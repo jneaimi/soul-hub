@@ -95,23 +95,19 @@ def main():
                             if "bypass" in text or "shift+tab" in text:
                                 seen_status_bar = True
 
-                            # Ready when: status bar seen AND we've seen ❯ at
-                            # least twice (banner + actual input prompt)
-                            ready = seen_status_bar and prompt_char_count >= 2
-
-                            if ready:
-                                # Wait for any final redraws to settle
-                                time.sleep(1.5)
-                                os.write(master_fd, prompt.encode())
+                            # Ready when: status bar seen (input is accepting text)
+                            if seen_status_bar:
                                 time.sleep(0.3)
+                                os.write(master_fd, prompt.encode())
+                                time.sleep(0.1)
                                 os.write(master_fd, b"\r")
                                 prompt_sent = True
                                 emit({"type": "prompt_sent"})
-                            # Fallback: after 12s just send it regardless
-                            elif elapsed > 12.0 and len(output_buffer) > 200:
-                                time.sleep(1.0)
-                                os.write(master_fd, prompt.encode())
+                            # Fallback: after 8s just send it
+                            elif elapsed > 8.0 and prompt_char_count >= 1:
                                 time.sleep(0.3)
+                                os.write(master_fd, prompt.encode())
+                                time.sleep(0.1)
                                 os.write(master_fd, b"\r")
                                 prompt_sent = True
                                 emit({"type": "prompt_sent"})
