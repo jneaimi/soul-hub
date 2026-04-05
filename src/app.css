@@ -28,3 +28,37 @@ body {
 ::-webkit-scrollbar-track { background: var(--color-hub-surface); }
 ::-webkit-scrollbar-thumb { background: var(--color-hub-border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+/* Mobile extra keys */
+.xkey {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 2.25rem;
+	height: 2.25rem;
+	padding: 0 0.35rem;
+	border-radius: 0.375rem;
+	background: #1a1a2e;
+	border: 1px solid #334155;
+	color: #94A3B8;
+	font-size: 11px;
+	font-family: 'JetBrains Mono', 'Fira Code', monospace;
+	font-weight: 500;
+	cursor: pointer;
+	-webkit-tap-highlight-color: transparent;
+	touch-action: manipulation;
+	flex-shrink: 0;
+}
+.xkey:active {
+	background: #334155;
+	color: #F8FAFC;
+}
+.xkey-active {
+	background: #a78bfa;
+	color: #0a0a0f;
+	border-color: #a78bfa;
+}
+.xkey-arrow {
+	width: 2.25rem;
+	font-size: 14px;
+}

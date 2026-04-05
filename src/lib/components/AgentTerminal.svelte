@@ -18,6 +18,58 @@
 	let exitCode = $state<number | null>(null);
 	let pid = $state<number | null>(null);
 	let error = $state('');
+	let isTouchDevice = $state(false);
+	let ctrlActive = $state(false);
+	let altActive = $state(false);
+
+	// Send a key (or modified key) to the terminal
+	function sendKey(key: string) {
+		if (!sessionId || !running) return;
+
+		let data = key;
+
+		// Apply modifiers
+		if (ctrlActive && key.length === 1) {
+			// Ctrl+letter = char code 1-26
+			const code = key.toUpperCase().charCodeAt(0) - 64;
+			if (code >= 1 && code <= 26) data = String.fromCharCode(code);
+			else data = key;
+			ctrlActive = false;
+		} else if (altActive) {
+			data = '\x1b' + key;
+			altActive = false;
+		}
+
+		sendInput(data);
+	}
+
+	function toggleCtrl() {
+		ctrlActive = !ctrlActive;
+		altActive = false;
+	}
+
+	function toggleAlt() {
+		altActive = !altActive;
+		ctrlActive = false;
+	}
+
+	// Wrapper for touch events — prevents default (no scroll/zoom) and sends key
+	function xkey(key: string) {
+		return (e: TouchEvent) => {
+			e.preventDefault();
+			sendKey(key);
+		};
+	}
+
+	function xctrl(e: TouchEvent) {
+		e.preventDefault();
+		toggleCtrl();
+	}
+
+	function xalt(e: TouchEvent) {
+		e.preventDefault();
+		toggleAlt();
+	}
 
 	onMount(async () => {
 		const { Terminal } = await import('@xterm/xterm');
@@ -78,6 +130,8 @@
 			}
 		});
 		if (terminalEl) resizeObserver.observe(terminalEl);
+
+		isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 
 		terminal.writeln('\x1b[38;5;141m  Soul Hub v2\x1b[0m');
 		terminal.writeln('\x1b[38;5;245m  PTY Terminal\x1b[0m');
@@ -247,6 +301,44 @@
 	</div>
 
 	<div bind:this={terminalEl} class="flex-1 min-h-0"></div>
+
+	<!-- Mobile extra keys toolbar -->
+	{#if isTouchDevice}
+		<div class="flex-shrink-0 bg-[#0d0d14] border-t border-hub-border/50 select-none">
+			<!-- Row 1: modifiers + special chars + Up arrow -->
+			<div class="flex items-center px-1 pt-1 pb-0.5 gap-0.5">
+				<button ontouchstart={xkey('\x1b')} class="xkey">ESC</button>
+				<button ontouchstart={xkey('\t')} class="xkey">TAB</button>
+				<button ontouchstart={xctrl} class="xkey {ctrlActive ? 'xkey-active' : ''}">CTL</button>
+				<button ontouchstart={xalt} class="xkey {altActive ? 'xkey-active' : ''}">ALT</button>
+				<button ontouchstart={xkey('/')} class="xkey">/</button>
+				<button ontouchstart={xkey('-')} class="xkey">-</button>
+				<button ontouchstart={xkey('_')} class="xkey">_</button>
+				<button ontouchstart={xkey('~')} class="xkey">~</button>
+				<div class="ml-auto flex gap-0.5">
+					<div class="w-9"></div>
+					<button ontouchstart={xkey('\x1b[A')} class="xkey xkey-arrow">&uarr;</button>
+					<div class="w-9"></div>
+				</div>
+			</div>
+			<!-- Row 2: more chars + Left/Down/Right arrows -->
+			<div class="flex items-center px-1 pb-1 pt-0.5 gap-0.5">
+				<button ontouchstart={xkey('|')} class="xkey">|</button>
+				<button ontouchstart={xkey('*')} class="xkey">*</button>
+				<button ontouchstart={xkey('{')}>&#123;</button>
+				<button ontouchstart={xkey('}')} class="xkey">&#125;</button>
+				<button ontouchstart={xkey('\x1b[H')} class="xkey text-[9px]">HOM</button>
+				<button ontouchstart={xkey('\x1b[F')} class="xkey text-[9px]">END</button>
+				<button ontouchstart={xkey('\x1b[5~')} class="xkey text-[9px]">PU</button>
+				<button ontouchstart={xkey('\x1b[6~')} class="xkey text-[9px]">PD</button>
+				<div class="ml-auto flex gap-0.5">
+					<button ontouchstart={xkey('\x1b[D')} class="xkey xkey-arrow">&larr;</button>
+					<button ontouchstart={xkey('\x1b[B')} class="xkey xkey-arrow">&darr;</button>
+					<button ontouchstart={xkey('\x1b[C')} class="xkey xkey-arrow">&rarr;</button>
+				</div>
+			</div>
+		</div>
+	{/if}
 
 	{#if error}
 		<div class="px-3 py-2 bg-red-500/10 border-t border-red-500/30 text-xs text-red-400">
