@@ -17,11 +17,20 @@
 		}, 100);
 	}
 
+	function handleOpen() {
+		started = true;
+		// Spawn with empty prompt — no injection, just open Claude in the project dir
+		setTimeout(() => {
+			terminalRef?.spawn('');
+		}, 100);
+	}
+
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter' && !e.shiftKey && prompt.trim()) {
 			e.preventDefault();
 			handleRun();
 		}
+		// Shift+Enter inserts newline (default textarea behavior, no action needed)
 	}
 </script>
 
@@ -47,8 +56,12 @@
 		{#if !started}
 			<div class="space-y-3">
 				<div>
-					<label class="block text-[10px] text-hub-dim uppercase tracking-wider mb-1">Prompt</label>
+					<div class="flex items-center justify-between mb-1">
+						<label for="prompt-input" class="text-[10px] text-hub-dim uppercase tracking-wider">Prompt</label>
+						<span class="text-[10px] text-hub-dim">Shift+Enter for new line</span>
+					</div>
 					<textarea
+						id="prompt-input"
 						bind:value={prompt}
 						onkeydown={handleKeydown}
 						placeholder="What should the agent do?"
@@ -57,13 +70,21 @@
 					></textarea>
 				</div>
 
-				<button
-					onclick={handleRun}
-					disabled={!prompt.trim()}
-					class="px-6 py-2.5 rounded-lg bg-hub-cta text-black font-medium text-sm hover:bg-hub-cta-hover transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
-				>
-					Run Agent
-				</button>
+				<div class="flex items-center gap-2">
+					<button
+						onclick={handleRun}
+						disabled={!prompt.trim()}
+						class="px-6 py-2.5 rounded-lg bg-hub-cta text-black font-medium text-sm hover:bg-hub-cta-hover transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+					>
+						Run Agent
+					</button>
+					<button
+						onclick={handleOpen}
+						class="px-6 py-2.5 rounded-lg bg-hub-card border border-hub-border text-hub-text font-medium text-sm hover:bg-hub-surface hover:border-hub-dim transition-colors cursor-pointer"
+					>
+						Open Terminal
+					</button>
+				</div>
 			</div>
 		{/if}
 	</header>
@@ -75,6 +96,7 @@
 				bind:this={terminalRef}
 				cwd={data.cwd}
 				{prompt}
+				projectName={data.name}
 			/>
 		</div>
 	{:else}

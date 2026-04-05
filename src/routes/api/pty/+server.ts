@@ -47,17 +47,14 @@ export const POST: RequestHandler = async ({ request }) => {
 
 	// action === 'spawn'
 	const { prompt, cwd, cols, rows } = body;
-
-	if (!prompt?.trim()) {
-		return json({ error: 'Missing prompt' }, { status: 400 });
-	}
+	const safePrompt = (prompt || '').trim();
 
 	const resolvedCwd = cwd || HOME;
 	const sessionId = crypto.randomUUID().slice(0, 8);
-	console.log(`[pty:${sessionId}] spawn cwd=${resolvedCwd} prompt=${prompt.slice(0, 60)}...`);
+	console.log(`[pty:${sessionId}] spawn cwd=${resolvedCwd} prompt=${safePrompt ? safePrompt.slice(0, 60) + '...' : '(interactive)'}`);
 
 	const bridgeArgs = JSON.stringify({
-		prompt,
+		prompt: safePrompt,
 		cwd: resolvedCwd,
 		cols: cols || 120,
 		rows: rows || 40,
@@ -77,14 +74,29 @@ export const POST: RequestHandler = async ({ request }) => {
 
 	const stream = new ReadableStream({
 		start(controller) {
-			controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'session', sessionId })}\n\n`));
+			let closed = false;
+
+			function safeEnqueue(chunk: Uint8Array) {
+				if (!closed) {
+					try { controller.enqueue(chunk); } catch { /* already closed */ }
+				}
+			}
+
+			function safeClose() {
+				if (!closed) {
+					closed = true;
+					try { controller.close(); } catch { /* already closed */ }
+				}
+			}
+
+			safeEnqueue(encoder.encode(`data: ${JSON.stringify({ type: 'session', sessionId })}\n\n`));
 
 			const rl = createInterface({ input: bridge.stdout! });
 
 			rl.on('line', (line) => {
 				try {
 					JSON.parse(line); // validate
-					controller.enqueue(encoder.encode(`data: ${line}\n\n`));
+					safeEnqueue(encoder.encode(`data: ${line}\n\n`));
 				} catch { /* skip non-JSON */ }
 			});
 
@@ -93,13 +105,15 @@ export const POST: RequestHandler = async ({ request }) => {
 			});
 
 			bridge.on('exit', (code) => {
-				controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'exit', code: code || 0 })}\n\n`));
-				controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-				controller.close();
+				rl.close();
+				safeEnqueue(encoder.encode(`data: ${JSON.stringify({ type: 'exit', code: code || 0 })}\n\n`));
+				safeEnqueue(encoder.encode('data: [DONE]\n\n'));
+				safeClose();
 				sessions.delete(sessionId);
 			});
 
 			request.signal.addEventListener('abort', () => {
+				closed = true;
 				bridge.kill();
 				sessions.delete(sessionId);
 			});

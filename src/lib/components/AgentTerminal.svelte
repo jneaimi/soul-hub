@@ -5,9 +5,16 @@
 		prompt?: string;
 		cwd?: string;
 		autoSpawn?: boolean;
+		projectName?: string;
 	}
 
-	let { prompt = '', cwd = '', autoSpawn = false }: Props = $props();
+	let { prompt = '', cwd = '', autoSpawn = false, projectName = '' }: Props = $props();
+
+	let fileInput: HTMLInputElement;
+	let uploading = $state(false);
+	let touchStartY = 0;
+	let touchScrollActive = false;
+	let scrolledUp = $state(false);
 
 	let terminalEl: HTMLDivElement | undefined = $state();
 	let terminal: any = null;
@@ -150,6 +157,42 @@
 
 		isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 
+		// Track scroll position to show "scroll to bottom" button
+		terminal.onScroll(() => {
+			const buf = terminal.buffer.active;
+			scrolledUp = buf.viewportY < buf.baseY;
+		});
+
+		// Touch scroll: attach handlers to the xterm viewport so vertical
+		// swipes scroll the scrollback buffer instead of being swallowed.
+		if (isTouchDevice && terminalEl) {
+			const viewport = terminalEl.querySelector('.xterm-screen') as HTMLElement;
+			if (viewport) {
+				viewport.addEventListener('touchstart', (e: TouchEvent) => {
+					if (e.touches.length === 1) {
+						touchStartY = e.touches[0].clientY;
+						touchScrollActive = true;
+					}
+				}, { passive: true });
+
+				viewport.addEventListener('touchmove', (e: TouchEvent) => {
+					if (!touchScrollActive || e.touches.length !== 1) return;
+					const deltaY = touchStartY - e.touches[0].clientY;
+					const lines = Math.round(deltaY / 20); // ~20px per line
+					if (lines !== 0) {
+						terminal.scrollLines(lines);
+						touchStartY = e.touches[0].clientY;
+					}
+					// Always prevent default on the terminal to avoid page bounce
+					e.preventDefault();
+				}, { passive: false });
+
+				viewport.addEventListener('touchend', () => {
+					touchScrollActive = false;
+				}, { passive: true });
+			}
+		}
+
 		terminal.writeln('\x1b[38;5;141m  Soul Hub v2\x1b[0m');
 		terminal.writeln('\x1b[38;5;245m  PTY Terminal\x1b[0m');
 		terminal.writeln('');
@@ -196,15 +239,14 @@
 	}
 
 	export function spawn(customPrompt?: string) {
-		const p = customPrompt || prompt;
-		if (!p.trim()) return;
+		const p = customPrompt ?? prompt;
 
 		error = '';
 		exitCode = null;
 		running = true;
 		sessionId = '';
 
-		terminal?.writeln(`\x1b[38;5;245m  Starting agent in ${cwd || 'HOME'}...\x1b[0m`);
+		terminal?.writeln(`\x1b[38;5;245m  Starting agent in ${cwd || 'HOME'}...${p ? '' : ' (no prompt)'}\x1b[0m`);
 		terminal?.focus();
 
 		abortController = new AbortController();
@@ -291,9 +333,82 @@
 	export function clear() {
 		terminal?.clear();
 	}
+
+	async function uploadFiles(files: FileList | File[]) {
+		if (!projectName || files.length === 0) return;
+		uploading = true;
+
+		const formData = new FormData();
+		formData.append('project', projectName);
+		for (const file of files) {
+			formData.append('files', file);
+		}
+
+		try {
+			const res = await fetch('/api/upload', { method: 'POST', body: formData });
+			const data = await res.json();
+
+			if (!res.ok) {
+				terminal?.writeln(`\x1b[38;5;203m  Upload failed: ${data.error}\x1b[0m`);
+				return;
+			}
+
+			const paths = (data.uploaded as { name: string; path: string; size: number }[])
+				.map((f) => f.path);
+
+			terminal?.writeln(`\x1b[38;5;82m  Uploaded ${paths.length} file(s)\x1b[0m`);
+			for (const p of paths) {
+				terminal?.writeln(`\x1b[38;5;245m    ${p}\x1b[0m`);
+			}
+
+			// If Claude session is running, paste the paths so it can read them
+			if (running && sessionId) {
+				const pathStr = paths.join(' ');
+				sendInput(pathStr);
+				terminal?.writeln(`\x1b[38;5;141m  Pasted path(s) into session\x1b[0m`);
+			}
+		} catch {
+			terminal?.writeln(`\x1b[38;5;203m  Upload failed: network error\x1b[0m`);
+		} finally {
+			uploading = false;
+		}
+	}
+
+	function handleFileSelect() {
+		fileInput?.click();
+	}
+
+	function onFileInputChange(e: Event) {
+		const input = e.target as HTMLInputElement;
+		if (input.files) uploadFiles(input.files);
+		input.value = ''; // reset so same file can be picked again
+	}
+
+	function handleDrop(e: DragEvent) {
+		e.preventDefault();
+		if (e.dataTransfer?.files) uploadFiles(e.dataTransfer.files);
+	}
+
+	function handleDragOver(e: DragEvent) {
+		e.preventDefault();
+	}
 </script>
 
-<div class="flex flex-col h-full">
+<!-- Hidden file input -->
+<input
+	bind:this={fileInput}
+	type="file"
+	multiple
+	class="hidden"
+	onchange={onFileInputChange}
+/>
+
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+	class="flex flex-col h-full"
+	ondrop={handleDrop}
+	ondragover={handleDragOver}
+>
 	<div class="flex items-center justify-between px-3 py-2 bg-[#0a0a0f] border-b border-hub-border/50 text-xs">
 		<div class="flex items-center gap-3">
 			<div class="flex items-center gap-1.5">
@@ -310,6 +425,19 @@
 			{/if}
 		</div>
 		<div class="flex items-center gap-2">
+			{#if projectName}
+				<button
+					onclick={handleFileSelect}
+					disabled={uploading}
+					class="flex items-center gap-1 px-2 py-1 rounded text-hub-muted hover:bg-hub-surface hover:text-hub-text transition-colors cursor-pointer disabled:opacity-50"
+					title="Upload files to project"
+				>
+					<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+					</svg>
+					{#if uploading}Uploading...{:else}Upload{/if}
+				</button>
+			{/if}
 			{#if running}
 				<button onclick={kill} class="px-2 py-1 rounded text-red-400 hover:bg-red-400/10 transition-colors cursor-pointer">Kill</button>
 			{/if}
@@ -317,7 +445,23 @@
 		</div>
 	</div>
 
-	<div bind:this={terminalEl} class="flex-1 min-h-0"></div>
+	<div class="relative flex-1 min-h-0">
+		<div bind:this={terminalEl} class="h-full"></div>
+
+		<!-- Scroll to bottom FAB -->
+		{#if scrolledUp}
+			<button
+				onclick={() => { terminal?.scrollToBottom(); scrolledUp = false; }}
+				class="absolute bottom-3 right-3 w-9 h-9 rounded-full bg-hub-purple/90 text-white flex items-center justify-center shadow-lg hover:bg-hub-purple transition-colors z-10 cursor-pointer"
+				title="Scroll to bottom"
+				onmousedown={(e) => e.preventDefault()}
+			>
+				<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+					<polyline points="6 9 12 15 18 9"/>
+				</svg>
+			</button>
+		{/if}
+	</div>
 
 	<!-- Mobile extra keys toolbar -->
 	{#if isTouchDevice}
