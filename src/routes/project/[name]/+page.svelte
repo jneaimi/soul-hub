@@ -2,8 +2,8 @@
 	import { page } from '$app/state';
 	import AgentTerminal from '$lib/components/AgentTerminal.svelte';
 
+	const { data } = $props();
 	const projectName = $derived(page.params.name);
-	const devPath = $derived(`${import.meta.env.SSR ? '' : ''}` || `/Users/${typeof window !== 'undefined' ? '' : ''}`) ;
 
 	let prompt = $state('');
 	let terminalRef: AgentTerminal | undefined = $state();
@@ -40,7 +40,7 @@
 			</a>
 			<div>
 				<h1 class="text-lg font-bold text-hub-text">{projectName}</h1>
-				<p class="text-xs text-hub-dim">~/dev/{projectName}</p>
+				<p class="text-xs text-hub-dim">{data.devPath || data.brainPath || '~'}</p>
 			</div>
 		</div>
 
@@ -73,7 +73,7 @@
 		<div class="flex-1 min-h-0">
 			<AgentTerminal
 				bind:this={terminalRef}
-				cwd={`/Users/jneaimi/dev/${projectName}`}
+				cwd={data.cwd}
 				{prompt}
 			/>
 		</div>
