@@ -187,7 +187,7 @@
 		running = true;
 		sessionId = '';
 
-		terminal?.writeln(`\x1b[38;5;245m  Starting agent...\x1b[0m`);
+		terminal?.writeln(`\x1b[38;5;245m  Starting agent in ${cwd || 'HOME'}...\x1b[0m`);
 		terminal?.focus();
 
 		abortController = new AbortController();
