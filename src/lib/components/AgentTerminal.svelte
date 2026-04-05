@@ -304,7 +304,11 @@
 
 	<!-- Mobile extra keys toolbar -->
 	{#if isTouchDevice}
-		<div class="flex-shrink-0 bg-[#0d0d14] border-t border-hub-border/50 select-none">
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div
+			class="xkey-bar flex-shrink-0 bg-[#0d0d14] border-t border-hub-border/50 select-none"
+			onmousedown={(e) => e.preventDefault()}
+		>
 			<!-- Row 1: modifiers + special chars + Up arrow -->
 			<div class="flex items-center px-1 pt-1 pb-0.5 gap-0.5">
 				<button ontouchstart={xkey('\x1b')} class="xkey">ESC</button>

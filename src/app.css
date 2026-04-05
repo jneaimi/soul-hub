@@ -29,7 +29,11 @@ body {
 ::-webkit-scrollbar-thumb { background: var(--color-hub-border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #475569; }
 
-/* Mobile extra keys */
+/* Mobile extra keys — must never steal focus from terminal */
+.xkey-bar {
+	-webkit-user-select: none;
+	user-select: none;
+}
 .xkey {
 	display: flex;
 	align-items: center;
@@ -48,6 +52,9 @@ body {
 	-webkit-tap-highlight-color: transparent;
 	touch-action: manipulation;
 	flex-shrink: 0;
+	/* Prevent focus steal — keeps keyboard open on mobile */
+	-webkit-user-select: none;
+	user-select: none;
 }
 .xkey:active {
 	background: #334155;
