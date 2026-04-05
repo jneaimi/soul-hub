@@ -116,9 +116,26 @@
 		}
 
 		terminal.onData((data: string) => {
-			if (sessionId && running) {
-				sendInput(data);
+			if (!sessionId || !running) return;
+
+			// Apply sticky modifiers from the extra-keys toolbar
+			if (ctrlActive && data.length === 1) {
+				const code = data.toUpperCase().charCodeAt(0) - 64;
+				if (code >= 1 && code <= 26) {
+					sendInput(String.fromCharCode(code));
+				} else {
+					sendInput(data);
+				}
+				ctrlActive = false;
+				return;
 			}
+			if (altActive) {
+				sendInput('\x1b' + data);
+				altActive = false;
+				return;
+			}
+
+			sendInput(data);
 		});
 
 		const resizeObserver = new ResizeObserver(() => {
