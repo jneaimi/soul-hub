@@ -64,6 +64,8 @@ def main():
     prompt_sent = False
     output_buffer = ""
     start_time = time.time()
+    # Track if we've seen the welcome banner complete and the input prompt appear
+    seen_input_prompt = False
 
     try:
         while True:
@@ -81,18 +83,30 @@ def main():
 
                         if not prompt_sent and prompt:
                             elapsed = time.time() - start_time
-                            ready = False
-                            recent = output_buffer[-200:] if len(output_buffer) > 200 else output_buffer
-                            if any(c in recent for c in [">", "\u276f", "\u2026"]):
-                                ready = True
-                            if elapsed > 5.0 and len(output_buffer) > 100:
-                                ready = True
-                            if ready:
-                                time.sleep(0.5)
+                            # Look for the input prompt indicator (❯) which appears
+                            # after the welcome banner when Claude is ready for input.
+                            # Also check for "bypass permissions" which confirms
+                            # --dangerously-skip-permissions is active.
+                            recent = output_buffer[-500:] if len(output_buffer) > 500 else output_buffer
+                            if "\u276f" in recent:  # ❯ character
+                                seen_input_prompt = True
+                            # Send prompt once we see the input prompt and enough
+                            # time has passed for the UI to settle
+                            if seen_input_prompt and elapsed > 3.0:
+                                time.sleep(0.8)  # let terminal fully settle
                                 os.write(master_fd, prompt.encode())
-                                time.sleep(0.1)
+                                time.sleep(0.2)
                                 os.write(master_fd, b"\r")
                                 prompt_sent = True
+                                emit({"type": "prompt_sent"})
+                            # Fallback: after 10s just send it regardless
+                            elif elapsed > 10.0 and len(output_buffer) > 200:
+                                time.sleep(0.5)
+                                os.write(master_fd, prompt.encode())
+                                time.sleep(0.2)
+                                os.write(master_fd, b"\r")
+                                prompt_sent = True
+                                emit({"type": "prompt_sent"})
                     except OSError:
                         raise EOFError
 

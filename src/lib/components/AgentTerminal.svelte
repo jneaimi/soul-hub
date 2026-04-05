@@ -325,7 +325,7 @@
 			<div class="flex items-center px-1 pb-1 pt-0.5 gap-0.5">
 				<button ontouchstart={xkey('|')} class="xkey">|</button>
 				<button ontouchstart={xkey('*')} class="xkey">*</button>
-				<button ontouchstart={xkey('{')}>&#123;</button>
+				<button ontouchstart={xkey('{')} class="xkey">&#123;</button>
 				<button ontouchstart={xkey('}')} class="xkey">&#125;</button>
 				<button ontouchstart={xkey('\x1b[H')} class="xkey text-[9px]">HOM</button>
 				<button ontouchstart={xkey('\x1b[F')} class="xkey text-[9px]">END</button>

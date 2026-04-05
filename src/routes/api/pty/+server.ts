@@ -52,11 +52,13 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ error: 'Missing prompt' }, { status: 400 });
 	}
 
+	const resolvedCwd = cwd || HOME;
 	const sessionId = crypto.randomUUID().slice(0, 8);
+	console.log(`[pty:${sessionId}] spawn cwd=${resolvedCwd} prompt=${prompt.slice(0, 60)}...`);
 
 	const bridgeArgs = JSON.stringify({
 		prompt,
-		cwd: cwd || HOME,
+		cwd: resolvedCwd,
 		cols: cols || 120,
 		rows: rows || 40,
 	});
