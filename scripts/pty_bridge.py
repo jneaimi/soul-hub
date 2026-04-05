@@ -64,8 +64,11 @@ def main():
     prompt_sent = False
     output_buffer = ""
     start_time = time.time()
-    # Track if we've seen the welcome banner complete and the input prompt appear
-    seen_input_prompt = False
+    # Count how many times we see the ❯ prompt — the first is during
+    # banner rendering, the second is the actual ready-for-input prompt
+    prompt_char_count = 0
+    # Track if the status bar has rendered (confirms UI is fully ready)
+    seen_status_bar = False
 
     try:
         while True:
@@ -83,27 +86,32 @@ def main():
 
                         if not prompt_sent and prompt:
                             elapsed = time.time() - start_time
-                            # Look for the input prompt indicator (❯) which appears
-                            # after the welcome banner when Claude is ready for input.
-                            # Also check for "bypass permissions" which confirms
-                            # --dangerously-skip-permissions is active.
-                            recent = output_buffer[-500:] if len(output_buffer) > 500 else output_buffer
-                            if "\u276f" in recent:  # ❯ character
-                                seen_input_prompt = True
-                            # Send prompt once we see the input prompt and enough
-                            # time has passed for the UI to settle
-                            if seen_input_prompt and elapsed > 3.0:
-                                time.sleep(0.8)  # let terminal fully settle
+
+                            # Count ❯ appearances in this chunk
+                            prompt_char_count += text.count("\u276f")
+
+                            # Status bar contains "bypass permissions" or
+                            # "shift+tab" — only appears when UI is fully ready
+                            if "bypass" in text or "shift+tab" in text:
+                                seen_status_bar = True
+
+                            # Ready when: status bar seen AND we've seen ❯ at
+                            # least twice (banner + actual input prompt)
+                            ready = seen_status_bar and prompt_char_count >= 2
+
+                            if ready:
+                                # Wait for any final redraws to settle
+                                time.sleep(1.5)
                                 os.write(master_fd, prompt.encode())
-                                time.sleep(0.2)
+                                time.sleep(0.3)
                                 os.write(master_fd, b"\r")
                                 prompt_sent = True
                                 emit({"type": "prompt_sent"})
-                            # Fallback: after 10s just send it regardless
-                            elif elapsed > 10.0 and len(output_buffer) > 200:
-                                time.sleep(0.5)
+                            # Fallback: after 12s just send it regardless
+                            elif elapsed > 12.0 and len(output_buffer) > 200:
+                                time.sleep(1.0)
                                 os.write(master_fd, prompt.encode())
-                                time.sleep(0.2)
+                                time.sleep(0.3)
                                 os.write(master_fd, b"\r")
                                 prompt_sent = True
                                 emit({"type": "prompt_sent"})
