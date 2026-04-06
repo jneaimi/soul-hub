@@ -40,6 +40,16 @@ steps:
     depends_on: [choose-style]
     timeout: 30
 
+  - id: notify
+    type: script
+    run: "python3 scripts/notify.py"
+    input: $steps.finalize.output
+    output: /tmp/pipeline-runs/$RUN_ID/notify.log
+    output_type: action
+    when: $steps.choose-style.output != "minimal"
+    depends_on: [finalize]
+    timeout: 30
+
 on_failure:
   strategy: halt
   notify: false

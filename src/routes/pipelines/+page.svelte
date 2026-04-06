@@ -352,6 +352,12 @@
 		return 'pending';
 	}
 
+	function getSkipReason(stepId: string): string {
+		if (!activeRun?.events) return '';
+		const event = activeRun.events.find((e: StepEvent) => e.stepId === stepId && e.status === 'skipped');
+		return event?.detail || '';
+	}
+
 	function getStepDuration(stepId: string): string {
 		if (!activeRun?.steps) return '';
 		const step = activeRun.steps.find((s) => s.id === stepId);
@@ -548,6 +554,9 @@
 											{#if duration}
 												<span class="text-xs text-hub-dim">{duration}</span>
 											{/if}
+											{#if status === 'skipped' && getSkipReason(step.id)}
+												<span class="text-[9px] text-hub-dim italic">({getSkipReason(step.id)})</span>
+											{/if}
 										</div>
 										<p class="text-[11px] text-hub-dim mt-0.5">
 											{#if step.type === 'approval'}
@@ -556,6 +565,11 @@
 												user prompt
 											{:else}
 												{step.type === 'script' ? step.run : step.agent}
+											{/if}
+											{#if step.when}
+												<span class="text-hub-info/50"> when {step.when}</span>
+											{:else if step.skip_if}
+												<span class="text-hub-warning/50"> skip if {step.skip_if}</span>
 											{/if}
 											{#if step.depends_on?.length}
 												<span class="text-hub-dim/50"> after {step.depends_on.join(', ')}</span>

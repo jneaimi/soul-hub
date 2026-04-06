@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline';
 import { mkdir, stat } from 'node:fs/promises';
 import { resolve, dirname, join } from 'node:path';
 import { config } from '$lib/config.js';
-import { parsePipeline, resolveRef, getExecutionOrder } from './parser.js';
+import { parsePipeline, resolveRef, getExecutionOrder, checkCondition } from './parser.js';
 import type { PipelineStep, PipelineRun, StepStatus } from './types.js';
 
 const execFileAsync = promisify(execFile);
@@ -179,6 +179,15 @@ export async function runPipeline(
 	// Execute steps in order
 	for (const stepId of order) {
 		const step = stepMap.get(stepId)!;
+
+		// Check when/skip_if conditions before executing
+		const condition = checkCondition(step, resolvedInputs, stepOutputs);
+		if (condition.skip) {
+			emit(stepId, 'skipped', condition.reason);
+			stepOutputs[stepId] = ''; // empty output for downstream refs
+			continue;
+		}
+
 		const maxAttempts = (step.retry ?? 0) + 1;
 
 		let success = false;

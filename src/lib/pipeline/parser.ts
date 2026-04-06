@@ -89,6 +89,75 @@ export function resolveRef(
 	});
 }
 
+/**
+ * Evaluate a condition expression against resolved values.
+ * Supports: ==, !=, contains, not_contains
+ * Example: '$steps.choose-lang.output == "English"'
+ * Returns true if the condition is met.
+ */
+export function evaluateCondition(
+	expr: string,
+	inputs: Record<string, string | number>,
+	stepOutputs: Record<string, string>,
+): boolean {
+	// Parse the expression: left operator right
+	const operators = ['not_contains', 'contains', '!=', '=='] as const;
+	let left = '';
+	let op = '' as typeof operators[number];
+	let right = '';
+
+	for (const candidate of operators) {
+		const idx = expr.indexOf(` ${candidate} `);
+		if (idx !== -1) {
+			left = expr.substring(0, idx).trim();
+			op = candidate;
+			right = expr.substring(idx + candidate.length + 2).trim();
+			break;
+		}
+	}
+
+	if (!op) {
+		throw new Error(`Invalid condition expression: "${expr}". Use ==, !=, contains, or not_contains`);
+	}
+
+	// Resolve variable references on the left side
+	const resolvedLeft = resolveRef(left, inputs, stepOutputs);
+
+	// Strip quotes from the right side
+	const resolvedRight = right.replace(/^["']|["']$/g, '');
+
+	switch (op) {
+		case '==': return resolvedLeft === resolvedRight;
+		case '!=': return resolvedLeft !== resolvedRight;
+		case 'contains': return resolvedLeft.includes(resolvedRight);
+		case 'not_contains': return !resolvedLeft.includes(resolvedRight);
+	}
+}
+
+/**
+ * Check if a step should be skipped based on when/skip_if conditions.
+ * Returns { skip: false } if the step should run, or { skip: true, reason: '...' } if skipped.
+ */
+export function checkCondition(
+	step: { when?: string; skip_if?: string; id: string },
+	inputs: Record<string, string | number>,
+	stepOutputs: Record<string, string>,
+): { skip: boolean; reason?: string } {
+	if (step.when) {
+		const result = evaluateCondition(step.when, inputs, stepOutputs);
+		if (!result) {
+			return { skip: true, reason: `when: ${step.when}` };
+		}
+	}
+	if (step.skip_if) {
+		const result = evaluateCondition(step.skip_if, inputs, stepOutputs);
+		if (result) {
+			return { skip: true, reason: `skip_if: ${step.skip_if}` };
+		}
+	}
+	return { skip: false };
+}
+
 /** Get execution order respecting depends_on (topological sort) */
 export function getExecutionOrder(spec: PipelineSpec): string[] {
 	const order: string[] = [];

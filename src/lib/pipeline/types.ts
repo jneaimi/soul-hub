@@ -48,6 +48,10 @@ export interface PipelineStep {
 	options_from?: string;
 	/** For type: prompt — static options */
 	options?: string[];
+	/** Condition: only run this step when expression is true */
+	when?: string;
+	/** Condition: skip this step when expression is true (inverse of when) */
+	skip_if?: string;
 }
 
 export interface PipelineOnFailure {
