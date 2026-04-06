@@ -2,20 +2,20 @@ import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { resolve, dirname } from 'node:path';
 import { config } from '$lib/config.js';
-import { runPipeline, sendInputToStep, killPipeline, approveGate, rejectGate, answerGate } from '$lib/pipeline/index.js';
+import { runPipeline, sendInputToStep, killPipeline, approveGate, rejectGate, answerGate, getActivePipelines } from '$lib/pipeline/index.js';
 import type { PipelineRun } from '$lib/pipeline/types.js';
 
 const PIPELINES_DIR = resolve(dirname(config.resolved.marketplaceDir), 'pipelines');
 
-// Track active and completed runs
+// Track active and completed runs (in-memory for live polling)
 const runs = new Map<string, PipelineRun>();
 const runEvents = new Map<string, { stepId: string; status: string; detail?: string; time: string }[]>();
 
 // Track terminal output per step (ring buffer — last 200 lines per step)
 const stepOutputBuffers = new Map<string, Map<string, string[]>>();
 
-// Concurrency lock: one active run per pipeline name
-const activePipelines = new Set<string>();
+// Use shared concurrency lock from scheduler
+const activePipelines = getActivePipelines();
 
 /** POST /api/pipelines/run — start, kill, or send input to a pipeline */
 export const POST: RequestHandler = async ({ request }) => {

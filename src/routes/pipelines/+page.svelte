@@ -76,6 +76,26 @@
 
 	let activeRunId = $state<string | null>(null);
 
+	// Schedules
+	interface Schedule {
+		name: string;
+		cronExpr: string;
+		enabled: boolean;
+		lastRun?: string;
+		lastStatus?: string;
+	}
+	interface HistoryRecord {
+		runId: string;
+		pipelineName: string;
+		status: string;
+		startedAt: string;
+		finishedAt?: string;
+		trigger: string;
+		stepSummary: { id: string; status: string; durationMs?: number }[];
+	}
+	let schedules = $state<Schedule[]>([]);
+	let persistedHistory = $state<HistoryRecord[]>([]);
+
 	const statusIcon: Record<string, string> = {
 		pending: '○', running: '◉', done: '✓', failed: '✗', skipped: '–', waiting: '◎',
 	};
@@ -98,12 +118,22 @@
 		} catch { /* silent */ }
 		loading = false;
 
-		// Load run history
+		// Load run history (in-memory)
 		try {
 			const res = await fetch('/api/pipelines/run');
 			if (res.ok) {
 				const data = await res.json();
 				history = (data.runs || []).filter((r: RunResult) => r.status === 'done' || r.status === 'failed');
+			}
+		} catch { /* silent */ }
+
+		// Load schedules + persisted history
+		try {
+			const res = await fetch('/api/pipelines/schedules');
+			if (res.ok) {
+				const data = await res.json();
+				schedules = data.schedules || [];
+				persistedHistory = data.history || [];
 			}
 		} catch { /* silent */ }
 	});
@@ -230,6 +260,19 @@
 		} catch { /* silent */ }
 		gateSubmitting.delete(stepId);
 		gateSubmitting = new Set(gateSubmitting);
+	}
+
+	async function toggleScheduleEnabled(name: string, enabled: boolean) {
+		try {
+			await fetch('/api/pipelines/schedules', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name, enabled }),
+			});
+			const schedule = schedules.find((s) => s.name === name);
+			if (schedule) schedule.enabled = enabled;
+			schedules = [...schedules];
+		} catch { /* silent */ }
 	}
 
 	async function killRun() {
@@ -452,8 +495,41 @@
 					</section>
 				{/if}
 
+				<!-- SCHEDULES -->
+				{#if schedules.length > 0}
+					<section class="mb-8">
+						<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-3">Scheduled</h2>
+						<div class="space-y-2">
+							{#each schedules as schedule}
+								<div class="p-3 rounded-lg bg-hub-surface border border-hub-border/50 flex items-center gap-3">
+									<button
+										onclick={() => toggleScheduleEnabled(schedule.name, !schedule.enabled)}
+										class="w-8 h-5 rounded-full transition-colors cursor-pointer flex-shrink-0 relative
+											{schedule.enabled ? 'bg-hub-cta' : 'bg-hub-border'}"
+									>
+										<span class="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform
+											{schedule.enabled ? 'left-3.5' : 'left-0.5'}"></span>
+									</button>
+									<div class="flex-1 min-w-0">
+										<div class="flex items-center gap-2">
+											<span class="text-sm font-medium text-hub-text">{schedule.name}</span>
+											<span class="text-[10px] font-mono text-hub-dim bg-hub-bg px-1.5 py-0.5 rounded">{schedule.cronExpr}</span>
+										</div>
+										{#if schedule.lastRun}
+											<p class="text-[11px] text-hub-dim mt-0.5">
+												Last: <span class="{schedule.lastStatus === 'done' ? 'text-hub-cta' : 'text-hub-danger'}">{schedule.lastStatus}</span>
+												{timeAgo(schedule.lastRun)}
+											</p>
+										{/if}
+									</div>
+								</div>
+							{/each}
+						</div>
+					</section>
+				{/if}
+
 				<!-- RUN HISTORY -->
-				{#if history.length > 0}
+				{#if history.length > 0 || persistedHistory.length > 0}
 					<section>
 						<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-3">Recent Runs</h2>
 						<div class="space-y-2">
@@ -468,6 +544,31 @@
 									</div>
 									<div class="flex items-center gap-3 ml-5 text-xs text-hub-dim">
 										{#each run.steps || [] as step}
+											<span class="{statusColor[step.status]}">
+												{statusIcon[step.status]} {step.id}
+												{#if step.durationMs}({formatDuration(step.durationMs)}){/if}
+											</span>
+										{/each}
+									</div>
+								</div>
+							{/each}
+							{#each persistedHistory as record}
+								<div class="p-3 rounded-lg bg-hub-surface border border-hub-border/50">
+									<div class="flex items-center gap-2 mb-1.5">
+										<span class="text-sm {record.status === 'done' ? 'text-hub-cta' : 'text-hub-danger'}">
+											{record.status === 'done' ? '✓' : '✗'}
+										</span>
+										<span class="text-sm font-medium text-hub-text">{record.pipelineName}</span>
+										<span class="px-1.5 py-0.5 rounded text-[9px] font-medium
+											{record.trigger === 'scheduled' ? 'bg-hub-purple/10 text-hub-purple' :
+											 record.trigger === 'webhook' ? 'bg-hub-info/10 text-hub-info' :
+											 'bg-hub-dim/10 text-hub-dim'}">
+											{record.trigger}
+										</span>
+										<span class="text-xs text-hub-dim ml-auto">{timeAgo(record.startedAt)}</span>
+									</div>
+									<div class="flex items-center gap-3 ml-5 text-xs text-hub-dim">
+										{#each record.stepSummary || [] as step}
 											<span class="{statusColor[step.status]}">
 												{statusIcon[step.status]} {step.id}
 												{#if step.durationMs}({formatDuration(step.durationMs)}){/if}
