@@ -13,8 +13,9 @@
 		description: string;
 		version?: string;
 		author?: string;
+		schedule?: string;
 		inputs?: { name: string; type: string; description: string; default?: string | number; options?: string[] }[];
-		steps: { id: string; type: string; agent?: string; run?: string; depends_on?: string[] }[];
+		steps: { id: string; type: string; agent?: string; run?: string; depends_on?: string[]; when?: string; skip_if?: string }[];
 	}
 
 	interface StepEvent {
@@ -43,6 +44,10 @@
 	let selected = $state<PipelineDetail | null>(null);
 	let selectedName = $state('');
 	let inputValues = $state<Record<string, string | number>>({});
+
+	// Selected pipeline schedule state
+	let selectedSchedule = $state<Schedule | null>(null);
+	let webhookUrl = $state('');
 
 	// Run state
 	let activeRun = $state<RunResult | null>(null);
@@ -156,6 +161,10 @@
 				}
 				// Load output files
 				if (outputDir) loadOutputFiles();
+				// Find schedule for this pipeline
+				selectedSchedule = schedules.find((s) => s.name === name) || null;
+				// Build webhook URL
+				webhookUrl = `${window.location.origin}/api/pipelines/trigger`;
 			}
 		} catch { /* silent */ }
 	}
@@ -192,6 +201,8 @@
 		promptAnswers = {};
 		showFileContent = {};
 		gateSubmitting = new Set();
+		selectedSchedule = null;
+		webhookUrl = '';
 		if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
 	}
 
@@ -272,6 +283,10 @@
 			const schedule = schedules.find((s) => s.name === name);
 			if (schedule) schedule.enabled = enabled;
 			schedules = [...schedules];
+			// Update selected schedule state too
+			if (selectedSchedule && selectedSchedule.name === name) {
+				selectedSchedule = { ...selectedSchedule, enabled };
+			}
 		} catch { /* silent */ }
 	}
 
@@ -480,6 +495,7 @@
 						<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-3">Available Pipelines</h2>
 						<div class="space-y-3">
 							{#each pipelines as pipeline}
+								{@const pipelineSchedule = schedules.find((s) => s.name === pipeline.name)}
 								<button
 									onclick={() => selectPipeline(pipeline.name)}
 									class="w-full text-left p-4 rounded-xl bg-hub-card border border-hub-border hover:border-hub-info/40 transition-all cursor-pointer group"
@@ -487,6 +503,11 @@
 									<div class="flex items-center gap-3 mb-1.5">
 										<svg class="w-4 h-4 text-hub-info group-hover:text-hub-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
 										<span class="font-semibold text-hub-text group-hover:text-hub-info transition-colors">{pipeline.name}</span>
+										{#if pipelineSchedule}
+											<span class="px-1.5 py-0.5 rounded text-[9px] font-mono {pipelineSchedule.enabled ? 'bg-hub-cta/10 text-hub-cta' : 'bg-hub-dim/10 text-hub-dim'}">
+												{pipelineSchedule.cronExpr}
+											</span>
+										{/if}
 									</div>
 									<p class="text-sm text-hub-muted ml-7">{pipeline.description}</p>
 								</button>
@@ -584,6 +605,68 @@
 			{:else}
 				<!-- PIPELINE DETAIL + RUN -->
 				<p class="text-sm text-hub-muted mb-6">{selected.description}</p>
+
+				<!-- Schedule + Trigger -->
+				{#if selected.schedule || selectedSchedule}
+					<section class="mb-6">
+						<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-3">Automation</h2>
+						<div class="bg-hub-surface border border-hub-border rounded-lg p-4 space-y-3">
+							<!-- Schedule -->
+							{#if selected.schedule}
+								<div class="flex items-center gap-3">
+									<span class="text-xs text-hub-muted w-16">Schedule</span>
+									<span class="text-xs font-mono text-hub-text bg-hub-bg px-2 py-1 rounded">{selected.schedule}</span>
+									{#if selectedSchedule}
+										<button
+											onclick={() => toggleScheduleEnabled(selectedName, !selectedSchedule!.enabled)}
+											class="ml-auto w-9 h-5 rounded-full transition-colors cursor-pointer flex-shrink-0 relative
+												{selectedSchedule.enabled ? 'bg-hub-cta' : 'bg-hub-border'}"
+										>
+											<span class="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform
+												{selectedSchedule.enabled ? 'left-4' : 'left-0.5'}"></span>
+										</button>
+										<span class="text-[10px] {selectedSchedule.enabled ? 'text-hub-cta' : 'text-hub-dim'}">
+											{selectedSchedule.enabled ? 'Active' : 'Paused'}
+										</span>
+									{/if}
+								</div>
+							{/if}
+
+							<!-- Webhook trigger -->
+							<div class="flex items-center gap-3">
+								<span class="text-xs text-hub-muted w-16">Trigger</span>
+								<code class="text-[10px] font-mono text-hub-dim bg-hub-bg px-2 py-1 rounded flex-1 truncate select-all">
+									curl -X POST {webhookUrl} -H "Content-Type: application/json" -d '{JSON.stringify({ name: selectedName })}'
+								</code>
+								<button
+									onclick={() => navigator.clipboard.writeText(`curl -X POST ${webhookUrl} -H "Content-Type: application/json" -d '${JSON.stringify({ name: selectedName })}'`)}
+									class="text-[10px] text-hub-info hover:text-hub-info/80 cursor-pointer flex-shrink-0"
+								>
+									Copy
+								</button>
+							</div>
+						</div>
+					</section>
+				{:else}
+					<!-- Show webhook trigger even without schedule -->
+					<section class="mb-6">
+						<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-3">Automation</h2>
+						<div class="bg-hub-surface border border-hub-border rounded-lg p-4">
+							<div class="flex items-center gap-3">
+								<span class="text-xs text-hub-muted w-16">Trigger</span>
+								<code class="text-[10px] font-mono text-hub-dim bg-hub-bg px-2 py-1 rounded flex-1 truncate select-all">
+									curl -X POST {webhookUrl} -H "Content-Type: application/json" -d '{JSON.stringify({ name: selectedName })}'
+								</code>
+								<button
+									onclick={() => navigator.clipboard.writeText(`curl -X POST ${webhookUrl} -H "Content-Type: application/json" -d '${JSON.stringify({ name: selectedName })}'`)}
+									class="text-[10px] text-hub-info hover:text-hub-info/80 cursor-pointer flex-shrink-0"
+								>
+									Copy
+								</button>
+							</div>
+						</div>
+					</section>
+				{/if}
 
 				<!-- Inputs form -->
 				{#if selected.inputs && selected.inputs.length > 0}
