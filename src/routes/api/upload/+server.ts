@@ -3,8 +3,9 @@ import { json } from '@sveltejs/kit';
 import { writeFile, mkdir, stat } from 'node:fs/promises';
 import { resolve, join, basename } from 'node:path';
 
-const HOME = process.env.HOME || '';
-const DEV_DIR = resolve(HOME, 'dev');
+import { config } from '$lib/config.js';
+
+const DEV_DIR = config.resolved.devDir;
 
 function sanitizeFilename(raw: string): string | null {
 	// Keep original filename but strip path traversal

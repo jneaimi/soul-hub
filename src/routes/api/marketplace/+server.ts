@@ -3,8 +3,9 @@ import { json } from '@sveltejs/kit';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
-const HOME = process.env.HOME || '';
-const REGISTRY_PATH = resolve(HOME, 'dev', 'soul-hub', 'marketplace', 'registry.json');
+import { config } from '$lib/config.js';
+
+const REGISTRY_PATH = resolve(config.resolved.marketplaceDir, 'registry.json');
 
 export const GET: RequestHandler = async () => {
 	try {

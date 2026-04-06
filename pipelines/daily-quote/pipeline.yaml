@@ -1,0 +1,49 @@
+name: daily-quote
+description: "Hello-world pipeline: collects a quote, enhances it with AI commentary, and formats the output"
+version: "1.0.0"
+author: jasem
+
+inputs:
+  - name: quotes_file
+    type: file
+    description: "Text file with quotes (one per line)"
+    default: ./quotes.txt
+  - name: output_dir
+    type: path
+    description: "Directory to save the final formatted output"
+    default: ~/SecondBrain/02-areas/pipelines/daily-quote
+  - name: language
+    type: select
+    description: "Language for AI commentary"
+    default: English
+    options: [English, Arabic, Both]
+
+steps:
+  - id: collect
+    type: script
+    run: "python3 scripts/collect.py"
+    input: $inputs.quotes_file
+    output: /tmp/pipeline-runs/$RUN_ID/collected.json
+    timeout: 30
+    retry: 1
+
+  - id: enhance
+    type: agent
+    agent: enhancer
+    prompt: "Read the quote from the input file. Add a brief commentary (2-3 sentences) explaining its relevance to technology leaders today. The commentary MUST be written ONLY in $inputs.language. If the language is 'English', write only in English. If 'Arabic', write only in Arabic. If 'Both', write English paragraph first then Arabic paragraph. Output as JSON with keys: quote, author, commentary."
+    input: $steps.collect.output
+    output: /tmp/pipeline-runs/$RUN_ID/enhanced.json
+    depends_on: [collect]
+    timeout: 300
+
+  - id: format
+    type: script
+    run: "python3 scripts/format.py"
+    input: $steps.enhance.output
+    output: $inputs.output_dir/$DATE-$RUN_ID-daily-quote.md
+    depends_on: [enhance]
+    timeout: 30
+
+on_failure:
+  strategy: halt
+  notify: false

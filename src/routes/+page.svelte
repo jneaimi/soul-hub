@@ -13,6 +13,7 @@
 	let projects = $state<Project[]>([]);
 	let loading = $state(true);
 	let filter = $state('');
+	let gitBranches = $state<Record<string, { branch: string; dirty: boolean }>>({});
 
 	const typeColors: Record<string, string> = {
 		development: 'bg-hub-cta/15 text-hub-cta',
@@ -35,6 +36,20 @@
 			if (res.ok) {
 				const data = await res.json();
 				projects = data.projects;
+
+				// Fetch git branches for projects with git repos (non-blocking)
+				for (const p of data.projects) {
+					if (p.hasGit && p.devPath) {
+						fetch(`/api/git?path=${encodeURIComponent(p.devPath)}`)
+							.then((r) => r.ok ? r.json() : null)
+							.then((d) => {
+								if (d?.isGit && d.branch) {
+									gitBranches = { ...gitBranches, [p.name]: { branch: d.branch, dirty: d.dirty } };
+								}
+							})
+							.catch(() => {});
+					}
+				}
 			}
 		} catch (e) {
 			console.error('Failed to load projects', e);
@@ -67,12 +82,32 @@
 					<h1 class="text-2xl font-bold text-hub-text">Soul Hub</h1>
 					<p class="text-sm text-hub-muted mt-1">Project workspace</p>
 				</div>
-				<a
-					href="/new"
-					class="px-4 py-2.5 rounded-lg bg-hub-cta text-black font-medium text-sm hover:bg-hub-cta-hover transition-colors"
-				>
-					New Project
-				</a>
+				<div class="flex items-center gap-2">
+					<a
+						href="/pipelines"
+						class="p-2 rounded-lg text-hub-dim hover:text-hub-info hover:bg-hub-card transition-colors cursor-pointer"
+						aria-label="Pipelines"
+					>
+						<svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+							<polygon points="5 3 19 12 5 21 5 3"/>
+						</svg>
+					</a>
+					<a
+						href="/settings"
+						class="p-2 rounded-lg text-hub-dim hover:text-hub-muted hover:bg-hub-card transition-colors cursor-pointer"
+						aria-label="Settings"
+					>
+						<svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+							<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>
+						</svg>
+					</a>
+					<a
+						href="/new"
+						class="px-4 py-2.5 rounded-lg bg-hub-cta text-black font-medium text-sm hover:bg-hub-cta-hover transition-colors"
+					>
+						New Project
+					</a>
+				</div>
 			</div>
 
 			<!-- Search -->
@@ -133,7 +168,14 @@
 										brain
 									</span>
 								{/if}
-								{#if project.hasGit}
+								{#if gitBranches[project.name]}
+									<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-hub-purple/10 text-hub-purple text-[10px] font-mono">
+										{gitBranches[project.name].branch}
+										{#if gitBranches[project.name].dirty}
+											<span class="w-1 h-1 rounded-full bg-hub-warning"></span>
+										{/if}
+									</span>
+								{:else if project.hasGit}
 									<span class="flex items-center gap-1">
 										<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg>
 										git

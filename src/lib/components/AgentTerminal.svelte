@@ -84,9 +84,21 @@
 		const { WebLinksAddon } = await import('@xterm/addon-web-links');
 		await import('@xterm/xterm/css/xterm.css');
 
+		// Load UI prefs from localStorage
+		let termFontSize = 13;
+		let termCursorBlink = true;
+		try {
+			const prefs = localStorage.getItem('soul-hub-prefs');
+			if (prefs) {
+				const p = JSON.parse(prefs);
+				if (p.fontSize) termFontSize = p.fontSize;
+				if (p.cursorBlink !== undefined) termCursorBlink = p.cursorBlink;
+			}
+		} catch { /* use defaults */ }
+
 		terminal = new Terminal({
-			cursorBlink: true,
-			fontSize: 13,
+			cursorBlink: termCursorBlink,
+			fontSize: termFontSize,
 			fontFamily: "'JetBrains Mono', 'Fira Code', 'Menlo', monospace",
 			theme: {
 				background: '#0a0a0f',

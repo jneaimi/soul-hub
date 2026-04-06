@@ -1,12 +1,12 @@
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { readdir, stat } from 'node:fs/promises';
-import { resolve, join } from 'node:path';
+import { join } from 'node:path';
+import { config } from '$lib/config.js';
 
-const HOME = process.env.HOME || '';
-const DEV_DIR = resolve(HOME, 'dev');
-const BRAIN_PROJECTS = resolve(HOME, 'SecondBrain', '01-projects');
-const BRAIN_AREAS = resolve(HOME, 'SecondBrain', '02-areas');
+const DEV_DIR = config.resolved.devDir;
+const BRAIN_PROJECTS = config.resolved.brainProjects;
+const BRAIN_AREAS = config.resolved.brainAreas;
 
 interface Project {
 	name: string;

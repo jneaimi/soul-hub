@@ -30,7 +30,7 @@ def main():
     cwd = args.get("cwd", os.environ.get("HOME", "/"))
     cols = args.get("cols", 120)
     rows = args.get("rows", 40)
-    claude_bin = os.path.expanduser("~/.local/bin/claude")
+    claude_bin = args.get("claudeBinary", os.path.expanduser("~/.local/bin/claude"))
 
     master_fd, slave_fd = pty.openpty()
 
@@ -127,7 +127,11 @@ def main():
                             fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
                             os.kill(pid, signal.SIGWINCH)
                         elif msg["type"] == "kill":
-                            os.kill(pid, signal.SIGTERM)
+                            # Kill the entire process group (claude + children)
+                            try:
+                                os.killpg(os.getpgid(pid), signal.SIGTERM)
+                            except ProcessLookupError:
+                                pass
                     except (json.JSONDecodeError, BlockingIOError):
                         pass
 
@@ -139,7 +143,8 @@ def main():
 
     except (EOFError, KeyboardInterrupt):
         try:
-            os.kill(pid, signal.SIGTERM)
+            # Kill the entire process group to prevent orphan claude processes
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
             os.waitpid(pid, 0)
         except ProcessLookupError:
             pass

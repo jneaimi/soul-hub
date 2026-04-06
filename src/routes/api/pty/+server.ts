@@ -2,10 +2,11 @@ import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { resolve } from 'node:path';
+import { resolve, dirname } from 'node:path';
+import { config } from '$lib/config.js';
 
 const HOME = process.env.HOME || '';
-const BRIDGE_SCRIPT = resolve(HOME, 'dev', 'soul-hub', 'scripts', 'pty_bridge.py');
+const BRIDGE_SCRIPT = resolve(dirname(config.resolved.marketplaceDir), 'scripts', 'pty_bridge.py');
 
 // Active PTY sessions
 const sessions = new Map<string, ChildProcess>();
@@ -56,15 +57,16 @@ export const POST: RequestHandler = async ({ request }) => {
 	const bridgeArgs = JSON.stringify({
 		prompt: safePrompt,
 		cwd: resolvedCwd,
-		cols: cols || 120,
-		rows: rows || 40,
+		cols: cols || config.terminal.cols,
+		rows: rows || config.terminal.rows,
+		claudeBinary: config.resolved.claudeBinary,
 	});
 
 	const bridge = spawn('python3', [BRIDGE_SCRIPT, bridgeArgs], {
 		stdio: ['pipe', 'pipe', 'pipe'],
 		env: {
 			...process.env,
-			PATH: `${HOME}/.local/bin:${process.env.PATH}`,
+			PATH: `${dirname(config.resolved.claudeBinary)}:${process.env.PATH}`,
 		},
 	});
 
@@ -85,11 +87,17 @@ export const POST: RequestHandler = async ({ request }) => {
 			function safeClose() {
 				if (!closed) {
 					closed = true;
+					clearInterval(heartbeat);
 					try { controller.close(); } catch { /* already closed */ }
 				}
 			}
 
 			safeEnqueue(encoder.encode(`data: ${JSON.stringify({ type: 'session', sessionId })}\n\n`));
+
+			// Send keepalive every 30s to prevent Cloudflare Tunnel idle timeout (~100s)
+			const heartbeat = setInterval(() => {
+				safeEnqueue(encoder.encode(': keepalive\n\n'));
+			}, 30_000);
 
 			const rl = createInterface({ input: bridge.stdout! });
 
@@ -114,6 +122,7 @@ export const POST: RequestHandler = async ({ request }) => {
 
 			request.signal.addEventListener('abort', () => {
 				closed = true;
+				clearInterval(heartbeat);
 				bridge.kill();
 				sessions.delete(sessionId);
 			});

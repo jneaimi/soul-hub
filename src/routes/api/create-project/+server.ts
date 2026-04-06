@@ -8,10 +8,11 @@ import { getTemplate } from '$lib/templates/index.js';
 
 const execFileAsync = promisify(execFile);
 
-const HOME = process.env.HOME || '';
-const DEV_DIR = resolve(HOME, 'dev');
-const BRAIN_DIR = resolve(HOME, 'SecondBrain');
-const MARKETPLACE_DIR = resolve(HOME, 'dev', 'soul-hub', 'marketplace');
+import { config } from '$lib/config.js';
+
+const DEV_DIR = config.resolved.devDir;
+const BRAIN_DIR = config.resolved.brainDir;
+const MARKETPLACE_DIR = config.resolved.marketplaceDir;
 
 /** Sanitize project name: lowercase, alphanumeric + hyphens only */
 function sanitizeName(raw: string): string | null {

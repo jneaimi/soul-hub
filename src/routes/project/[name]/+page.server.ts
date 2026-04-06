@@ -1,8 +1,7 @@
 import type { PageServerLoad } from './$types';
 import { resolve } from 'node:path';
 import { stat } from 'node:fs/promises';
-
-const HOME = process.env.HOME || '';
+import { config } from '$lib/config.js';
 
 async function dirExists(path: string): Promise<boolean> {
 	try {
@@ -15,9 +14,9 @@ async function dirExists(path: string): Promise<boolean> {
 
 export const load: PageServerLoad = async ({ params }) => {
 	const name = params.name;
-	const devPath = resolve(HOME, 'dev', name);
-	const brainProject = resolve(HOME, 'SecondBrain', '01-projects', name);
-	const brainArea = resolve(HOME, 'SecondBrain', '02-areas', name);
+	const devPath = resolve(config.resolved.devDir, name);
+	const brainProject = resolve(config.resolved.brainProjects, name);
+	const brainArea = resolve(config.resolved.brainAreas, name);
 
 	const hasDev = await dirExists(devPath);
 	const hasBrainProject = await dirExists(brainProject);
