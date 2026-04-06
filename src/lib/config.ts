@@ -23,7 +23,6 @@ export interface SoulHubConfig {
 	server: {
 		port: number;
 	};
-	webhookSecret?: string;
 }
 
 const DEFAULTS: SoulHubConfig = {

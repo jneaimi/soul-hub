@@ -10,7 +10,7 @@ interface AutomationConfig {
 	schedule?: string;       // cron expression
 	scheduleEnabled?: boolean;
 	triggerEnabled?: boolean;
-	triggerMethod?: 'POST' | 'GET' | 'PUT';
+	triggerSecret?: string;  // per-pipeline secret token
 }
 
 /** Scheduled job runtime state */
@@ -155,7 +155,7 @@ export function getSchedules(): {
 	schedule?: string;
 	scheduleEnabled: boolean;
 	triggerEnabled: boolean;
-	triggerMethod: string;
+	triggerSecret?: string;
 	lastRun?: string;
 	lastStatus?: string;
 }[] {
@@ -167,7 +167,7 @@ export function getSchedules(): {
 			schedule: config.schedule,
 			scheduleEnabled: config.scheduleEnabled !== false && !!config.schedule,
 			triggerEnabled: config.triggerEnabled !== false,
-			triggerMethod: config.triggerMethod || 'POST',
+			triggerSecret: config.triggerSecret,
 			lastRun: job?.lastRun,
 			lastStatus: job?.lastStatus,
 		});
@@ -197,9 +197,9 @@ export function isTriggerEnabled(name: string): boolean {
 	return config?.triggerEnabled !== false;
 }
 
-/** Get allowed trigger method for a pipeline */
-export function getTriggerMethod(name: string): string {
-	return automationConfigs[name]?.triggerMethod || 'POST';
+/** Get per-pipeline trigger secret (falls back to global secret) */
+export function getTriggerSecret(name: string): string {
+	return automationConfigs[name]?.triggerSecret || process.env.SOUL_HUB_WEBHOOK_SECRET || '';
 }
 
 /** Execute a pipeline run */
