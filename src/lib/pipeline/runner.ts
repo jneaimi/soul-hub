@@ -59,12 +59,6 @@ export function answerGate(runId: string, stepId: string, value: string): boolea
 	return true;
 }
 
-/** Get info about a pending gate (for UI) */
-export function getGateInfo(runId: string, stepId: string): { type: 'approval' | 'prompt' } | null {
-	const gate = pendingGates.get(`${runId}:${stepId}`);
-	return gate ? { type: gate.type } : null;
-}
-
 /** System env vars always passed through (safe, needed for execution) */
 const SYSTEM_ENV_KEYS = ['PATH', 'HOME', 'TERM', 'LANG', 'USER', 'SHELL', 'TMPDIR'];
 
@@ -419,10 +413,6 @@ export function killPipeline(runId: string): boolean {
 }
 
 /** Get an active PTY bridge for a step (for sending input/interaction) */
-export function getStepBridge(runStepKey: string) {
-	return activePtyBridges.get(runStepKey);
-}
-
 /** Execute an agent step via pty_bridge.py (same PTY as interactive terminals) */
 async function runAgentStep(
 	step: PipelineStep,
