@@ -64,7 +64,6 @@ export interface PipelineSpec {
 	description: string;
 	version?: string;
 	author?: string;
-	schedule?: string; // cron expression
 	inputs?: PipelineInput[];
 	env?: PipelineEnvVar[];
 	steps: PipelineStep[];

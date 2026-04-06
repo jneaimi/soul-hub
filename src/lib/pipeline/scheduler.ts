@@ -1,11 +1,19 @@
 import cron from 'node-cron';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { resolve, dirname } from 'node:path';
+import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { parsePipeline } from './parser.js';
 import { runPipeline } from './runner.js';
-import type { PipelineRun, PipelineSpec } from './types.js';
+import type { PipelineRun } from './types.js';
 
-/** Scheduled job state */
+/** Per-pipeline automation config (stored in .data/automation.json, NOT in YAML) */
+interface AutomationConfig {
+	schedule?: string;       // cron expression
+	scheduleEnabled?: boolean;
+	triggerEnabled?: boolean;
+	triggerMethod?: 'POST' | 'GET' | 'PUT';
+}
+
+/** Scheduled job runtime state */
 interface ScheduledJob {
 	pipelineName: string;
 	cronExpr: string;
@@ -13,7 +21,6 @@ interface ScheduledJob {
 	enabled: boolean;
 	lastRun?: string;
 	lastStatus?: string;
-	nextRun?: string;
 }
 
 /** Run history entry persisted to disk */
@@ -28,8 +35,10 @@ interface RunRecord {
 }
 
 const scheduledJobs = new Map<string, ScheduledJob>();
+let automationConfigs: Record<string, AutomationConfig> = {};
 let runHistory: RunRecord[] = [];
 let historyPath = '';
+let automationPath = '';
 let pipelinesDir = '';
 
 // Concurrency lock (shared with the API)
@@ -43,6 +52,9 @@ export function getActivePipelines(): Set<string> {
 export async function initScheduler(pipDir: string, dataDir: string): Promise<void> {
 	pipelinesDir = pipDir;
 	historyPath = resolve(dataDir, 'run-history.json');
+	automationPath = resolve(dataDir, 'automation.json');
+
+	await mkdir(dataDir, { recursive: true });
 
 	// Load persisted run history
 	try {
@@ -52,8 +64,21 @@ export async function initScheduler(pipDir: string, dataDir: string): Promise<vo
 		runHistory = [];
 	}
 
-	// Scan pipelines for schedule: fields and register cron jobs
-	const { readdir } = await import('node:fs/promises');
+	// Load automation configs
+	try {
+		const raw = await readFile(automationPath, 'utf-8');
+		automationConfigs = JSON.parse(raw);
+	} catch {
+		automationConfigs = {};
+	}
+
+	// Stop all existing jobs before re-scanning
+	for (const [, job] of scheduledJobs) {
+		job.task.stop();
+	}
+	scheduledJobs.clear();
+
+	// Register cron jobs from automation config
 	try {
 		const entries = await readdir(pipelinesDir, { withFileTypes: true });
 		for (const entry of entries) {
@@ -61,28 +86,22 @@ export async function initScheduler(pipDir: string, dataDir: string): Promise<vo
 			const yamlPath = resolve(pipelinesDir, entry.name, 'pipeline.yaml');
 			try {
 				const spec = await parsePipeline(yamlPath);
-				if (spec.schedule) {
-					registerSchedule(spec.name, spec.schedule, yamlPath);
+				const autoConfig = automationConfigs[spec.name];
+				if (autoConfig?.schedule && autoConfig.scheduleEnabled !== false) {
+					registerSchedule(spec.name, autoConfig.schedule, yamlPath);
 				}
 			} catch { /* skip invalid */ }
 		}
 	} catch { /* pipelines dir doesn't exist */ }
 
-	console.log(`[scheduler] Initialized: ${scheduledJobs.size} scheduled pipelines, ${runHistory.length} history records`);
+	console.log(`[scheduler] Initialized: ${scheduledJobs.size} scheduled, ${Object.keys(automationConfigs).length} configured, ${runHistory.length} history records`);
 }
 
 /** Register a cron schedule for a pipeline */
 function registerSchedule(name: string, cronExpr: string, yamlPath: string): void {
-	// Validate cron expression
 	if (!cron.validate(cronExpr)) {
 		console.error(`[scheduler] Invalid cron expression for "${name}": ${cronExpr}`);
 		return;
-	}
-
-	// Remove existing schedule if any
-	const existing = scheduledJobs.get(name);
-	if (existing) {
-		existing.task.stop();
 	}
 
 	const task = cron.schedule(cronExpr, async () => {
@@ -100,14 +119,96 @@ function registerSchedule(name: string, cronExpr: string, yamlPath: string): voi
 	console.log(`[scheduler] Registered: ${name} — ${cronExpr}`);
 }
 
-/** Execute a pipeline run (used by scheduler and webhook trigger) */
+/** Get automation config for a pipeline */
+export function getAutomationConfig(name: string): AutomationConfig {
+	return automationConfigs[name] || {};
+}
+
+/** Update automation config for a pipeline and re-register schedules */
+export async function setAutomationConfig(name: string, config: Partial<AutomationConfig>): Promise<void> {
+	const existing = automationConfigs[name] || {};
+	automationConfigs[name] = { ...existing, ...config };
+
+	// Persist
+	await persistAutomation();
+
+	// Re-register schedule if changed
+	const autoConfig = automationConfigs[name];
+	const existingJob = scheduledJobs.get(name);
+
+	// Stop existing job
+	if (existingJob) {
+		existingJob.task.stop();
+		scheduledJobs.delete(name);
+	}
+
+	// Start new job if schedule is configured and enabled
+	if (autoConfig.schedule && autoConfig.scheduleEnabled !== false) {
+		const yamlPath = resolve(pipelinesDir, name, 'pipeline.yaml');
+		registerSchedule(name, autoConfig.schedule, yamlPath);
+	}
+}
+
+/** Get all automation configs with schedule info */
+export function getSchedules(): {
+	name: string;
+	schedule?: string;
+	scheduleEnabled: boolean;
+	triggerEnabled: boolean;
+	triggerMethod: string;
+	lastRun?: string;
+	lastStatus?: string;
+}[] {
+	const results: ReturnType<typeof getSchedules> = [];
+	for (const [name, config] of Object.entries(automationConfigs)) {
+		const job = scheduledJobs.get(name);
+		results.push({
+			name,
+			schedule: config.schedule,
+			scheduleEnabled: config.scheduleEnabled !== false && !!config.schedule,
+			triggerEnabled: config.triggerEnabled !== false,
+			triggerMethod: config.triggerMethod || 'POST',
+			lastRun: job?.lastRun,
+			lastStatus: job?.lastStatus,
+		});
+	}
+	return results;
+}
+
+/** Toggle schedule on/off */
+export function toggleSchedule(name: string, enabled: boolean): boolean {
+	const config = automationConfigs[name];
+	if (!config?.schedule) return false;
+
+	config.scheduleEnabled = enabled;
+	persistAutomation();
+
+	const job = scheduledJobs.get(name);
+	if (job) {
+		if (enabled) job.task.start(); else job.task.stop();
+		job.enabled = enabled;
+	}
+	return true;
+}
+
+/** Check if webhook trigger is enabled for a pipeline */
+export function isTriggerEnabled(name: string): boolean {
+	const config = automationConfigs[name];
+	return config?.triggerEnabled !== false;
+}
+
+/** Get allowed trigger method for a pipeline */
+export function getTriggerMethod(name: string): string {
+	return automationConfigs[name]?.triggerMethod || 'POST';
+}
+
+/** Execute a pipeline run */
 export async function executeScheduledRun(
 	name: string,
 	yamlPath: string,
 	trigger: 'scheduled' | 'webhook' | 'manual',
 	inputs?: Record<string, string | number>,
 ): Promise<{ runId: string; status: string }> {
-	// Concurrency check
 	if (activePipelines.has(name)) {
 		console.log(`[scheduler] Skipping "${name}" — already running`);
 		return { runId: '', status: 'skipped' };
@@ -117,13 +218,7 @@ export async function executeScheduledRun(
 	const runId = crypto.randomUUID().slice(0, 8);
 
 	try {
-		const result = await runPipeline(
-			yamlPath,
-			inputs || {},
-			undefined, // no step event callback for scheduled runs
-			undefined, // no step output callback
-			runId,
-		);
+		const result = await runPipeline(yamlPath, inputs || {}, undefined, undefined, runId);
 
 		const record: RunRecord = {
 			runId,
@@ -133,83 +228,51 @@ export async function executeScheduledRun(
 			finishedAt: result.finishedAt,
 			trigger,
 			stepSummary: result.steps.map((s) => ({
-				id: s.id,
-				status: s.status,
-				durationMs: s.durationMs,
+				id: s.id, status: s.status, durationMs: s.durationMs,
 			})),
 		};
 
-		// Update job state
 		const job = scheduledJobs.get(name);
 		if (job) {
 			job.lastRun = result.startedAt;
 			job.lastStatus = result.status;
 		}
 
-		// Persist to history
 		runHistory.unshift(record);
 		if (runHistory.length > 100) runHistory = runHistory.slice(0, 100);
 		await persistHistory();
 
 		activePipelines.delete(name);
 		return { runId, status: result.status };
-	} catch (err) {
+	} catch {
 		const record: RunRecord = {
-			runId,
-			pipelineName: name,
-			status: 'failed',
-			startedAt: new Date().toISOString(),
-			finishedAt: new Date().toISOString(),
-			trigger,
-			stepSummary: [],
+			runId, pipelineName: name, status: 'failed',
+			startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(),
+			trigger, stepSummary: [],
 		};
 		runHistory.unshift(record);
 		if (runHistory.length > 100) runHistory = runHistory.slice(0, 100);
 		await persistHistory();
-
 		activePipelines.delete(name);
 		return { runId, status: 'failed' };
 	}
 }
 
-/** Persist run history to disk */
 async function persistHistory(): Promise<void> {
 	try {
-		await mkdir(dirname(historyPath), { recursive: true });
 		await writeFile(historyPath, JSON.stringify(runHistory, null, 2));
 	} catch (err) {
 		console.error(`[scheduler] Failed to persist history: ${err}`);
 	}
 }
 
-/** Get all scheduled jobs */
-export function getSchedules(): {
-	name: string;
-	cronExpr: string;
-	enabled: boolean;
-	lastRun?: string;
-	lastStatus?: string;
-}[] {
-	return Array.from(scheduledJobs.values()).map((j) => ({
-		name: j.pipelineName,
-		cronExpr: j.cronExpr,
-		enabled: j.enabled,
-		lastRun: j.lastRun,
-		lastStatus: j.lastStatus,
-	}));
-}
-
-/** Enable/disable a scheduled job */
-export function toggleSchedule(name: string, enabled: boolean): boolean {
-	const job = scheduledJobs.get(name);
-	if (!job) return false;
-	job.enabled = enabled;
-	if (enabled) {
-		job.task.start();
-	} else {
-		job.task.stop();
+async function persistAutomation(): Promise<void> {
+	try {
+		await mkdir(resolve(automationPath, '..'), { recursive: true });
+		await writeFile(automationPath, JSON.stringify(automationConfigs, null, 2));
+	} catch (err) {
+		console.error(`[scheduler] Failed to persist automation config: ${err}`);
 	}
-	return true;
 }
 
 /** Get persisted run history */
@@ -217,11 +280,10 @@ export function getRunHistory(limit = 20): RunRecord[] {
 	return runHistory.slice(0, limit);
 }
 
-/** Shutdown scheduler — stop all jobs */
+/** Shutdown scheduler */
 export function shutdownScheduler(): void {
 	for (const [, job] of scheduledJobs) {
 		job.task.stop();
 	}
 	scheduledJobs.clear();
-	console.log('[scheduler] Shutdown complete');
 }

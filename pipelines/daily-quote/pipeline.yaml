@@ -2,7 +2,6 @@ name: daily-quote
 description: "Hello-world pipeline: collects a quote, enhances it with AI commentary, and formats the output"
 version: "1.0.0"
 author: jasem
-schedule: "0 8 * * *"
 
 inputs:
   - name: quotes_file

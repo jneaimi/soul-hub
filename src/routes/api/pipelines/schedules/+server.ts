@@ -2,7 +2,7 @@ import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { getSchedules, toggleSchedule, getRunHistory } from '$lib/pipeline/index.js';
 
-/** GET /api/pipelines/schedules — list scheduled pipelines and run history */
+/** GET /api/pipelines/schedules — list automation configs and run history */
 export const GET: RequestHandler = async ({ url }) => {
 	const historyOnly = url.searchParams.get('history');
 
@@ -17,7 +17,7 @@ export const GET: RequestHandler = async ({ url }) => {
 	});
 };
 
-/** POST /api/pipelines/schedules — enable/disable a schedule */
+/** POST /api/pipelines/schedules — toggle a schedule on/off */
 export const POST: RequestHandler = async ({ request }) => {
 	const body = await request.json();
 	const { name, enabled } = body as { name: string; enabled: boolean };

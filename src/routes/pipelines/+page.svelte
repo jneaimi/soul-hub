@@ -13,7 +13,6 @@
 		description: string;
 		version?: string;
 		author?: string;
-		schedule?: string;
 		inputs?: { name: string; type: string; description: string; default?: string | number; options?: string[] }[];
 		steps: { id: string; type: string; agent?: string; run?: string; depends_on?: string[]; when?: string; skip_if?: string }[];
 	}
@@ -48,6 +47,9 @@
 	// Selected pipeline schedule state
 	let selectedSchedule = $state<Schedule | null>(null);
 	let webhookUrl = $state('');
+	let editingSchedule = $state(false);
+	let scheduleInput = $state('');
+	let scheduleSaving = $state(false);
 
 	// Run state
 	let activeRun = $state<RunResult | null>(null);
@@ -84,8 +86,10 @@
 	// Schedules
 	interface Schedule {
 		name: string;
-		cronExpr: string;
-		enabled: boolean;
+		schedule?: string;
+		scheduleEnabled: boolean;
+		triggerEnabled: boolean;
+		triggerMethod: string;
 		lastRun?: string;
 		lastStatus?: string;
 	}
@@ -161,9 +165,27 @@
 				}
 				// Load output files
 				if (outputDir) loadOutputFiles();
-				// Find schedule for this pipeline
+				// Load automation config for this pipeline
 				selectedSchedule = schedules.find((s) => s.name === name) || null;
-				// Build webhook URL
+				// Load fresh config if not in schedules yet
+				if (!selectedSchedule) {
+					try {
+						const cfgRes = await fetch(`/api/pipelines/config?name=${encodeURIComponent(name)}`);
+						if (cfgRes.ok) {
+							const cfg = await cfgRes.json();
+							selectedSchedule = {
+								name,
+								schedule: cfg.schedule,
+								scheduleEnabled: cfg.scheduleEnabled !== false && !!cfg.schedule,
+								triggerEnabled: cfg.triggerEnabled !== false,
+								triggerMethod: cfg.triggerMethod || 'POST',
+							};
+						}
+					} catch { /* silent */ }
+				}
+				if (!selectedSchedule) {
+					selectedSchedule = { name, scheduleEnabled: false, triggerEnabled: true, triggerMethod: 'POST' };
+				}
 				webhookUrl = `${window.location.origin}/api/pipelines/trigger`;
 			}
 		} catch { /* silent */ }
@@ -203,6 +225,9 @@
 		gateSubmitting = new Set();
 		selectedSchedule = null;
 		webhookUrl = '';
+		editingSchedule = false;
+		scheduleInput = '';
+		scheduleSaving = false;
 		if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
 	}
 
@@ -271,6 +296,44 @@
 		} catch { /* silent */ }
 		gateSubmitting.delete(stepId);
 		gateSubmitting = new Set(gateSubmitting);
+	}
+
+	async function saveSchedule(name: string, cronExpr: string | null) {
+		scheduleSaving = true;
+		try {
+			const res = await fetch('/api/pipelines/config', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name, schedule: cronExpr, scheduleEnabled: !!cronExpr }),
+			});
+			if (res.ok) {
+				editingSchedule = false;
+				// Refresh schedules
+				const schedRes = await fetch('/api/pipelines/schedules');
+				if (schedRes.ok) {
+					const data = await schedRes.json();
+					schedules = data.schedules || [];
+				}
+				// Update local state
+				if (selectedSchedule) {
+					selectedSchedule = { ...selectedSchedule, schedule: cronExpr || undefined, scheduleEnabled: !!cronExpr };
+				}
+			}
+		} catch { /* silent */ }
+		scheduleSaving = false;
+	}
+
+	async function saveTriggerConfig(name: string, enabled: boolean, method: string) {
+		try {
+			await fetch('/api/pipelines/config', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name, triggerEnabled: enabled, triggerMethod: method }),
+			});
+			if (selectedSchedule) {
+				selectedSchedule = { ...selectedSchedule, triggerEnabled: enabled, triggerMethod: method };
+			}
+		} catch { /* silent */ }
 	}
 
 	async function toggleScheduleEnabled(name: string, enabled: boolean) {
@@ -503,47 +566,14 @@
 									<div class="flex items-center gap-3 mb-1.5">
 										<svg class="w-4 h-4 text-hub-info group-hover:text-hub-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
 										<span class="font-semibold text-hub-text group-hover:text-hub-info transition-colors">{pipeline.name}</span>
-										{#if pipelineSchedule}
-											<span class="px-1.5 py-0.5 rounded text-[9px] font-mono {pipelineSchedule.enabled ? 'bg-hub-cta/10 text-hub-cta' : 'bg-hub-dim/10 text-hub-dim'}">
-												{pipelineSchedule.cronExpr}
+										{#if pipelineSchedule?.schedule}
+											<span class="px-1.5 py-0.5 rounded text-[9px] font-mono {pipelineSchedule.scheduleEnabled ? 'bg-hub-cta/10 text-hub-cta' : 'bg-hub-dim/10 text-hub-dim'}">
+												{pipelineSchedule.schedule}
 											</span>
 										{/if}
 									</div>
 									<p class="text-sm text-hub-muted ml-7">{pipeline.description}</p>
 								</button>
-							{/each}
-						</div>
-					</section>
-				{/if}
-
-				<!-- SCHEDULES -->
-				{#if schedules.length > 0}
-					<section class="mb-8">
-						<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-3">Scheduled</h2>
-						<div class="space-y-2">
-							{#each schedules as schedule}
-								<div class="p-3 rounded-lg bg-hub-surface border border-hub-border/50 flex items-center gap-3">
-									<button
-										onclick={() => toggleScheduleEnabled(schedule.name, !schedule.enabled)}
-										class="w-8 h-5 rounded-full transition-colors cursor-pointer flex-shrink-0 relative
-											{schedule.enabled ? 'bg-hub-cta' : 'bg-hub-border'}"
-									>
-										<span class="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform
-											{schedule.enabled ? 'left-3.5' : 'left-0.5'}"></span>
-									</button>
-									<div class="flex-1 min-w-0">
-										<div class="flex items-center gap-2">
-											<span class="text-sm font-medium text-hub-text">{schedule.name}</span>
-											<span class="text-[10px] font-mono text-hub-dim bg-hub-bg px-1.5 py-0.5 rounded">{schedule.cronExpr}</span>
-										</div>
-										{#if schedule.lastRun}
-											<p class="text-[11px] text-hub-dim mt-0.5">
-												Last: <span class="{schedule.lastStatus === 'done' ? 'text-hub-cta' : 'text-hub-danger'}">{schedule.lastStatus}</span>
-												{timeAgo(schedule.lastRun)}
-											</p>
-										{/if}
-									</div>
-								</div>
 							{/each}
 						</div>
 					</section>
@@ -606,63 +636,85 @@
 				<!-- PIPELINE DETAIL + RUN -->
 				<p class="text-sm text-hub-muted mb-6">{selected.description}</p>
 
-				<!-- Schedule + Trigger -->
-				{#if selected.schedule || selectedSchedule}
+				<!-- Automation: Schedule + Trigger -->
+				{#if selectedSchedule}
 					<section class="mb-6">
 						<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-3">Automation</h2>
 						<div class="bg-hub-surface border border-hub-border rounded-lg p-4 space-y-3">
 							<!-- Schedule -->
-							{#if selected.schedule}
-								<div class="flex items-center gap-3">
-									<span class="text-xs text-hub-muted w-16">Schedule</span>
-									<span class="text-xs font-mono text-hub-text bg-hub-bg px-2 py-1 rounded">{selected.schedule}</span>
-									{#if selectedSchedule}
-										<button
-											onclick={() => toggleScheduleEnabled(selectedName, !selectedSchedule!.enabled)}
-											class="ml-auto w-9 h-5 rounded-full transition-colors cursor-pointer flex-shrink-0 relative
-												{selectedSchedule.enabled ? 'bg-hub-cta' : 'bg-hub-border'}"
-										>
-											<span class="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform
-												{selectedSchedule.enabled ? 'left-4' : 'left-0.5'}"></span>
-										</button>
-										<span class="text-[10px] {selectedSchedule.enabled ? 'text-hub-cta' : 'text-hub-dim'}">
-											{selectedSchedule.enabled ? 'Active' : 'Paused'}
-										</span>
-									{/if}
-								</div>
-							{/if}
+							<div class="flex items-center gap-3 flex-wrap">
+								<span class="text-xs text-hub-muted w-16 flex-shrink-0">Schedule</span>
+								{#if editingSchedule}
+									<input
+										type="text"
+										bind:value={scheduleInput}
+										placeholder="e.g. 0 8 * * * (daily 8am)"
+										onkeydown={(e) => { if (e.key === 'Enter') saveSchedule(selectedName, scheduleInput || null); if (e.key === 'Escape') { editingSchedule = false; } }}
+										class="flex-1 min-w-[200px] bg-hub-bg border border-hub-border rounded-md px-2 py-1 text-xs text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-info/50"
+									/>
+									<button onclick={() => saveSchedule(selectedName, scheduleInput || null)} disabled={scheduleSaving}
+										class="text-[10px] text-hub-cta hover:text-hub-cta/80 cursor-pointer">{scheduleSaving ? '...' : 'Save'}</button>
+									<button onclick={() => { editingSchedule = false; }}
+										class="text-[10px] text-hub-dim hover:text-hub-muted cursor-pointer">Cancel</button>
+								{:else if selectedSchedule.schedule}
+									<span class="text-xs font-mono text-hub-text bg-hub-bg px-2 py-1 rounded">{selectedSchedule.schedule}</span>
+									<button
+										onclick={() => toggleScheduleEnabled(selectedName, !selectedSchedule!.scheduleEnabled)}
+										class="w-9 h-5 rounded-full transition-colors cursor-pointer flex-shrink-0 relative
+											{selectedSchedule.scheduleEnabled ? 'bg-hub-cta' : 'bg-hub-border'}"
+									>
+										<span class="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform
+											{selectedSchedule.scheduleEnabled ? 'left-4' : 'left-0.5'}"></span>
+									</button>
+									<span class="text-[10px] {selectedSchedule.scheduleEnabled ? 'text-hub-cta' : 'text-hub-dim'}">
+										{selectedSchedule.scheduleEnabled ? 'Active' : 'Paused'}
+									</span>
+									<button onclick={() => { editingSchedule = true; scheduleInput = selectedSchedule?.schedule || ''; }}
+										class="text-[10px] text-hub-info hover:text-hub-info/80 cursor-pointer ml-auto">Edit</button>
+									<button onclick={() => saveSchedule(selectedName, null)}
+										class="text-[10px] text-hub-danger hover:text-hub-danger/80 cursor-pointer">Remove</button>
+								{:else}
+									<button onclick={() => { editingSchedule = true; scheduleInput = ''; }}
+										class="text-xs text-hub-info hover:text-hub-info/80 cursor-pointer">+ Add schedule</button>
+								{/if}
+							</div>
 
 							<!-- Webhook trigger -->
-							<div class="flex items-center gap-3">
-								<span class="text-xs text-hub-muted w-16">Trigger</span>
-								<code class="text-[10px] font-mono text-hub-dim bg-hub-bg px-2 py-1 rounded flex-1 truncate select-all">
-									curl -X POST {webhookUrl} -H "Content-Type: application/json" -d '{JSON.stringify({ name: selectedName })}'
-								</code>
+							<div class="flex items-center gap-3 flex-wrap">
+								<span class="text-xs text-hub-muted w-16 flex-shrink-0">Trigger</span>
 								<button
-									onclick={() => navigator.clipboard.writeText(`curl -X POST ${webhookUrl} -H "Content-Type: application/json" -d '${JSON.stringify({ name: selectedName })}'`)}
-									class="text-[10px] text-hub-info hover:text-hub-info/80 cursor-pointer flex-shrink-0"
+									onclick={() => saveTriggerConfig(selectedName, !selectedSchedule!.triggerEnabled, selectedSchedule!.triggerMethod)}
+									class="w-9 h-5 rounded-full transition-colors cursor-pointer flex-shrink-0 relative
+										{selectedSchedule.triggerEnabled ? 'bg-hub-cta' : 'bg-hub-border'}"
 								>
-									Copy
+									<span class="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform
+										{selectedSchedule.triggerEnabled ? 'left-4' : 'left-0.5'}"></span>
 								</button>
-							</div>
-						</div>
-					</section>
-				{:else}
-					<!-- Show webhook trigger even without schedule -->
-					<section class="mb-6">
-						<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-3">Automation</h2>
-						<div class="bg-hub-surface border border-hub-border rounded-lg p-4">
-							<div class="flex items-center gap-3">
-								<span class="text-xs text-hub-muted w-16">Trigger</span>
-								<code class="text-[10px] font-mono text-hub-dim bg-hub-bg px-2 py-1 rounded flex-1 truncate select-all">
-									curl -X POST {webhookUrl} -H "Content-Type: application/json" -d '{JSON.stringify({ name: selectedName })}'
-								</code>
-								<button
-									onclick={() => navigator.clipboard.writeText(`curl -X POST ${webhookUrl} -H "Content-Type: application/json" -d '${JSON.stringify({ name: selectedName })}'`)}
-									class="text-[10px] text-hub-info hover:text-hub-info/80 cursor-pointer flex-shrink-0"
+								<select
+									value={selectedSchedule.triggerMethod}
+									onchange={(e) => saveTriggerConfig(selectedName, selectedSchedule!.triggerEnabled, (e.target as HTMLSelectElement).value)}
+									class="bg-hub-bg border border-hub-border rounded-md px-1.5 py-0.5 text-[10px] text-hub-text font-mono focus:outline-none cursor-pointer"
 								>
-									Copy
-								</button>
+									<option value="POST">POST</option>
+									<option value="GET">GET</option>
+									<option value="PUT">PUT</option>
+								</select>
+								{#if selectedSchedule.triggerEnabled}
+									{@const method = selectedSchedule.triggerMethod}
+									{@const triggerCmd = method === 'GET'
+										? `curl ${webhookUrl}?name=${selectedName}`
+										: `curl -X ${method} ${webhookUrl} -H "Content-Type: application/json" -d '${JSON.stringify({ name: selectedName })}'`}
+									<code class="text-[10px] font-mono text-hub-dim bg-hub-bg px-2 py-1 rounded flex-1 truncate select-all">{triggerCmd}</code>
+									<button onclick={() => {
+										const method = selectedSchedule!.triggerMethod;
+										const cmd = method === 'GET'
+											? `curl ${webhookUrl}?name=${selectedName}`
+											: `curl -X ${method} ${webhookUrl} -H "Content-Type: application/json" -d '${JSON.stringify({ name: selectedName })}'`;
+										navigator.clipboard.writeText(cmd);
+									}} class="text-[10px] text-hub-info hover:text-hub-info/80 cursor-pointer flex-shrink-0">Copy</button>
+								{:else}
+									<span class="text-[10px] text-hub-dim">Disabled</span>
+								{/if}
 							</div>
 						</div>
 					</section>
