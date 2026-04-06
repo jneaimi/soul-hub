@@ -28,8 +28,8 @@ export interface PipelineStep {
 	prompt?: string;
 	/** Input — file path or $steps.X.output or $inputs.Y reference */
 	input?: string | string[];
-	/** Output — file path where this step writes its result (optional for action/webhook types) */
-	output: string;
+	/** Output — file path where this step writes its result (not required for approval/prompt/action/webhook types) */
+	output?: string;
 	/** Output type — determines how the output is tracked and displayed */
 	output_type?: 'file' | 'media' | 'action' | 'response' | 'webhook';
 	/** Steps that must complete before this one */

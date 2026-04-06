@@ -16,6 +16,7 @@ import { config } from '$lib/config.js';
 const ALLOWED_ROOTS = [
 	config.resolved.devDir,
 	config.resolved.brainDir,
+	'/tmp/pipeline-runs',
 ];
 
 // Skip these directories when listing

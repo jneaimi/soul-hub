@@ -17,13 +17,17 @@ export async function parsePipeline(filePath: string): Promise<PipelineSpec> {
 		if (!step.id) throw new Error('Every step must have an "id"');
 		if (!step.type) throw new Error(`Step "${step.id}" missing "type"`);
 
-		// output is required for file/media/response types, optional for action/webhook
-		const outputType = step.output_type || 'file';
-		if (!step.output && (outputType === 'file' || outputType === 'media' || outputType === 'response')) {
-			throw new Error(`Step "${step.id}" missing "output" (required for ${outputType} output_type)`);
+		// approval and prompt steps don't produce files — output is never required
+		if (step.type === 'approval' || step.type === 'prompt') {
+			if (!step.output) step.output = '/dev/null';
+		} else {
+			// output is required for file/media/response types, optional for action/webhook
+			const outputType = step.output_type || 'file';
+			if (!step.output && (outputType === 'file' || outputType === 'media' || outputType === 'response')) {
+				throw new Error(`Step "${step.id}" missing "output" (required for ${outputType} output_type)`);
+			}
+			if (!step.output) step.output = '/dev/null';
 		}
-		// Default output for action/webhook types if not specified
-		if (!step.output) step.output = '/dev/null';
 
 		if (step.type === 'script' && !step.run) {
 			throw new Error(`Script step "${step.id}" missing "run" command`);
@@ -74,11 +78,11 @@ export function resolveRef(
 	inputs: Record<string, string | number>,
 	stepOutputs: Record<string, string>,
 ): string {
-	return value.replace(/\$inputs\.(\w+)/g, (_, name) => {
+	return value.replace(/\$inputs\.([\w-]+)/g, (_, name) => {
 		const val = inputs[name];
 		if (val === undefined) throw new Error(`Unknown input reference: $inputs.${name}`);
 		return String(val);
-	}).replace(/\$steps\.(\w+)\.output/g, (_, stepId) => {
+	}).replace(/\$steps\.([\w-]+)\.output/g, (_, stepId) => {
 		const val = stepOutputs[stepId];
 		if (val === undefined) throw new Error(`Unknown step output reference: $steps.${stepId}.output`);
 		return val;

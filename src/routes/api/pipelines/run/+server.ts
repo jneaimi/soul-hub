@@ -2,7 +2,7 @@ import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { resolve, dirname } from 'node:path';
 import { config } from '$lib/config.js';
-import { runPipeline, sendInputToStep, killPipeline } from '$lib/pipeline/index.js';
+import { runPipeline, sendInputToStep, killPipeline, approveGate, rejectGate, answerGate } from '$lib/pipeline/index.js';
 import type { PipelineRun } from '$lib/pipeline/types.js';
 
 const PIPELINES_DIR = resolve(dirname(config.resolved.marketplaceDir), 'pipelines');
@@ -47,6 +47,42 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ ok: killed });
 	}
 
+	// Handle approve: resolve a waiting approval gate
+	if (body.action === 'approve') {
+		const { runId, stepId } = body;
+		if (!runId || !stepId) return json({ error: 'Missing runId or stepId' }, { status: 400 });
+		const ok = approveGate(runId, stepId);
+		if (ok) {
+			const events = runEvents.get(runId);
+			events?.push({ stepId, status: 'approved', time: new Date().toISOString() });
+		}
+		return json({ ok });
+	}
+
+	// Handle reject: fail a waiting approval gate
+	if (body.action === 'reject') {
+		const { runId, stepId, reason } = body;
+		if (!runId || !stepId) return json({ error: 'Missing runId or stepId' }, { status: 400 });
+		const ok = rejectGate(runId, stepId, reason || 'Rejected by user');
+		if (ok) {
+			const events = runEvents.get(runId);
+			events?.push({ stepId, status: 'rejected', detail: reason || 'Rejected by user', time: new Date().toISOString() });
+		}
+		return json({ ok });
+	}
+
+	// Handle answer: provide input for a waiting prompt gate
+	if (body.action === 'answer') {
+		const { runId, stepId, value } = body;
+		if (!runId || !stepId || value === undefined) return json({ error: 'Missing runId, stepId, or value' }, { status: 400 });
+		const ok = answerGate(runId, stepId, value);
+		if (ok) {
+			const events = runEvents.get(runId);
+			events?.push({ stepId, status: 'answered', detail: value, time: new Date().toISOString() });
+		}
+		return json({ ok });
+	}
+
 	const { name, inputs } = body as { name: string; inputs?: Record<string, string | number> };
 
 	if (!name) {
@@ -72,7 +108,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	// Acquire concurrency lock
 	activePipelines.add(name);
 
-	// Start pipeline in background
+	// Start pipeline in background (pass runId so gates can reference it)
 	const promise = runPipeline(
 		yamlPath,
 		inputs || {},
@@ -86,6 +122,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			buf.push(data);
 			if (buf.length > 200) buf.shift();
 		},
+		runId,
 	);
 
 	promise.then((result) => {

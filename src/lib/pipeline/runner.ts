@@ -14,6 +14,57 @@ const BRIDGE_SCRIPT = resolve(dirname(config.resolved.marketplaceDir), 'scripts'
 export type StepOutputCallback = (stepId: string, data: string) => void;
 export type StepEventCallback = (stepId: string, status: StepStatus, detail?: string) => void;
 
+/** Pending gate: a Promise that suspends the runner until the user acts */
+interface PendingGate {
+	resolve: (value: { action: 'approve' | 'answer'; value?: string }) => void;
+	reject: (reason: Error) => void;
+	stepId: string;
+	type: 'approval' | 'prompt';
+	timeout: ReturnType<typeof setTimeout>;
+}
+
+/** Active gates keyed by runId:stepId */
+const pendingGates = new Map<string, PendingGate>();
+
+/** Resolve a pending approval gate */
+export function approveGate(runId: string, stepId: string): boolean {
+	const key = `${runId}:${stepId}`;
+	const gate = pendingGates.get(key);
+	if (!gate) return false;
+	clearTimeout(gate.timeout);
+	gate.resolve({ action: 'approve' });
+	pendingGates.delete(key);
+	return true;
+}
+
+/** Reject a pending approval gate */
+export function rejectGate(runId: string, stepId: string, reason?: string): boolean {
+	const key = `${runId}:${stepId}`;
+	const gate = pendingGates.get(key);
+	if (!gate) return false;
+	clearTimeout(gate.timeout);
+	gate.reject(new Error(reason || 'Rejected by user'));
+	pendingGates.delete(key);
+	return true;
+}
+
+/** Answer a pending prompt gate */
+export function answerGate(runId: string, stepId: string, value: string): boolean {
+	const key = `${runId}:${stepId}`;
+	const gate = pendingGates.get(key);
+	if (!gate || gate.type !== 'prompt') return false;
+	clearTimeout(gate.timeout);
+	gate.resolve({ action: 'answer', value });
+	pendingGates.delete(key);
+	return true;
+}
+
+/** Get info about a pending gate (for UI) */
+export function getGateInfo(runId: string, stepId: string): { type: 'approval' | 'prompt' } | null {
+	const gate = pendingGates.get(`${runId}:${stepId}`);
+	return gate ? { type: gate.type } : null;
+}
+
 /** System env vars always passed through (safe, needed for execution) */
 const SYSTEM_ENV_KEYS = ['PATH', 'HOME', 'TERM', 'LANG', 'USER', 'SHELL', 'TMPDIR'];
 
@@ -23,7 +74,7 @@ const SYSTEM_ENV_KEYS = ['PATH', 'HOME', 'TERM', 'LANG', 'USER', 'SHELL', 'TMPDI
 function buildIsolatedEnv(
 	spec: { env?: { name: string }[] },
 	pipelineDir: string,
-	inputPath: string,
+	inputPaths: string[],
 	outputPath: string,
 ): Record<string, string> {
 	const env: Record<string, string> = {};
@@ -37,9 +88,15 @@ function buildIsolatedEnv(
 	env.PATH = `${dirname(config.resolved.claudeBinary)}:${env.PATH || ''}`;
 
 	// Pipeline-specific vars
-	env.PIPELINE_INPUT = inputPath;
+	env.PIPELINE_INPUT = inputPaths[0] || '';
 	env.PIPELINE_OUTPUT = outputPath;
 	env.PIPELINE_DIR = pipelineDir;
+
+	// Numbered inputs for multi-input steps
+	for (let i = 0; i < inputPaths.length; i++) {
+		env[`PIPELINE_INPUT_${i}`] = inputPaths[i];
+	}
+	env.PIPELINE_INPUT_COUNT = String(inputPaths.length);
 
 	// Only pass env vars declared in the pipeline's env: section
 	// Values come from the pipeline's .env file (TODO: Phase 8) or system env as fallback
@@ -58,10 +115,11 @@ export async function runPipeline(
 	inputOverrides: Record<string, string | number> = {},
 	onStepEvent?: StepEventCallback,
 	onStepOutput?: StepOutputCallback,
+	externalRunId?: string,
 ): Promise<PipelineRun> {
 	const spec = await parsePipeline(yamlPath);
 	const pipelineDir = dirname(yamlPath);
-	const runId = crypto.randomUUID().slice(0, 8);
+	const runId = externalRunId || crypto.randomUUID().slice(0, 8);
 	const runDir = `/tmp/pipeline-runs/${runId}`;
 	await mkdir(runDir, { recursive: true });
 
@@ -145,27 +203,42 @@ export async function runPipeline(
 				// Ensure output directory exists
 				await mkdir(dirname(outputPath), { recursive: true });
 
-				// Resolve $inputs.* references in the prompt
+				// Resolve $inputs.* and $steps.* references in prompt, show, message, question
 				const resolvedStep = { ...step };
 				if (resolvedStep.prompt) {
 					resolvedStep.prompt = resolveRef(resolvedStep.prompt, resolvedInputs, stepOutputs);
+				}
+				if (resolvedStep.show) {
+					resolvedStep.show = resolveRef(resolvedStep.show, resolvedInputs, stepOutputs);
+				}
+				if (resolvedStep.message) {
+					resolvedStep.message = resolveRef(resolvedStep.message, resolvedInputs, stepOutputs);
+				}
+				if (resolvedStep.question) {
+					resolvedStep.question = resolveRef(resolvedStep.question, resolvedInputs, stepOutputs);
 				}
 
 				// Output callback for terminal streaming
 				const outputCb = onStepOutput ? (data: string) => onStepOutput(stepId, data) : undefined;
 
 				// Build isolated env (only declared vars + system essentials)
-				const stepEnv = buildIsolatedEnv(spec, pipelineDir, primaryInput, outputPath);
+				const stepEnv = buildIsolatedEnv(spec, pipelineDir, resolvedInputPaths, outputPath);
 
 				if (step.type === 'script') {
 					await runScriptStep(resolvedStep, pipelineDir, primaryInput, outputPath, step.timeout ?? 300, outputCb, stepEnv);
 				} else if (step.type === 'agent') {
 					await runAgentStep(resolvedStep, pipelineDir, primaryInput, outputPath, step.timeout ?? 300, outputCb, runId, stepEnv);
+				} else if (step.type === 'approval' || step.type === 'prompt') {
+					const gateResult = await runGateStep(resolvedStep, runId, step.timeout ?? 86400, emit, onStepOutput);
+					// For prompt steps, store the answer as the step output reference
+					if (gateResult.value !== undefined) {
+						stepOutputs[stepId] = gateResult.value;
+					}
 				}
 
-				// Verify output was produced (skip for action/webhook types — they don't write files)
+				// Verify output was produced (skip for action/webhook/approval/prompt types)
 				const outputType = step.output_type || 'file';
-				if (outputType === 'file' || outputType === 'media' || outputType === 'response') {
+				if (step.type !== 'approval' && step.type !== 'prompt' && (outputType === 'file' || outputType === 'media' || outputType === 'response')) {
 					try {
 						await stat(outputPath);
 					} catch {
@@ -173,9 +246,13 @@ export async function runPipeline(
 					}
 				}
 
-				stepOutputs[stepId] = outputPath;
-				sr.outputPath = outputPath;
-				sr.outputType = step.output_type || 'file';
+				// For prompt steps, the answer is already in stepOutputs — don't overwrite
+				// For approval steps, there's no meaningful output
+				if (step.type !== 'prompt' && step.type !== 'approval') {
+					stepOutputs[stepId] = outputPath;
+					sr.outputPath = outputPath;
+					sr.outputType = step.output_type || 'file';
+				}
 				emit(stepId, 'done');
 				success = true;
 				break;
@@ -209,6 +286,50 @@ export async function runPipeline(
 	run.finishedAt = new Date().toISOString();
 
 	return run;
+}
+
+/** Execute an approval or prompt step — suspends until user acts or timeout */
+async function runGateStep(
+	step: PipelineStep,
+	runId: string,
+	timeoutSec: number,
+	emit: (stepId: string, status: StepStatus, detail?: string) => void,
+	onStepOutput?: StepOutputCallback,
+): Promise<{ action: string; value?: string }> {
+	const key = `${runId}:${step.id}`;
+
+	// Emit waiting status with context
+	const detail = step.type === 'approval'
+		? step.message || 'Waiting for approval'
+		: step.question || 'Waiting for input';
+	emit(step.id, 'waiting', detail);
+
+	// Send gate info as output so the UI can render it
+	const gateInfo = JSON.stringify({
+		_gate: true,
+		type: step.type,
+		message: step.message,
+		question: step.question,
+		show: step.show,
+		options: step.options,
+		options_from: step.options_from,
+	});
+	onStepOutput?.(step.id, gateInfo);
+
+	return new Promise((resolve, reject) => {
+		const timeout = setTimeout(() => {
+			pendingGates.delete(key);
+			reject(new Error(`${step.type} step "${step.id}" timed out after ${timeoutSec}s`));
+		}, timeoutSec * 1000);
+
+		pendingGates.set(key, {
+			resolve,
+			reject,
+			stepId: step.id,
+			type: step.type as 'approval' | 'prompt',
+			timeout,
+		});
+	});
 }
 
 /** Execute a script step via child_process */
@@ -256,21 +377,36 @@ const activePtyBridges = new Map<string, import('node:child_process').ChildProce
 // Track which bridges belong to which run (for kill)
 const runBridges = new Map<string, Set<string>>();
 
-/** Kill all active PTY bridges for a pipeline run */
+/** Kill all active PTY bridges for a pipeline run and reject pending gates */
 export function killPipeline(runId: string): boolean {
-	const bridgeKeys = runBridges.get(runId);
-	if (!bridgeKeys || bridgeKeys.size === 0) return false;
+	let killed = false;
 
-	for (const key of bridgeKeys) {
-		const bridge = activePtyBridges.get(key);
-		if (bridge) {
-			bridge.stdin?.write(JSON.stringify({ type: 'kill' }) + '\n');
-			bridge.kill();
-			activePtyBridges.delete(key);
+	// Kill PTY bridges
+	const bridgeKeys = runBridges.get(runId);
+	if (bridgeKeys && bridgeKeys.size > 0) {
+		for (const key of bridgeKeys) {
+			const bridge = activePtyBridges.get(key);
+			if (bridge) {
+				bridge.stdin?.write(JSON.stringify({ type: 'kill' }) + '\n');
+				bridge.kill();
+				activePtyBridges.delete(key);
+			}
+		}
+		runBridges.delete(runId);
+		killed = true;
+	}
+
+	// Reject any pending gates for this run
+	for (const [key, gate] of pendingGates) {
+		if (key.startsWith(`${runId}:`)) {
+			clearTimeout(gate.timeout);
+			gate.reject(new Error('Pipeline killed'));
+			pendingGates.delete(key);
+			killed = true;
 		}
 	}
-	runBridges.delete(runId);
-	return true;
+
+	return killed;
 }
 
 /** Get an active PTY bridge for a step (for sending input/interaction) */

@@ -52,6 +52,20 @@
 	// Step card expansion
 	let expandedSteps = $state<Set<string>>(new Set());
 
+	// Gate state (approval/prompt steps waiting for user action)
+	interface GateInfo {
+		type: 'approval' | 'prompt';
+		message?: string;
+		question?: string;
+		show?: string;
+		options?: string[];
+		options_from?: string;
+	}
+	let activeGates = $state<Map<string, GateInfo>>(new Map());
+	let promptAnswers = $state<Record<string, string>>({});
+	let showFileContent = $state<Record<string, string>>({});
+	let gateSubmitting = $state<Set<string>>(new Set());
+
 	// Run history
 	let history = $state<RunResult[]>([]);
 
@@ -144,7 +158,78 @@
 		outputDir = null;
 		outputFiles = [];
 		previewFile = null;
+		activeGates = new Map();
+		promptAnswers = {};
+		showFileContent = {};
+		gateSubmitting = new Set();
 		if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+	}
+
+	async function loadShowFile(stepId: string, filePath: string) {
+		try {
+			// Split into directory + filename for the files API
+			const lastSlash = filePath.lastIndexOf('/');
+			const dir = filePath.substring(0, lastSlash);
+			const file = filePath.substring(lastSlash + 1);
+			const res = await fetch(`/api/files?path=${encodeURIComponent(dir)}&action=read&file=${encodeURIComponent(file)}`);
+			if (res.ok) {
+				const data = await res.json();
+				showFileContent[stepId] = data.content || '';
+			}
+		} catch { /* silent */ }
+	}
+
+	async function handleApprove(stepId: string) {
+		if (!activeRunId) return;
+		gateSubmitting.add(stepId);
+		gateSubmitting = new Set(gateSubmitting);
+		try {
+			await fetch('/api/pipelines/run', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action: 'approve', runId: activeRunId, stepId }),
+			});
+			activeGates.delete(stepId);
+			activeGates = new Map(activeGates);
+		} catch { /* silent */ }
+		gateSubmitting.delete(stepId);
+		gateSubmitting = new Set(gateSubmitting);
+	}
+
+	async function handleReject(stepId: string) {
+		if (!activeRunId) return;
+		gateSubmitting.add(stepId);
+		gateSubmitting = new Set(gateSubmitting);
+		try {
+			await fetch('/api/pipelines/run', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action: 'reject', runId: activeRunId, stepId, reason: 'Rejected by user' }),
+			});
+			activeGates.delete(stepId);
+			activeGates = new Map(activeGates);
+		} catch { /* silent */ }
+		gateSubmitting.delete(stepId);
+		gateSubmitting = new Set(gateSubmitting);
+	}
+
+	async function handleAnswer(stepId: string) {
+		if (!activeRunId) return;
+		const value = promptAnswers[stepId] || '';
+		if (!value) return;
+		gateSubmitting.add(stepId);
+		gateSubmitting = new Set(gateSubmitting);
+		try {
+			await fetch('/api/pipelines/run', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action: 'answer', runId: activeRunId, stepId, value }),
+			});
+			activeGates.delete(stepId);
+			activeGates = new Map(activeGates);
+		} catch { /* silent */ }
+		gateSubmitting.delete(stepId);
+		gateSubmitting = new Set(gateSubmitting);
 	}
 
 	async function killRun() {
@@ -194,11 +279,45 @@
 					const statusData = await statusRes.json();
 					activeRun = statusData;
 
-					// Auto-expand running step
+					// Auto-expand running and waiting steps
 					for (const e of statusData.events || []) {
-						if (e.status === 'running') expandedSteps.add(e.stepId);
+						if (e.status === 'running' || e.status === 'waiting') expandedSteps.add(e.stepId);
 					}
 					expandedSteps = new Set(expandedSteps);
+
+					// Detect gate info from step output (JSON with _gate: true)
+					for (const [stepId, output] of Object.entries(statusData.stepOutput || {})) {
+						const outputStr = output as string;
+						if (outputStr.includes('"_gate":true') || outputStr.includes('"_gate": true')) {
+							try {
+								const gateData = JSON.parse(outputStr);
+								if (gateData._gate && !activeGates.has(stepId)) {
+									activeGates.set(stepId, {
+										type: gateData.type,
+										message: gateData.message,
+										question: gateData.question,
+										show: gateData.show,
+										options: gateData.options,
+										options_from: gateData.options_from,
+									});
+									activeGates = new Map(activeGates);
+									// Load the file to show for approval gates
+									if (gateData.show) loadShowFile(stepId, gateData.show);
+									// Default prompt answer for options
+									if (gateData.options?.length) promptAnswers[stepId] = gateData.options[0];
+								}
+							} catch { /* not valid JSON gate info */ }
+						}
+					}
+
+					// Clear gates for steps that are no longer waiting
+					for (const [stepId] of activeGates) {
+						const stepStatus = getStepStatus(stepId);
+						if (stepStatus !== 'waiting') {
+							activeGates.delete(stepId);
+							activeGates = new Map(activeGates);
+						}
+					}
 
 					if (statusData.status === 'done' || statusData.status === 'failed') {
 						running = false;
@@ -403,6 +522,7 @@
 
 							<div class="rounded-lg border overflow-hidden transition-colors
 								{status === 'running' ? 'border-hub-info/40 bg-hub-info/5' :
+								 status === 'waiting' ? 'border-hub-warning/40 bg-hub-warning/5' :
 								 status === 'done' ? 'border-hub-cta/20 bg-hub-surface' :
 								 status === 'failed' ? 'border-hub-danger/30 bg-hub-danger/5' :
 								 'border-hub-border/50 bg-hub-surface'}">
@@ -419,7 +539,10 @@
 										<div class="flex items-center gap-2">
 											<span class="text-sm font-mono font-medium text-hub-text">{step.id}</span>
 											<span class="px-1.5 py-0.5 rounded text-[9px] font-medium
-												{step.type === 'agent' ? 'bg-hub-purple/10 text-hub-purple' : 'bg-hub-info/10 text-hub-info'}">
+												{step.type === 'agent' ? 'bg-hub-purple/10 text-hub-purple' :
+												 step.type === 'approval' ? 'bg-hub-warning/10 text-hub-warning' :
+												 step.type === 'prompt' ? 'bg-hub-info/10 text-hub-info' :
+												 'bg-hub-info/10 text-hub-info'}">
 												{step.type}
 											</span>
 											{#if duration}
@@ -427,7 +550,13 @@
 											{/if}
 										</div>
 										<p class="text-[11px] text-hub-dim mt-0.5">
-											{step.type === 'script' ? step.run : step.agent}
+											{#if step.type === 'approval'}
+												approval gate
+											{:else if step.type === 'prompt'}
+												user prompt
+											{:else}
+												{step.type === 'script' ? step.run : step.agent}
+											{/if}
 											{#if step.depends_on?.length}
 												<span class="text-hub-dim/50"> after {step.depends_on.join(', ')}</span>
 											{/if}
@@ -436,11 +565,91 @@
 									<svg class="w-3.5 h-3.5 text-hub-dim transition-transform {isExpanded ? 'rotate-180' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
 								</button>
 
-								<!-- Expanded terminal output -->
-								{#if isExpanded && output}
-									<div class="border-t border-hub-border/30">
-										<pre class="px-4 py-3 text-xs font-mono text-hub-muted leading-relaxed max-h-60 overflow-y-auto whitespace-pre-wrap break-all bg-[#0a0a0f]">{output}</pre>
-									</div>
+								<!-- Expanded content: gate UI or terminal output -->
+								{#if isExpanded}
+									{@const gate = activeGates.get(step.id)}
+									{@const isSubmitting = gateSubmitting.has(step.id)}
+
+									{#if gate && status === 'waiting'}
+										<!-- Approval gate UI -->
+										{#if gate.type === 'approval'}
+											<div class="border-t border-hub-warning/30 bg-hub-warning/5 px-4 py-4">
+												<p class="text-sm text-hub-text mb-3">{gate.message || 'Review and approve to continue'}</p>
+
+												{#if showFileContent[step.id]}
+													<div class="mb-4 rounded-lg border border-hub-border/50 overflow-hidden">
+														<div class="px-3 py-1.5 bg-hub-surface text-[10px] text-hub-dim font-mono border-b border-hub-border/30">{gate.show}</div>
+														<pre class="px-4 py-3 text-xs font-mono text-hub-muted leading-relaxed max-h-48 overflow-y-auto whitespace-pre-wrap bg-[#0a0a0f]">{showFileContent[step.id]}</pre>
+													</div>
+												{/if}
+
+												<div class="flex items-center gap-3">
+													<button
+														onclick={() => handleApprove(step.id)}
+														disabled={isSubmitting}
+														class="px-4 py-2 rounded-lg text-sm font-medium bg-hub-cta text-white hover:bg-hub-cta/80 transition-colors cursor-pointer disabled:opacity-50"
+													>
+														{isSubmitting ? 'Approving...' : 'Approve'}
+													</button>
+													<button
+														onclick={() => handleReject(step.id)}
+														disabled={isSubmitting}
+														class="px-4 py-2 rounded-lg text-sm font-medium text-hub-danger border border-hub-danger/30 hover:bg-hub-danger/10 transition-colors cursor-pointer disabled:opacity-50"
+													>
+														Reject
+													</button>
+												</div>
+											</div>
+
+										<!-- Prompt gate UI -->
+										{:else if gate.type === 'prompt'}
+											<div class="border-t border-hub-info/30 bg-hub-info/5 px-4 py-4">
+												<p class="text-sm text-hub-text mb-3">{gate.question || 'Provide input to continue'}</p>
+
+												{#if gate.options && gate.options.length > 0}
+													<!-- Options as radio buttons -->
+													<div class="space-y-2 mb-4">
+														{#each gate.options as opt}
+															<label class="flex items-center gap-2 cursor-pointer text-sm text-hub-muted hover:text-hub-text transition-colors">
+																<input
+																	type="radio"
+																	name="prompt-{step.id}"
+																	value={opt}
+																	checked={promptAnswers[step.id] === opt}
+																	onchange={() => { promptAnswers[step.id] = opt; }}
+																	class="accent-hub-info"
+																/>
+																{opt}
+															</label>
+														{/each}
+													</div>
+												{:else}
+													<!-- Freeform text input -->
+													<input
+														type="text"
+														bind:value={promptAnswers[step.id]}
+														placeholder="Type your answer..."
+														onkeydown={(e) => { if (e.key === 'Enter') handleAnswer(step.id); }}
+														class="w-full bg-hub-bg border border-hub-border rounded-md px-3 py-2 text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-info/50 mb-3"
+													/>
+												{/if}
+
+												<button
+													onclick={() => handleAnswer(step.id)}
+													disabled={isSubmitting || !promptAnswers[step.id]}
+													class="px-4 py-2 rounded-lg text-sm font-medium bg-hub-info text-white hover:bg-hub-info/80 transition-colors cursor-pointer disabled:opacity-50"
+												>
+													{isSubmitting ? 'Submitting...' : 'Submit'}
+												</button>
+											</div>
+										{/if}
+
+									{:else if output && !output.includes('"_gate":true')}
+										<!-- Regular terminal output (hide raw gate JSON) -->
+										<div class="border-t border-hub-border/30">
+											<pre class="px-4 py-3 text-xs font-mono text-hub-muted leading-relaxed max-h-60 overflow-y-auto whitespace-pre-wrap break-all bg-[#0a0a0f]">{output}</pre>
+										</div>
+									{/if}
 								{/if}
 							</div>
 						{/each}
