@@ -473,6 +473,13 @@
 		return 'pending';
 	}
 
+	function buildCurlCmd(multiline = false): string {
+		const m = selectedSchedule?.triggerMethod || 'POST';
+		if (m === 'GET') return `curl "${webhookUrl}?name=${selectedName}"`;
+		const sep = multiline ? ' \\\n  ' : ' ';
+		return `curl -X ${m} ${webhookUrl}${sep}-H "Content-Type: application/json"${sep}-d '${JSON.stringify({ name: selectedName })}'`;
+	}
+
 	function getSkipReason(stepId: string): string {
 		if (!activeRun?.events) return '';
 		const event = activeRun.events.find((e: StepEvent) => e.stepId === stepId && e.status === 'skipped');
@@ -680,40 +687,82 @@
 							</div>
 
 							<!-- Webhook trigger -->
-							<div class="flex items-center gap-3 flex-wrap">
-								<span class="text-xs text-hub-muted w-16 flex-shrink-0">Trigger</span>
-								<button
-									onclick={() => saveTriggerConfig(selectedName, !selectedSchedule!.triggerEnabled, selectedSchedule!.triggerMethod)}
-									class="w-9 h-5 rounded-full transition-colors cursor-pointer flex-shrink-0 relative
-										{selectedSchedule.triggerEnabled ? 'bg-hub-cta' : 'bg-hub-border'}"
-								>
-									<span class="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform
-										{selectedSchedule.triggerEnabled ? 'left-4' : 'left-0.5'}"></span>
-								</button>
-								<select
-									value={selectedSchedule.triggerMethod}
-									onchange={(e) => saveTriggerConfig(selectedName, selectedSchedule!.triggerEnabled, (e.target as HTMLSelectElement).value)}
-									class="bg-hub-bg border border-hub-border rounded-md px-1.5 py-0.5 text-[10px] text-hub-text font-mono focus:outline-none cursor-pointer"
-								>
-									<option value="POST">POST</option>
-									<option value="GET">GET</option>
-									<option value="PUT">PUT</option>
-								</select>
+							<div class="space-y-2">
+								<div class="flex items-center gap-3">
+									<span class="text-xs text-hub-muted w-16 flex-shrink-0">Trigger</span>
+									<button
+										onclick={() => saveTriggerConfig(selectedName, !selectedSchedule!.triggerEnabled, selectedSchedule!.triggerMethod)}
+										class="w-9 h-5 rounded-full transition-colors cursor-pointer flex-shrink-0 relative
+											{selectedSchedule.triggerEnabled ? 'bg-hub-cta' : 'bg-hub-border'}"
+									>
+										<span class="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform
+											{selectedSchedule.triggerEnabled ? 'left-4' : 'left-0.5'}"></span>
+									</button>
+									<span class="text-[10px] {selectedSchedule.triggerEnabled ? 'text-hub-cta' : 'text-hub-dim'}">
+										{selectedSchedule.triggerEnabled ? 'Enabled' : 'Disabled'}
+									</span>
+								</div>
+
 								{#if selectedSchedule.triggerEnabled}
-									{@const method = selectedSchedule.triggerMethod}
-									{@const triggerCmd = method === 'GET'
-										? `curl ${webhookUrl}?name=${selectedName}`
-										: `curl -X ${method} ${webhookUrl} -H "Content-Type: application/json" -d '${JSON.stringify({ name: selectedName })}'`}
-									<code class="text-[10px] font-mono text-hub-dim bg-hub-bg px-2 py-1 rounded flex-1 truncate select-all">{triggerCmd}</code>
-									<button onclick={() => {
-										const method = selectedSchedule!.triggerMethod;
-										const cmd = method === 'GET'
-											? `curl ${webhookUrl}?name=${selectedName}`
-											: `curl -X ${method} ${webhookUrl} -H "Content-Type: application/json" -d '${JSON.stringify({ name: selectedName })}'`;
-										navigator.clipboard.writeText(cmd);
-									}} class="text-[10px] text-hub-info hover:text-hub-info/80 cursor-pointer flex-shrink-0">Copy</button>
-								{:else}
-									<span class="text-[10px] text-hub-dim">Disabled</span>
+									<!-- Webhook details breakdown -->
+									<div class="ml-[76px] space-y-1.5">
+										<!-- Method -->
+										<div class="flex items-center gap-2">
+											<span class="text-[10px] text-hub-dim w-14">Method</span>
+											<select
+												value={selectedSchedule.triggerMethod}
+												onchange={(e) => saveTriggerConfig(selectedName, selectedSchedule!.triggerEnabled, (e.target as HTMLSelectElement).value)}
+												class="bg-hub-bg border border-hub-border rounded-md px-1.5 py-0.5 text-[10px] text-hub-text font-mono focus:outline-none cursor-pointer"
+											>
+												<option value="POST">POST</option>
+												<option value="GET">GET</option>
+												<option value="PUT">PUT</option>
+											</select>
+										</div>
+										<!-- URL -->
+										<div class="flex items-center gap-2">
+											<span class="text-[10px] text-hub-dim w-14">URL</span>
+											<code class="text-[10px] font-mono text-hub-text bg-hub-bg px-2 py-1 rounded flex-1 select-all">{webhookUrl}</code>
+											<button onclick={() => navigator.clipboard.writeText(webhookUrl)}
+												class="text-[10px] text-hub-info hover:text-hub-info/80 cursor-pointer">Copy</button>
+										</div>
+										<!-- Headers -->
+										<div class="flex items-start gap-2">
+											<span class="text-[10px] text-hub-dim w-14 pt-0.5">Headers</span>
+											<div class="flex-1 space-y-1">
+												{#if selectedSchedule.triggerMethod !== 'GET'}
+													<div class="flex items-center gap-1">
+														<code class="text-[10px] font-mono text-hub-dim bg-hub-bg px-2 py-1 rounded select-all">Content-Type: application/json</code>
+													</div>
+												{/if}
+												<div class="flex items-center gap-1">
+													<code class="text-[10px] font-mono text-hub-dim bg-hub-bg px-2 py-1 rounded select-all">Authorization: Bearer &lt;your-secret&gt;</code>
+													<span class="text-[9px] text-hub-dim italic">optional</span>
+												</div>
+											</div>
+										</div>
+										<!-- Body / Params -->
+										{#if selectedSchedule.triggerMethod === 'GET'}
+											<div class="flex items-center gap-2">
+												<span class="text-[10px] text-hub-dim w-14">Params</span>
+												<code class="text-[10px] font-mono text-hub-dim bg-hub-bg px-2 py-1 rounded select-all">?name={selectedName}</code>
+											</div>
+										{:else}
+											<div class="flex items-center gap-2">
+												<span class="text-[10px] text-hub-dim w-14">Body</span>
+												<code class="text-[10px] font-mono text-hub-dim bg-hub-bg px-2 py-1 rounded flex-1 select-all">{JSON.stringify({ name: selectedName }, null, 2)}</code>
+												<button onclick={() => navigator.clipboard.writeText(JSON.stringify({ name: selectedName }, null, 2))}
+													class="text-[10px] text-hub-info hover:text-hub-info/80 cursor-pointer">Copy</button>
+											</div>
+										{/if}
+										<!-- Full curl command -->
+										<div class="flex items-start gap-2 pt-1 border-t border-hub-border/30">
+											<span class="text-[10px] text-hub-dim w-14 pt-0.5">curl</span>
+											<pre class="text-[10px] font-mono text-hub-muted bg-hub-bg px-2 py-1 rounded flex-1 select-all whitespace-pre-wrap">{buildCurlCmd(true)}</pre>
+											<button onclick={() => navigator.clipboard.writeText(buildCurlCmd(false))}
+												class="text-[10px] text-hub-info hover:text-hub-info/80 cursor-pointer pt-0.5">Copy</button>
+										</div>
+									</div>
 								{/if}
 							</div>
 						</div>
