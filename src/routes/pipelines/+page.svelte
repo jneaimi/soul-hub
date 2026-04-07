@@ -168,16 +168,18 @@
 			if (manifest?.outputs && manifest.outputs.length > 0) {
 				// Use the step's actual output path with block's declared format
 				const out = manifest.outputs[0];
+				const fileName = step.outputPath.split('/').pop() || step.id;
 				entries.push({
-					name: out.name || step.id,
+					name: fileName,
 					path: step.outputPath,
 					type: out.type || 'file',
 					format: out.format,
 				});
 			} else {
-				// Fallback: show the output path as a generic file entry
+				// Fallback: use actual filename from path
+				const fallbackName = step.outputPath.split('/').pop() || step.id;
 				entries.push({
-					name: step.id,
+					name: fallbackName,
 					path: step.outputPath,
 					type: 'file',
 					format: 'text',
