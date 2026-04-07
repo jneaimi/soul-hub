@@ -1,0 +1,56 @@
+name: market-intel-weekly
+description: "Weekly intelligence: Data Prep \u2192 Miner (Article Radar) \u2192 Strategist (Opportunities)"
+version: 1.0.0
+author: jasem
+
+env:
+  - name: TELEGRAM_BOT_TOKEN
+    description: Telegram notifications
+    required: false
+  - name: TELEGRAM_CHAT_ID
+    description: Telegram chat for notifications
+    required: false
+
+steps:
+  - id: weekly-prep
+    type: script
+    run: python3 scripts/weekly_prep.py
+    output: ~/SecondBrain/02-areas/pipelines/market-intel/_prep/$DATE-weekly-data-pack.md
+    timeout: 120
+
+  - id: strategist-prep
+    type: script
+    run: python3 scripts/strategist_prep.py
+    output: ~/SecondBrain/02-areas/pipelines/market-intel/_prep/$DATE-strategist-prep.md
+    timeout: 120
+    depends_on: [weekly-prep]
+
+  - id: miner-weekly
+    type: script
+    run: bash scripts/miner.sh --weekly
+    output: ~/SecondBrain/02-areas/pipelines/market-intel/$DATE-miner-weekly.md
+    timeout: 1200
+    depends_on: [weekly-prep]
+
+  - id: strategist
+    type: script
+    run: bash scripts/strategist.sh
+    output: ~/SecondBrain/02-areas/pipelines/market-intel/$DATE-strategist-weekly.md
+    timeout: 900
+    depends_on: [miner-weekly, strategist-prep]
+
+  - id: actions
+    type: script
+    run: python3 scripts/generate-actions.py --date $DATE --weekly
+    output: ~/SecondBrain/02-areas/pipelines/market-intel/$DATE-weekly-review.md
+    timeout: 120
+    depends_on: [strategist]
+
+  - id: notify
+    type: channel
+    channel: telegram
+    message: "Market Intel weekly completed for $DATE. Strategy brief and article radar ready."
+    depends_on: [actions]
+
+on_failure:
+  strategy: halt

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import type { ChannelsSettings } from './channels/types.js';
 
 const HOME = process.env.HOME || '';
 
@@ -17,12 +18,13 @@ export interface SoulHubConfig {
 	paths: {
 		devDir: string;
 		brainDir: string;
-		marketplaceDir: string;
+		catalogDir: string;
 		claudeBinary: string;
 	};
 	server: {
 		port: number;
 	};
+	channels: ChannelsSettings;
 }
 
 const DEFAULTS: SoulHubConfig = {
@@ -39,11 +41,18 @@ const DEFAULTS: SoulHubConfig = {
 	paths: {
 		devDir: '~/dev',
 		brainDir: '~/SecondBrain',
-		marketplaceDir: '~/dev/soul-hub/marketplace',
+		catalogDir: '~/dev/soul-hub/catalog',
 		claudeBinary: '~/.local/bin/claude',
 	},
 	server: {
 		port: 5173,
+	},
+	channels: {
+		telegram: {
+			enabled: false,
+			label: 'Telegram',
+			defaultFor: ['send'],
+		},
 	},
 };
 
@@ -83,14 +92,14 @@ function loadSettings(): SoulHubConfig {
 const _config = loadSettings();
 
 /** Resolved config with ~ expanded to absolute paths */
-export const config: SoulHubConfig & { resolved: { devDir: string; brainDir: string; brainProjects: string; brainAreas: string; marketplaceDir: string; claudeBinary: string } } = {
+export const config: SoulHubConfig & { resolved: { devDir: string; brainDir: string; brainProjects: string; brainAreas: string; catalogDir: string; claudeBinary: string } } = {
 	..._config,
 	resolved: {
 		devDir: expandPath(_config.paths.devDir),
 		brainDir: expandPath(_config.paths.brainDir),
 		brainProjects: resolve(expandPath(_config.paths.brainDir), '01-projects'),
 		brainAreas: resolve(expandPath(_config.paths.brainDir), '02-areas'),
-		marketplaceDir: expandPath(_config.paths.marketplaceDir),
+		catalogDir: expandPath(_config.paths.catalogDir),
 		claudeBinary: expandPath(_config.paths.claudeBinary),
 	},
 };

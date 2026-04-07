@@ -71,7 +71,7 @@
 		},
 	];
 
-	interface MarketplaceSkill {
+	interface CatalogSkill {
 		name: string;
 		description: string;
 		category: string;
@@ -80,7 +80,7 @@
 		tags: string[];
 	}
 
-	interface MarketplaceAgent {
+	interface CatalogAgent {
 		name: string;
 		description: string;
 		category: string;
@@ -96,10 +96,10 @@
 	let selectedVariant = $state('sveltekit');
 	let selectedSkills = $state<Set<string>>(new Set());
 	let selectedAgents = $state<Set<string>>(new Set());
-	let marketplaceSkills = $state<MarketplaceSkill[]>([]);
-	let marketplaceAgents = $state<MarketplaceAgent[]>([]);
-	let marketplaceTab = $state<'skills' | 'agents'>('skills');
-	let marketplaceOpen = $state(false);
+	let catalogSkills = $state<CatalogSkill[]>([]);
+	let catalogAgents = $state<CatalogAgent[]>([]);
+	let catalogTab = $state<'skills' | 'agents'>('skills');
+	let catalogOpen = $state(false);
 	let creating = $state(false);
 	let error = $state('');
 	let nameInput: HTMLInputElement;
@@ -141,17 +141,17 @@
 		selectedTemplate !== null && projectName.trim().length >= 2
 	);
 
-	// Load marketplace data
+	// Load catalog data
 	onMount(async () => {
 		try {
-			const res = await fetch('/api/marketplace');
+			const res = await fetch('/api/catalog');
 			if (res.ok) {
 				const data = await res.json();
-				marketplaceSkills = data.skills || [];
-				marketplaceAgents = data.agents || [];
+				catalogSkills = data.skills || [];
+				catalogAgents = data.agents || [];
 			}
 		} catch (e) {
-			console.error('Failed to load marketplace', e);
+			console.error('Failed to load catalog', e);
 		}
 	});
 
@@ -190,7 +190,7 @@
 		} else {
 			next.add(name);
 			// Auto-add dependent skills
-			const agent = marketplaceAgents.find((a) => a.name === name);
+			const agent = catalogAgents.find((a) => a.name === name);
 			if (agent) {
 				const skillsNext = new Set(selectedSkills);
 				for (const dep of agent.dependsOn) {
@@ -321,14 +321,14 @@
 					{/if}
 				</section>
 
-				<!-- Step 3: Marketplace -->
+				<!-- Step 3: Catalog -->
 				<section>
 					<button
-						onclick={() => { marketplaceOpen = !marketplaceOpen; }}
+						onclick={() => { catalogOpen = !catalogOpen; }}
 						class="flex items-center gap-2 text-sm font-semibold text-hub-muted uppercase tracking-wider hover:text-hub-text transition-colors"
 					>
 						<svg
-							class="w-4 h-4 transition-transform {marketplaceOpen ? 'rotate-90' : ''}"
+							class="w-4 h-4 transition-transform {catalogOpen ? 'rotate-90' : ''}"
 							viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
 						>
 							<polyline points="9 18 15 12 9 6"/>
@@ -339,28 +339,28 @@
 						</span>
 					</button>
 
-					{#if marketplaceOpen}
+					{#if catalogOpen}
 						<div class="mt-4 space-y-4">
 							<!-- Tabs -->
 							<div class="flex gap-1 bg-hub-surface rounded-lg p-1">
 								<button
-									onclick={() => { marketplaceTab = 'skills'; }}
-									class="flex-1 text-xs font-medium py-1.5 rounded-md transition-colors {marketplaceTab === 'skills' ? 'bg-hub-card text-hub-text' : 'text-hub-dim hover:text-hub-muted'}"
+									onclick={() => { catalogTab = 'skills'; }}
+									class="flex-1 text-xs font-medium py-1.5 rounded-md transition-colors {catalogTab === 'skills' ? 'bg-hub-card text-hub-text' : 'text-hub-dim hover:text-hub-muted'}"
 								>
-									Skills ({marketplaceSkills.length})
+									Skills ({catalogSkills.length})
 								</button>
 								<button
-									onclick={() => { marketplaceTab = 'agents'; }}
-									class="flex-1 text-xs font-medium py-1.5 rounded-md transition-colors {marketplaceTab === 'agents' ? 'bg-hub-card text-hub-text' : 'text-hub-dim hover:text-hub-muted'}"
+									onclick={() => { catalogTab = 'agents'; }}
+									class="flex-1 text-xs font-medium py-1.5 rounded-md transition-colors {catalogTab === 'agents' ? 'bg-hub-card text-hub-text' : 'text-hub-dim hover:text-hub-muted'}"
 								>
-									Agents ({marketplaceAgents.length})
+									Agents ({catalogAgents.length})
 								</button>
 							</div>
 
 							<!-- Skills Tab -->
-							{#if marketplaceTab === 'skills'}
+							{#if catalogTab === 'skills'}
 								<div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
-									{#each marketplaceSkills as skill}
+									{#each catalogSkills as skill}
 										<button
 											onclick={() => toggleSkill(skill.name)}
 											class="text-left p-3 rounded-lg border transition-all {selectedSkills.has(skill.name) ? 'border-hub-cta/60 bg-hub-cta/5' : 'border-hub-border bg-hub-card hover:border-hub-border'}"
@@ -394,9 +394,9 @@
 							{/if}
 
 							<!-- Agents Tab -->
-							{#if marketplaceTab === 'agents'}
+							{#if catalogTab === 'agents'}
 								<div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
-									{#each marketplaceAgents as agent}
+									{#each catalogAgents as agent}
 										<button
 											onclick={() => toggleAgent(agent.name)}
 											class="text-left p-3 rounded-lg border transition-all {selectedAgents.has(agent.name) ? 'border-hub-purple/60 bg-hub-purple/5' : 'border-hub-border bg-hub-card hover:border-hub-border'}"

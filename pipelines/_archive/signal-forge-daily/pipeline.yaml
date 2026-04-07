@@ -1,0 +1,47 @@
+name: signal-forge-daily
+description: "Daily market intelligence: Scout \u2192 Prospector \u2192 Miner \u2192 Content Forge"
+version: 2.0.0
+author: jasem
+
+env:
+  - name: APIDIRECT_API_KEY
+    description: Social media API (Twitter, Reddit, TikTok, Instagram, LinkedIn)
+    required: true
+  - name: YOUTUBE_API_KEY
+    description: YouTube Data API for video transcripts
+    required: true
+  - name: TELEGRAM_BOT_TOKEN
+    description: Telegram notifications
+    required: true
+  - name: TELEGRAM_CHAT_ID
+    description: Telegram chat for notifications
+    required: true
+
+inputs:
+  - name: mode
+    type: select
+    description: Pipeline mode
+    options: [full, quick]
+    default: full
+  - name: from_step
+    type: select
+    description: Resume from step (skip earlier steps)
+    options: [scout, prospector, miner, content-forge]
+    default: scout
+    required: false
+
+steps:
+  - id: run-pipeline
+    type: script
+    run: bash scripts/run.sh
+    output: /tmp/pipeline-runs/$RUN_ID/daily-status.json
+    timeout: 2700
+
+  - id: notify
+    type: channel
+    channel: telegram
+    message: "Signal Forge Daily pipeline completed. Check Soul Hub for details."
+    depends_on: [run-pipeline]
+
+on_failure:
+  strategy: halt

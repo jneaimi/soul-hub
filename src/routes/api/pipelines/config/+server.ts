@@ -5,7 +5,7 @@ import { config } from '$lib/config.js';
 import { getAutomationConfig, setAutomationConfig, parsePipeline } from '$lib/pipeline/index.js';
 import cron from 'node-cron';
 
-const PIPELINES_DIR = resolve(dirname(config.resolved.marketplaceDir), 'pipelines');
+const PIPELINES_DIR = resolve(dirname(config.resolved.catalogDir), 'pipelines');
 
 /** GET /api/pipelines/config?name=... — get automation config */
 export const GET: RequestHandler = async ({ url }) => {

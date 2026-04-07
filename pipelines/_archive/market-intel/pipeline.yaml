@@ -1,0 +1,136 @@
+name: market-intel
+description: "Daily market intelligence: Scout \u2192 Prospector \u2192 Miner \u2192 Content Forge"
+version: 1.0.0
+author: jasem
+
+env:
+  - name: APIDIRECT_API_KEY
+    description: Social media API (Twitter, Reddit, TikTok, Instagram, LinkedIn)
+    required: true
+  - name: YOUTUBE_API_KEY
+    description: YouTube Data API for video transcripts
+    required: true
+  - name: GOOGLE_API_KEY
+    description: Google API (used by some collector endpoints)
+    required: false
+  - name: HF_API_TOKEN
+    description: Hugging Face API (optional, for embeddings)
+    required: false
+  - name: TELEGRAM_BOT_TOKEN
+    description: Telegram notifications
+    required: false
+  - name: TELEGRAM_CHAT_ID
+    description: Telegram chat for notifications
+    required: false
+
+inputs:
+  # Scout
+  - name: scout_lookback_days
+    type: text
+    description: "Scout: How many days back to fetch posts per influencer"
+    default: "3"
+  # Prospector
+  - name: prospector_max_topics
+    type: text
+    description: "Prospector: Max trending topics to research"
+    default: "2"
+  - name: prospector_platforms
+    type: text
+    description: "Prospector: Platforms to search (comma-separated: twitter,reddit,youtube,linkedin,news,forums)"
+    default: "twitter,reddit,youtube,linkedin,news,forums"
+  - name: prospector_pinned_topic
+    type: text
+    description: "Prospector: Always-researched topic (leave empty to disable)"
+    default: "AI agents in GCC"
+    required: false
+  # Miner
+  - name: miner_mode
+    type: select
+    description: "Miner: Analysis mode"
+    options: [daily, quick]
+    default: daily
+  - name: miner_lookback_days
+    type: text
+    description: "Miner: Analysis window (days)"
+    default: "7"
+  # Content Forge
+  - name: content_platforms
+    type: text
+    description: "Content Forge: Platforms to draft for (comma-separated: linkedin,twitter)"
+    default: "linkedin"
+  - name: content_max_hot
+    type: text
+    description: "Content Forge: Max HOT drafts per run"
+    default: "3"
+  - name: content_languages
+    type: text
+    description: "Content Forge: Languages to draft (comma-separated: en,ar)"
+    default: "en,ar"
+
+config_files:
+  - name: Influencer Roster
+    description: "Add/remove influencers to track (handle, platform, focus)"
+    path: config/influencer-roster.md
+  - name: Market Context
+    description: "GCC market definition, sectors, audiences, scoring criteria"
+    path: config/market-context.md
+  - name: Brand Assets
+    description: "Tools, frameworks, articles for CTA matching"
+    path: config/brand-assets.md
+  - name: Miner Config
+    description: "Miner analysis parameters (thresholds, pillars, pain keywords)"
+    path: config/miner-config.md
+  - name: Prospector Config
+    description: "Topic selection mode, search parameters, Arabic search toggle"
+    path: config/prospector-config.md
+  - name: Content Forge Config
+    description: "Scoring thresholds, voice settings, platform templates"
+    path: config/content-forge-config.md
+  - name: Strategist Config
+    description: "Opportunity scoring, category definitions, lookback weeks"
+    path: config/strategist-config.md
+
+steps:
+  - id: scout
+    type: script
+    run: bash scripts/scout.sh --lookback-days $inputs.scout_lookback_days
+    output: /tmp/pipeline-runs/$RUN_ID/scout-status.json
+    timeout: 900
+    retry: 1
+
+  - id: prospector
+    type: script
+    run: bash scripts/prospector.sh --max-topics $inputs.prospector_max_topics --platforms $inputs.prospector_platforms --pinned-topic $inputs.prospector_pinned_topic
+    output: /tmp/pipeline-runs/$RUN_ID/prospector-status.json
+    timeout: 600
+    depends_on: [scout]
+
+  - id: miner
+    type: script
+    run: bash scripts/miner.sh --lookback-days $inputs.miner_lookback_days
+    output: ~/SecondBrain/02-areas/pipelines/market-intel/$DATE-miner-daily.md
+    timeout: 900
+    depends_on: [scout]
+
+  - id: content-forge
+    type: script
+    run: bash scripts/content-forge.sh --platforms $inputs.content_platforms --max-hot $inputs.content_max_hot --languages $inputs.content_languages
+    output: ~/SecondBrain/02-areas/pipelines/market-intel/$DATE-content-menu.md
+    timeout: 600
+    depends_on: [miner]
+
+  - id: actions
+    type: script
+    run: python3 scripts/generate-actions.py --date $DATE
+    output: ~/SecondBrain/02-areas/pipelines/market-intel/$DATE-action-note.md
+    timeout: 120
+    depends_on: [content-forge]
+
+  - id: notify
+    type: channel
+    channel: telegram
+    message: "Market Intel daily completed for $DATE. Check Soul Hub for reports."
+    depends_on: [actions]
+
+on_failure:
+  strategy: halt

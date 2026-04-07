@@ -78,7 +78,14 @@
 		toggleAlt();
 	}
 
-	onMount(async () => {
+	let resizeObserver: ResizeObserver | null = null;
+
+	onMount(() => {
+		initTerminal();
+		return () => resizeObserver?.disconnect();
+	});
+
+	async function initTerminal() {
 		const { Terminal } = await import('@xterm/xterm');
 		const { FitAddon } = await import('@xterm/addon-fit');
 		const { WebLinksAddon } = await import('@xterm/addon-web-links');
@@ -157,15 +164,20 @@
 			sendInput(data);
 		});
 
-		const resizeObserver = new ResizeObserver(() => {
-			if (fitAddon && terminal) {
-				fitAddon.fit();
-				if (sessionId && running) {
-					sendResize(terminal.cols, terminal.rows);
+		let resizeTimer: ReturnType<typeof setTimeout>;
+		const ro = new ResizeObserver(() => {
+			clearTimeout(resizeTimer);
+			resizeTimer = setTimeout(() => {
+				if (fitAddon && terminal) {
+					fitAddon.fit();
+					if (sessionId && running) {
+						sendResize(terminal.cols, terminal.rows);
+					}
 				}
-			}
+			}, 100);
 		});
-		if (terminalEl) resizeObserver.observe(terminalEl);
+		resizeObserver = ro;
+		if (terminalEl) ro.observe(terminalEl);
 
 		isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 
@@ -210,9 +222,7 @@
 		terminal.writeln('');
 
 		if (autoSpawn && prompt) spawn();
-
-		return () => resizeObserver.disconnect();
-	});
+	}
 
 	onDestroy(() => {
 		if (abortController) abortController.abort();

@@ -17,10 +17,14 @@ export interface PipelineEnvVar {
 
 export interface PipelineStep {
 	id: string;
-	type: 'script' | 'agent' | 'approval' | 'prompt';
+	type: 'script' | 'agent' | 'approval' | 'prompt' | 'channel';
+	/** Block reference — name of a block in <pipeline-dir>/blocks/ */
+	block?: string;
+	/** Config overrides for the referenced block (merged with block defaults) */
+	config?: Record<string, unknown>;
 	/** For type: script — command to run */
 	run?: string;
-	/** For type: agent — agent name from marketplace/agents/ */
+	/** For type: agent — agent name from catalog/agents/ */
 	agent?: string;
 	/** Skills to pre-load for agent steps */
 	skills?: string[];
@@ -48,6 +52,12 @@ export interface PipelineStep {
 	options_from?: string;
 	/** For type: prompt — static options */
 	options?: string[];
+	/** For type: channel — channel adapter id (omit for default) */
+	channel?: string;
+	/** For type: channel — action to perform */
+	action?: 'send';
+	/** For type: channel — file to attach */
+	attach?: string;
 	/** Condition: only run this step when expression is true */
 	when?: string;
 	/** Condition: skip this step when expression is true (inverse of when) */
@@ -59,6 +69,17 @@ export interface PipelineOnFailure {
 	strategy?: 'halt' | 'skip' | 'retry';
 }
 
+/** MCP server declaration — makes server available to agent steps */
+export interface PipelineMcp {
+	/** Server name (must match a key in project or global .mcp.json) */
+	name: string;
+	/** Optional: inline server config (overrides .mcp.json lookup) */
+	command?: string;
+	args?: string[];
+	url?: string;
+	env?: Record<string, string>;
+}
+
 export interface PipelineSpec {
 	name: string;
 	description: string;
@@ -66,6 +87,7 @@ export interface PipelineSpec {
 	author?: string;
 	inputs?: PipelineInput[];
 	env?: PipelineEnvVar[];
+	mcp?: PipelineMcp[];
 	steps: PipelineStep[];
 	on_failure?: PipelineOnFailure;
 }

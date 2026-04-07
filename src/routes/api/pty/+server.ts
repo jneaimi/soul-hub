@@ -6,7 +6,7 @@ import { resolve, dirname } from 'node:path';
 import { config } from '$lib/config.js';
 
 const HOME = process.env.HOME || '';
-const BRIDGE_SCRIPT = resolve(dirname(config.resolved.marketplaceDir), 'scripts', 'pty_bridge.py');
+const BRIDGE_SCRIPT = resolve(dirname(config.resolved.catalogDir), 'scripts', 'pty_bridge.py');
 
 // Active PTY sessions
 const sessions = new Map<string, ChildProcess>();

@@ -22,7 +22,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		const body = await request.json();
 
 		// Validate structure — only allow known keys
-		const allowed = ['terminal', 'interface', 'paths', 'server'];
+		const allowed = ['terminal', 'interface', 'paths', 'server', 'channels'];
 		const filtered: Record<string, any> = {};
 		for (const key of allowed) {
 			if (body[key] !== undefined) filtered[key] = body[key];

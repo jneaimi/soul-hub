@@ -1,11 +1,89 @@
 import { parse as parseYaml } from 'yaml';
-import { readFile } from 'node:fs/promises';
+import { readFile, access } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
 import type { PipelineSpec } from './types.js';
+import { parseBlockManifest, validateBlockConfig } from './block.js';
+import type { BlockManifest } from './block.js';
+
+/** Resolve block references in pipeline steps.
+ *  For steps with block:, reads BLOCK.md and auto-derives type, run, agent.
+ *  Merges block default config with step config overrides. */
+async function resolveBlockReferences(spec: PipelineSpec, pipelineDir: string): Promise<void> {
+	for (const step of spec.steps) {
+		if (!step.block) continue;
+
+		const blockDir = join(pipelineDir, 'blocks', step.block);
+		let manifest: BlockManifest;
+		try {
+			manifest = await parseBlockManifest(blockDir);
+		} catch (err) {
+			throw new Error(`Step "${step.id}": failed to load block "${step.block}" — ${err instanceof Error ? err.message : err}`);
+		}
+
+		// Auto-derive type from block manifest (step can still override)
+		if (!step.type) {
+			if (manifest.type === 'script' || manifest.type === 'agent') {
+				step.type = manifest.type;
+			} else {
+				throw new Error(`Step "${step.id}": block "${step.block}" has unsupported type "${manifest.type}" for pipeline steps`);
+			}
+		}
+
+		// Auto-derive run command for script blocks
+		if (step.type === 'script' && !step.run) {
+			const runtime = manifest.runtime || 'python';
+			if (runtime === 'python' || runtime === 'python3') {
+				step.run = `python3 blocks/${step.block}/run.py`;
+			} else if (runtime === 'bash' || runtime === 'sh') {
+				step.run = `bash blocks/${step.block}/run.sh`;
+			} else if (runtime === 'node' || runtime === 'nodejs') {
+				step.run = `node blocks/${step.block}/run.js`;
+			} else {
+				step.run = `python3 blocks/${step.block}/run.py`;
+			}
+		}
+
+		// Auto-derive agent for agent blocks
+		if (step.type === 'agent' && !step.agent) {
+			step.agent = `blocks/${step.block}/agent.md`;
+		}
+
+		// Merge block default config with step config overrides
+		const defaults: Record<string, unknown> = {};
+		for (const field of manifest.config || []) {
+			if (field.default !== undefined) {
+				defaults[field.name] = field.default;
+			}
+		}
+		step.config = { ...defaults, ...(step.config || {}) };
+
+		// Validate merged config against block schema
+		const validation = validateBlockConfig(manifest, step.config);
+		if (!validation.ok) {
+			throw new Error(`Step "${step.id}" block config errors: ${validation.errors.join('; ')}`);
+		}
+
+		// Merge block env requirements into pipeline spec
+		if (manifest.env) {
+			if (!spec.env) spec.env = [];
+			for (const blockEnv of manifest.env) {
+				if (!spec.env.some(e => e.name === blockEnv.name)) {
+					spec.env.push({
+						name: blockEnv.name,
+						description: blockEnv.description || '',
+						required: blockEnv.required,
+					});
+				}
+			}
+		}
+	}
+}
 
 /** Parse a pipeline YAML file and validate its structure */
 export async function parsePipeline(filePath: string): Promise<PipelineSpec> {
 	const raw = await readFile(filePath, 'utf-8');
 	const spec = parseYaml(raw) as PipelineSpec;
+	const pipelineDir = dirname(filePath);
 
 	// Validate required fields
 	if (!spec.name) throw new Error('Pipeline missing "name"');
@@ -13,12 +91,15 @@ export async function parsePipeline(filePath: string): Promise<PipelineSpec> {
 		throw new Error('Pipeline must have at least one step');
 	}
 
+	// Resolve block references before validation (fills in type, run, agent)
+	await resolveBlockReferences(spec, pipelineDir);
+
 	for (const step of spec.steps) {
 		if (!step.id) throw new Error('Every step must have an "id"');
-		if (!step.type) throw new Error(`Step "${step.id}" missing "type"`);
+		if (!step.type) throw new Error(`Step "${step.id}" missing "type" (and no block: to derive it from)`);
 
-		// approval and prompt steps don't produce files — output is never required
-		if (step.type === 'approval' || step.type === 'prompt') {
+		// approval, prompt, and channel steps don't produce files — output is never required
+		if (step.type === 'approval' || step.type === 'prompt' || step.type === 'channel') {
 			if (!step.output) step.output = '/dev/null';
 		} else {
 			// output is required for file/media/response types, optional for action/webhook
@@ -70,6 +151,32 @@ export async function parsePipeline(filePath: string): Promise<PipelineSpec> {
 	}
 
 	return spec;
+}
+
+/** Validate pipeline is ready to run — check required env vars and inputs */
+export function validatePipelineRun(
+	spec: PipelineSpec,
+	inputs: Record<string, string | number>,
+): { ok: boolean; errors: string[] } {
+	const errors: string[] = [];
+
+	// Check required env vars are set in process.env
+	for (const env of spec.env || []) {
+		if (env.required !== false && !process.env[env.name]) {
+			errors.push(`Missing env var: ${env.name}${env.description ? ` (${env.description})` : ''}`);
+		}
+	}
+
+	// Check required inputs have values
+	for (const input of spec.inputs || []) {
+		if (input.required === false) continue;
+		const val = inputs[input.name] ?? input.default;
+		if (val === undefined || val === '' || val === null) {
+			errors.push(`Missing required input: ${input.name}${input.description ? ` (${input.description})` : ''}`);
+		}
+	}
+
+	return { ok: errors.length === 0, errors };
 }
 
 /** Resolve variable references in a string: $inputs.X, $steps.X.output */

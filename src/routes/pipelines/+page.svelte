@@ -13,8 +13,26 @@
 		description: string;
 		version?: string;
 		author?: string;
-		inputs?: { name: string; type: string; description: string; default?: string | number; options?: string[] }[];
-		steps: { id: string; type: string; agent?: string; run?: string; depends_on?: string[]; when?: string; skip_if?: string }[];
+		inputs?: { name: string; type: string; description: string; default?: string | number; options?: string[]; required?: boolean }[];
+		config_files?: { name: string; description: string; path: string }[];
+		steps: { id: string; type: string; block?: string; config?: Record<string, unknown>; agent?: string; run?: string; depends_on?: string[]; when?: string; skip_if?: string }[];
+	}
+
+	interface BlockManifest {
+		name: string;
+		type: string;
+		runtime?: string;
+		description: string;
+		version?: string;
+		config?: { name: string; type: string; label?: string; description?: string; default?: unknown }[];
+		env?: { name: string; description?: string; required?: boolean }[];
+	}
+
+	interface EnvStatus {
+		name: string;
+		description: string;
+		required: boolean;
+		set: boolean;
 	}
 
 	interface StepEvent {
@@ -42,11 +60,17 @@
 	// Selected pipeline
 	let selected = $state<PipelineDetail | null>(null);
 	let selectedName = $state('');
+	let selectedPath = $state('');
 	let inputValues = $state<Record<string, string | number>>({});
+	let envStatus = $state<EnvStatus[]>([]);
+	let expandedConfigs = $state<Set<string>>(new Set());
+	let configContents = $state<Record<string, string>>({});
 
 	// Selected pipeline schedule state
 	let selectedSchedule = $state<Schedule | null>(null);
 	let webhookUrl = $state('');
+	let cfClientId = $state('');
+	let cfClientSecret = $state('');
 	let editingSchedule = $state(false);
 	let scheduleInput = $state('');
 	let scheduleSaving = $state(false);
@@ -83,6 +107,12 @@
 	let outputFiles = $state<{ name: string; type: string; size?: number }[]>([]);
 	let previewFile = $state<{ path: string; name: string } | null>(null);
 
+	// Block info
+	let installedBlocks = $state<BlockManifest[]>([]);
+	let blockCatalog = $state<BlockManifest[]>([]);
+	let showCatalogModal = $state(false);
+	let installingBlock = $state<string | null>(null);
+
 	let activeRunId = $state<string | null>(null);
 
 	// Schedules
@@ -106,6 +136,40 @@
 	}
 	let schedules = $state<Schedule[]>([]);
 	let persistedHistory = $state<HistoryRecord[]>([]);
+
+	async function toggleConfig(path: string) {
+		if (expandedConfigs.has(path)) {
+			expandedConfigs.delete(path);
+			expandedConfigs = new Set(expandedConfigs);
+			return;
+		}
+		expandedConfigs.add(path);
+		expandedConfigs = new Set(expandedConfigs);
+
+		if (!configContents[path] && selectedPath) {
+			const dir = selectedPath.replace(/\/pipeline\.yaml$/, '');
+			const fullPath = `${dir}/${path}`;
+			try {
+				const res = await fetch(`/api/files?action=read&path=${encodeURIComponent(fullPath)}`);
+				if (res.ok) {
+					const data = await res.json();
+					configContents = { ...configContents, [path]: data.content || '(empty)' };
+				}
+			} catch { /* ignore */ }
+		}
+	}
+
+	// Validation: missing env vars and required inputs
+	let missingEnvVars = $derived(envStatus.filter(e => e.required && !e.set));
+	let missingInputs = $derived.by(() => {
+		if (!selected?.inputs) return [];
+		return selected.inputs.filter(input => {
+			if (input.required === false) return false;
+			const val = inputValues[input.name];
+			return val === undefined || val === '' || val === null;
+		});
+	});
+	let canRun = $derived(missingEnvVars.length === 0 && missingInputs.length === 0);
 
 	const statusIcon: Record<string, string> = {
 		pending: '○', running: '◉', done: '✓', failed: '✗', skipped: '–', waiting: '◎',
@@ -147,6 +211,16 @@
 				persistedHistory = data.history || [];
 			}
 		} catch { /* silent */ }
+
+		// Load CF Access credentials for remote curl
+		try {
+			const res = await fetch('/api/secrets/cf-access');
+			if (res.ok) {
+				const data = await res.json();
+				cfClientId = data.clientId || '';
+				cfClientSecret = data.clientSecret || '';
+			}
+		} catch { /* silent */ }
 	});
 
 	onDestroy(() => {
@@ -160,11 +234,23 @@
 			if (res.ok) {
 				const data = await res.json();
 				selected = data.pipeline;
+				selectedPath = data.path || '';
 				outputDir = data.outputDir || null;
+				// Load inputs: saved values > defaults
 				inputValues = {};
+				const saved = data.savedInputs || {};
 				for (const input of data.pipeline.inputs || []) {
-					if (input.default !== undefined) inputValues[input.name] = input.default;
+					if (saved[input.name] !== undefined) {
+						inputValues[input.name] = saved[input.name];
+					} else if (input.default !== undefined) {
+						inputValues[input.name] = input.default;
+					}
 				}
+				// Load env var status for validation
+				envStatus = data.envStatus || [];
+				// Load block info
+				installedBlocks = data.installedBlocks || [];
+				blockCatalog = data.blockCatalog || [];
 				// Load output files
 				if (outputDir) loadOutputFiles();
 				// Load automation config for this pipeline
@@ -220,11 +306,19 @@
 		expandedSteps = new Set();
 		outputDir = null;
 		outputFiles = [];
+		envStatus = [];
+		expandedConfigs = new Set();
+		configContents = {};
+		selectedPath = '';
 		previewFile = null;
 		activeGates = new Map();
 		promptAnswers = {};
 		showFileContent = {};
 		gateSubmitting = new Set();
+		installedBlocks = [];
+		blockCatalog = [];
+		showCatalogModal = false;
+		installingBlock = null;
 		selectedSchedule = null;
 		webhookUrl = '';
 		editingSchedule = false;
@@ -352,11 +446,11 @@
 				body: JSON.stringify({ name, enabled }),
 			});
 			const schedule = schedules.find((s) => s.name === name);
-			if (schedule) schedule.enabled = enabled;
+			if (schedule) schedule.scheduleEnabled = enabled;
 			schedules = [...schedules];
 			// Update selected schedule state too
 			if (selectedSchedule && selectedSchedule.name === name) {
-				selectedSchedule = { ...selectedSchedule, enabled };
+				selectedSchedule = { ...selectedSchedule, scheduleEnabled: enabled };
 			}
 		} catch { /* silent */ }
 	}
@@ -390,11 +484,9 @@
 			if (!res.ok) {
 				const err = await res.json().catch(() => ({}));
 				running = false;
-				// Show concurrency error
-				if (res.status === 409) {
-					activeRun = { runId: '', pipelineName: selectedName, status: 'failed', startedAt: new Date().toISOString(), steps: [], events: [], stepOutput: {}, finishedAt: new Date().toISOString() } as RunResult;
-					(activeRun as any)._error = err.error || 'Pipeline is already running';
-				}
+				const errorMsg = err.errors?.join('\n') || err.error || 'Pipeline failed to start';
+				activeRun = { runId: '', pipelineName: selectedName, status: 'failed', startedAt: new Date().toISOString(), steps: [], events: [], stepOutput: {}, finishedAt: new Date().toISOString() } as RunResult;
+				(activeRun as any)._error = errorMsg;
 				return;
 			}
 			const data = await res.json();
@@ -489,6 +581,19 @@
 		return base;
 	}
 
+	function buildLocalCurl(): string {
+		const base = `http://localhost:5173/api/pipelines/trigger?name=${selectedName}`;
+		const secret = selectedSchedule?.triggerSecret ? `&token=${selectedSchedule.triggerSecret}` : '';
+		return `curl "${base}${secret}"`;
+	}
+
+	function buildExternalCurl(): string {
+		const url = buildTriggerUrl();
+		const id = cfClientId || '$CF_ACCESS_CLIENT_ID';
+		const secret = cfClientSecret || '$CF_ACCESS_CLIENT_SECRET';
+		return `curl -H "CF-Access-Client-Id: ${id}" \\\n     -H "CF-Access-Client-Secret: ${secret}" \\\n     "${url}"`;
+	}
+
 	function getSkipReason(stepId: string): string {
 		if (!activeRun?.events) return '';
 		const event = activeRun.events.find((e: StepEvent) => e.stepId === stepId && e.status === 'skipped');
@@ -526,6 +631,40 @@
 		if (hours < 24) return `${hours}h ago`;
 		return `${Math.floor(hours / 24)}d ago`;
 	}
+
+	function getBlockForStep(step: { block?: string }): BlockManifest | undefined {
+		if (!step.block) return undefined;
+		return installedBlocks.find(b => b.name === step.block);
+	}
+
+	function getBlockEnvStatus(block: BlockManifest): { name: string; set: boolean }[] {
+		if (!block.env) return [];
+		return block.env.map(e => ({
+			name: e.name,
+			set: envStatus.some(es => es.name === e.name && es.set),
+		}));
+	}
+
+	async function handleInstallBlock(blockName: string) {
+		if (!selectedName) return;
+		installingBlock = blockName;
+		try {
+			const res = await fetch('/api/blocks/install', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ pipelineName: selectedName, blockName }),
+			});
+			if (res.ok) {
+				const data = await res.json();
+				installedBlocks = [...installedBlocks, data.block];
+			}
+		} catch { /* silent */ }
+		installingBlock = null;
+	}
+
+	let availableCatalogBlocks = $derived(
+		blockCatalog.filter(cb => !installedBlocks.some(ib => ib.name === cb.name))
+	);
 </script>
 
 <svelte:head>
@@ -751,16 +890,82 @@
 												<span class="text-[9px] text-hub-dim italic">optional — anyone with the URL can trigger</span>
 											{/if}
 										</div>
-										<!-- Test curl -->
+										<!-- Test curl — local -->
 										<div class="flex items-start gap-2 pt-1.5 border-t border-hub-border/30">
-											<span class="text-[10px] text-hub-dim w-12 pt-0.5">Test</span>
-											<pre class="text-[10px] font-mono text-hub-muted bg-hub-bg px-2 py-1 rounded flex-1 select-all whitespace-pre-wrap">curl "{buildTriggerUrl()}"</pre>
-											<button onclick={() => navigator.clipboard.writeText(`curl "${buildTriggerUrl()}"`)}
+											<span class="text-[10px] text-hub-dim w-12 pt-0.5 flex-shrink-0">Local</span>
+											<pre class="text-[10px] font-mono text-hub-muted bg-hub-bg px-2 py-1 rounded flex-1 select-all whitespace-pre-wrap">{buildLocalCurl()}</pre>
+											<button onclick={() => navigator.clipboard.writeText(buildLocalCurl())}
+												class="text-[10px] text-hub-info hover:text-hub-info/80 cursor-pointer pt-0.5">Copy</button>
+										</div>
+										<!-- Test curl — external (via Cloudflare Access) -->
+										<div class="flex items-start gap-2">
+											<span class="text-[10px] text-hub-dim w-12 pt-0.5 flex-shrink-0">Remote</span>
+											<pre class="text-[10px] font-mono text-hub-muted bg-hub-bg px-2 py-1 rounded flex-1 select-all whitespace-pre-wrap">{buildExternalCurl()}</pre>
+											<button onclick={() => navigator.clipboard.writeText(buildExternalCurl())}
 												class="text-[10px] text-hub-info hover:text-hub-info/80 cursor-pointer pt-0.5">Copy</button>
 										</div>
 									</div>
 								{/if}
 							</div>
+						</div>
+					</section>
+				{/if}
+
+				<!-- Env var banner -->
+				{#if missingEnvVars.length > 0}
+					<section class="mb-6" role="alert">
+						<div class="bg-hub-warning/5 border border-hub-warning/30 rounded-lg p-4">
+							<div class="flex items-center gap-2 mb-2">
+								<span class="text-hub-warning text-sm">!</span>
+								<h3 class="text-xs font-medium text-hub-warning">Missing environment variables</h3>
+							</div>
+							<div class="space-y-1 mb-3">
+								{#each missingEnvVars as env}
+									<div class="flex items-center gap-2 text-xs">
+										<span class="font-mono text-hub-text">{env.name}</span>
+										{#if env.description}
+											<span class="text-hub-dim">— {env.description}</span>
+										{/if}
+									</div>
+								{/each}
+							</div>
+							<a href="/settings" class="text-[11px] text-hub-info hover:underline cursor-pointer">
+								Configure in Settings → Platform Environment
+							</a>
+						</div>
+					</section>
+				{/if}
+
+				<!-- Config Files -->
+				{#if selected.config_files && selected.config_files.length > 0}
+					<section class="mb-6">
+						<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-3">Config Files</h2>
+						<div class="bg-hub-surface border border-hub-border rounded-lg divide-y divide-hub-border/30">
+							{#each selected.config_files as cfg}
+								{@const isExpanded = expandedConfigs.has(cfg.path)}
+								<div>
+									<button
+										onclick={() => toggleConfig(cfg.path)}
+										class="w-full flex items-center gap-3 px-4 py-3 hover:bg-hub-bg/30 transition-colors cursor-pointer text-left"
+									>
+										<svg class="w-3 h-3 flex-shrink-0 text-hub-dim transition-transform {isExpanded ? 'rotate-90' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+										<div class="min-w-0 flex-1">
+											<span class="text-xs font-medium text-hub-text">{cfg.name}</span>
+											<p class="text-[10px] text-hub-dim mt-0.5">{cfg.description}</p>
+										</div>
+										<span class="text-[9px] text-hub-dim font-mono">{cfg.path.split('/').pop()}</span>
+									</button>
+									{#if isExpanded}
+										<div class="px-4 pb-3">
+											{#if configContents[cfg.path]}
+												<pre class="text-[11px] text-hub-muted bg-hub-bg border border-hub-border/50 rounded-md p-3 overflow-x-auto max-h-60 whitespace-pre-wrap font-mono">{configContents[cfg.path]}</pre>
+											{:else}
+												<span class="text-[10px] text-hub-dim">Loading...</span>
+											{/if}
+										</div>
+									{/if}
+								</div>
+							{/each}
 						</div>
 					</section>
 				{/if}
@@ -771,13 +976,22 @@
 						<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-3">Configuration</h2>
 						<div class="bg-hub-surface border border-hub-border rounded-lg p-4 space-y-3">
 							{#each selected.inputs as input}
+								{@const isEmpty = inputValues[input.name] === undefined || inputValues[input.name] === '' || inputValues[input.name] === null}
+								{@const isRequired = input.required !== false}
+								{@const showError = isRequired && isEmpty}
 								<div>
-									<label for="input-{input.name}" class="block text-xs text-hub-muted mb-1">{input.description}</label>
+									<div class="flex items-center justify-between mb-1">
+										<label for="input-{input.name}" class="text-xs text-hub-muted">{input.description}</label>
+										{#if isRequired}
+											<span class="text-[9px] {showError ? 'text-hub-danger' : 'text-hub-dim'}">required</span>
+										{/if}
+									</div>
 									{#if input.type === 'select' && input.options}
 										<select
 											id="input-{input.name}"
 											bind:value={inputValues[input.name]}
-											class="w-full bg-hub-bg border border-hub-border rounded-md px-3 py-1.5 text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-info/50 cursor-pointer"
+											class="w-full bg-hub-bg border rounded-md px-3 py-1.5 text-sm text-hub-text font-mono focus:outline-none focus:ring-1 cursor-pointer
+												{showError ? 'border-hub-danger/50 focus:ring-hub-danger/50' : 'border-hub-border focus:ring-hub-info/50'}"
 										>
 											{#each input.options as opt}
 												<option value={opt}>{opt}</option>
@@ -788,7 +1002,9 @@
 											id="input-{input.name}"
 											type="text"
 											bind:value={inputValues[input.name]}
-											class="w-full bg-hub-bg border border-hub-border rounded-md px-3 py-1.5 text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-info/50"
+											placeholder={input.default !== undefined ? String(input.default) : ''}
+											class="w-full bg-hub-bg border rounded-md px-3 py-1.5 text-sm text-hub-text font-mono focus:outline-none focus:ring-1
+												{showError ? 'border-hub-danger/50 focus:ring-hub-danger/50' : 'border-hub-border focus:ring-hub-info/50'}"
 										/>
 									{/if}
 								</div>
@@ -799,13 +1015,62 @@
 
 				<!-- Steps overview -->
 				<section class="mb-6">
-					<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-3">Steps</h2>
+					<div class="flex items-center justify-between mb-3">
+						<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider">Steps</h2>
+						{#if availableCatalogBlocks.length > 0}
+							<button
+								onclick={() => { showCatalogModal = !showCatalogModal; }}
+								class="px-2.5 py-1 rounded-md text-[10px] font-medium text-hub-info border border-hub-info/30 hover:bg-hub-info/10 transition-colors cursor-pointer"
+							>
+								+ Install Blocks
+							</button>
+						{/if}
+					</div>
+
+					<!-- Catalog install panel -->
+					{#if showCatalogModal}
+						<div class="mb-4 rounded-lg border border-hub-info/30 bg-hub-surface p-4">
+							<div class="flex items-center justify-between mb-3">
+								<h3 class="text-xs font-medium text-hub-text">Available Catalog Blocks</h3>
+								<button onclick={() => { showCatalogModal = false; }} class="text-hub-dim hover:text-hub-text text-xs cursor-pointer">Close</button>
+							</div>
+							<div class="space-y-2 max-h-60 overflow-y-auto">
+								{#each availableCatalogBlocks as block}
+									<div class="flex items-center justify-between px-3 py-2 rounded-md bg-hub-bg/50 border border-hub-border/30">
+										<div class="flex-1 min-w-0">
+											<div class="flex items-center gap-2">
+												<span class="text-sm font-mono text-hub-text">{block.name}</span>
+												<span class="px-1.5 py-0.5 rounded text-[9px] font-medium bg-hub-dim/10 text-hub-dim">{block.type}</span>
+												{#if block.version}
+													<span class="text-[9px] text-hub-dim font-mono">v{block.version}</span>
+												{/if}
+											</div>
+											<p class="text-[10px] text-hub-dim mt-0.5 truncate">{block.description}</p>
+										</div>
+										<button
+											onclick={() => handleInstallBlock(block.name)}
+											disabled={installingBlock === block.name}
+											class="ml-3 px-2.5 py-1 rounded-md text-[10px] font-medium text-hub-cta border border-hub-cta/30 hover:bg-hub-cta/10 transition-colors cursor-pointer disabled:opacity-50"
+										>
+											{installingBlock === block.name ? 'Installing...' : 'Install'}
+										</button>
+									</div>
+								{/each}
+								{#if availableCatalogBlocks.length === 0}
+									<p class="text-xs text-hub-dim text-center py-4">All catalog blocks are already installed.</p>
+								{/if}
+							</div>
+						</div>
+					{/if}
+
 					<div class="space-y-2">
 						{#each selected.steps as step}
 							{@const status = activeRun ? getStepStatus(step.id) : 'pending'}
 							{@const duration = getStepDuration(step.id)}
 							{@const output = getStepOutput(step.id)}
 							{@const isExpanded = expandedSteps.has(step.id)}
+							{@const block = getBlockForStep(step)}
+							{@const blockEnv = block ? getBlockEnvStatus(block) : []}
 
 							<div class="rounded-lg border overflow-hidden transition-colors
 								{status === 'running' ? 'border-hub-info/40 bg-hub-info/5' :
@@ -823,7 +1088,7 @@
 										{statusIcon[status]}
 									</span>
 									<div class="flex-1 text-left">
-										<div class="flex items-center gap-2">
+										<div class="flex items-center gap-2 flex-wrap">
 											<span class="text-sm font-mono font-medium text-hub-text">{step.id}</span>
 											<span class="px-1.5 py-0.5 rounded text-[9px] font-medium
 												{step.type === 'agent' ? 'bg-hub-purple/10 text-hub-purple' :
@@ -832,15 +1097,30 @@
 												 'bg-hub-info/10 text-hub-info'}">
 												{step.type}
 											</span>
+											{#if block}
+												<span class="px-1.5 py-0.5 rounded text-[9px] font-medium bg-hub-cta/10 text-hub-cta">
+													Block: {block.name}{#if block.version} v{block.version}{/if}
+												</span>
+											{/if}
 											{#if duration}
 												<span class="text-xs text-hub-dim">{duration}</span>
 											{/if}
 											{#if status === 'skipped' && getSkipReason(step.id)}
 												<span class="text-[9px] text-hub-dim italic">({getSkipReason(step.id)})</span>
 											{/if}
+											<!-- Env status dots for block -->
+											{#if blockEnv.length > 0}
+												<span class="flex items-center gap-0.5 ml-1">
+													{#each blockEnv as ev}
+														<span class="w-1.5 h-1.5 rounded-full {ev.set ? 'bg-hub-cta' : 'bg-hub-danger'}" title="{ev.name}: {ev.set ? 'set' : 'missing'}"></span>
+													{/each}
+												</span>
+											{/if}
 										</div>
 										<p class="text-[11px] text-hub-dim mt-0.5">
-											{#if step.type === 'approval'}
+											{#if step.block && block}
+												{block.description}
+											{:else if step.type === 'approval'}
 												approval gate
 											{:else if step.type === 'prompt'}
 												user prompt
@@ -856,6 +1136,16 @@
 												<span class="text-hub-dim/50"> after {step.depends_on.join(', ')}</span>
 											{/if}
 										</p>
+										<!-- Config values being passed -->
+										{#if step.config && Object.keys(step.config).length > 0}
+											<div class="flex items-center gap-2 mt-1 flex-wrap">
+												{#each Object.entries(step.config) as [key, val]}
+													<span class="px-1.5 py-0.5 rounded text-[9px] font-mono bg-hub-bg border border-hub-border/30 text-hub-muted">
+														{key}={typeof val === 'object' ? JSON.stringify(val) : val}
+													</span>
+												{/each}
+											</div>
+										{/if}
 									</div>
 									<svg class="w-3.5 h-3.5 text-hub-dim transition-transform {isExpanded ? 'rotate-180' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
 								</button>
@@ -952,12 +1242,13 @@
 				</section>
 
 				<!-- Run button -->
-				<div class="flex items-center gap-3">
+				<div class="flex flex-col gap-2">
+					<div class="flex items-center gap-3">
 					<button
 						onclick={runPipeline}
-						disabled={running}
-						class="px-6 py-2.5 rounded-lg text-sm font-medium transition-colors cursor-pointer
-							{running ? 'bg-hub-info/20 text-hub-info' : 'bg-hub-info text-white hover:bg-hub-info/80'}"
+						disabled={running || !canRun}
+						class="px-6 py-2.5 rounded-lg text-sm font-medium transition-colors
+							{running ? 'bg-hub-info/20 text-hub-info cursor-wait' : !canRun ? 'bg-hub-dim/20 text-hub-dim cursor-not-allowed' : 'bg-hub-info text-white hover:bg-hub-info/80 cursor-pointer'}"
 					>
 						{#if running}
 							<span class="inline-flex items-center gap-2">
@@ -994,6 +1285,15 @@
 								</span>
 							{/if}
 						</div>
+						{#if (activeRun as any)._error}
+							<pre class="text-xs text-hub-danger bg-hub-danger/5 border border-hub-danger/20 rounded-md px-3 py-2 mt-2 whitespace-pre-wrap">{(activeRun as any)._error}</pre>
+						{/if}
+					{/if}
+					</div>
+					{#if !canRun && !running}
+						<p class="text-[11px] text-hub-dim">
+							{#if missingEnvVars.length > 0}{missingEnvVars.length} env var{missingEnvVars.length > 1 ? 's' : ''} missing{/if}{#if missingEnvVars.length > 0 && missingInputs.length > 0}, {/if}{#if missingInputs.length > 0}{missingInputs.length} required input{missingInputs.length > 1 ? 's' : ''} empty{/if}
+						</p>
 					{/if}
 				</div>
 

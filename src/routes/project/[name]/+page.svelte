@@ -4,14 +4,14 @@
 	import TerminalTabs from '$lib/components/TerminalTabs.svelte';
 	import FileTree from '$lib/components/FileTree.svelte';
 	import FilePreview from '$lib/components/FilePreview.svelte';
-	import MarketplacePanel from '$lib/components/MarketplacePanel.svelte';
+	import CatalogPanel from '$lib/components/CatalogPanel.svelte';
 	import ProjectInfoDropdown from '$lib/components/ProjectInfoDropdown.svelte';
 
 	const { data } = $props();
-	const projectName = $derived(page.params.name);
+	const projectName = $derived(page.params.name ?? '');
 
 	// Panel state (defaults, overridden from localStorage in onMount)
-	let sidePanel = $state<'code' | 'brain' | 'market' | null>('code');
+	let sidePanel = $state<'code' | 'brain' | 'catalog' | null>('code');
 	let sidePanelWidth = $state(260);
 	let resizing = $state(false);
 
@@ -20,7 +20,7 @@
 
 	// Mobile state
 	let isMobile = $state(false);
-	let mobileView = $state<'terminal' | 'files' | 'market'>('terminal');
+	let mobileView = $state<'terminal' | 'files' | 'catalog'>('terminal');
 
 	// Git state
 	let gitInfo = $state<{
@@ -110,7 +110,7 @@
 	}
 
 	// Toggle side panel tab — clicking the active tab closes it
-	function setSidePanel(tab: 'code' | 'brain' | 'market') {
+	function setSidePanel(tab: 'code' | 'brain' | 'catalog') {
 		sidePanel = sidePanel === tab ? null : tab;
 	}
 </script>
@@ -163,13 +163,13 @@
 					</button>
 				{/if}
 				<button
-					onclick={() => setSidePanel('market')}
+					onclick={() => setSidePanel('catalog')}
 					class="px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer
-						{sidePanel === 'market' ? 'bg-hub-warning/15 text-hub-warning' : 'text-hub-dim hover:text-hub-muted hover:bg-hub-card'}"
-					title="Toggle marketplace"
+						{sidePanel === 'catalog' ? 'bg-hub-warning/15 text-hub-warning' : 'text-hub-dim hover:text-hub-muted hover:bg-hub-card'}"
+					title="Toggle catalog"
 				>
 					<svg class="w-3.5 h-3.5 inline-block mr-1 -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></svg>
-					Market
+					Catalog
 				</button>
 			</div>
 
@@ -190,9 +190,9 @@
 					<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
 				</button>
 				<button
-					onclick={() => mobileView = 'market'}
+					onclick={() => mobileView = 'catalog'}
 					class="px-2 py-1.5 rounded text-xs cursor-pointer
-						{mobileView === 'market' ? 'bg-hub-warning/15 text-hub-warning' : 'text-hub-dim'}"
+						{mobileView === 'catalog' ? 'bg-hub-warning/15 text-hub-warning' : 'text-hub-dim'}"
 				>
 					<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></svg>
 				</button>
@@ -214,8 +214,8 @@
 						brainPath={data.brainPath}
 						onFileSelect={handleFileSelect}
 					/>
-				{:else if sidePanel === 'market'}
-					<MarketplacePanel
+				{:else if sidePanel === 'catalog'}
+					<CatalogPanel
 						{projectName}
 						codePath={data.devPath}
 					/>
@@ -246,8 +246,8 @@
 						brainPath={data.brainPath}
 						onFileSelect={handleFileSelect}
 					/>
-				{:else if mobileView === 'market'}
-					<MarketplacePanel
+				{:else if mobileView === 'catalog'}
+					<CatalogPanel
 						{projectName}
 						codePath={data.devPath}
 					/>

@@ -4,7 +4,7 @@ import { resolve, dirname } from 'node:path';
 import { config } from '$lib/config.js';
 import { executeScheduledRun, parsePipeline, getActivePipelines, isTriggerEnabled, getTriggerSecret } from '$lib/pipeline/index.js';
 
-const PIPELINES_DIR = resolve(dirname(config.resolved.marketplaceDir), 'pipelines');
+const PIPELINES_DIR = resolve(dirname(config.resolved.catalogDir), 'pipelines');
 
 /**
  * Trigger endpoint: /api/pipelines/trigger?name=<pipeline>

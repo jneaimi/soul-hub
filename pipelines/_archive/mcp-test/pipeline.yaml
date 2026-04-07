@@ -1,0 +1,18 @@
+name: mcp-test
+description: Test pipeline — verifies MCP servers are available to agent steps
+version: 1.0.0
+
+mcp:
+  - name: context7
+
+steps:
+  - id: lookup
+    type: agent
+    agent: researcher
+    prompt: |
+      Use the Context7 MCP tool to look up the latest SvelteKit documentation.
+      Specifically, find what the recommended way to handle form actions is.
+      Write a SHORT summary (under 10 lines) of what you find.
+      Write your output to the file path specified below.
+    output: /tmp/pipeline-runs/$RUN_ID/mcp-test-result.md
+    timeout: 300

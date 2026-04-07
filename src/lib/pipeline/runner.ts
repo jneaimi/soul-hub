@@ -1,15 +1,16 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createInterface } from 'node:readline';
-import { mkdir, stat } from 'node:fs/promises';
+import { mkdir, stat, readFile, writeFile, unlink } from 'node:fs/promises';
 import { resolve, dirname, join } from 'node:path';
 import { config } from '$lib/config.js';
 import { parsePipeline, resolveRef, getExecutionOrder, checkCondition } from './parser.js';
-import type { PipelineStep, PipelineRun, StepStatus } from './types.js';
+import type { PipelineStep, PipelineMcp, PipelineRun, StepStatus } from './types.js';
+import { sendViaChannel } from '$lib/channels/registry.js';
 
 const execFileAsync = promisify(execFile);
 
-const BRIDGE_SCRIPT = resolve(dirname(config.resolved.marketplaceDir), 'scripts', 'pty_bridge.py');
+const BRIDGE_SCRIPT = resolve(dirname(config.resolved.catalogDir), 'scripts', 'pty_bridge.py');
 
 export type StepOutputCallback = (stepId: string, data: string) => void;
 export type StepEventCallback = (stepId: string, status: StepStatus, detail?: string) => void;
@@ -59,17 +60,85 @@ export function answerGate(runId: string, stepId: string, value: string): boolea
 	return true;
 }
 
+/** Build a temporary .mcp.json for pipeline agent steps.
+ *  Merges inline mcp declarations with existing .mcp.json from pipeline dir or project. */
+async function buildMcpConfig(
+	mcpDeclarations: PipelineMcp[],
+	pipelineDir: string,
+	runDir: string,
+): Promise<string | null> {
+	if (!mcpDeclarations || mcpDeclarations.length === 0) return null;
+
+	// Start with existing .mcp.json from pipeline dir (if any)
+	let mcpJson: { mcpServers: Record<string, any> } = { mcpServers: {} };
+	try {
+		const existing = await readFile(join(pipelineDir, '.mcp.json'), 'utf-8');
+		mcpJson = JSON.parse(existing);
+		if (!mcpJson.mcpServers) mcpJson.mcpServers = {};
+	} catch { /* no existing .mcp.json */ }
+
+	// Merge declared MCP servers
+	for (const mcp of mcpDeclarations) {
+		if (mcp.command || mcp.url) {
+			// Inline config — use as-is
+			const cfg: Record<string, any> = {};
+			if (mcp.command) cfg.command = mcp.command;
+			if (mcp.args) cfg.args = mcp.args;
+			if (mcp.url) { cfg.url = mcp.url; cfg.type = 'http'; }
+			if (mcp.env) cfg.env = mcp.env;
+			mcpJson.mcpServers[mcp.name] = cfg;
+		} else {
+			// Reference — look up from project .mcp.json files in ~/dev/
+			if (mcpJson.mcpServers[mcp.name]) continue; // already present
+			const found = await findMcpServer(mcp.name);
+			if (found) mcpJson.mcpServers[mcp.name] = found;
+		}
+	}
+
+	if (Object.keys(mcpJson.mcpServers).length === 0) return null;
+
+	// Write to run dir so agent steps pick it up
+	const mcpPath = join(runDir, '.mcp.json');
+	await writeFile(mcpPath, JSON.stringify(mcpJson, null, 2), 'utf-8');
+	return mcpPath;
+}
+
+/** Search ~/dev/ projects for an MCP server by name (case-insensitive) */
+async function findMcpServer(name: string): Promise<Record<string, any> | null> {
+	const nameLower = name.toLowerCase();
+	try {
+		const { readdir } = await import('node:fs/promises');
+		const devDir = config.resolved.devDir;
+		const projects = await readdir(devDir, { withFileTypes: true });
+		for (const project of projects) {
+			if (!project.isDirectory()) continue;
+			try {
+				const raw = await readFile(join(devDir, project.name, '.mcp.json'), 'utf-8');
+				const parsed = JSON.parse(raw);
+				const servers = parsed.mcpServers || {};
+				// Case-insensitive match
+				for (const [key, cfg] of Object.entries(servers)) {
+					if (key.toLowerCase() === nameLower) return cfg as Record<string, any>;
+				}
+			} catch { /* skip */ }
+		}
+	} catch { /* devDir missing */ }
+	return null;
+}
+
 /** System env vars always passed through (safe, needed for execution) */
 const SYSTEM_ENV_KEYS = ['PATH', 'HOME', 'TERM', 'LANG', 'USER', 'SHELL', 'TMPDIR'];
 
 /** Build isolated env for pipeline step execution.
  *  Only passes: system essentials + declared pipeline env vars + pipeline-specific vars.
- *  Strips everything else (API keys, tokens, secrets). */
+ *  Strips everything else (API keys, tokens, secrets).
+ *  For block steps, adds BLOCK_CONFIG_* env vars from step config. */
 function buildIsolatedEnv(
 	spec: { env?: { name: string }[] },
 	pipelineDir: string,
 	inputPaths: string[],
 	outputPath: string,
+	stepConfig?: Record<string, unknown>,
 ): Record<string, string> {
 	const env: Record<string, string> = {};
 
@@ -100,6 +169,14 @@ function buildIsolatedEnv(
 		}
 	}
 
+	// Block config → BLOCK_CONFIG_* env vars
+	if (stepConfig) {
+		for (const [key, value] of Object.entries(stepConfig)) {
+			const envKey = `BLOCK_CONFIG_${key.toUpperCase()}`;
+			env[envKey] = Array.isArray(value) ? value.join(',') : String(value);
+		}
+	}
+
 	return env;
 }
 
@@ -116,6 +193,10 @@ export async function runPipeline(
 	const runId = externalRunId || crypto.randomUUID().slice(0, 8);
 	const runDir = `/tmp/pipeline-runs/${runId}`;
 	await mkdir(runDir, { recursive: true });
+
+	// Build MCP config for agent steps (if pipeline declares mcp servers)
+	// Write to pipeline dir (not run dir) — agent cwd must be under ~/dev/ for trust
+	const mcpConfigPath = await buildMcpConfig(spec.mcp || [], pipelineDir, pipelineDir);
 
 	// Resolve inputs: defaults + overrides
 	const resolvedInputs: Record<string, string | number> = {};
@@ -195,7 +276,7 @@ export async function runPipeline(
 			try {
 				// Resolve output path (replace built-in variables and refs)
 				const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-				let outputPath = step.output.replace('$RUN_ID', runId).replace('$DATE', today);
+				let outputPath = (step.output || '/dev/null').replace('$RUN_ID', runId).replace('$DATE', today);
 				outputPath = resolveRef(outputPath, resolvedInputs, stepOutputs);
 
 				// Resolve input(s)
@@ -224,12 +305,19 @@ export async function runPipeline(
 				// Output callback for terminal streaming
 				const outputCb = onStepOutput ? (data: string) => onStepOutput(stepId, data) : undefined;
 
-				// Build isolated env (only declared vars + system essentials)
-				const stepEnv = buildIsolatedEnv(spec, pipelineDir, resolvedInputPaths, outputPath);
+				// Build isolated env (only declared vars + system essentials + block config)
+				const stepEnv = buildIsolatedEnv(spec, pipelineDir, resolvedInputPaths, outputPath, step.config);
 
 				if (step.type === 'script') {
 					await runScriptStep(resolvedStep, pipelineDir, primaryInput, outputPath, step.timeout ?? 300, outputCb, stepEnv);
 				} else if (step.type === 'agent') {
+					// For block-based agent steps, inject config into the prompt
+					if (step.config && Object.keys(step.config).length > 0) {
+						const configLines = Object.entries(step.config)
+							.map(([k, v]) => `- ${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
+							.join('\n');
+						resolvedStep.prompt = `## Block Config\n${configLines}\n\n${resolvedStep.prompt || ''}`;
+					}
 					await runAgentStep(resolvedStep, pipelineDir, primaryInput, outputPath, step.timeout ?? 300, outputCb, runId, stepEnv);
 				} else if (step.type === 'approval' || step.type === 'prompt') {
 					const gateResult = await runGateStep(resolvedStep, runId, step.timeout ?? 86400, emit, onStepOutput);
@@ -237,11 +325,13 @@ export async function runPipeline(
 					if (gateResult.value !== undefined) {
 						stepOutputs[stepId] = gateResult.value;
 					}
+				} else if (step.type === 'channel') {
+					await runChannelStep(resolvedStep, resolvedInputs, stepOutputs, outputCb);
 				}
 
-				// Verify output was produced (skip for action/webhook/approval/prompt types)
+				// Verify output was produced (skip for action/webhook/approval/prompt/channel types)
 				const outputType = step.output_type || 'file';
-				if (step.type !== 'approval' && step.type !== 'prompt' && (outputType === 'file' || outputType === 'media' || outputType === 'response')) {
+				if (step.type !== 'approval' && step.type !== 'prompt' && step.type !== 'channel' && (outputType === 'file' || outputType === 'media' || outputType === 'response')) {
 					try {
 						await stat(outputPath);
 					} catch {
@@ -251,7 +341,7 @@ export async function runPipeline(
 
 				// For prompt steps, the answer is already in stepOutputs — don't overwrite
 				// For approval steps, there's no meaningful output
-				if (step.type !== 'prompt' && step.type !== 'approval') {
+				if (step.type !== 'prompt' && step.type !== 'approval' && step.type !== 'channel') {
 					stepOutputs[stepId] = outputPath;
 					sr.outputPath = outputPath;
 					sr.outputType = step.output_type || 'file';
@@ -287,6 +377,11 @@ export async function runPipeline(
 		run.status = 'done';
 	}
 	run.finishedAt = new Date().toISOString();
+
+	// Clean up temp .mcp.json from pipeline dir (written by buildMcpConfig)
+	if (mcpConfigPath) {
+		try { await unlink(mcpConfigPath); } catch { /* already gone */ }
+	}
 
 	return run;
 }
@@ -524,6 +619,38 @@ async function runAgentStep(
 	});
 }
 
+/** Execute a channel step — send a message via a configured channel adapter */
+async function runChannelStep(
+	step: PipelineStep,
+	resolvedInputs: Record<string, string | number>,
+	stepOutputs: Record<string, string>,
+	onOutput?: (data: string) => void,
+): Promise<void> {
+	const message = step.message || '';
+	if (!message) {
+		throw new Error(`Channel step "${step.id}" has no message`);
+	}
+
+	// Resolve attach path if present
+	let attachPath: string | undefined;
+	if (step.attach) {
+		attachPath = resolveRef(step.attach, resolvedInputs, stepOutputs);
+	}
+
+	const result = await sendViaChannel(
+		step.channel,
+		config.channels,
+		message,
+		attachPath,
+	);
+
+	if (!result.ok) {
+		throw new Error(`Channel send failed: ${result.error}`);
+	}
+
+	onOutput?.(`Channel "${step.channel || 'default'}": message sent (id: ${result.messageId || 'n/a'})\n`);
+}
+
 /** Send input to a running pipeline step's PTY (for interaction) */
 export function sendInputToStep(stepId: string, data: string): boolean {
 	const bridge = activePtyBridges.get(stepId);
@@ -540,7 +667,7 @@ export async function listPipelines(pipelinesDir: string): Promise<{ name: strin
 	try {
 		const entries = await readdir(pipelinesDir, { withFileTypes: true });
 		for (const entry of entries) {
-			if (!entry.isDirectory()) continue;
+			if (!entry.isDirectory() || entry.name.startsWith('_')) continue;
 			const yamlPath = join(pipelinesDir, entry.name, 'pipeline.yaml');
 			try {
 				const spec = await parsePipeline(yamlPath);

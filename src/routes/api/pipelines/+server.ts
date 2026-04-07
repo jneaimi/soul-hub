@@ -2,10 +2,13 @@ import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { resolve, dirname } from 'node:path';
 import { config } from '$lib/config.js';
-import { listPipelines, parsePipeline } from '$lib/pipeline/index.js';
+import { listPipelines, parsePipeline, getSavedInputs } from '$lib/pipeline/index.js';
+import { listInstalledBlocks } from '$lib/pipeline/block-installer.js';
+import { scanCatalog } from '$lib/pipeline/block-registry.js';
+import { getBlockConfigSchema, type BlockManifest, type ConfigField } from '$lib/pipeline/block.js';
 
-// Pipelines directory is alongside marketplace in the soul-hub root
-const PIPELINES_DIR = resolve(dirname(config.resolved.marketplaceDir), 'pipelines');
+// Pipelines directory is alongside catalog in the soul-hub root
+const PIPELINES_DIR = resolve(dirname(config.resolved.catalogDir), 'pipelines');
 
 // Default output root in Second Brain
 const OUTPUT_ROOT = resolve(config.resolved.brainDir, '02-areas', 'pipelines');
@@ -20,7 +23,41 @@ export const GET: RequestHandler = async ({ url }) => {
 			const yamlPath = resolve(PIPELINES_DIR, detail, 'pipeline.yaml');
 			const spec = await parsePipeline(yamlPath);
 			const outputDir = resolve(OUTPUT_ROOT, detail);
-			return json({ pipeline: spec, path: yamlPath, outputDir });
+			const saved = getSavedInputs(spec.name);
+			// Check env var status for validation UI
+			const envStatus = (spec.env || []).map(e => ({
+				name: e.name,
+				description: e.description,
+				required: e.required !== false,
+				set: !!process.env[e.name],
+			}));
+
+			// Block info: installed blocks + catalog + merged config schema
+			const pipelineDir = resolve(PIPELINES_DIR, detail);
+			let installedBlocks: BlockManifest[] = [];
+			let blockCatalog: BlockManifest[] = [];
+			let configSchema: ConfigField[] = [];
+			try {
+				installedBlocks = await listInstalledBlocks(pipelineDir);
+				blockCatalog = await scanCatalog();
+				// Merge config fields from all installed blocks referenced in steps
+				for (const step of spec.steps) {
+					if (!step.block) continue;
+					const block = installedBlocks.find(b => b.name === step.block);
+					if (block) {
+						const fields = getBlockConfigSchema(block).map(f => ({
+							...f,
+							_stepId: step.id,
+							_blockName: block.name,
+						}));
+						configSchema.push(...(fields as ConfigField[]));
+					}
+				}
+			} catch {
+				// Block features degrade gracefully if blocks/ doesn't exist yet
+			}
+
+			return json({ pipeline: spec, path: yamlPath, outputDir, savedInputs: saved, envStatus, installedBlocks, blockCatalog, configSchema });
 		} catch (err) {
 			return json({ error: (err as Error).message }, { status: 404 });
 		}

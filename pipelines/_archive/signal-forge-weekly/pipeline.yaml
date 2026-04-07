@@ -1,0 +1,36 @@
+name: signal-forge-weekly
+description: "Weekly intelligence: Data Prep \u2192 Miner (Article Radar) \u2192 Strategist (Opportunities)"
+version: 2.0.0
+author: jasem
+
+env:
+  - name: TELEGRAM_BOT_TOKEN
+    description: Telegram notifications
+    required: true
+  - name: TELEGRAM_CHAT_ID
+    description: Telegram chat for notifications
+    required: true
+
+inputs:
+  - name: skip_strategist
+    type: select
+    description: Skip the Strategist step (run Miner weekly only)
+    options: ["no", "yes"]
+    default: "no"
+    required: false
+
+steps:
+  - id: run-pipeline
+    type: script
+    run: bash scripts/run.sh
+    output: /tmp/pipeline-runs/$RUN_ID/weekly-status.json
+    timeout: 2400
+
+  - id: notify
+    type: channel
+    channel: telegram
+    message: "Signal Forge Weekly pipeline completed. Check Soul Hub for details."
+    depends_on: [run-pipeline]
+
+on_failure:
+  strategy: halt

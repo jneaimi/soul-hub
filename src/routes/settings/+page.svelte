@@ -1,5 +1,25 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import ChannelCard from '$lib/components/ChannelCard.svelte';
+	import PlatformEnv from '$lib/components/PlatformEnv.svelte';
+
+	type ChannelAction = 'send' | 'prompt' | 'listen';
+
+	interface ChannelMetaItem {
+		id: string;
+		name: string;
+		icon: string;
+		fields: { key: string; label: string; type: string; env: string }[];
+		actions: ChannelAction[];
+		configured: boolean;
+		missingEnv: string[];
+	}
+
+	interface ChannelConfigItem {
+		enabled: boolean;
+		label: string;
+		defaultFor: ChannelAction[];
+	}
 
 	// Settings state
 	let fontSize = $state(13);
@@ -12,8 +32,12 @@
 
 	let devDir = $state('~/dev');
 	let brainDir = $state('~/SecondBrain');
-	let marketplaceDir = $state('~/dev/soul-hub/marketplace');
+	let catalogDir = $state('~/dev/soul-hub/catalog');
 	let claudeBinary = $state('~/.local/bin/claude');
+
+	// Channels state
+	let channelMetas = $state<ChannelMetaItem[]>([]);
+	let channelConfigs = $state<Record<string, ChannelConfigItem>>({});
 
 	// System health (read-only)
 	let serverHealth = $state<{
@@ -58,11 +82,32 @@
 				if (data.paths) {
 					devDir = data.paths.devDir ?? '~/dev';
 					brainDir = data.paths.brainDir ?? '~/SecondBrain';
-					marketplaceDir = data.paths.marketplaceDir ?? '~/dev/soul-hub/marketplace';
+					catalogDir = data.paths.catalogDir ?? '~/dev/soul-hub/catalog';
 					claudeBinary = data.paths.claudeBinary ?? '~/.local/bin/claude';
+				}
+				if (data.channels) {
+					channelConfigs = data.channels;
 				}
 			}
 		} catch { /* use defaults */ }
+
+		// Load channel adapter metadata
+		try {
+			const res = await fetch('/api/channels/meta');
+			if (res.ok) {
+				channelMetas = await res.json();
+				// Ensure all adapters have a config entry (use defaults for new ones)
+				for (const m of channelMetas) {
+					if (!channelConfigs[m.id]) {
+						channelConfigs[m.id] = {
+							enabled: m.configured,
+							label: m.name,
+							defaultFor: m.actions.includes('send') ? ['send'] : [],
+						};
+					}
+				}
+			}
+		} catch { /* ignore */ }
 
 		// Load UI overrides from localStorage
 		const prefs = localStorage.getItem('soul-hub-prefs');
@@ -99,7 +144,8 @@
 				body: JSON.stringify({
 					terminal: { fontSize, cols, rows, cursorBlink },
 					interface: { defaultPanel, panelWidth },
-					paths: { devDir, brainDir, marketplaceDir, claudeBinary },
+					paths: { devDir, brainDir, catalogDir, claudeBinary },
+					channels: channelConfigs,
 				}),
 			});
 
@@ -120,6 +166,11 @@
 		}
 	}
 
+	function handleChannelChange(id: string, cfg: ChannelConfigItem) {
+		channelConfigs = { ...channelConfigs, [id]: cfg };
+		markDirty();
+	}
+
 	function resetToDefaults() {
 		fontSize = 13;
 		cols = 120;
@@ -129,7 +180,7 @@
 		panelWidth = 260;
 		devDir = '~/dev';
 		brainDir = '~/SecondBrain';
-		marketplaceDir = '~/dev/soul-hub/marketplace';
+		catalogDir = '~/dev/soul-hub/catalog';
 		claudeBinary = '~/.local/bin/claude';
 		dirty = true;
 	}
@@ -300,11 +351,11 @@
 						/>
 					</div>
 					<div>
-						<label for="marketplaceDir" class="block text-xs text-hub-muted mb-1">Marketplace</label>
+						<label for="catalogDir" class="block text-xs text-hub-muted mb-1">Catalog</label>
 						<input
-							id="marketplaceDir"
+							id="catalogDir"
 							type="text"
-							bind:value={marketplaceDir}
+							bind:value={catalogDir}
 							oninput={markDirty}
 							class="w-full bg-hub-bg border border-hub-border rounded-md px-3 py-1.5 text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-cta/50"
 						/>
@@ -388,6 +439,27 @@
 				{/if}
 			</div>
 		</section>
+
+		<!-- Platform Environment section -->
+		<PlatformEnv />
+
+		<!-- Channels section -->
+		{#if channelMetas.length > 0}
+			<section class="mb-6">
+				<div class="mb-2">
+					<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider px-1">Channels</h2>
+				</div>
+				<div class="space-y-3">
+					{#each channelMetas as meta (meta.id)}
+						<ChannelCard
+							{meta}
+							config={channelConfigs[meta.id] || { enabled: false, label: meta.name, defaultFor: [] }}
+							onchange={handleChannelChange}
+						/>
+					{/each}
+				</div>
+			</section>
+		{/if}
 
 		<!-- Action buttons -->
 		<div class="flex items-center justify-between">

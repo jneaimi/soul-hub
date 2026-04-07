@@ -1,0 +1,24 @@
+name: channel-test
+description: Test pipeline channel step — sends a Telegram notification
+version: 1.0.0
+
+inputs:
+  - name: greeting
+    type: text
+    description: Message to send
+    default: "Hello from Soul Hub pipeline!"
+
+steps:
+  - id: generate
+    type: script
+    run: python3 scripts/greet.py
+    output: /tmp/pipeline-runs/$RUN_ID/greeting.txt
+    timeout: 10
+
+  - id: notify
+    type: channel
+    channel: telegram
+    action: send
+    message: "Pipeline channel-test completed. Greeting: $inputs.greeting"
+    attach: $steps.generate.output
+    depends_on: [generate]

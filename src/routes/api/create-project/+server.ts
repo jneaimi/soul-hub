@@ -12,7 +12,7 @@ import { config } from '$lib/config.js';
 
 const DEV_DIR = config.resolved.devDir;
 const BRAIN_DIR = config.resolved.brainDir;
-const MARKETPLACE_DIR = config.resolved.marketplaceDir;
+const CATALOG_DIR = config.resolved.catalogDir;
 
 /** Sanitize project name: lowercase, alphanumeric + hyphens only */
 function sanitizeName(raw: string): string | null {
@@ -110,23 +110,23 @@ export const POST: RequestHandler = async ({ request }) => {
 			await mkdir(join(brainPath, folder), { recursive: true });
 		}
 
-		// 3. Copy selected skills from marketplace
+		// 3. Copy selected skills from catalog
 		for (const skillName of skills) {
-			const src = join(MARKETPLACE_DIR, 'skills', skillName);
+			const src = join(CATALOG_DIR, 'skills', skillName);
 			const dst = join(devPath, '.claude', 'skills', skillName);
 			if (await dirExists(src)) {
 				await cp(src, dst, { recursive: true });
 			}
 		}
 
-		// 4. Copy selected agents from marketplace
+		// 4. Copy selected agents from catalog
 		for (const agentName of agents) {
-			const src = join(MARKETPLACE_DIR, 'agents', `${agentName}.md`);
+			const src = join(CATALOG_DIR, 'agents', `${agentName}.md`);
 			const dst = join(devPath, '.claude', 'agents', `${agentName}.md`);
 			try {
 				await cp(src, dst);
 			} catch {
-				// Agent file doesn't exist in marketplace — skip
+				// Agent file doesn't exist in catalog — skip
 			}
 		}
 

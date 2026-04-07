@@ -17,7 +17,7 @@ interface AutomationConfig {
 interface ScheduledJob {
 	pipelineName: string;
 	cronExpr: string;
-	task: cron.ScheduledTask;
+	task: ReturnType<typeof cron.schedule>;
 	enabled: boolean;
 	lastRun?: string;
 	lastStatus?: string;
@@ -37,8 +37,10 @@ interface RunRecord {
 const scheduledJobs = new Map<string, ScheduledJob>();
 let automationConfigs: Record<string, AutomationConfig> = {};
 let runHistory: RunRecord[] = [];
+let savedInputs: Record<string, Record<string, string | number>> = {};
 let historyPath = '';
 let automationPath = '';
+let inputsPath = '';
 let pipelinesDir = '';
 
 // Concurrency lock (shared with the API)
@@ -53,6 +55,7 @@ export async function initScheduler(pipDir: string, dataDir: string): Promise<vo
 	pipelinesDir = pipDir;
 	historyPath = resolve(dataDir, 'run-history.json');
 	automationPath = resolve(dataDir, 'automation.json');
+	inputsPath = resolve(dataDir, 'pipeline-inputs.json');
 
 	await mkdir(dataDir, { recursive: true });
 
@@ -70,6 +73,14 @@ export async function initScheduler(pipDir: string, dataDir: string): Promise<vo
 		automationConfigs = JSON.parse(raw);
 	} catch {
 		automationConfigs = {};
+	}
+
+	// Load saved pipeline inputs
+	try {
+		const raw = await readFile(inputsPath, 'utf-8');
+		savedInputs = JSON.parse(raw);
+	} catch {
+		savedInputs = {};
 	}
 
 	// Stop all existing jobs before re-scanning
@@ -209,6 +220,18 @@ export async function executeScheduledRun(
 	trigger: 'scheduled' | 'webhook' | 'manual',
 	inputs?: Record<string, string | number>,
 ): Promise<{ runId: string; status: string }> {
+	// Guard: verify schedule is still enabled (protects against ghost cron jobs)
+	if (trigger === 'scheduled') {
+		const autoConfig = automationConfigs[name];
+		if (!autoConfig?.schedule || autoConfig.scheduleEnabled === false) {
+			console.log(`[scheduler] Blocking ghost trigger for "${name}" — no active schedule`);
+			// Kill the orphan cron job
+			const job = scheduledJobs.get(name);
+			if (job) { job.task.stop(); scheduledJobs.delete(name); }
+			return { runId: '', status: 'blocked' };
+		}
+	}
+
 	if (activePipelines.has(name)) {
 		console.log(`[scheduler] Skipping "${name}" — already running`);
 		return { runId: '', status: 'skipped' };
@@ -278,6 +301,21 @@ async function persistAutomation(): Promise<void> {
 /** Get persisted run history */
 export function getRunHistory(limit = 20): RunRecord[] {
 	return runHistory.slice(0, limit);
+}
+
+/** Get saved inputs for a pipeline */
+export function getSavedInputs(name: string): Record<string, string | number> {
+	return savedInputs[name] || {};
+}
+
+/** Save inputs for a pipeline (persists to disk) */
+export async function saveInputs(name: string, inputs: Record<string, string | number>): Promise<void> {
+	savedInputs[name] = inputs;
+	try {
+		await writeFile(inputsPath, JSON.stringify(savedInputs, null, 2));
+	} catch (err) {
+		console.error(`[scheduler] Failed to persist inputs: ${err}`);
+	}
 }
 
 /** Shutdown scheduler */

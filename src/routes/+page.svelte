@@ -93,6 +93,15 @@
 						</svg>
 					</a>
 					<a
+						href="/library"
+						class="p-2 rounded-lg text-hub-dim hover:text-hub-purple hover:bg-hub-card transition-colors cursor-pointer"
+						aria-label="Library"
+					>
+						<svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+							<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+						</svg>
+					</a>
+					<a
 						href="/settings"
 						class="p-2 rounded-lg text-hub-dim hover:text-hub-muted hover:bg-hub-card transition-colors cursor-pointer"
 						aria-label="Settings"

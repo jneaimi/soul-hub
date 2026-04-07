@@ -26,6 +26,6 @@ export const load: PageServerLoad = async ({ params }) => {
 		name,
 		devPath: hasDev ? devPath : null,
 		brainPath: hasBrainProject ? brainProject : hasBrainArea ? brainArea : null,
-		cwd: hasDev ? devPath : HOME,
+		cwd: hasDev ? devPath : process.env.HOME ?? '/tmp',
 	};
 };

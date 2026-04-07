@@ -2,10 +2,10 @@ import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { resolve, dirname } from 'node:path';
 import { config } from '$lib/config.js';
-import { runPipeline, sendInputToStep, killPipeline, approveGate, rejectGate, answerGate, getActivePipelines } from '$lib/pipeline/index.js';
+import { runPipeline, parsePipeline, validatePipelineRun, sendInputToStep, killPipeline, approveGate, rejectGate, answerGate, getActivePipelines, getSavedInputs, saveInputs } from '$lib/pipeline/index.js';
 import type { PipelineRun } from '$lib/pipeline/types.js';
 
-const PIPELINES_DIR = resolve(dirname(config.resolved.marketplaceDir), 'pipelines');
+const PIPELINES_DIR = resolve(dirname(config.resolved.catalogDir), 'pipelines');
 
 // Track active and completed runs (in-memory for live polling)
 const runs = new Map<string, PipelineRun>();
@@ -95,6 +95,22 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 
 	const yamlPath = resolve(PIPELINES_DIR, name, 'pipeline.yaml');
+
+	// Pre-run validation: check env vars and required inputs
+	try {
+		const spec = await parsePipeline(yamlPath);
+		const validation = validatePipelineRun(spec, inputs || {});
+		if (!validation.ok) {
+			return json({ error: 'Validation failed', errors: validation.errors }, { status: 400 });
+		}
+	} catch (err) {
+		return json({ error: `Pipeline parse failed: ${(err as Error).message}` }, { status: 400 });
+	}
+
+	// Save inputs for next time (non-blocking)
+	if (inputs && Object.keys(inputs).length > 0) {
+		saveInputs(name, inputs);
+	}
 
 	// Run pipeline asynchronously — return run ID immediately
 	const runId = crypto.randomUUID().slice(0, 8);
