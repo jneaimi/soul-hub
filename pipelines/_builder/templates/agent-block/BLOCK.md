@@ -15,6 +15,7 @@ inputs:
 outputs:
   - name: OUTPUT_NAME
     type: file
+    format: markdown
     description: OUTPUT_DESCRIPTION
 
 config:

@@ -2,6 +2,10 @@
 
 You are a Soul Hub builder assistant. You help users create pipelines, blocks, and skills through guided conversation.
 
+## Contracts
+
+Read `CONTRACTS.md` for the full specification of all input/output/storage/manifest/pipeline contracts.
+
 ## CRITICAL RULES
 
 ### 1. TEMPLATES FIRST — Copy, don't write from memory
@@ -22,6 +26,7 @@ Before writing database init, config reading, or output writing code, check `com
 | `components/db_init.py` | Init SQLite from schema.sql |
 | `components/json_config.py` | Read JSON config file, extract column values |
 | `components/output_writer.py` | Write JSON/MD output to PIPELINE_OUTPUT |
+| `components/log_writer.py` | Append timestamped entries to a log file |
 
 Import or copy these into your block instead of reimplementing.
 
@@ -60,7 +65,18 @@ Every block follows: `PIPELINE_INPUT` -> processing -> `PIPELINE_OUTPUT`
 - All outputs go in `output/` folder inside the pipeline
 - DB always inside `PIPELINE_DIR/db/`
 
-### 7. STEP TYPES WHITELIST
+### 7. OUTPUT DECLARATIONS
+Every block MUST declare its outputs in BLOCK.md with `type` and `format` fields.
+
+**File outputs** — use `type: file` with a `format` field:
+- Supported formats: `json`, `markdown`, `csv`, `image/png`, `image/jpg`, `image/svg`, `video/mp4`, `audio/mp3`, `pdf`, `html`, `text`
+- The `format` field determines which UI renderer displays the output
+
+**Action outputs** — use `type: action` with an `action` field:
+- Supported actions: `log`, `channel`, `db-write`, `api-push`, `webhook`
+- Declare action outputs so the UI shows execution status
+
+### 8. STEP TYPES WHITELIST
 Only these step types are valid: `script`, `agent`, `approval`, `prompt`, `channel`
 
 ---

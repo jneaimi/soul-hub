@@ -56,5 +56,32 @@ case "$FILE_PATH" in
     ;;
 esac
 
+# Block output/ writes that aren't inside a pipeline directory
+case "$FILE_PATH" in
+  */output/*)
+    # Must be under pipelines/<name>/output/ — extract parent of output/
+    PARENT=$(echo "$FILE_PATH" | sed 's|/output/.*||')
+    if [ ! -f "$PARENT/pipeline.yaml" ]; then
+      echo "BLOCKED: output/ writes must be inside a pipeline directory (one containing pipeline.yaml). Attempted: $FILE_PATH"
+      exit 2
+    fi
+    ;;
+esac
+
+# Validate pipeline.yaml has required sections
+if [ "$BASENAME" = "pipeline.yaml" ]; then
+  CONTENT=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('content',''))" 2>/dev/null)
+  if [ -n "$CONTENT" ]; then
+    if ! echo "$CONTENT" | grep -q 'steps:'; then
+      echo "BLOCKED: pipeline.yaml must contain a 'steps:' section"
+      exit 2
+    fi
+    if ! echo "$CONTENT" | grep -q 'on_failure:'; then
+      echo "BLOCKED: pipeline.yaml must contain an 'on_failure:' section"
+      exit 2
+    fi
+  fi
+fi
+
 exit 0
 

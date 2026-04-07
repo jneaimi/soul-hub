@@ -68,6 +68,16 @@
 		};
 	}
 
+	// Mobile button: send Shift+Enter (newline without submit)
+	function xnewline(e: TouchEvent) {
+		e.preventDefault();
+		if (kittyModeActive) {
+			sendInput('\x1b[13;2u');
+		} else {
+			sendInput('\x1b\r');
+		}
+	}
+
 	function xctrl(e: TouchEvent) {
 		e.preventDefault();
 		toggleCtrl();
@@ -85,10 +95,75 @@
 		return () => resizeObserver?.disconnect();
 	});
 
+	// --- Kitty keyboard protocol negotiation ---
+	// Claude Code sends \x1b[>Pu to enable kitty mode and \x1b[?u to query.
+	// We intercept these in the output stream and respond so Claude Code
+	// knows we support CSI u encoding (e.g. \x1b[13;2u for Shift+Enter).
+	let kittyModeActive = false;
+
+	function handleKittyProtocol(data: string): string {
+		// Detect \x1b[>1u or \x1b[>Nu (enable kitty keyboard, flags N)
+		if (data.includes('\x1b[>')) {
+			const enableMatch = data.match(/\x1b\[>(\d+)u/);
+			if (enableMatch) {
+				kittyModeActive = true;
+				// Strip the enable sequence from terminal output (don't render it)
+				data = data.replace(/\x1b\[>\d+u/g, '');
+			}
+		}
+
+		// Detect \x1b[?u (query kitty mode) — respond with current flags
+		if (data.includes('\x1b[?u')) {
+			if (kittyModeActive) {
+				// Respond: "yes, kitty mode is active with flags=1"
+				sendInput('\x1b[?1u');
+			}
+			data = data.replace(/\x1b\[\?u/g, '');
+		}
+
+		// Detect \x1b[<Nu (pop/disable kitty mode)
+		if (data.includes('\x1b[<')) {
+			const disableMatch = data.match(/\x1b\[<(\d*)u/);
+			if (disableMatch) {
+				kittyModeActive = false;
+				data = data.replace(/\x1b\[<\d*u/g, '');
+			}
+		}
+
+		return data;
+	}
+
+	// --- RAF-batched writer: coalesces rapid SSE chunks into ~60 writes/sec ---
+	let writeQueue = '';
+	let writeRafId: number | null = null;
+
+	function batchWrite(data: string) {
+		// Intercept kitty protocol negotiation before queuing for render
+		data = handleKittyProtocol(data);
+		if (!data) return;
+		writeQueue += data;
+		if (writeRafId === null) {
+			writeRafId = requestAnimationFrame(flushWrites);
+		}
+	}
+
+	function flushWrites() {
+		writeRafId = null;
+		if (!writeQueue || !terminal) return;
+		const data = writeQueue;
+		writeQueue = '';
+		terminal.write(data);
+		// If more arrived during the write, schedule another flush
+		if (writeQueue) writeRafId = requestAnimationFrame(flushWrites);
+	}
+
 	async function initTerminal() {
 		const { Terminal } = await import('@xterm/xterm');
 		const { FitAddon } = await import('@xterm/addon-fit');
 		const { WebLinksAddon } = await import('@xterm/addon-web-links');
+		const { WebglAddon } = await import('@xterm/addon-webgl');
+		const { CanvasAddon } = await import('@xterm/addon-canvas');
+		const { Unicode11Addon } = await import('@xterm/addon-unicode11');
 		await import('@xterm/xterm/css/xterm.css');
 
 		// Load UI prefs from localStorage
@@ -130,16 +205,63 @@
 				brightWhite: '#f8f8ff',
 			},
 			allowProposedApi: true,
+			rescaleOverlappingGlyphs: true,  // shrink glyphs that overflow cell width
+			customGlyphs: true,               // pixel-perfect box/block drawing
+			allowTransparency: false,          // transparency kills WebGL perf
 		});
 
 		fitAddon = new FitAddon();
 		terminal.loadAddon(fitAddon);
 		terminal.loadAddon(new WebLinksAddon());
+		terminal.loadAddon(new Unicode11Addon());  // correct emoji/wide char widths
 
 		if (terminalEl) {
 			terminal.open(terminalEl);
+
+			// Wait for web font to load before fitting — otherwise fit()
+			// measures with a fallback font (narrower glyphs → too many cols)
+			// and the PTY gets a cols value wider than the visible area.
+			await document.fonts.ready;
 			fitAddon.fit();
+
+			// Load WebGL renderer AFTER open() — needs canvas to exist
+			try {
+				const webgl = new WebglAddon();
+				webgl.onContextLoss(() => {
+					webgl.dispose();
+					terminal.loadAddon(new CanvasAddon());
+				});
+				terminal.loadAddon(webgl);
+			} catch {
+				// WebGL not available — fall back to Canvas
+				try { terminal.loadAddon(new CanvasAddon()); } catch { /* DOM fallback */ }
+			}
+
+			// Re-fit after a short delay to catch any late layout shifts
+			setTimeout(() => {
+				fitAddon.fit();
+				if (sessionId && running) {
+					sendResize(terminal.cols, terminal.rows);
+				}
+			}, 200);
 		}
+
+		// Intercept Shift+Enter and Option+Enter for multi-line input.
+		// If kitty protocol was negotiated, send CSI 13;2u (Shift+Enter).
+		// Otherwise fall back to ESC+CR (Alt+Enter sequence).
+		terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+			if (event.key === 'Enter' && (event.shiftKey || event.altKey)) {
+				if (event.type === 'keydown') {
+					if (kittyModeActive) {
+						sendInput('\x1b[13;2u'); // kitty: Enter + Shift modifier
+					} else {
+						sendInput('\x1b\r'); // fallback: Alt+Enter
+					}
+				}
+				return false; // block both keydown and keyup from xterm
+			}
+			return true;
+		});
 
 		terminal.onData((data: string) => {
 			if (!sessionId || !running) return;
@@ -225,6 +347,7 @@
 	}
 
 	onDestroy(() => {
+		if (writeRafId !== null) cancelAnimationFrame(writeRafId);
 		if (abortController) abortController.abort();
 		if (sessionId) killSession();
 		if (terminal) terminal.dispose();
@@ -315,7 +438,7 @@
 								sessionId = msg.sessionId;
 								break;
 							case 'output':
-								terminal?.write(msg.data);
+								batchWrite(msg.data);
 								break;
 							case 'spawned':
 								pid = msg.pid;
@@ -467,8 +590,8 @@
 		</div>
 	</div>
 
-	<div class="relative flex-1 min-h-0">
-		<div bind:this={terminalEl} class="h-full"></div>
+	<div class="relative flex-1 min-h-0 overflow-hidden">
+		<div bind:this={terminalEl} class="w-full h-full"></div>
 
 		<!-- Scroll to bottom FAB -->
 		{#if scrolledUp}
@@ -494,6 +617,7 @@
 		>
 			<!-- Row 1: modifiers + special chars + Up arrow -->
 			<div class="flex items-center px-1 pt-1 pb-0.5 gap-0.5">
+				<button ontouchstart={xnewline} class="xkey text-[9px] text-hub-purple">S+&#x23CE;</button>
 				<button ontouchstart={xkey('\x1b')} class="xkey">ESC</button>
 				<button ontouchstart={xkey('\t')} class="xkey">TAB</button>
 				<button ontouchstart={xctrl} class="xkey {ctrlActive ? 'xkey-active' : ''}">CTL</button>
@@ -501,7 +625,6 @@
 				<button ontouchstart={xkey('/')} class="xkey">/</button>
 				<button ontouchstart={xkey('-')} class="xkey">-</button>
 				<button ontouchstart={xkey('_')} class="xkey">_</button>
-				<button ontouchstart={xkey('~')} class="xkey">~</button>
 				<div class="ml-auto flex gap-0.5">
 					<div class="w-9"></div>
 					<button ontouchstart={xkey('\x1b[A')} class="xkey xkey-arrow">&uarr;</button>

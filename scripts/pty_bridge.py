@@ -77,7 +77,7 @@ def main():
             for fd in rlist:
                 if fd == master_fd:
                     try:
-                        data = os.read(master_fd, 4096)
+                        data = os.read(master_fd, 16384)
                         if not data:
                             raise EOFError
                         text = data.decode("utf-8", errors="replace")

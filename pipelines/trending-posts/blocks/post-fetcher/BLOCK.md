@@ -9,9 +9,9 @@ version: 1.0.0
 inputs:
   - name: roster_file
     type: file
-    format: markdown-table
+    format: json
     description: Influencer roster with handle, platform, focus columns
-    default: config/influencer-roster.md
+    default: config/influencer-roster.json
 
 outputs:
   - name: status

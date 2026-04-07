@@ -13,7 +13,6 @@ Path resolution via:
 
 import json
 import os
-import re
 import sqlite3
 import subprocess
 import sys
@@ -26,7 +25,7 @@ from pathlib import Path
 PIPELINE_DIR = Path(os.environ.get("PIPELINE_DIR", str(Path(__file__).resolve().parent.parent.parent)))
 DB_PATH = PIPELINE_DIR / "db" / "data.db"
 CONFIG_DIR = PIPELINE_DIR / "config"
-ROSTER_PATH = CONFIG_DIR / "influencer-roster.md"
+ROSTER_PATH = CONFIG_DIR / "influencer-roster.json"
 SCRIPTS_DIR = PIPELINE_DIR / "blocks" / "post-fetcher"
 TEMP_DIR = Path("/tmp/scout")
 DATE = datetime.now().strftime("%Y-%m-%d")
@@ -65,28 +64,8 @@ def run_cmd(cmd: list[str], timeout: int = 60, stdin_data: str | None = None) ->
 # ── Step 1: Parse roster ───────────────────────
 
 def parse_roster() -> list[dict]:
-    text = ROSTER_PATH.read_text()
-    roster = []
-    in_table = False
-    for line in text.splitlines():
-        line = line.strip()
-        if line.startswith("| Handle"):
-            in_table = True
-            continue
-        if in_table and line.startswith("| ---"):
-            continue
-        if in_table and line.startswith("|"):
-            cols = [c.strip() for c in line.split("|")[1:-1]]
-            if len(cols) >= 4:
-                roster.append({
-                    "handle": cols[0],
-                    "platform": cols[1],
-                    "focus": cols[2],
-                    "why_follow": cols[3],
-                })
-        elif in_table and not line.startswith("|"):
-            break
-    return roster
+    with open(ROSTER_PATH) as f:
+        return json.load(f)
 
 
 # ── Step 2: Sync roster to DB ──────────────────

@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import FilePreview from '$lib/components/FilePreview.svelte';
+	import OutputViewer from '$lib/components/OutputViewer.svelte';
+	import type { OutputEntry } from '$lib/components/OutputViewer.svelte';
 	import StepConfigCard from '$lib/components/StepConfigCard.svelte';
 	import SharedConfigEditor from '$lib/components/SharedConfigEditor.svelte';
 	import type { ConfigFieldType } from '$lib/pipeline/block';
@@ -27,6 +29,7 @@
 		runtime?: string;
 		description: string;
 		version?: string;
+		outputs?: { name: string; type: string; format?: string; description?: string }[];
 		config?: { name: string; type: ConfigFieldType; label?: string; description?: string; default?: unknown; min?: number; max?: number; options?: string[]; required?: boolean }[];
 		env?: { name: string; description?: string; required?: boolean }[];
 	}
@@ -150,6 +153,38 @@
 		});
 	});
 	let canRun = $derived(missingEnvVars.length === 0 && missingInputs.length === 0);
+
+	// Build structured output entries from completed run steps + block manifests
+	let runOutputs = $derived.by((): OutputEntry[] => {
+		if (!activeRun || activeRun.status !== 'done') return [];
+		const entries: OutputEntry[] = [];
+		for (const step of activeRun.steps) {
+			if (step.status !== 'done' || !step.outputPath) continue;
+			// Find block manifest for this step to get declared outputs
+			const stepSpec = selected?.steps?.find(s => s.id === step.id);
+			const blockName = stepSpec?.block;
+			const manifest = blockName ? installedBlocks.find(b => b.name === blockName) : null;
+			if (manifest?.outputs) {
+				for (const out of manifest.outputs) {
+					entries.push({
+						name: out.name,
+						path: `${step.outputPath}/${out.name}`,
+						type: out.type,
+						format: out.format,
+					});
+				}
+			} else {
+				// Fallback: show the output path as a generic file entry
+				entries.push({
+					name: step.id,
+					path: step.outputPath,
+					type: 'file',
+					format: 'text',
+				});
+			}
+		}
+		return entries;
+	});
 
 	const statusIcon: Record<string, string> = {
 		pending: '○', running: '◉', done: '✓', failed: '✗', skipped: '–', waiting: '◎',
@@ -1247,6 +1282,11 @@
 						</p>
 					{/if}
 				</div>
+
+				<!-- Structured output viewer -->
+				{#if activeRun?.status === 'done' && runOutputs.length > 0}
+					<OutputViewer outputs={runOutputs} onPreview={(path, name) => { previewFile = { path, name }; }} />
+				{/if}
 
 				<!-- Output Library -->
 				{#if outputDir && outputFiles.length > 0}
