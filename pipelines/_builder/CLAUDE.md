@@ -181,4 +181,6 @@ The user will see this in the pipeline UI and can copy the fix to apply it outsi
 | Use `claude -p` | Use `type: agent` |
 | Put secrets in code | Declare in `env:`, values from Platform Environment |
 | Skip `depends_on` | Always declare step dependencies |
+| Skip `input:` on dependent steps | If step B depends on step A, add `input: $steps.A.output` so B receives A's output as PIPELINE_INPUT |
+| Forget `output:` on steps | Every step that produces data must have `output:` pointing to `output/filename.ext` |
 | Use step types not in whitelist | Only: script, agent, approval, prompt, channel |

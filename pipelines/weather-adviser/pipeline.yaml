@@ -36,6 +36,7 @@ steps:
 
   - id: advise-activities
     block: activity-adviser
+    input: $steps.fetch-weather.output
     depends_on: [fetch-weather]
     output: output/advise-activities-result.md
     timeout: 120

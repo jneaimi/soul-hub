@@ -623,13 +623,25 @@
 		return `${(step.durationMs / 1000).toFixed(1)}s`;
 	}
 
-	function stripAnsi(text: string): string {
-		return text.replace(/\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]|\x1b\[[\?]?[0-9;]*[hlm]/g, '');
-	}
+	let ansiConverter: { toHtml: (text: string) => string } | null = null;
+
+	onMount(async () => {
+		try {
+			const AnsiToHtml = (await import('ansi-to-html')).default;
+			ansiConverter = new AnsiToHtml({ fg: '#e0e0e8', bg: 'transparent', newline: true });
+		} catch { /* fallback to plain text */ }
+	});
 
 	function getStepOutput(stepId: string): string {
-		const raw = activeRun?.stepOutput?.[stepId] || '';
-		return stripAnsi(raw);
+		return activeRun?.stepOutput?.[stepId] || '';
+	}
+
+	function getStepOutputHtml(stepId: string): string {
+		const raw = getStepOutput(stepId);
+		if (!raw) return '';
+		if (ansiConverter) return ansiConverter.toHtml(raw);
+		// Fallback: strip ANSI if converter not loaded
+		return raw.replace(/\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07/g, '');
 	}
 
 	function getLastOutputPath(): string | null {
@@ -1117,7 +1129,7 @@
 											{/if}
 										{:else if output && !output.includes('"_gate":true')}
 											<div class="border-t border-hub-border/30">
-												<pre class="px-4 py-3 text-xs font-mono text-hub-muted leading-relaxed max-h-60 overflow-y-auto whitespace-pre-wrap break-all bg-[#0a0a0f]">{output}</pre>
+												<pre class="px-4 py-3 text-xs font-mono text-hub-muted leading-relaxed max-h-60 overflow-y-auto whitespace-pre-wrap break-all bg-[#0a0a0f]">{@html getStepOutputHtml(step.id)}</pre>
 											</div>
 										{/if}
 
@@ -1242,7 +1254,7 @@
 											{/if}
 										{:else if output && !output.includes('"_gate":true')}
 											<div class="border-t border-hub-border/30">
-												<pre class="px-4 py-3 text-xs font-mono text-hub-muted leading-relaxed max-h-60 overflow-y-auto whitespace-pre-wrap break-all bg-[#0a0a0f]">{output}</pre>
+												<pre class="px-4 py-3 text-xs font-mono text-hub-muted leading-relaxed max-h-60 overflow-y-auto whitespace-pre-wrap break-all bg-[#0a0a0f]">{@html getStepOutputHtml(step.id)}</pre>
 											</div>
 										{/if}
 
