@@ -235,6 +235,7 @@ version: 1.0.0
 
 env:
   - name: API_KEY
+    description: What this key is for
     required: true
 
 inputs:
@@ -246,7 +247,7 @@ inputs:
 shared_config:
   - name: Display Name
     file: config/file.md
-    description: User-editable config file
+    description: User-editable config file (shows in UI with Edit button)
 
 steps:
   - id: step-id
@@ -266,6 +267,8 @@ steps:
 on_failure:
   strategy: halt|skip
 ```
+
+**IMPORTANT:** Only use fields shown above. Do NOT add `database:` or `output_dir:` — those are not valid pipeline.yaml fields and will be ignored.
 
 ### Pipeline Directory — MUST be self-contained
 ```

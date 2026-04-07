@@ -80,6 +80,12 @@ export interface PipelineMcp {
 	env?: Record<string, string>;
 }
 
+export interface PipelineConfigFile {
+	name: string;
+	file: string;
+	description?: string;
+}
+
 export interface PipelineSpec {
 	name: string;
 	description: string;
@@ -88,6 +94,7 @@ export interface PipelineSpec {
 	inputs?: PipelineInput[];
 	env?: PipelineEnvVar[];
 	mcp?: PipelineMcp[];
+	shared_config?: PipelineConfigFile[];
 	steps: PipelineStep[];
 	on_failure?: PipelineOnFailure;
 }

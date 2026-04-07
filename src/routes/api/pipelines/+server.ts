@@ -54,7 +54,14 @@ export const GET: RequestHandler = async ({ url }) => {
 				// Block features degrade gracefully if blocks/ doesn't exist yet
 			}
 
-			return json({ pipeline: spec, path: yamlPath, outputDir, savedInputs: saved, envStatus, installedBlocks, configSchema });
+			// Map shared_config to config_files for the UI
+			const configFiles = (spec.shared_config || []).map(c => ({
+				name: c.name,
+				description: c.description || '',
+				path: c.file,
+			}));
+
+			return json({ pipeline: spec, path: yamlPath, outputDir, savedInputs: saved, envStatus, installedBlocks, configSchema, config_files: configFiles });
 		} catch (err) {
 			return json({ error: (err as Error).message }, { status: 404 });
 		}
