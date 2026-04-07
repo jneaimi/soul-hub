@@ -70,9 +70,13 @@
 
 	const stagedBlockNames = $derived(new Set(stagedBlocks.map((b) => b.name)));
 
+	// Troubleshoot context
+	const troubleshootContext = $derived(data.troubleshootContext);
+
 	// Context banner type
-	const bannerType = $derived.by<'fork' | 'pipeline' | 'fork-error' | 'pipeline-error' | null>(() => {
+	const bannerType = $derived.by<'fork' | 'pipeline' | 'fork-error' | 'pipeline-error' | 'troubleshoot' | null>(() => {
 		if (bannerDismissed) return null;
+		if (troubleshootContext) return 'troubleshoot';
 		if (forkName && data.forkBlockContent) return 'fork';
 		if (forkName && !data.forkBlockContent) return 'fork-error';
 		if (pipelineName && data.pipelineYaml) return 'pipeline';
@@ -108,8 +112,10 @@
 			}
 		} catch { /* use catalog blocks as fallback */ }
 
-		// Pre-fill prompt for fork/edit contexts
-		if (forkName && data.forkBlockContent) {
+		// Pre-fill prompt for troubleshoot/fork/edit contexts
+		if (troubleshootContext) {
+			userPrompt = `Step "${troubleshootContext.stepId}" failed with error:\n${troubleshootContext.error}\n\nHelp me diagnose and fix this issue.`;
+		} else if (forkName && data.forkBlockContent) {
 			userPrompt = `I want to customize the block "${forkName}". Here is the source:\n\n${data.forkBlockContent}`;
 		} else if (pipelineName && data.pipelineYaml) {
 			const blockNames = (data.pipelineBlocks || []).map((b: BlockManifest) => b.name).join(', ');
@@ -132,6 +138,30 @@
 	}
 
 	function composePrompt(): string {
+		// Troubleshoot mode: compose a rich diagnostic prompt
+		if (troubleshootContext) {
+			const parts: string[] = [];
+			parts.push(`Step "${troubleshootContext.stepId}" in pipeline "${pipelineName}" failed.`);
+			parts.push(`Error: ${troubleshootContext.error}`);
+			if (troubleshootContext.blockName) {
+				parts.push(`Block: ${troubleshootContext.blockName}`);
+			}
+			if (troubleshootContext.blockContent) {
+				parts.push(`BLOCK.md:\n${troubleshootContext.blockContent}`);
+			}
+			if (troubleshootContext.scriptContent) {
+				parts.push(`Implementation:\n${troubleshootContext.scriptContent}`);
+			}
+			if (data.pipelineYaml) {
+				parts.push(`Pipeline YAML:\n${data.pipelineYaml}`);
+			}
+			if (userPrompt.trim()) {
+				parts.push(`Additional context: ${userPrompt.trim()}`);
+			}
+			parts.push('Diagnose the root cause and fix it.');
+			return parts.join('\n\n');
+		}
+
 		const blockList = stagedBlocks
 			.map((b) => `- "${b.name}" (${b.type}): ${b.description}\n  Path: ${(b as BlockManifest & { path?: string }).path || `catalog/${b.type === 'script' ? 'scripts' : 'agents'}/${b.name}/`}`)
 			.join('\n');
@@ -242,7 +272,21 @@ Then propose a plan. Only create files after I approve.`);
 	</div>
 
 	<!-- Context banners -->
-	{#if bannerType === 'fork'}
+	{#if bannerType === 'troubleshoot'}
+		<div class="flex-shrink-0 mx-4 mt-3 rounded-lg px-4 py-2 bg-hub-danger/10 border-l-4 border-hub-danger flex items-center justify-between">
+			<div class="flex items-center gap-2">
+				<svg class="w-4 h-4 text-hub-danger flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/>
+				</svg>
+				<span class="text-sm text-hub-text">Troubleshooting step <strong class="text-hub-danger">'{troubleshootContext?.stepId}'</strong> in <strong class="text-hub-danger">{pipelineName}</strong></span>
+			</div>
+			<button onclick={dismissBanner} class="p-1 rounded hover:bg-hub-card transition-colors text-hub-muted hover:text-hub-text cursor-pointer" aria-label="Dismiss">
+				<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+				</svg>
+			</button>
+		</div>
+	{:else if bannerType === 'fork'}
 		<div class="flex-shrink-0 mx-4 mt-3 rounded-lg px-4 py-2 bg-hub-purple/10 border-l-4 border-hub-purple flex items-center justify-between">
 			<div class="flex items-center gap-2">
 				<svg class="w-4 h-4 text-hub-purple flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

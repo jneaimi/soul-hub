@@ -1,0 +1,44 @@
+name: weather-adviser
+description: Fetch weather for a city and generate a tailored activity report
+version: 1.0.0
+
+env: []
+
+inputs:
+  - name: city
+    type: text
+    description: City name (e.g. "Dubai", "London", "Tokyo")
+    required: true
+
+shared_config:
+  - name: Favorite Cities
+    file: config/cities.json
+    description: Quick-pick list of cities you check often
+    columns:
+      - name: city
+        type: text
+        label: City Name
+        placeholder: "e.g. Dubai"
+        required: true
+      - name: country
+        type: text
+        label: Country
+        placeholder: "e.g. UAE"
+        required: false
+
+steps:
+  - id: fetch-weather
+    block: weather-fetcher
+    config:
+      city: "{{inputs.city}}"
+    output: output/fetch-weather-result.json
+    timeout: 30
+
+  - id: advise-activities
+    block: activity-adviser
+    depends_on: [fetch-weather]
+    output: output/advise-activities-result.md
+    timeout: 120
+
+on_failure:
+  strategy: halt

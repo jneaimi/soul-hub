@@ -1110,6 +1110,21 @@
 												<pre class="px-4 py-3 text-xs font-mono text-hub-muted leading-relaxed max-h-60 overflow-y-auto whitespace-pre-wrap break-all bg-[#0a0a0f]">{output}</pre>
 											</div>
 										{/if}
+
+										{#if status === 'failed'}
+											{@const stepError = activeRun?.steps?.find((s) => s.id === step.id)?.error || output || 'Unknown error'}
+											<div class="border-t border-hub-danger/20 px-4 py-3 flex items-center">
+												<a
+													href="/library/builder?pipeline={encodeURIComponent(selectedName)}&troubleshoot={encodeURIComponent(step.id)}&error={encodeURIComponent(stepError)}"
+													class="inline-flex items-center gap-1.5 border border-red-500/30 text-red-400 hover:bg-red-500/10 px-3 py-1 rounded-lg text-xs font-medium transition-colors"
+												>
+													<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+														<path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/>
+													</svg>
+													Troubleshoot
+												</a>
+											</div>
+										{/if}
 									{/if}
 								</div>
 
@@ -1218,6 +1233,21 @@
 										{:else if output && !output.includes('"_gate":true')}
 											<div class="border-t border-hub-border/30">
 												<pre class="px-4 py-3 text-xs font-mono text-hub-muted leading-relaxed max-h-60 overflow-y-auto whitespace-pre-wrap break-all bg-[#0a0a0f]">{output}</pre>
+											</div>
+										{/if}
+
+										{#if status === 'failed'}
+											{@const stepError = activeRun?.steps?.find((s) => s.id === step.id)?.error || output || 'Unknown error'}
+											<div class="border-t border-hub-danger/20 px-4 py-3 flex items-center">
+												<a
+													href="/library/builder?pipeline={encodeURIComponent(selectedName)}&troubleshoot={encodeURIComponent(step.id)}&error={encodeURIComponent(stepError)}"
+													class="inline-flex items-center gap-1.5 border border-red-500/30 text-red-400 hover:bg-red-500/10 px-3 py-1 rounded-lg text-xs font-medium transition-colors"
+												>
+													<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+														<path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/>
+													</svg>
+													Troubleshoot
+												</a>
 											</div>
 										{/if}
 									{/if}
