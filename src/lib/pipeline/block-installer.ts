@@ -137,37 +137,3 @@ export async function listInstalledBlocks(
 	return manifests;
 }
 
-/**
- * List all available blocks in the catalog (for "browse catalog" UI).
- *
- * @returns Array of BlockManifest with source type dir info.
- */
-export async function listCatalogBlocks(
-	catalogDir: string,
-): Promise<(BlockManifest & { catalogType: string })[]> {
-	const typeDirs = ['scripts', 'agents', 'skills', 'mcp', 'pipelines'];
-	const results: (BlockManifest & { catalogType: string })[] = [];
-
-	for (const typeDir of typeDirs) {
-		const dir = join(catalogDir, typeDir);
-		let names: string[];
-		try {
-			const entries = await readdir(dir, { withFileTypes: true });
-			names = entries.filter(e => e.isDirectory()).map(e => String(e.name));
-		} catch {
-			continue; // type dir doesn't exist
-		}
-
-		for (const name of names) {
-			if (name.startsWith('.') || name.startsWith('_')) continue;
-			try {
-				const manifest = await parseBlockManifest(join(dir, name));
-				results.push({ ...manifest, catalogType: typeDir });
-			} catch {
-				// Skip invalid blocks
-			}
-		}
-	}
-
-	return results;
-}

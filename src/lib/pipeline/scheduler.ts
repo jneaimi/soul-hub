@@ -318,10 +318,4 @@ export async function saveInputs(name: string, inputs: Record<string, string | n
 	}
 }
 
-/** Shutdown scheduler */
-export function shutdownScheduler(): void {
-	for (const [, job] of scheduledJobs) {
-		job.task.stop();
-	}
-	scheduledJobs.clear();
-}
+

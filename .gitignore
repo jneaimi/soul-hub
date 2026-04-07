@@ -13,3 +13,7 @@ CLAUDE.local.md
 .pids/
 settings.json
 .data/
+
+# Python
+__pycache__/
+*.pyc
