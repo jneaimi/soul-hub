@@ -278,6 +278,10 @@ export async function runPipeline(
 				const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 				let outputPath = (step.output || '/dev/null').replace('$RUN_ID', runId).replace('$DATE', today);
 				outputPath = resolveRef(outputPath, resolvedInputs, stepOutputs);
+				// Resolve relative output paths against the pipeline directory
+				if (outputPath !== '/dev/null' && !outputPath.startsWith('/')) {
+					outputPath = resolve(pipelineDir, outputPath);
+				}
 
 				// Resolve input(s)
 				const inputs = Array.isArray(step.input) ? step.input : step.input ? [step.input] : [];
@@ -305,8 +309,18 @@ export async function runPipeline(
 				// Output callback for terminal streaming
 				const outputCb = onStepOutput ? (data: string) => onStepOutput(stepId, data) : undefined;
 
+				// Resolve $inputs.* / {{inputs.*}} references in step config values
+				const resolvedConfig = step.config
+					? Object.fromEntries(
+						Object.entries(step.config).map(([k, v]) => [
+							k,
+							typeof v === 'string' ? resolveRef(v, resolvedInputs, stepOutputs) : v,
+						]),
+					)
+					: undefined;
+
 				// Build isolated env (only declared vars + system essentials + block config)
-				const stepEnv = buildIsolatedEnv(spec, pipelineDir, resolvedInputPaths, outputPath, step.config);
+				const stepEnv = buildIsolatedEnv(spec, pipelineDir, resolvedInputPaths, outputPath, resolvedConfig);
 
 				if (step.type === 'script') {
 					await runScriptStep(resolvedStep, pipelineDir, primaryInput, outputPath, step.timeout ?? 300, outputCb, stepEnv);

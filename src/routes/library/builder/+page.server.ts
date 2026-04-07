@@ -41,13 +41,11 @@ export const load: PageServerLoad = async ({ url }) => {
 	// Pipeline edit flow: load pipeline.yaml and installed blocks
 	let pipelineYaml: string | null = null;
 	let pipelineBlocks: BlockManifest[] = [];
-	let pipelineCwd: string | null = null;
 	if (pipelineParam) {
 		const pipelineDir = join(PIPELINES_DIR, pipelineParam);
 		try {
 			pipelineYaml = await readFile(join(pipelineDir, 'pipeline.yaml'), 'utf-8');
 			pipelineBlocks = await listInstalledBlocks(pipelineDir);
-			pipelineCwd = pipelineDir;
 		} catch {
 			// pipeline not found — page will show error banner
 		}
@@ -96,7 +94,8 @@ export const load: PageServerLoad = async ({ url }) => {
 	}
 
 	return {
-		cwd: pipelineCwd || builderDir,
+		// ALWAYS use builderDir — guard hooks in _builder/.claude/ only load from this cwd
+		cwd: builderDir,
 		catalogBlocks,
 		forkBlockContent,
 		forkName,
