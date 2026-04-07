@@ -235,7 +235,7 @@
 			const res = await fetch(`/api/pipelines?name=${encodeURIComponent(name)}`);
 			if (res.ok) {
 				const data = await res.json();
-				selected = data.pipeline;
+				selected = { ...data.pipeline, config_files: data.config_files || [] };
 				selectedPath = data.path || '';
 				outputDir = data.outputDir || null;
 				// Load inputs: saved values > defaults
