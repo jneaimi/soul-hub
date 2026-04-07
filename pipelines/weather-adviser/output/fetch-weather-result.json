@@ -1,0 +1,16 @@
+{
+  "city": "Tokyo",
+  "country": "Japan",
+  "latitude": 35.6895,
+  "longitude": 139.69171,
+  "timezone": "Asia/Tokyo",
+  "temperature_c": 6.0,
+  "feels_like_c": 2.6,
+  "humidity_percent": 55,
+  "wind_speed_kmh": 6.6,
+  "wind_gusts_kmh": 40.3,
+  "uv_index": 0.0,
+  "is_day": false,
+  "weather_code": 0,
+  "condition": "Clear sky"
+}

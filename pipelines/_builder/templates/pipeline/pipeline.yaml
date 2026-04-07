@@ -13,6 +13,7 @@ inputs:
     description: INPUT_DESCRIPTION
     required: true
 
+# Only add shared_config when a step actually reads from the JSON file
 shared_config:
   - name: CONFIG_DISPLAY_NAME
     file: config/CONFIG_FILE.json
@@ -37,6 +38,14 @@ steps:
     depends_on: [STEP_ID]
     output: output/NEXT_STEP-result.json
     timeout: 300
+
+  # Multi-input step example (receives output from two prior steps):
+  # - id: merge_step
+  #   block: merger
+  #   depends_on: [STEP_ID, NEXT_STEP]
+  #   input: [$steps.STEP_ID.output, $steps.NEXT_STEP.output]
+  #   output: output/merge-result.json
+  #   timeout: 300
 
 on_failure:
   strategy: halt

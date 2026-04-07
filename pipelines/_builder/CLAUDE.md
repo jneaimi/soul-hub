@@ -17,18 +17,26 @@ Always start from `templates/` — copy the skeleton and fill in placeholders. N
 | Agent block | `templates/agent-block/BLOCK.md` + `templates/agent-block/agent.md` |
 | Pipeline | `templates/pipeline/pipeline.yaml` |
 | Config file | `templates/config/data-file.json` |
+| Skill | `templates/skill/SKILL.md` |
+| MCP server | `templates/mcp/mcp-config.json` |
 
-### 2. CHECK COMPONENTS — Before writing utility code
-Before writing database init, config reading, or output writing code, check `components/` for reusable patterns:
+### 2. MANDATORY: Check components/ before writing utility code
+Before writing ANY of these, check `components/` first:
 
-| Component | What it does |
-|-----------|-------------|
-| `components/db_init.py` | Init SQLite from schema.sql |
-| `components/json_config.py` | Read JSON config file, extract column values |
-| `components/output_writer.py` | Write JSON/MD output to PIPELINE_OUTPUT |
-| `components/log_writer.py` | Append timestamped entries to a log file |
+| Need | Use |
+|------|-----|
+| HTTP requests | `components/api_client.py` |
+| JSON config reading | `components/json_config.py` |
+| Database init | `components/db_init.py` |
+| CSV reading/writing | `components/csv_writer.py` |
+| Output writing | `components/output_writer.py` |
+| Error handling | `components/error_handler.py` |
+| Logging actions | `components/log_writer.py` |
+| Progress reporting | `components/progress.py` |
 
-Import or copy these into your block instead of reimplementing.
+Run `ls components/` to see what's available. Import and extend — don't rewrite.
+
+**If you write a reusable utility function not covered by existing components**, save a copy to `staged-components/` with a docstring explaining what it does and why it's needed. The user will review it and may promote it to `components/` for future use.
 
 ### 3. CONFIG FILES MUST BE JSON
 Config files in `config/` **MUST** be `.json` with column schema defined in `pipeline.yaml`. Never create `.md` config files — the guard hook will block them.
