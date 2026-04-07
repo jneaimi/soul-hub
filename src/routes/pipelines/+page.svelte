@@ -165,15 +165,15 @@
 			const stepSpec = selected?.steps?.find(s => s.id === step.id);
 			const blockName = stepSpec?.block;
 			const manifest = blockName ? installedBlocks.find(b => b.name === blockName) : null;
-			if (manifest?.outputs) {
-				for (const out of manifest.outputs) {
-					entries.push({
-						name: out.name,
-						path: `${step.outputPath}/${out.name}`,
-						type: out.type,
-						format: out.format,
-					});
-				}
+			if (manifest?.outputs && manifest.outputs.length > 0) {
+				// Use the step's actual output path with block's declared format
+				const out = manifest.outputs[0];
+				entries.push({
+					name: out.name || step.id,
+					path: step.outputPath,
+					type: out.type || 'file',
+					format: out.format,
+				});
 			} else {
 				// Fallback: show the output path as a generic file entry
 				entries.push({
