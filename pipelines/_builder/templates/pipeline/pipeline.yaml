@@ -1,0 +1,42 @@
+name: PIPELINE_NAME
+description: DESCRIPTION
+version: 1.0.0
+
+env:
+  - name: API_KEY_NAME
+    description: DESCRIPTION
+    required: true
+
+inputs:
+  - name: INPUT_NAME
+    type: text
+    description: INPUT_DESCRIPTION
+    required: true
+
+shared_config:
+  - name: CONFIG_DISPLAY_NAME
+    file: config/CONFIG_FILE.json
+    description: CONFIG_DESCRIPTION
+    columns:
+      - name: COLUMN_NAME
+        type: text
+        label: COLUMN_LABEL
+        placeholder: "placeholder text"
+        required: true
+
+steps:
+  - id: STEP_ID
+    block: BLOCK_NAME
+    config:
+      param_name: value
+    timeout: 300
+    output: output/STEP_ID-result.json
+
+  - id: NEXT_STEP
+    block: NEXT_BLOCK
+    depends_on: [STEP_ID]
+    output: output/NEXT_STEP-result.json
+    timeout: 300
+
+on_failure:
+  strategy: halt

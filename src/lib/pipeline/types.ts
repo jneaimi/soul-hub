@@ -80,10 +80,20 @@ export interface PipelineMcp {
 	env?: Record<string, string>;
 }
 
+export interface ConfigColumn {
+	name: string;
+	type: 'text' | 'select' | 'number';
+	label: string;
+	placeholder?: string;
+	options?: string[];
+	required?: boolean;
+}
+
 export interface PipelineConfigFile {
 	name: string;
 	file: string;
 	description?: string;
+	columns?: ConfigColumn[];
 }
 
 export interface PipelineSpec {

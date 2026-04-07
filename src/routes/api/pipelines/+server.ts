@@ -59,6 +59,7 @@ export const GET: RequestHandler = async ({ url }) => {
 				name: c.name,
 				description: c.description || '',
 				path: c.file,
+				columns: c.columns || [],
 			}));
 
 			return json({ pipeline: spec, path: yamlPath, outputDir, savedInputs: saved, envStatus, installedBlocks, configSchema, config_files: configFiles });

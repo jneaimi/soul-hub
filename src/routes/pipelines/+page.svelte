@@ -2,6 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import FilePreview from '$lib/components/FilePreview.svelte';
 	import StepConfigCard from '$lib/components/StepConfigCard.svelte';
+	import SharedConfigEditor from '$lib/components/SharedConfigEditor.svelte';
 	import type { ConfigFieldType } from '$lib/pipeline/block';
 
 	interface Pipeline {
@@ -16,7 +17,7 @@
 		version?: string;
 		author?: string;
 		inputs?: { name: string; type: string; description: string; default?: string | number; options?: string[]; required?: boolean }[];
-		config_files?: { name: string; description: string; path: string }[];
+		config_files?: { name: string; description: string; path: string; columns?: { name: string; type: 'text' | 'select' | 'number'; label: string; placeholder?: string; options?: string[]; required?: boolean }[] }[];
 		steps: { id: string; type: string; block?: string; config?: Record<string, unknown>; agent?: string; run?: string; depends_on?: string[]; when?: string; skip_if?: string }[];
 	}
 
@@ -65,8 +66,6 @@
 	let selectedPath = $state('');
 	let inputValues = $state<Record<string, string | number>>({});
 	let envStatus = $state<EnvStatus[]>([]);
-	let expandedConfigs = $state<Set<string>>(new Set());
-	let configContents = $state<Record<string, string>>({});
 
 	// Selected pipeline schedule state
 	let selectedSchedule = $state<Schedule | null>(null);
@@ -139,27 +138,6 @@
 	let schedules = $state<Schedule[]>([]);
 	let persistedHistory = $state<HistoryRecord[]>([]);
 
-	async function toggleConfig(path: string) {
-		if (expandedConfigs.has(path)) {
-			expandedConfigs.delete(path);
-			expandedConfigs = new Set(expandedConfigs);
-			return;
-		}
-		expandedConfigs.add(path);
-		expandedConfigs = new Set(expandedConfigs);
-
-		if (!configContents[path] && selectedPath) {
-			const dir = selectedPath.replace(/\/pipeline\.yaml$/, '');
-			const fullPath = `${dir}/${path}`;
-			try {
-				const res = await fetch(`/api/files?action=read&path=${encodeURIComponent(fullPath)}`);
-				if (res.ok) {
-					const data = await res.json();
-					configContents = { ...configContents, [path]: data.content || '(empty)' };
-				}
-			} catch { /* ignore */ }
-		}
-	}
 
 	// Validation: missing env vars and required inputs
 	let missingEnvVars = $derived(envStatus.filter(e => e.required && !e.set));
@@ -309,8 +287,6 @@
 		outputDir = null;
 		outputFiles = [];
 		envStatus = [];
-		expandedConfigs = new Set();
-		configContents = {};
 		selectedPath = '';
 		previewFile = null;
 		activeGates = new Map();
@@ -944,43 +920,12 @@
 				{#if selected.config_files && selected.config_files.length > 0}
 					<section class="mb-6">
 						<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-3">Shared Config</h2>
-						<div class="bg-hub-surface border border-hub-border rounded-lg divide-y divide-hub-border/30">
+						<div class="space-y-3">
 							{#each selected.config_files as cfg}
-								{@const isExpanded = expandedConfigs.has(cfg.path)}
-								<div>
-									<div class="flex items-center gap-3 px-4 py-3">
-										<button
-											onclick={() => toggleConfig(cfg.path)}
-											class="flex items-center gap-2 flex-1 min-w-0 hover:bg-hub-bg/30 -m-1 p-1 rounded transition-colors cursor-pointer text-left"
-										>
-											<svg class="w-3 h-3 flex-shrink-0 text-hub-dim transition-transform {isExpanded ? 'rotate-90' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
-											<div class="min-w-0 flex-1">
-												<span class="text-xs font-medium text-hub-text">{cfg.name}</span>
-												<p class="text-[10px] text-hub-dim mt-0.5">{cfg.description}</p>
-											</div>
-										</button>
-										<span class="text-[9px] text-hub-dim font-mono flex-shrink-0">{cfg.path.split('/').pop()}</span>
-										<button
-											onclick={() => {
-												if (!selectedPath) return;
-												const dir = selectedPath.replace(/\/pipeline\.yaml$/, '');
-												previewFile = { path: `${dir}/${cfg.path}`, name: cfg.name };
-											}}
-											class="px-2 py-1 rounded text-[10px] font-medium text-hub-info border border-hub-info/30 hover:bg-hub-info/10 transition-colors cursor-pointer flex-shrink-0"
-										>
-											Edit
-										</button>
-									</div>
-									{#if isExpanded}
-										<div class="px-4 pb-3">
-											{#if configContents[cfg.path]}
-												<pre class="text-[11px] text-hub-muted bg-hub-bg border border-hub-border/50 rounded-md p-3 overflow-x-auto max-h-60 whitespace-pre-wrap font-mono">{configContents[cfg.path]}</pre>
-											{:else}
-												<span class="text-[10px] text-hub-dim">Loading...</span>
-											{/if}
-										</div>
-									{/if}
-								</div>
+								<SharedConfigEditor
+									pipelineName={selectedName}
+									configFile={{ name: cfg.name, file: cfg.path, description: cfg.description, columns: cfg.columns }}
+								/>
 							{/each}
 						</div>
 					</section>

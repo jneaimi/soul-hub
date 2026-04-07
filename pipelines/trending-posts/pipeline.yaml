@@ -1,0 +1,54 @@
+name: trending-posts
+description: Fetch last 24h posts from tracked influencers, rank by engagement, output top 10 as markdown
+version: 1.0.0
+
+env:
+  - name: APIDIRECT_API_KEY
+    required: true
+  - name: YOUTUBE_API_KEY
+    required: true
+
+shared_config:
+  - name: Influencer Roster
+    file: config/influencer-roster.json
+    description: Add influencers to track — one row per person with handle, platform, and focus
+    columns:
+      - name: handle
+        type: text
+        label: Handle
+        placeholder: "@username"
+        required: true
+      - name: platform
+        type: select
+        label: Platform
+        options: [tiktok, youtube, twitter, linkedin, reddit, instagram]
+        required: true
+      - name: focus
+        type: text
+        label: Focus
+        placeholder: "e.g. AI, fintech, crypto"
+      - name: why_follow
+        type: text
+        label: Why Follow
+        placeholder: "Why track this person?"
+
+steps:
+  - id: fetch-posts
+    block: post-fetcher
+    config:
+      lookback_days: 1
+      platforms: [tiktok, youtube, twitter, linkedin, reddit, instagram]
+      skip_comments: true
+      skip_transcripts: true
+    timeout: 300
+
+  - id: rank-engagement
+    block: engagement-ranker
+    config:
+      top_n: 10
+    depends_on: [fetch-posts]
+    output: output/top-10-trending.md
+    timeout: 30
+
+on_failure:
+  strategy: halt
