@@ -3,11 +3,12 @@
 
 	interface Props {
 		blocks: BlockManifest[];
+		stagedBlockNames?: Set<string>;
 		onUseBlock?: (block: BlockManifest) => void;
 		onForkBlock?: (block: BlockManifest) => void;
 	}
 
-	let { blocks, onUseBlock, onForkBlock }: Props = $props();
+	let { blocks, stagedBlockNames = new Set(), onUseBlock, onForkBlock }: Props = $props();
 
 	let search = $state('');
 	let activeFilter = $state<BlockType | 'all'>('all');
@@ -118,11 +119,13 @@
 							<!-- Action buttons -->
 							<div class="flex items-center gap-1.5 mt-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
 								{#if onUseBlock}
+									{@const isStaged = stagedBlockNames.has(block.name)}
 									<button
 										onclick={() => onUseBlock?.(block)}
-										class="px-2 py-0.5 rounded text-[10px] font-medium bg-hub-cta/15 text-hub-cta hover:bg-hub-cta/25 transition-colors cursor-pointer"
+										class="px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer
+											{isStaged ? 'bg-hub-success/15 text-hub-success' : 'bg-hub-cta/15 text-hub-cta hover:bg-hub-cta/25'}"
 									>
-										Use
+										{isStaged ? 'Added' : 'Add'}
 									</button>
 								{/if}
 								{#if onForkBlock}

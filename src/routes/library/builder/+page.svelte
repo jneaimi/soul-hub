@@ -37,6 +37,13 @@
 	// Terminal ref
 	let terminalRef: TerminalTabs | undefined = $state();
 
+	// Prompt composer state
+	let stagedBlocks = $state<BlockManifest[]>([]);
+	let userPrompt = $state('');
+	let sessionStarted = $state(false);
+
+	const stagedBlockNames = $derived(new Set(stagedBlocks.map((b) => b.name)));
+
 	// Context banner type
 	const bannerType = $derived.by<'fork' | 'pipeline' | 'fork-error' | 'pipeline-error' | null>(() => {
 		if (bannerDismissed) return null;
@@ -47,24 +54,43 @@
 		return null;
 	});
 
-	// Inject context prompt on mount
+	// Pre-fill composer on mount for fork/edit contexts
 	onMount(() => {
-		if (!terminalRef) return;
-
 		if (forkName && data.forkBlockContent) {
-			const prompt = `I want to fork the block "${forkName}" and customize it. Here is the source block content:\n\n${data.forkBlockContent}\n\nHelp me create a new version of this block with a custom name.`;
-			setTimeout(() => terminalRef?.sendToActive(prompt), 300);
+			userPrompt = `I want to fork the block "${forkName}" and customize it. Here is the source block content:\n\n${data.forkBlockContent}\n\nHelp me create a new version of this block with a custom name.`;
 		} else if (pipelineName && data.pipelineYaml) {
 			const blockNames = (data.pipelineBlocks || []).map((b: BlockManifest) => b.name).join(', ');
-			const prompt = `I'm editing the pipeline "${pipelineName}". Here is the current pipeline.yaml:\n\n\`\`\`yaml\n${data.pipelineYaml}\`\`\`\n\nInstalled blocks: ${blockNames || 'none'}\n\nWhat would you like to change?`;
-			setTimeout(() => terminalRef?.sendToActive(prompt), 300);
+			userPrompt = `I'm editing the pipeline "${pipelineName}". Here is the current pipeline.yaml:\n\n\`\`\`yaml\n${data.pipelineYaml}\`\`\`\n\nInstalled blocks: ${blockNames || 'none'}\n\nWhat would you like to change?`;
 		}
 	});
 
 	function handleUseBlock(block: BlockManifest) {
-		terminalRef?.sendToActive(
-			`Install the block "${block.name}" (${block.type}) into this pipeline. Description: ${block.description}`
-		);
+		if (stagedBlockNames.has(block.name)) {
+			stagedBlocks = stagedBlocks.filter((b) => b.name !== block.name);
+		} else {
+			stagedBlocks = [...stagedBlocks, block];
+		}
+	}
+
+	function removeStagedBlock(name: string) {
+		stagedBlocks = stagedBlocks.filter((b) => b.name !== name);
+	}
+
+	function startSession() {
+		if (!terminalRef) return;
+		const blockList = stagedBlocks
+			.map((b) => `- "${b.name}" (${b.type}): ${b.description}`)
+			.join('\n');
+		const parts: string[] = [];
+		if (blockList) {
+			parts.push(`Use these blocks:\n${blockList}`);
+		}
+		if (userPrompt.trim()) {
+			parts.push(userPrompt.trim());
+		}
+		const composed = parts.join('\n\n') || 'Start a new builder session.';
+		sessionStarted = true;
+		setTimeout(() => terminalRef?.sendToActive(composed), 300);
 	}
 
 	function handleForkBlock(block: BlockManifest) {
@@ -189,7 +215,7 @@
 		</div>
 	{/if}
 
-	<!-- Main content: sidebar + terminal -->
+	<!-- Main content: sidebar + composer/terminal -->
 	<div class="flex-1 min-h-0 flex">
 		<!-- Catalog sidebar -->
 		{#if sidebarOpen}
@@ -199,6 +225,7 @@
 			>
 				<BuilderCatalogSidebar
 					blocks={data.catalogBlocks}
+					{stagedBlockNames}
 					onUseBlock={handleUseBlock}
 					onForkBlock={handleForkBlock}
 				/>
@@ -212,9 +239,72 @@
 			></div>
 		{/if}
 
-		<!-- Terminal -->
-		<div class="flex-1 min-w-0 min-h-0 overflow-hidden">
-			<TerminalTabs bind:this={terminalRef} cwd={data.cwd} projectName="_builder" />
+		<!-- Right pane: composer + terminal -->
+		<div class="flex-1 min-w-0 min-h-0 flex flex-col">
+			<!-- Prompt Composer (visible before session starts) -->
+			{#if !sessionStarted}
+				<div class="flex-shrink-0 border-b border-hub-border bg-hub-surface/30 px-4 py-3">
+					<!-- Staged blocks -->
+					{#if stagedBlocks.length > 0}
+						<div class="mb-2">
+							<span class="text-[10px] font-semibold text-hub-dim uppercase tracking-wider">Blocks</span>
+							<div class="flex flex-wrap gap-1.5 mt-1">
+								{#each stagedBlocks as block (block.name)}
+									<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-hub-cta/10 text-hub-cta border border-hub-cta/20">
+										{block.name}
+										<button
+											onclick={() => removeStagedBlock(block.name)}
+											class="ml-0.5 hover:text-hub-danger transition-colors cursor-pointer"
+											aria-label="Remove {block.name}"
+										>
+											<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+												<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+											</svg>
+										</button>
+									</span>
+								{/each}
+							</div>
+						</div>
+					{/if}
+
+					<!-- Prompt textarea -->
+					<textarea
+						bind:value={userPrompt}
+						placeholder="Describe what you want to build..."
+						rows="3"
+						class="w-full bg-hub-card border border-hub-border rounded-lg px-3 py-2 text-sm text-hub-text placeholder:text-hub-dim focus:outline-none focus:border-hub-cta/50 resize-y min-h-[60px] max-h-[200px]"
+						onkeydown={(e) => {
+							if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+								e.preventDefault();
+								startSession();
+							}
+						}}
+					></textarea>
+
+					<!-- Actions row -->
+					<div class="flex items-center justify-between mt-2">
+						<span class="text-[10px] text-hub-dim">
+							{stagedBlocks.length > 0 ? `${stagedBlocks.length} block${stagedBlocks.length > 1 ? 's' : ''} staged` : 'Add blocks from the catalog or just describe your goal'}
+						</span>
+						<button
+							onclick={startSession}
+							disabled={!userPrompt.trim() && stagedBlocks.length === 0}
+							class="px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer
+								{!userPrompt.trim() && stagedBlocks.length === 0
+									? 'bg-hub-card text-hub-dim cursor-not-allowed'
+									: 'bg-hub-cta text-white hover:bg-hub-cta/90'}"
+						>
+							Start Session
+							<span class="text-[10px] opacity-60 ml-1">{'\u2318'}Enter</span>
+						</button>
+					</div>
+				</div>
+			{/if}
+
+			<!-- Terminal -->
+			<div class="flex-1 min-w-0 min-h-0 overflow-hidden">
+				<TerminalTabs bind:this={terminalRef} cwd={data.cwd} projectName="_builder" />
+			</div>
 		</div>
 	</div>
 </div>
