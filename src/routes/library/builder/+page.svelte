@@ -137,11 +137,12 @@
 			.join('\n');
 		const parts: string[] = [];
 
-		parts.push(`IMPORTANT: Before creating any files, ask me clarifying questions about:
-1. What are my inputs? (data I provide, files, APIs)
-2. What output do I expect? (format, location)
-3. Propose a plan with the structure you'll create
-4. Only create files after I approve the plan.`);
+		parts.push(`IMPORTANT: Use the Evaluate → Analyze → Apply framework. Ask ONE question at a time using AskUserQuestion:
+1. What problem does this solve?
+2. What data goes in and what comes out?
+3. What could go wrong?
+4. How will we know it works?
+Then propose a plan. Only create files after I approve.`);
 
 		if (buildType) {
 			parts.push(`Build type: ${buildTypes.find((bt) => bt.value === buildType)?.label || buildType}`);

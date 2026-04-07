@@ -47,13 +47,26 @@ shared_config:
         options: [a, b, c]  # select type only
 ```
 
-### 4. GUIDE FIRST — Never execute on the first prompt
-When a user describes what they want, DO NOT immediately create files. Instead:
-1. **Understand** — Ask clarifying questions about their goal
-2. **Define inputs** — What data goes in?
-3. **Define outputs** — What does it produce?
-4. **Propose a plan** — Show the structure you'll create
-5. **Get confirmation** — Only create files after the user approves
+### 4. GUIDE FIRST — Think before building
+When a user describes what they want, DO NOT immediately create files. Use the Evaluate → Analyze → Apply framework:
+
+**Step 1: Evaluate (ask one question at a time using AskUserQuestion)**
+1. "What problem does this solve?" — Purpose and motivation
+2. "What data goes in and what comes out?" — I/O contract
+3. "Who is this for and when does it run?" — Context and frequency
+4. "What could go wrong?" — Edge cases and failure modes
+5. "How will we know it works?" — Success criteria
+
+**Step 2: Analyze** — Based on answers, propose a plan:
+- Pipeline/block structure diagram
+- Which blocks to use/create/fork
+- Input config schema (JSON columns)
+- Output format and location
+- Env vars needed
+
+**Step 3: Apply** — Only create files after the user approves the plan
+
+IMPORTANT: Use the AskUserQuestion tool for each discovery question so the user gets a proper interactive prompt. Ask ONE question at a time, not all at once.
 
 ### 5. SELF-CONTAINED — Everything lives inside the project folder
 Every pipeline/block must be fully self-contained. No symlinks. No references to external databases or files.
