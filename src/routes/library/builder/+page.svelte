@@ -7,7 +7,6 @@
 
 	const { data } = $props();
 
-	const type = $derived(page.url.searchParams.get('type') || 'pipeline');
 	const forkName = $derived(data.forkName);
 	const pipelineName = $derived(data.pipelineName);
 
@@ -15,21 +14,43 @@
 	let libraryItems = $state<BlockManifest[]>(data.catalogBlocks);
 
 	// No filtering — show everything as referenceable
-	const filteredCatalog = $derived(libraryItems
-	);
+	const filteredCatalog = $derived(libraryItems);
 
-	const labels: Record<string, string> = {
-		pipeline: 'New Pipeline',
-		skill: 'New Skill',
-		agent: 'New Agent',
+	// Build type selector
+	type BuildType = 'pipeline' | 'script' | 'agent' | 'skill' | 'fork';
+
+	const buildTypes: { value: BuildType; label: string }[] = [
+		{ value: 'pipeline', label: 'New Pipeline' },
+		{ value: 'script', label: 'New Script Block' },
+		{ value: 'agent', label: 'New Agent Block' },
+		{ value: 'skill', label: 'New Skill' },
+		{ value: 'fork', label: 'Fork Existing' },
+	];
+
+	const placeholders: Record<BuildType, string> = {
+		pipeline: 'Describe what your pipeline should do...',
+		script: 'Describe what this script should process...',
+		agent: 'Describe what this agent should do...',
+		skill: 'Describe what Claude should be able to do with this skill...',
+		fork: 'Which block do you want to customize and why?',
 	};
+
+	// Initialize buildType from URL params
+	function getInitialBuildType(): BuildType {
+		if (forkName) return 'fork';
+		const t = page.url.searchParams.get('type');
+		if (t && ['pipeline', 'script', 'agent', 'skill'].includes(t)) return t as BuildType;
+		return 'pipeline';
+	}
+
+	let buildType = $state<BuildType>(getInitialBuildType());
 
 	const label = $derived(
 		pipelineName
 			? `Editing ${pipelineName}`
 			: forkName
 				? `Forking ${forkName}`
-				: labels[type] || 'Builder'
+				: buildTypes.find((bt) => bt.value === buildType)?.label || 'Builder'
 	);
 
 	// Sidebar state
@@ -40,13 +61,12 @@
 	// Banner dismiss
 	let bannerDismissed = $state(false);
 
-	// Terminal ref
-	let terminalRef: TerminalTabs | undefined = $state();
-
 	// Prompt composer state
 	let stagedBlocks = $state<BlockManifest[]>([]);
 	let userPrompt = $state('');
 	let sessionStarted = $state(false);
+	let loading = $state(false);
+	let composedPrompt = $state('');
 
 	const stagedBlockNames = $derived(new Set(stagedBlocks.map((b) => b.name)));
 
@@ -94,6 +114,8 @@
 		} else if (pipelineName && data.pipelineYaml) {
 			const blockNames = (data.pipelineBlocks || []).map((b: BlockManifest) => b.name).join(', ');
 			userPrompt = `I'm editing "${pipelineName}".\n\nCurrent pipeline.yaml:\n\`\`\`yaml\n${data.pipelineYaml}\`\`\`\n\nInstalled blocks: ${blockNames || 'none'}`;
+			// Auto-start session for ?pipeline= param
+			startSession();
 		}
 	});
 
@@ -109,28 +131,44 @@
 		stagedBlocks = stagedBlocks.filter((b) => b.name !== name);
 	}
 
-	function startSession() {
+	function composePrompt(): string {
 		const blockList = stagedBlocks
 			.map((b) => `- "${b.name}" (${b.type}): ${b.description}\n  Path: ${(b as BlockManifest & { path?: string }).path || `catalog/${b.type === 'script' ? 'scripts' : 'agents'}/${b.name}/`}`)
 			.join('\n');
 		const parts: string[] = [];
 
-		// System instruction: guide first, don't execute immediately
 		parts.push(`IMPORTANT: Before creating any files, ask me clarifying questions about:
 1. What are my inputs? (data I provide, files, APIs)
 2. What output do I expect? (format, location)
 3. Propose a plan with the structure you'll create
 4. Only create files after I approve the plan.`);
 
+		if (buildType) {
+			parts.push(`Build type: ${buildTypes.find((bt) => bt.value === buildType)?.label || buildType}`);
+		}
 		if (blockList) {
 			parts.push(`I want to reference these blocks:\n${blockList}`);
 		}
 		if (userPrompt.trim()) {
 			parts.push(`My goal: ${userPrompt.trim()}`);
 		}
-		const composed = parts.join('\n\n') || 'Start a new builder session.';
+		return parts.join('\n\n') || 'Start a new builder session.';
+	}
+
+	function startSession() {
+		composedPrompt = composePrompt();
+		loading = true;
 		sessionStarted = true;
-		setTimeout(() => terminalRef?.sendToActive(composed), 3000);
+	}
+
+	function openTerminal() {
+		composedPrompt = '';
+		loading = true;
+		sessionStarted = true;
+	}
+
+	function handleReady() {
+		loading = false;
 	}
 
 	function dismissBanner() {
@@ -274,82 +312,110 @@
 			></div>
 		{/if}
 
-		<!-- Right pane: composer + terminal -->
+		<!-- Right pane: composer or terminal -->
 		<div class="flex-1 min-w-0 min-h-0 flex flex-col">
-			<!-- Prompt Composer (visible before session starts) -->
 			{#if !sessionStarted}
-				<div class="flex-shrink-0 border-b border-hub-border bg-hub-surface/30 px-4 py-3">
-					<!-- Staged blocks -->
-					{#if stagedBlocks.length > 0}
-						<div class="mb-2">
-							<span class="text-[10px] font-semibold text-hub-dim uppercase tracking-wider">Blocks</span>
-							<div class="flex flex-wrap gap-1.5 mt-1">
-								{#each stagedBlocks as block (block.name)}
-									<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-hub-cta/10 text-hub-cta border border-hub-cta/20">
-										{block.name}
-										<button
-											onclick={() => removeStagedBlock(block.name)}
-											class="ml-0.5 hover:text-hub-danger transition-colors cursor-pointer"
-											aria-label="Remove {block.name}"
-										>
-											<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-												<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-											</svg>
-										</button>
-									</span>
+				<!-- Composer fills entire right pane -->
+				<div class="flex-1 overflow-y-auto">
+					<div class="max-w-2xl mx-auto py-8 px-4 flex flex-col gap-6">
+						<!-- Step 1: What are you building? -->
+						<div class="bg-hub-surface/30 border border-hub-border rounded-lg p-4">
+							<h3 class="text-xs font-semibold text-hub-dim uppercase tracking-wider mb-3">Step 1: What are you building?</h3>
+							<div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+								{#each buildTypes as bt (bt.value)}
+									<button
+										onclick={() => (buildType = bt.value)}
+										class="p-3 rounded-lg border text-left transition-colors cursor-pointer
+											{buildType === bt.value ? 'border-hub-cta bg-hub-cta/5 text-hub-text' : 'border-hub-border text-hub-muted hover:border-hub-dim hover:text-hub-text'}"
+									>
+										<span class="text-sm font-medium">{bt.label}</span>
+									</button>
 								{/each}
 							</div>
 						</div>
-					{/if}
 
-					<!-- Prompt textarea -->
-					<textarea
-						bind:value={userPrompt}
-						placeholder="Describe what you want to build..."
-						rows="3"
-						class="w-full bg-hub-card border border-hub-border rounded-lg px-3 py-2 text-sm text-hub-text placeholder:text-hub-dim focus:outline-none focus:border-hub-cta/50 resize-y min-h-[60px] max-h-[200px]"
-						onkeydown={(e) => {
-							if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-								e.preventDefault();
-								startSession();
-							}
-						}}
-					></textarea>
+						<!-- Step 2: References (optional) -->
+						<div class="bg-hub-surface/30 border border-hub-border rounded-lg p-4">
+							<h3 class="text-xs font-semibold text-hub-dim uppercase tracking-wider mb-3">Step 2: References (optional)</h3>
+							{#if stagedBlocks.length > 0}
+								<div class="flex flex-wrap gap-1.5">
+									{#each stagedBlocks as block (block.name)}
+										<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-hub-cta/10 text-hub-cta border border-hub-cta/20">
+											{block.name}
+											<button
+												onclick={() => removeStagedBlock(block.name)}
+												class="ml-0.5 hover:text-hub-danger transition-colors cursor-pointer"
+												aria-label="Remove {block.name}"
+											>
+												<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+													<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+												</svg>
+											</button>
+										</span>
+									{/each}
+								</div>
+							{:else}
+								<p class="text-xs text-hub-dim">Click items in the sidebar to add references</p>
+							{/if}
+						</div>
 
-					<!-- Actions row -->
-					<div class="flex items-center justify-between mt-2">
-						<span class="text-[10px] text-hub-dim">
-							{stagedBlocks.length > 0 ? `${stagedBlocks.length} block${stagedBlocks.length > 1 ? 's' : ''} staged` : 'Add blocks from the catalog or just describe your goal'}
-						</span>
-						<button
-							onclick={startSession}
-							disabled={!userPrompt.trim() && stagedBlocks.length === 0}
-							class="px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer
-								{!userPrompt.trim() && stagedBlocks.length === 0
-									? 'bg-hub-card text-hub-dim cursor-not-allowed'
-									: 'bg-hub-cta text-white hover:bg-hub-cta/90'}"
-						>
-							Start Session
-							<span class="text-[10px] opacity-60 ml-1">{'\u2318'}Enter</span>
-						</button>
+						<!-- Step 3: Describe your goal -->
+						<div class="bg-hub-surface/30 border border-hub-border rounded-lg p-4">
+							<h3 class="text-xs font-semibold text-hub-dim uppercase tracking-wider mb-3">Step 3: Describe your goal</h3>
+							<textarea
+								bind:value={userPrompt}
+								placeholder={placeholders[buildType]}
+								rows="6"
+								class="w-full bg-hub-card border border-hub-border rounded-lg px-3 py-2 text-sm text-hub-text placeholder:text-hub-dim focus:outline-none focus:border-hub-cta/50 resize-y min-h-[120px] max-h-[300px]"
+								onkeydown={(e) => {
+									if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+										e.preventDefault();
+										startSession();
+									}
+								}}
+							></textarea>
+						</div>
+
+						<!-- Action buttons -->
+						<div class="flex items-center justify-center gap-3">
+							<button
+								onclick={startSession}
+								disabled={!userPrompt.trim() && stagedBlocks.length === 0}
+								class="px-6 py-2.5 rounded-lg text-sm font-semibold transition-colors cursor-pointer
+									{!userPrompt.trim() && stagedBlocks.length === 0
+										? 'bg-hub-card text-hub-dim cursor-not-allowed'
+										: 'bg-hub-cta text-white hover:bg-hub-cta/90'}"
+							>
+								Start Session
+								<span class="text-[10px] opacity-60 ml-1">{'\u2318'}Enter</span>
+							</button>
+							<button
+								onclick={openTerminal}
+								class="px-6 py-2.5 rounded-lg text-sm font-medium border border-hub-border text-hub-muted hover:text-hub-text hover:border-hub-dim transition-colors cursor-pointer"
+							>
+								Open Terminal
+							</button>
+						</div>
 					</div>
-				</div>
-			{/if}
-
-			<!-- Terminal (only after session starts) -->
-			{#if sessionStarted}
-				<div class="flex-1 min-w-0 min-h-0 overflow-hidden">
-					<TerminalTabs bind:this={terminalRef} cwd={data.cwd} projectName="_builder" />
 				</div>
 			{:else}
-				<!-- Empty state -->
-				<div class="flex-1 flex items-center justify-center text-hub-dim">
-					<div class="text-center">
-						<svg class="w-12 h-12 mx-auto mb-3 opacity-30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-							<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
-						</svg>
-						<p class="text-sm">Enter a prompt or open a terminal to start</p>
-					</div>
+				<!-- Terminal with loading overlay -->
+				<div class="flex-1 min-w-0 min-h-0 overflow-hidden relative">
+					{#if loading}
+						<div class="absolute inset-0 z-10 flex items-center justify-center bg-[#0a0a0f]">
+							<div class="text-center">
+								<div class="inline-block w-8 h-8 border-2 border-hub-dim border-t-hub-cta rounded-full animate-spin mb-3"></div>
+								<p class="text-sm text-hub-muted">Starting Claude...</p>
+							</div>
+						</div>
+					{/if}
+					<TerminalTabs
+						cwd={data.cwd}
+						projectName="_builder"
+						initialPrompt={composedPrompt}
+						autoStart={true}
+						onReady={handleReady}
+					/>
 				</div>
 			{/if}
 		</div>

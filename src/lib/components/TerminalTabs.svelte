@@ -4,6 +4,9 @@
 	interface Props {
 		cwd: string;
 		projectName: string;
+		initialPrompt?: string;
+		autoStart?: boolean;
+		onReady?: () => void;
 	}
 
 	interface Tab {
@@ -14,7 +17,7 @@
 		ref?: AgentTerminal;
 	}
 
-	let { cwd, projectName }: Props = $props();
+	let { cwd, projectName, initialPrompt = '', autoStart = false, onReady }: Props = $props();
 
 	let tabs = $state<Tab[]>([]);
 	let activeTabId = $state('');
@@ -33,7 +36,10 @@
 			// Spawn after DOM renders the terminal
 			setTimeout(() => {
 				const t = tabs.find((t) => t.id === id);
-				if (t?.ref) t.ref.spawn(prompt);
+				if (t?.ref) {
+					t.ref.spawn(prompt);
+					onReady?.();
+				}
 			}, 150);
 		}
 	}
@@ -77,6 +83,15 @@
 	}
 
 	const activeTab = $derived(tabs.find((t) => t.id === activeTabId));
+
+	// Auto-create first tab when autoStart is true
+	let initialTabCreated = false;
+	$effect(() => {
+		if (autoStart && !initialTabCreated) {
+			initialTabCreated = true;
+			createTab(initialPrompt || '', true);
+		}
+	});
 
 	/** Send a prompt to the active terminal, or create a new one if none exists */
 	export function sendToActive(prompt: string) {

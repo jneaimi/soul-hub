@@ -10,7 +10,6 @@
 	let { blocks, stagedBlockNames = new Set(), onReference }: Props = $props();
 
 	let search = $state('');
-	let activeFilter = $state<BlockType | 'all'>('all');
 
 	const typeColors: Record<BlockType, string> = {
 		script: 'bg-hub-cta/15 text-hub-cta',
@@ -28,29 +27,52 @@
 		pipeline: 'M13 17l5-5-5-5M6 17l5-5-5-5',
 	};
 
-	const filteredBlocks = $derived.by(() => {
-		let result = blocks;
-		if (activeFilter !== 'all') {
-			result = result.filter((b) => b.type === activeFilter);
-		}
-		if (search.trim()) {
-			const q = search.toLowerCase();
-			result = result.filter(
-				(b) =>
-					b.name.toLowerCase().includes(q) ||
-					b.description.toLowerCase().includes(q)
-			);
-		}
-		return result;
+	// Group order and default expansion
+	const groupOrder: BlockType[] = ['script', 'agent', 'skill', 'mcp'];
+	const groupLabels: Record<BlockType, string> = {
+		script: 'Scripts',
+		agent: 'Agents',
+		skill: 'Skills',
+		mcp: 'MCPs',
+		pipeline: 'Pipelines',
+	};
+
+	// Scripts + Agents expanded by default; Skills + MCPs collapsed
+	let collapsed = $state<Record<string, boolean>>({
+		script: false,
+		agent: false,
+		skill: true,
+		mcp: true,
+		pipeline: true,
 	});
 
-	const typeCounts = $derived.by(() => {
-		const counts: Record<string, number> = { all: blocks.length };
-		for (const b of blocks) {
-			counts[b.type] = (counts[b.type] || 0) + 1;
-		}
-		return counts;
+	function toggleGroup(type: string) {
+		collapsed[type] = !collapsed[type];
+	}
+
+	// Search-filtered blocks
+	const filteredBlocks = $derived.by(() => {
+		if (!search.trim()) return blocks;
+		const q = search.toLowerCase();
+		return blocks.filter(
+			(b) =>
+				b.name.toLowerCase().includes(q) ||
+				b.description.toLowerCase().includes(q)
+		);
 	});
+
+	// Grouped blocks
+	const grouped = $derived.by(() => {
+		const groups: Record<string, BlockManifest[]> = {};
+		for (const b of filteredBlocks) {
+			if (!groups[b.type]) groups[b.type] = [];
+			groups[b.type].push(b);
+		}
+		return groups;
+	});
+
+	// When searching, expand all groups
+	const isSearching = $derived(search.trim().length > 0);
 </script>
 
 <div class="flex flex-col h-full bg-hub-surface/50">
@@ -71,29 +93,7 @@
 		/>
 	</div>
 
-	<!-- Type filter pills -->
-	<div class="flex-shrink-0 flex flex-wrap gap-1 px-3 py-2 border-b border-hub-border/30">
-		<button
-			onclick={() => (activeFilter = 'all')}
-			class="px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer
-				{activeFilter === 'all' ? 'bg-hub-card text-hub-text' : 'text-hub-dim hover:text-hub-muted'}"
-		>
-			All ({typeCounts.all})
-		</button>
-		{#each ['script', 'agent', 'skill', 'mcp'] as t}
-			{#if typeCounts[t]}
-				<button
-					onclick={() => (activeFilter = t as BlockType)}
-					class="px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer
-						{activeFilter === t ? typeColors[t as BlockType] : 'text-hub-dim hover:text-hub-muted'}"
-				>
-					{t}s ({typeCounts[t]})
-				</button>
-			{/if}
-		{/each}
-	</div>
-
-	<!-- Block list -->
+	<!-- Grouped block list -->
 	<div class="flex-1 overflow-y-auto">
 		{#if filteredBlocks.length === 0}
 			<div class="flex items-center justify-center py-8">
@@ -102,38 +102,62 @@
 				</span>
 			</div>
 		{:else}
-			{#each filteredBlocks as block (block.name)}
-				<div class="px-3 py-2.5 border-b border-hub-border/30 hover:bg-hub-card/30 transition-colors group">
-					<div class="flex items-start gap-2">
-						<svg class="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-hub-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-							<path d={typeIcons[block.type] || typeIcons.script}/>
+			{#each groupOrder as type (type)}
+				{@const items = grouped[type]}
+				{#if items && items.length > 0}
+					{@const isCollapsed = !isSearching && collapsed[type]}
+					<!-- Group header -->
+					<button
+						onclick={() => toggleGroup(type)}
+						class="w-full flex items-center gap-2 px-3 py-2 border-b border-hub-border/30 hover:bg-hub-card/30 transition-colors cursor-pointer select-none"
+					>
+						<svg
+							class="w-3 h-3 text-hub-dim transition-transform {isCollapsed ? '-rotate-90' : ''}"
+							viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+						>
+							<polyline points="6 9 12 15 18 9"/>
 						</svg>
-						<div class="min-w-0 flex-1">
-							<div class="flex items-center gap-1.5 mb-0.5">
-								<span class="text-xs font-medium text-hub-text truncate">{block.name}</span>
-								<span class="text-[9px] px-1 py-0.5 rounded flex-shrink-0 {typeColors[block.type]}">{block.type}</span>
-							</div>
-							<p class="text-[11px] text-hub-dim leading-snug line-clamp-2">{block.description}</p>
+						<span class="text-[11px] font-semibold text-hub-muted uppercase tracking-wider">{groupLabels[type]}</span>
+						<span class="text-[10px] text-hub-dim ml-auto">{items.length}</span>
+					</button>
 
-							<!-- Reference button -->
-							{#if stagedBlockNames.has(block.name)}
-								<button
-									onclick={() => onReference(block)}
-									class="mt-1.5 px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer bg-hub-cta/15 text-hub-cta"
-								>
-									+ Referenced
-								</button>
-							{:else}
-								<button
-									onclick={() => onReference(block)}
-									class="mt-1.5 px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer bg-hub-card text-hub-muted hover:bg-hub-cta/10 hover:text-hub-cta"
-								>
-									+ Reference
-								</button>
-							{/if}
-						</div>
-					</div>
-				</div>
+					<!-- Group items -->
+					{#if !isCollapsed}
+						{#each items as block (block.name)}
+							<div class="px-3 py-2.5 border-b border-hub-border/30 hover:bg-hub-card/30 transition-colors group pl-6">
+								<div class="flex items-start gap-2">
+									<svg class="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-hub-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+										<path d={typeIcons[block.type] || typeIcons.script}/>
+									</svg>
+									<div class="min-w-0 flex-1">
+										<div class="flex items-center gap-1.5 mb-0.5">
+											<span class="text-xs font-medium text-hub-text truncate">{block.name}</span>
+											<span class="text-[9px] px-1 py-0.5 rounded flex-shrink-0 {typeColors[block.type]}">{block.type}</span>
+										</div>
+										<p class="text-[11px] text-hub-dim leading-snug line-clamp-2">{block.description}</p>
+
+										<!-- Reference button -->
+										{#if stagedBlockNames.has(block.name)}
+											<button
+												onclick={() => onReference(block)}
+												class="mt-1.5 px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer bg-hub-cta/15 text-hub-cta"
+											>
+												+ Referenced
+											</button>
+										{:else}
+											<button
+												onclick={() => onReference(block)}
+												class="mt-1.5 px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer bg-hub-card text-hub-muted hover:bg-hub-cta/10 hover:text-hub-cta"
+											>
+												+ Reference
+											</button>
+										{/if}
+									</div>
+								</div>
+							</div>
+						{/each}
+					{/if}
+				{/if}
 			{/each}
 		{/if}
 	</div>

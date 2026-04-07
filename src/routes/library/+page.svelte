@@ -114,21 +114,6 @@
 		previewContent = null;
 	}
 
-	// Builder — create menu
-	let showCreateMenu = $state(false);
-
-	function openBuilder(type: 'pipeline' | 'skill' | 'agent' | 'script') {
-		showCreateMenu = false;
-		const prompts: Record<string, string> = {
-			script: "I want to create a NEW SCRIPT BLOCK for the catalog. This is a BLOCK.md + run.py in catalog/scripts/. Do NOT ask what format — it is a script block. Ask me: what does it do, what inputs does it need, and what outputs does it produce.",
-			agent: "I want to create a NEW AGENT BLOCK for the catalog. This is a BLOCK.md + agent.md in catalog/agents/. Do NOT ask what format — it is an agent block. Ask me: what should the agent do and what tools/skills does it need.",
-			pipeline: "I want to create a NEW PIPELINE that assembles blocks from the catalog. This is a pipeline.yaml + blocks/ directory. Ask me: what steps does it need and which blocks should it use.",
-			skill: "I want to create a NEW SKILL for Claude. This is a SKILL.md in ~/.claude/skills/. Ask me what the skill should do.",
-		};
-		const prompt = encodeURIComponent(prompts[type]);
-		window.location.href = `/library/builder?type=${type}&prompt=${prompt}`;
-	}
-
 	function envStatusClass(envVars?: EnvVar[]): string {
 		if (!envVars || envVars.length === 0) return '';
 		const allSet = envVars.every((e) => e.set);
@@ -175,34 +160,15 @@
 		</div>
 
 		<div class="flex items-center gap-2">
-			<!-- Create dropdown -->
-			<div class="relative">
-				<button
-					onclick={() => showCreateMenu = !showCreateMenu}
-					class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-hub-cta text-hub-bg text-sm font-medium hover:bg-hub-cta-hover transition-colors cursor-pointer"
-				>
-					<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-						<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-					</svg>
-					Create
-				</button>
-				{#if showCreateMenu}
-					<div class="absolute right-0 top-full mt-1 w-48 bg-hub-surface border border-hub-border rounded-lg shadow-xl z-50 py-1">
-						<button onclick={() => openBuilder('script')} class="w-full text-left px-3 py-2 text-sm text-hub-text hover:bg-hub-card transition-colors cursor-pointer">
-							New Script Block
-						</button>
-						<button onclick={() => openBuilder('agent')} class="w-full text-left px-3 py-2 text-sm text-hub-text hover:bg-hub-card transition-colors cursor-pointer">
-							New Agent Block
-						</button>
-						<button onclick={() => openBuilder('pipeline')} class="w-full text-left px-3 py-2 text-sm text-hub-text hover:bg-hub-card transition-colors cursor-pointer">
-							New Pipeline
-						</button>
-						<button onclick={() => openBuilder('skill')} class="w-full text-left px-3 py-2 text-sm text-hub-text hover:bg-hub-card transition-colors cursor-pointer">
-							New Skill
-						</button>
-					</div>
-				{/if}
-			</div>
+			<a
+				href="/library/builder"
+				class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-hub-cta text-white hover:bg-hub-cta/90 transition-colors"
+			>
+				<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+				</svg>
+				Open Builder
+			</a>
 
 		<!-- Search -->
 		<div class="relative">
