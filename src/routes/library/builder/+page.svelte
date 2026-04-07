@@ -77,9 +77,8 @@
 	}
 
 	function startSession() {
-		if (!terminalRef) return;
 		const blockList = stagedBlocks
-			.map((b) => `- "${b.name}" (${b.type}): ${b.description}`)
+			.map((b) => `- "${b.name}" (${b.type}): ${b.description}\n  Path: catalog/${b.type === 'script' ? 'scripts' : 'agents'}/${b.name}/`)
 			.join('\n');
 		const parts: string[] = [];
 		if (blockList) {
@@ -90,7 +89,8 @@
 		}
 		const composed = parts.join('\n\n') || 'Start a new builder session.';
 		sessionStarted = true;
-		setTimeout(() => terminalRef?.sendToActive(composed), 300);
+		// Wait for TerminalTabs to mount + Claude to initialize, then inject
+		setTimeout(() => terminalRef?.sendToActive(composed), 3000);
 	}
 
 	function handleForkBlock(block: BlockManifest) {
@@ -301,10 +301,22 @@
 				</div>
 			{/if}
 
-			<!-- Terminal -->
-			<div class="flex-1 min-w-0 min-h-0 overflow-hidden">
-				<TerminalTabs bind:this={terminalRef} cwd={data.cwd} projectName="_builder" />
-			</div>
+			<!-- Terminal (only after session starts) -->
+			{#if sessionStarted}
+				<div class="flex-1 min-w-0 min-h-0 overflow-hidden">
+					<TerminalTabs bind:this={terminalRef} cwd={data.cwd} projectName="_builder" />
+				</div>
+			{:else}
+				<!-- Empty state -->
+				<div class="flex-1 flex items-center justify-center text-hub-dim">
+					<div class="text-center">
+						<svg class="w-12 h-12 mx-auto mb-3 opacity-30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+							<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+						</svg>
+						<p class="text-sm">Enter a prompt or open a terminal to start</p>
+					</div>
+				</div>
+			{/if}
 		</div>
 	</div>
 </div>
