@@ -114,11 +114,19 @@
 			.map((b) => `- "${b.name}" (${b.type}): ${b.description}\n  Path: ${(b as BlockManifest & { path?: string }).path || `catalog/${b.type === 'script' ? 'scripts' : 'agents'}/${b.name}/`}`)
 			.join('\n');
 		const parts: string[] = [];
+
+		// System instruction: guide first, don't execute immediately
+		parts.push(`IMPORTANT: Before creating any files, ask me clarifying questions about:
+1. What are my inputs? (data I provide, files, APIs)
+2. What output do I expect? (format, location)
+3. Propose a plan with the structure you'll create
+4. Only create files after I approve the plan.`);
+
 		if (blockList) {
-			parts.push(`References:\n${blockList}`);
+			parts.push(`I want to reference these blocks:\n${blockList}`);
 		}
 		if (userPrompt.trim()) {
-			parts.push(userPrompt.trim());
+			parts.push(`My goal: ${userPrompt.trim()}`);
 		}
 		const composed = parts.join('\n\n') || 'Start a new builder session.';
 		sessionStarted = true;
