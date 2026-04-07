@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import FilePreview from '$lib/components/FilePreview.svelte';
+	import StepConfigCard from '$lib/components/StepConfigCard.svelte';
+	import type { ConfigFieldType } from '$lib/pipeline/block';
 
 	interface Pipeline {
 		name: string;
@@ -24,7 +26,7 @@
 		runtime?: string;
 		description: string;
 		version?: string;
-		config?: { name: string; type: string; label?: string; description?: string; default?: unknown }[];
+		config?: { name: string; type: ConfigFieldType; label?: string; description?: string; default?: unknown; min?: number; max?: number; options?: string[]; required?: boolean }[];
 		env?: { name: string; description?: string; required?: boolean }[];
 	}
 
@@ -84,6 +86,9 @@
 
 	// Step card expansion
 	let expandedSteps = $state<Set<string>>(new Set());
+
+	// Per-step config overrides (edited via StepConfigCard widgets)
+	let stepConfigEdits = $state<Record<string, Record<string, unknown>>>({});
 
 	// Gate state (approval/prompt steps waiting for user action)
 	interface GateInfo {
@@ -304,6 +309,7 @@
 		activeRunId = null;
 		running = false;
 		expandedSteps = new Set();
+		stepConfigEdits = {};
 		outputDir = null;
 		outputFiles = [];
 		envStatus = [];
@@ -478,7 +484,7 @@
 			const res = await fetch('/api/pipelines/run', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ name: selectedName, inputs: inputValues }),
+				body: JSON.stringify({ name: selectedName, inputs: inputValues, stepConfig: Object.keys(stepConfigEdits).length > 0 ? stepConfigEdits : undefined }),
 			});
 
 			if (!res.ok) {
@@ -643,6 +649,32 @@
 			name: e.name,
 			set: envStatus.some(es => es.name === e.name && es.set),
 		}));
+	}
+
+	function handleStepConfigChange(stepId: string, name: string, value: unknown) {
+		if (!stepConfigEdits[stepId]) stepConfigEdits[stepId] = {};
+		stepConfigEdits[stepId] = { ...stepConfigEdits[stepId], [name]: value };
+	}
+
+	function handleSwapBlock(stepId: string) {
+		showCatalogModal = true;
+	}
+
+	async function handleForkBlock(stepId: string) {
+		if (!selectedName) return;
+		const step = selected?.steps.find(s => s.id === stepId);
+		if (!step?.block) return;
+		try {
+			const res = await fetch('/api/blocks/install', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ pipelineName: selectedName, blockName: step.block, fork: true }),
+			});
+			if (res.ok) {
+				// Refresh pipeline to pick up the forked block
+				await selectPipeline(selectedName);
+			}
+		} catch { /* silent */ }
 	}
 
 	async function handleInstallBlock(blockName: string) {
@@ -936,25 +968,37 @@
 					</section>
 				{/if}
 
-				<!-- Config Files -->
+				<!-- Shared Config -->
 				{#if selected.config_files && selected.config_files.length > 0}
 					<section class="mb-6">
-						<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-3">Config Files</h2>
+						<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-3">Shared Config</h2>
 						<div class="bg-hub-surface border border-hub-border rounded-lg divide-y divide-hub-border/30">
 							{#each selected.config_files as cfg}
 								{@const isExpanded = expandedConfigs.has(cfg.path)}
 								<div>
-									<button
-										onclick={() => toggleConfig(cfg.path)}
-										class="w-full flex items-center gap-3 px-4 py-3 hover:bg-hub-bg/30 transition-colors cursor-pointer text-left"
-									>
-										<svg class="w-3 h-3 flex-shrink-0 text-hub-dim transition-transform {isExpanded ? 'rotate-90' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
-										<div class="min-w-0 flex-1">
-											<span class="text-xs font-medium text-hub-text">{cfg.name}</span>
-											<p class="text-[10px] text-hub-dim mt-0.5">{cfg.description}</p>
-										</div>
-										<span class="text-[9px] text-hub-dim font-mono">{cfg.path.split('/').pop()}</span>
-									</button>
+									<div class="flex items-center gap-3 px-4 py-3">
+										<button
+											onclick={() => toggleConfig(cfg.path)}
+											class="flex items-center gap-2 flex-1 min-w-0 hover:bg-hub-bg/30 -m-1 p-1 rounded transition-colors cursor-pointer text-left"
+										>
+											<svg class="w-3 h-3 flex-shrink-0 text-hub-dim transition-transform {isExpanded ? 'rotate-90' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+											<div class="min-w-0 flex-1">
+												<span class="text-xs font-medium text-hub-text">{cfg.name}</span>
+												<p class="text-[10px] text-hub-dim mt-0.5">{cfg.description}</p>
+											</div>
+										</button>
+										<span class="text-[9px] text-hub-dim font-mono flex-shrink-0">{cfg.path.split('/').pop()}</span>
+										<button
+											onclick={() => {
+												if (!selectedPath) return;
+												const dir = selectedPath.replace(/\/pipeline\.yaml$/, '');
+												previewFile = { path: `${dir}/${cfg.path}`, name: cfg.name };
+											}}
+											class="px-2 py-1 rounded text-[10px] font-medium text-hub-info border border-hub-info/30 hover:bg-hub-info/10 transition-colors cursor-pointer flex-shrink-0"
+										>
+											Edit
+										</button>
+									</div>
 									{#if isExpanded}
 										<div class="px-4 pb-3">
 											{#if configContents[cfg.path]}
@@ -1072,171 +1116,209 @@
 							{@const block = getBlockForStep(step)}
 							{@const blockEnv = block ? getBlockEnvStatus(block) : []}
 
-							<div class="rounded-lg border overflow-hidden transition-colors
-								{status === 'running' ? 'border-hub-info/40 bg-hub-info/5' :
-								 status === 'waiting' ? 'border-hub-warning/40 bg-hub-warning/5' :
-								 status === 'done' ? 'border-hub-cta/20 bg-hub-surface' :
-								 status === 'failed' ? 'border-hub-danger/30 bg-hub-danger/5' :
-								 'border-hub-border/50 bg-hub-surface'}">
+							<!-- Block-backed steps use StepConfigCard -->
+							{#if step.block}
+								<div class="rounded-lg border overflow-hidden transition-colors
+									{status === 'running' ? 'border-hub-info/40 bg-hub-info/5' :
+									 status === 'waiting' ? 'border-hub-warning/40 bg-hub-warning/5' :
+									 status === 'done' ? 'border-hub-cta/20 bg-hub-surface' :
+									 status === 'failed' ? 'border-hub-danger/30 bg-hub-danger/5' :
+									 'border-hub-border/50 bg-hub-surface'}">
 
-								<!-- Step header (clickable) -->
-								<button
-									onclick={() => toggleStep(step.id)}
-									class="w-full flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-hub-bg/30 transition-colors"
-								>
-									<span class="text-base {statusColor[status]} {status === 'running' ? 'animate-pulse' : ''}">
-										{statusIcon[status]}
-									</span>
-									<div class="flex-1 text-left">
-										<div class="flex items-center gap-2 flex-wrap">
-											<span class="text-sm font-mono font-medium text-hub-text">{step.id}</span>
-											<span class="px-1.5 py-0.5 rounded text-[9px] font-medium
-												{step.type === 'agent' ? 'bg-hub-purple/10 text-hub-purple' :
-												 step.type === 'approval' ? 'bg-hub-warning/10 text-hub-warning' :
-												 step.type === 'prompt' ? 'bg-hub-info/10 text-hub-info' :
-												 'bg-hub-info/10 text-hub-info'}">
-												{step.type}
+									<!-- Runtime status indicator + StepConfigCard -->
+									{#if activeRun}
+										<div class="flex items-center gap-2 px-4 pt-3 pb-0">
+											<span class="text-base {statusColor[status]} {status === 'running' ? 'animate-pulse' : ''}">
+												{statusIcon[status]}
 											</span>
-											{#if block}
-												<span class="px-1.5 py-0.5 rounded text-[9px] font-medium bg-hub-cta/10 text-hub-cta">
-													Block: {block.name}{#if block.version} v{block.version}{/if}
-												</span>
-											{/if}
 											{#if duration}
 												<span class="text-xs text-hub-dim">{duration}</span>
 											{/if}
 											{#if status === 'skipped' && getSkipReason(step.id)}
 												<span class="text-[9px] text-hub-dim italic">({getSkipReason(step.id)})</span>
 											{/if}
-											<!-- Env status dots for block -->
-											{#if blockEnv.length > 0}
-												<span class="flex items-center gap-0.5 ml-1">
-													{#each blockEnv as ev}
-														<span class="w-1.5 h-1.5 rounded-full {ev.set ? 'bg-hub-cta' : 'bg-hub-danger'}" title="{ev.name}: {ev.set ? 'set' : 'missing'}"></span>
-													{/each}
-												</span>
-											{/if}
-										</div>
-										<p class="text-[11px] text-hub-dim mt-0.5">
-											{#if step.block && block}
-												{block.description}
-											{:else if step.type === 'approval'}
-												approval gate
-											{:else if step.type === 'prompt'}
-												user prompt
-											{:else}
-												{step.type === 'script' ? step.run : step.agent}
-											{/if}
-											{#if step.when}
-												<span class="text-hub-info/50"> when {step.when}</span>
-											{:else if step.skip_if}
-												<span class="text-hub-warning/50"> skip if {step.skip_if}</span>
-											{/if}
-											{#if step.depends_on?.length}
-												<span class="text-hub-dim/50"> after {step.depends_on.join(', ')}</span>
-											{/if}
-										</p>
-										<!-- Config values being passed -->
-										{#if step.config && Object.keys(step.config).length > 0}
-											<div class="flex items-center gap-2 mt-1 flex-wrap">
-												{#each Object.entries(step.config) as [key, val]}
-													<span class="px-1.5 py-0.5 rounded text-[9px] font-mono bg-hub-bg border border-hub-border/30 text-hub-muted">
-														{key}={typeof val === 'object' ? JSON.stringify(val) : val}
-													</span>
-												{/each}
-											</div>
-										{/if}
-									</div>
-									<svg class="w-3.5 h-3.5 text-hub-dim transition-transform {isExpanded ? 'rotate-180' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-								</button>
-
-								<!-- Expanded content: gate UI or terminal output -->
-								{#if isExpanded}
-									{@const gate = activeGates.get(step.id)}
-									{@const isSubmitting = gateSubmitting.has(step.id)}
-
-									{#if gate && status === 'waiting'}
-										<!-- Approval gate UI -->
-										{#if gate.type === 'approval'}
-											<div class="border-t border-hub-warning/30 bg-hub-warning/5 px-4 py-4">
-												<p class="text-sm text-hub-text mb-3">{gate.message || 'Review and approve to continue'}</p>
-
-												{#if showFileContent[step.id]}
-													<div class="mb-4 rounded-lg border border-hub-border/50 overflow-hidden">
-														<div class="px-3 py-1.5 bg-hub-surface text-[10px] text-hub-dim font-mono border-b border-hub-border/30">{gate.show}</div>
-														<pre class="px-4 py-3 text-xs font-mono text-hub-muted leading-relaxed max-h-48 overflow-y-auto whitespace-pre-wrap bg-[#0a0a0f]">{showFileContent[step.id]}</pre>
-													</div>
-												{/if}
-
-												<div class="flex items-center gap-3">
-													<button
-														onclick={() => handleApprove(step.id)}
-														disabled={isSubmitting}
-														class="px-4 py-2 rounded-lg text-sm font-medium bg-hub-cta text-white hover:bg-hub-cta/80 transition-colors cursor-pointer disabled:opacity-50"
-													>
-														{isSubmitting ? 'Approving...' : 'Approve'}
-													</button>
-													<button
-														onclick={() => handleReject(step.id)}
-														disabled={isSubmitting}
-														class="px-4 py-2 rounded-lg text-sm font-medium text-hub-danger border border-hub-danger/30 hover:bg-hub-danger/10 transition-colors cursor-pointer disabled:opacity-50"
-													>
-														Reject
-													</button>
-												</div>
-											</div>
-
-										<!-- Prompt gate UI -->
-										{:else if gate.type === 'prompt'}
-											<div class="border-t border-hub-info/30 bg-hub-info/5 px-4 py-4">
-												<p class="text-sm text-hub-text mb-3">{gate.question || 'Provide input to continue'}</p>
-
-												{#if gate.options && gate.options.length > 0}
-													<!-- Options as radio buttons -->
-													<div class="space-y-2 mb-4">
-														{#each gate.options as opt}
-															<label class="flex items-center gap-2 cursor-pointer text-sm text-hub-muted hover:text-hub-text transition-colors">
-																<input
-																	type="radio"
-																	name="prompt-{step.id}"
-																	value={opt}
-																	checked={promptAnswers[step.id] === opt}
-																	onchange={() => { promptAnswers[step.id] = opt; }}
-																	class="accent-hub-info"
-																/>
-																{opt}
-															</label>
-														{/each}
-													</div>
-												{:else}
-													<!-- Freeform text input -->
-													<input
-														type="text"
-														bind:value={promptAnswers[step.id]}
-														placeholder="Type your answer..."
-														onkeydown={(e) => { if (e.key === 'Enter') handleAnswer(step.id); }}
-														class="w-full bg-hub-bg border border-hub-border rounded-md px-3 py-2 text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-info/50 mb-3"
-													/>
-												{/if}
-
-												<button
-													onclick={() => handleAnswer(step.id)}
-													disabled={isSubmitting || !promptAnswers[step.id]}
-													class="px-4 py-2 rounded-lg text-sm font-medium bg-hub-info text-white hover:bg-hub-info/80 transition-colors cursor-pointer disabled:opacity-50"
-												>
-													{isSubmitting ? 'Submitting...' : 'Submit'}
-												</button>
-											</div>
-										{/if}
-
-									{:else if output && !output.includes('"_gate":true')}
-										<!-- Regular terminal output (hide raw gate JSON) -->
-										<div class="border-t border-hub-border/30">
-											<pre class="px-4 py-3 text-xs font-mono text-hub-muted leading-relaxed max-h-60 overflow-y-auto whitespace-pre-wrap break-all bg-[#0a0a0f]">{output}</pre>
 										</div>
 									{/if}
-								{/if}
-							</div>
+
+									<StepConfigCard
+										{step}
+										{block}
+										configValues={stepConfigEdits[step.id] || {}}
+										envStatus={blockEnv}
+										expanded={isExpanded}
+										ontoggle={toggleStep}
+										onconfigchange={handleStepConfigChange}
+										onswap={handleSwapBlock}
+										onfork={handleForkBlock}
+									/>
+
+									<!-- Runtime: gate UI or terminal output (appended below config) -->
+									{#if isExpanded}
+										{@const gate = activeGates.get(step.id)}
+										{@const isSubmitting = gateSubmitting.has(step.id)}
+
+										{#if gate && status === 'waiting'}
+											{#if gate.type === 'approval'}
+												<div class="border-t border-hub-warning/30 bg-hub-warning/5 px-4 py-4">
+													<p class="text-sm text-hub-text mb-3">{gate.message || 'Review and approve to continue'}</p>
+													{#if showFileContent[step.id]}
+														<div class="mb-4 rounded-lg border border-hub-border/50 overflow-hidden">
+															<div class="px-3 py-1.5 bg-hub-surface text-[10px] text-hub-dim font-mono border-b border-hub-border/30">{gate.show}</div>
+															<pre class="px-4 py-3 text-xs font-mono text-hub-muted leading-relaxed max-h-48 overflow-y-auto whitespace-pre-wrap bg-[#0a0a0f]">{showFileContent[step.id]}</pre>
+														</div>
+													{/if}
+													<div class="flex items-center gap-3">
+														<button onclick={() => handleApprove(step.id)} disabled={isSubmitting}
+															class="px-4 py-2 rounded-lg text-sm font-medium bg-hub-cta text-white hover:bg-hub-cta/80 transition-colors cursor-pointer disabled:opacity-50">
+															{isSubmitting ? 'Approving...' : 'Approve'}
+														</button>
+														<button onclick={() => handleReject(step.id)} disabled={isSubmitting}
+															class="px-4 py-2 rounded-lg text-sm font-medium text-hub-danger border border-hub-danger/30 hover:bg-hub-danger/10 transition-colors cursor-pointer disabled:opacity-50">
+															Reject
+														</button>
+													</div>
+												</div>
+											{:else if gate.type === 'prompt'}
+												<div class="border-t border-hub-info/30 bg-hub-info/5 px-4 py-4">
+													<p class="text-sm text-hub-text mb-3">{gate.question || 'Provide input to continue'}</p>
+													{#if gate.options && gate.options.length > 0}
+														<div class="space-y-2 mb-4">
+															{#each gate.options as opt}
+																<label class="flex items-center gap-2 cursor-pointer text-sm text-hub-muted hover:text-hub-text transition-colors">
+																	<input type="radio" name="prompt-{step.id}" value={opt} checked={promptAnswers[step.id] === opt} onchange={() => { promptAnswers[step.id] = opt; }} class="accent-hub-info" />
+																	{opt}
+																</label>
+															{/each}
+														</div>
+													{:else}
+														<input type="text" bind:value={promptAnswers[step.id]} placeholder="Type your answer..."
+															onkeydown={(e) => { if (e.key === 'Enter') handleAnswer(step.id); }}
+															class="w-full bg-hub-bg border border-hub-border rounded-md px-3 py-2 text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-info/50 mb-3" />
+													{/if}
+													<button onclick={() => handleAnswer(step.id)} disabled={isSubmitting || !promptAnswers[step.id]}
+														class="px-4 py-2 rounded-lg text-sm font-medium bg-hub-info text-white hover:bg-hub-info/80 transition-colors cursor-pointer disabled:opacity-50">
+														{isSubmitting ? 'Submitting...' : 'Submit'}
+													</button>
+												</div>
+											{/if}
+										{:else if output && !output.includes('"_gate":true')}
+											<div class="border-t border-hub-border/30">
+												<pre class="px-4 py-3 text-xs font-mono text-hub-muted leading-relaxed max-h-60 overflow-y-auto whitespace-pre-wrap break-all bg-[#0a0a0f]">{output}</pre>
+											</div>
+										{/if}
+									{/if}
+								</div>
+
+							<!-- Non-block steps: approval, prompt, channel, legacy script/agent -->
+							{:else}
+								<div class="rounded-lg border overflow-hidden transition-colors
+									{status === 'running' ? 'border-hub-info/40 bg-hub-info/5' :
+									 status === 'waiting' ? 'border-hub-warning/40 bg-hub-warning/5' :
+									 status === 'done' ? 'border-hub-cta/20 bg-hub-surface' :
+									 status === 'failed' ? 'border-hub-danger/30 bg-hub-danger/5' :
+									 'border-hub-border/50 bg-hub-surface'}">
+
+									<button
+										onclick={() => toggleStep(step.id)}
+										class="w-full flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-hub-bg/30 transition-colors"
+									>
+										<span class="text-base {statusColor[status]} {status === 'running' ? 'animate-pulse' : ''}">
+											{statusIcon[status]}
+										</span>
+										<div class="flex-1 text-left">
+											<div class="flex items-center gap-2 flex-wrap">
+												<span class="text-sm font-mono font-medium text-hub-text">{step.id}</span>
+												<span class="px-1.5 py-0.5 rounded text-[9px] font-medium
+													{step.type === 'agent' ? 'bg-hub-purple/10 text-hub-purple' :
+													 step.type === 'approval' ? 'bg-hub-warning/10 text-hub-warning' :
+													 step.type === 'prompt' ? 'bg-hub-info/10 text-hub-info' :
+													 'bg-hub-info/10 text-hub-info'}">
+													{step.type}
+												</span>
+												{#if duration}
+													<span class="text-xs text-hub-dim">{duration}</span>
+												{/if}
+												{#if status === 'skipped' && getSkipReason(step.id)}
+													<span class="text-[9px] text-hub-dim italic">({getSkipReason(step.id)})</span>
+												{/if}
+											</div>
+											<p class="text-[11px] text-hub-dim mt-0.5">
+												{#if step.type === 'approval'}
+													approval gate
+												{:else if step.type === 'prompt'}
+													user prompt
+												{:else}
+													{step.type === 'script' ? step.run : step.agent}
+												{/if}
+												{#if step.when}
+													<span class="text-hub-info/50"> when {step.when}</span>
+												{:else if step.skip_if}
+													<span class="text-hub-warning/50"> skip if {step.skip_if}</span>
+												{/if}
+												{#if step.depends_on?.length}
+													<span class="text-hub-dim/50"> after {step.depends_on.join(', ')}</span>
+												{/if}
+											</p>
+										</div>
+										<svg class="w-3.5 h-3.5 text-hub-dim transition-transform {isExpanded ? 'rotate-180' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+									</button>
+
+									{#if isExpanded}
+										{@const gate = activeGates.get(step.id)}
+										{@const isSubmitting = gateSubmitting.has(step.id)}
+
+										{#if gate && status === 'waiting'}
+											{#if gate.type === 'approval'}
+												<div class="border-t border-hub-warning/30 bg-hub-warning/5 px-4 py-4">
+													<p class="text-sm text-hub-text mb-3">{gate.message || 'Review and approve to continue'}</p>
+													{#if showFileContent[step.id]}
+														<div class="mb-4 rounded-lg border border-hub-border/50 overflow-hidden">
+															<div class="px-3 py-1.5 bg-hub-surface text-[10px] text-hub-dim font-mono border-b border-hub-border/30">{gate.show}</div>
+															<pre class="px-4 py-3 text-xs font-mono text-hub-muted leading-relaxed max-h-48 overflow-y-auto whitespace-pre-wrap bg-[#0a0a0f]">{showFileContent[step.id]}</pre>
+														</div>
+													{/if}
+													<div class="flex items-center gap-3">
+														<button onclick={() => handleApprove(step.id)} disabled={isSubmitting}
+															class="px-4 py-2 rounded-lg text-sm font-medium bg-hub-cta text-white hover:bg-hub-cta/80 transition-colors cursor-pointer disabled:opacity-50">
+															{isSubmitting ? 'Approving...' : 'Approve'}
+														</button>
+														<button onclick={() => handleReject(step.id)} disabled={isSubmitting}
+															class="px-4 py-2 rounded-lg text-sm font-medium text-hub-danger border border-hub-danger/30 hover:bg-hub-danger/10 transition-colors cursor-pointer disabled:opacity-50">
+															Reject
+														</button>
+													</div>
+												</div>
+											{:else if gate.type === 'prompt'}
+												<div class="border-t border-hub-info/30 bg-hub-info/5 px-4 py-4">
+													<p class="text-sm text-hub-text mb-3">{gate.question || 'Provide input to continue'}</p>
+													{#if gate.options && gate.options.length > 0}
+														<div class="space-y-2 mb-4">
+															{#each gate.options as opt}
+																<label class="flex items-center gap-2 cursor-pointer text-sm text-hub-muted hover:text-hub-text transition-colors">
+																	<input type="radio" name="prompt-{step.id}" value={opt} checked={promptAnswers[step.id] === opt} onchange={() => { promptAnswers[step.id] = opt; }} class="accent-hub-info" />
+																	{opt}
+																</label>
+															{/each}
+														</div>
+													{:else}
+														<input type="text" bind:value={promptAnswers[step.id]} placeholder="Type your answer..."
+															onkeydown={(e) => { if (e.key === 'Enter') handleAnswer(step.id); }}
+															class="w-full bg-hub-bg border border-hub-border rounded-md px-3 py-2 text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-info/50 mb-3" />
+													{/if}
+													<button onclick={() => handleAnswer(step.id)} disabled={isSubmitting || !promptAnswers[step.id]}
+														class="px-4 py-2 rounded-lg text-sm font-medium bg-hub-info text-white hover:bg-hub-info/80 transition-colors cursor-pointer disabled:opacity-50">
+														{isSubmitting ? 'Submitting...' : 'Submit'}
+													</button>
+												</div>
+											{/if}
+										{:else if output && !output.includes('"_gate":true')}
+											<div class="border-t border-hub-border/30">
+												<pre class="px-4 py-3 text-xs font-mono text-hub-muted leading-relaxed max-h-60 overflow-y-auto whitespace-pre-wrap break-all bg-[#0a0a0f]">{output}</pre>
+											</div>
+										{/if}
+									{/if}
+								</div>
+							{/if}
 						{/each}
 					</div>
 				</section>
