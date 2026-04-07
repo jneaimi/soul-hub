@@ -11,21 +11,11 @@
 	const forkName = $derived(data.forkName);
 	const pipelineName = $derived(data.pipelineName);
 
-	// What types to show in sidebar based on context
-	const allowedTypes = $derived.by<Set<string>>(() => {
-		if (forkName && data.forkBlockType === 'script') return new Set(['script']);
-		if (forkName && data.forkBlockType === 'agent') return new Set(['agent', 'script', 'skill']);
-		if (type === 'skill') return new Set(['skill']);
-		if (type === 'agent') return new Set(['skill', 'script', 'agent']);
-		// pipeline or default — show everything
-		return new Set(['skill', 'script', 'agent', 'mcp', 'pipeline']);
-	});
-
 	// Full library items (loaded client-side, merged with catalog)
 	let libraryItems = $state<BlockManifest[]>(data.catalogBlocks);
 
-	const filteredCatalog = $derived(
-		libraryItems.filter((b: BlockManifest) => allowedTypes.has(b.type))
+	// No filtering — show everything as referenceable
+	const filteredCatalog = $derived(libraryItems
 	);
 
 	const labels: Record<string, string> = {

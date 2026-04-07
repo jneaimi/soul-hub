@@ -25,14 +25,12 @@ export const load: PageServerLoad = async ({ url }) => {
 	// Fork flow: load source block's BLOCK.md content
 	let forkBlockContent: string | null = null;
 	let forkName: string | null = null;
-	let forkBlockType: string | null = null;
 	if (forkParam) {
 		try {
 			const block = await getBlock(forkParam);
 			if (block) {
 				forkName = forkParam;
 				forkBlockContent = block.body || block.description || '';
-				forkBlockType = block.type;
 			}
 		} catch {
 			// block not found — page will show error banner
@@ -58,7 +56,6 @@ export const load: PageServerLoad = async ({ url }) => {
 		cwd: pipelineCwd || builderDir,
 		catalogBlocks,
 		forkBlockContent,
-		forkBlockType,
 		forkName,
 		pipelineYaml,
 		pipelineBlocks,
