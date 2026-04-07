@@ -1,0 +1,55 @@
+name: demo-pipeline
+description: Demo pipeline showing block-based config UI
+version: 1.0.0
+
+env:
+  - name: APIDIRECT_API_KEY
+    description: Social media API key
+    required: true
+  - name: YOUTUBE_API_KEY
+    description: YouTube Data API
+    required: true
+
+shared_config:
+  - name: Influencer Roster
+    file: config/influencer-roster.md
+    description: Add/remove influencers to track
+  - name: Market Context
+    file: config/market-context.md
+    description: GCC market definition and scoring
+
+steps:
+  - id: scout
+    block: weather-fetcher
+    config:
+      country: United Arab Emirates
+      city: Dubai
+      units: celsius
+
+  - id: analyze
+    block: market-researcher
+    config:
+      max_topics: 3
+      platforms: [twitter, reddit, youtube]
+      pinned_topic: "AI agents in GCC"
+      include_arabic_search: true
+    depends_on: [scout]
+
+  - id: mine
+    block: miner
+    config:
+      mode: daily
+      lookback_days: 7
+      include_transcripts: true
+    depends_on: [scout]
+
+  - id: review
+    type: approval
+    message: "Review the miner output before proceeding"
+    depends_on: [mine]
+
+  - id: notify
+    type: channel
+    channel: telegram
+    message: "Demo pipeline completed"
+    depends_on: [review]

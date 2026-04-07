@@ -63,6 +63,11 @@ async function resolveBlockReferences(spec: PipelineSpec, pipelineDir: string): 
 			throw new Error(`Step "${step.id}" block config errors: ${validation.errors.join('; ')}`);
 		}
 
+		// Auto-derive output for block steps
+		if (!step.output) {
+			step.output = `/tmp/pipeline-runs/$RUN_ID/${step.id}-output.json`;
+		}
+
 		// Merge block env requirements into pipeline spec
 		if (manifest.env) {
 			if (!spec.env) spec.env = [];
