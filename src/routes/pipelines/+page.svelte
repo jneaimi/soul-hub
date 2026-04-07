@@ -623,25 +623,53 @@
 		return `${(step.durationMs / 1000).toFixed(1)}s`;
 	}
 
-	let ansiConverter: { toHtml: (text: string) => string } | null = null;
-
-	onMount(async () => {
-		try {
-			const AnsiToHtml = (await import('ansi-to-html')).default;
-			ansiConverter = new AnsiToHtml({ fg: '#e0e0e8', bg: 'transparent', newline: true });
-		} catch { /* fallback to plain text */ }
-	});
-
 	function getStepOutput(stepId: string): string {
 		return activeRun?.stepOutput?.[stepId] || '';
 	}
 
+	/** Strip ALL terminal escape sequences + extract readable text */
 	function getStepOutputHtml(stepId: string): string {
 		const raw = getStepOutput(stepId);
 		if (!raw) return '';
-		if (ansiConverter) return ansiConverter.toHtml(raw);
-		// Fallback: strip ANSI if converter not loaded
-		return raw.replace(/\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07/g, '');
+
+		let clean = raw
+			// OSC sequences (title changes etc): ESC ] ... BEL or ESC ] ... ST
+			.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+			// CSI sequences: ESC [ ... final byte
+			.replace(/\x1b\[[\?]?[0-9;]*[A-Za-z]/g, '')
+			// DEC private modes and other ESC sequences
+			.replace(/\x1b[()][A-Z0-9]/g, '')
+			.replace(/\x1b[>=<]/g, '')
+			.replace(/\x1b\x1b/g, '')
+			// Remaining lone ESC
+			.replace(/\x1b/g, '')
+			// Carriage returns
+			.replace(/\r/g, '')
+			// Collapse multiple blank lines
+			.replace(/\n{4,}/g, '\n\n')
+			// Remove lines that are just box-drawing or dashes
+			.replace(/^[─━═│┌┐└┘├┤┬┴┼╭╮╰╯\-]+$/gm, '')
+			// Remove lines that are just spaces
+			.replace(/^\s+$/gm, '');
+
+		// Extract meaningful lines (filter noise)
+		const lines = clean.split('\n').filter(line => {
+			const trimmed = line.trim();
+			if (!trimmed) return false;
+			// Skip status bar fragments
+			if (trimmed.startsWith('│') && trimmed.includes('ctx')) return false;
+			if (trimmed.includes('bypass permissions')) return false;
+			if (trimmed.includes('shift+tab to cycle')) return false;
+			if (trimmed.match(/^[A-Z]$/)) return false; // Single letter fragments
+			if (trimmed.length < 3) return false;
+			return true;
+		});
+
+		// Escape HTML entities for safe rendering
+		return lines.join('\n')
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;');
 	}
 
 	function getLastOutputPath(): string | null {
