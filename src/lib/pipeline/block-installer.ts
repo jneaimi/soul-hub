@@ -7,7 +7,7 @@
  * - list: reads installed blocks from pipelines/{pipeline}/blocks/
  */
 
-import { cp, rm, readdir, stat } from 'node:fs/promises';
+import { cp, rm, readdir, stat, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseBlockManifest } from './block.js';
 import type { BlockManifest } from './block.js';
@@ -137,3 +137,53 @@ export async function listInstalledBlocks(
 	return manifests;
 }
 
+/** Kebab-case name validation: lowercase, starts with letter, allows hyphens and digits */
+const VALID_BLOCK_NAME = /^[a-z][a-z0-9-]*$/;
+
+/**
+ * Fork a block from the catalog into a pipeline's blocks/ directory with a new name.
+ * Copies all files, then patches BLOCK.md to use the new name.
+ *
+ * @returns The parsed manifest of the forked block (with new name).
+ * @throws If the source block is not found, the name is invalid, or the target already exists.
+ */
+export async function forkBlock(
+	catalogDir: string,
+	pipelineDir: string,
+	blockName: string,
+	newName: string,
+): Promise<BlockManifest> {
+	// Validate new name
+	if (!newName || !VALID_BLOCK_NAME.test(newName)) {
+		throw new Error(`Invalid block name "${newName}": must match /^[a-z][a-z0-9-]*$/`);
+	}
+
+	// Find source block in catalog
+	const found = await findBlockInCatalog(catalogDir, blockName);
+	if (!found) {
+		throw new Error(`Block "${blockName}" not found in catalog at ${catalogDir}`);
+	}
+
+	// Check target doesn't already exist
+	const destDir = join(pipelineDir, 'blocks', newName);
+	try {
+		const s = await stat(destDir);
+		if (s.isDirectory()) {
+			throw new Error(`Block "${newName}" already exists in ${pipelineDir}/blocks/`);
+		}
+	} catch (err) {
+		if (err instanceof Error && err.message.includes('already exists')) throw err;
+		// ENOENT is expected
+	}
+
+	// Copy block directory
+	await cp(found.dir, destDir, { recursive: true });
+
+	// Patch BLOCK.md: replace the name field in frontmatter
+	const blockMdPath = join(destDir, 'BLOCK.md');
+	const raw = await readFile(blockMdPath, 'utf-8');
+	const patched = raw.replace(/^(name:\s*).+$/m, `$1${newName}`);
+	await writeFile(blockMdPath, patched, 'utf-8');
+
+	return parseBlockManifest(destDir);
+}
