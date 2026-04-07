@@ -183,4 +183,7 @@ The user will see this in the pipeline UI and can copy the fix to apply it outsi
 | Skip `depends_on` | Always declare step dependencies |
 | Skip `input:` on dependent steps | If step B depends on step A, add `input: $steps.A.output` so B receives A's output as PIPELINE_INPUT |
 | Forget `output:` on steps | Every step that produces data must have `output:` pointing to `output/filename.ext` |
+| Skip `model:` in agent.md | Always declare `model: sonnet` (default) or `model: haiku` (fast) or `model: opus` (complex). Sonnet is best for most tasks. |
+| Use `{{inputs.X}}` without declaring the input | If config references `{{inputs.city}}`, pipeline.yaml MUST have a matching `inputs:` entry with `name: city` |
+| Add `shared_config` with no step that reads it | Only add shared_config when a block actually reads from that JSON file. Dead config confuses users. |
 | Use step types not in whitelist | Only: script, agent, approval, prompt, channel |
