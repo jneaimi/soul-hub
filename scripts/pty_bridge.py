@@ -31,6 +31,7 @@ def main():
     cols = args.get("cols", 120)
     rows = args.get("rows", 40)
     claude_bin = args.get("claudeBinary", os.path.expanduser("~/.local/bin/claude"))
+    model = args.get("model", "")
 
     master_fd, slave_fd = pty.openpty()
 
@@ -52,7 +53,10 @@ def main():
         env = os.environ.copy()
         env["TERM"] = "xterm-256color"
         env["CLAUDE_CODE_DISABLE_HOOKS"] = "1"
-        os.execve(claude_bin, [claude_bin, "--dangerously-skip-permissions"], env)
+        cmd = [claude_bin, "--dangerously-skip-permissions"]
+        if model:
+            cmd.extend(["--model", model])
+        os.execve(claude_bin, cmd, env)
 
     os.close(slave_fd)
 

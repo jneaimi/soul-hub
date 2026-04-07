@@ -288,8 +288,11 @@ export async function runPipeline(
 				const resolvedInputPaths = inputs.map((i) => resolveRef(i, resolvedInputs, stepOutputs));
 				const primaryInput = resolvedInputPaths[0] || '';
 
-				// Ensure output directory exists
+				// Ensure output directory exists and clean stale output
 				await mkdir(dirname(outputPath), { recursive: true });
+				if (outputPath !== '/dev/null') {
+					try { await unlink(outputPath); } catch { /* file may not exist */ }
+				}
 
 				// Resolve $inputs.* and $steps.* references in prompt, show, message, question
 				const resolvedStep = { ...step };
@@ -541,12 +544,24 @@ async function runAgentStep(
 	prompt += `\n\nWrite your output to: ${outputPath}`;
 	prompt += `\n\nIMPORTANT: When you have finished writing the output file, type /exit to end the session.`;
 
+	// Extract model from agent.md frontmatter (if block-based)
+	let model = '';
+	if (step.agent) {
+		try {
+			const agentPath = resolve(pipelineDir, step.agent);
+			const agentContent = await readFile(agentPath, 'utf-8');
+			const modelMatch = agentContent.match(/^model:\s*(\S+)/m);
+			if (modelMatch) model = modelMatch[1];
+		} catch { /* use default model */ }
+	}
+
 	const bridgeArgs = JSON.stringify({
 		prompt,
 		cwd: pipelineDir,
 		cols: config.terminal.cols,
 		rows: config.terminal.rows,
 		claudeBinary: config.resolved.claudeBinary,
+		model,
 	});
 
 	return new Promise((resolvePromise, reject) => {
