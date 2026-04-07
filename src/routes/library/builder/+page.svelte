@@ -12,6 +12,23 @@
 	const forkName = $derived(data.forkName);
 	const pipelineName = $derived(data.pipelineName);
 
+	// Auto-filter sidebar based on context
+	const sidebarFilter = $derived.by<string | null>(() => {
+		// Forking a block — show only same type
+		if (forkName && data.forkBlockType) return data.forkBlockType;
+		// Creating a specific type
+		if (type === 'agent') return 'agent';
+		if (type === 'skill') return 'skill';
+		// Pipeline or default — show all
+		return null;
+	});
+
+	const filteredCatalog = $derived(
+		sidebarFilter
+			? data.catalogBlocks.filter((b: BlockManifest) => b.type === sidebarFilter)
+			: data.catalogBlocks
+	);
+
 	const labels: Record<string, string> = {
 		pipeline: 'New Pipeline',
 		skill: 'New Skill',
@@ -224,7 +241,7 @@
 				style="width: {sidebarWidth}px"
 			>
 				<BuilderCatalogSidebar
-					blocks={data.catalogBlocks}
+					blocks={filteredCatalog}
 					{stagedBlockNames}
 					onUseBlock={handleUseBlock}
 					onForkBlock={handleForkBlock}
