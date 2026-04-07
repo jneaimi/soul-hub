@@ -623,8 +623,13 @@
 		return `${(step.durationMs / 1000).toFixed(1)}s`;
 	}
 
+	function stripAnsi(text: string): string {
+		return text.replace(/\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]|\x1b\[[\?]?[0-9;]*[hlm]/g, '');
+	}
+
 	function getStepOutput(stepId: string): string {
-		return activeRun?.stepOutput?.[stepId] || '';
+		const raw = activeRun?.stepOutput?.[stepId] || '';
+		return stripAnsi(raw);
 	}
 
 	function getLastOutputPath(): string | null {
