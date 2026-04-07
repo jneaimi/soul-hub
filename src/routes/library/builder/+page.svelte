@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import TerminalTabs from '$lib/components/TerminalTabs.svelte';
 	import BuilderCatalogSidebar from '$lib/components/BuilderCatalogSidebar.svelte';
@@ -12,21 +11,21 @@
 	const forkName = $derived(data.forkName);
 	const pipelineName = $derived(data.pipelineName);
 
-	// Auto-filter sidebar based on context
-	const sidebarFilter = $derived.by<string | null>(() => {
-		// Forking a block — show only same type
-		if (forkName && data.forkBlockType) return data.forkBlockType;
-		// Creating a specific type
-		if (type === 'agent') return 'agent';
-		if (type === 'skill') return 'skill';
-		// Pipeline or default — show all
-		return null;
+	// What types to show in sidebar based on context
+	const allowedTypes = $derived.by<Set<string>>(() => {
+		if (forkName && data.forkBlockType === 'script') return new Set(['script']);
+		if (forkName && data.forkBlockType === 'agent') return new Set(['agent', 'script', 'skill']);
+		if (type === 'skill') return new Set(['skill']);
+		if (type === 'agent') return new Set(['skill', 'script', 'agent']);
+		// pipeline or default — show everything
+		return new Set(['skill', 'script', 'agent', 'mcp', 'pipeline']);
 	});
 
+	// Full library items (loaded client-side, merged with catalog)
+	let libraryItems = $state<BlockManifest[]>(data.catalogBlocks);
+
 	const filteredCatalog = $derived(
-		sidebarFilter
-			? data.catalogBlocks.filter((b: BlockManifest) => b.type === sidebarFilter)
-			: data.catalogBlocks
+		libraryItems.filter((b: BlockManifest) => allowedTypes.has(b.type))
 	);
 
 	const labels: Record<string, string> = {
@@ -71,17 +70,44 @@
 		return null;
 	});
 
-	// Pre-fill composer on mount for fork/edit contexts
-	onMount(() => {
+	// Pre-fill composer on mount based on context
+	onMount(async () => {
+		// Load full library for sidebar
+		try {
+			const res = await fetch('/api/library');
+			if (res.ok) {
+				const items = await res.json();
+				const seen = new Set<string>();
+				const merged: BlockManifest[] = [];
+				for (const item of [...items, ...data.catalogBlocks]) {
+					if (!seen.has(item.name)) {
+						seen.add(item.name);
+						merged.push(item);
+					}
+				}
+				libraryItems = merged;
+
+				// Pre-stage a referenced block from ?ref= param
+				const refName = page.url.searchParams.get('ref');
+				if (refName) {
+					const refBlock = merged.find((b: BlockManifest) => b.name === refName);
+					if (refBlock && !stagedBlockNames.has(refBlock.name)) {
+						stagedBlocks = [refBlock];
+					}
+				}
+			}
+		} catch { /* use catalog blocks as fallback */ }
+
+		// Pre-fill prompt for fork/edit contexts
 		if (forkName && data.forkBlockContent) {
-			userPrompt = `I want to fork the block "${forkName}" and customize it. Here is the source block content:\n\n${data.forkBlockContent}\n\nHelp me create a new version of this block with a custom name.`;
+			userPrompt = `I want to customize the block "${forkName}". Here is the source:\n\n${data.forkBlockContent}`;
 		} else if (pipelineName && data.pipelineYaml) {
 			const blockNames = (data.pipelineBlocks || []).map((b: BlockManifest) => b.name).join(', ');
-			userPrompt = `I'm editing the pipeline "${pipelineName}". Here is the current pipeline.yaml:\n\n\`\`\`yaml\n${data.pipelineYaml}\`\`\`\n\nInstalled blocks: ${blockNames || 'none'}\n\nWhat would you like to change?`;
+			userPrompt = `I'm editing "${pipelineName}".\n\nCurrent pipeline.yaml:\n\`\`\`yaml\n${data.pipelineYaml}\`\`\`\n\nInstalled blocks: ${blockNames || 'none'}`;
 		}
 	});
 
-	function handleUseBlock(block: BlockManifest) {
+	function handleReference(block: BlockManifest) {
 		if (stagedBlockNames.has(block.name)) {
 			stagedBlocks = stagedBlocks.filter((b) => b.name !== block.name);
 		} else {
@@ -95,23 +121,18 @@
 
 	function startSession() {
 		const blockList = stagedBlocks
-			.map((b) => `- "${b.name}" (${b.type}): ${b.description}\n  Path: catalog/${b.type === 'script' ? 'scripts' : 'agents'}/${b.name}/`)
+			.map((b) => `- "${b.name}" (${b.type}): ${b.description}\n  Path: ${(b as BlockManifest & { path?: string }).path || `catalog/${b.type === 'script' ? 'scripts' : 'agents'}/${b.name}/`}`)
 			.join('\n');
 		const parts: string[] = [];
 		if (blockList) {
-			parts.push(`Use these blocks:\n${blockList}`);
+			parts.push(`References:\n${blockList}`);
 		}
 		if (userPrompt.trim()) {
 			parts.push(userPrompt.trim());
 		}
 		const composed = parts.join('\n\n') || 'Start a new builder session.';
 		sessionStarted = true;
-		// Wait for TerminalTabs to mount + Claude to initialize, then inject
 		setTimeout(() => terminalRef?.sendToActive(composed), 3000);
-	}
-
-	function handleForkBlock(block: BlockManifest) {
-		goto(`/library/builder?fork=${block.name}`);
 	}
 
 	function dismissBanner() {
@@ -243,8 +264,7 @@
 				<BuilderCatalogSidebar
 					blocks={filteredCatalog}
 					{stagedBlockNames}
-					onUseBlock={handleUseBlock}
-					onForkBlock={handleForkBlock}
+					onReference={handleReference}
 				/>
 			</div>
 

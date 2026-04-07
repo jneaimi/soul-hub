@@ -4,11 +4,10 @@
 	interface Props {
 		blocks: BlockManifest[];
 		stagedBlockNames?: Set<string>;
-		onUseBlock?: (block: BlockManifest) => void;
-		onForkBlock?: (block: BlockManifest) => void;
+		onReference: (block: BlockManifest) => void;
 	}
 
-	let { blocks, stagedBlockNames = new Set(), onUseBlock, onForkBlock }: Props = $props();
+	let { blocks, stagedBlockNames = new Set(), onReference }: Props = $props();
 
 	let search = $state('');
 	let activeFilter = $state<BlockType | 'all'>('all');
@@ -116,27 +115,22 @@
 							</div>
 							<p class="text-[11px] text-hub-dim leading-snug line-clamp-2">{block.description}</p>
 
-							<!-- Action buttons -->
-							<div class="flex items-center gap-1.5 mt-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-								{#if onUseBlock}
-									{@const isStaged = stagedBlockNames.has(block.name)}
-									<button
-										onclick={() => onUseBlock?.(block)}
-										class="px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer
-											{isStaged ? 'bg-hub-success/15 text-hub-success' : 'bg-hub-cta/15 text-hub-cta hover:bg-hub-cta/25'}"
-									>
-										{isStaged ? 'Added' : 'Add'}
-									</button>
-								{/if}
-								{#if onForkBlock}
-									<button
-										onclick={() => onForkBlock?.(block)}
-										class="px-2 py-0.5 rounded text-[10px] font-medium bg-hub-purple/15 text-hub-purple hover:bg-hub-purple/25 transition-colors cursor-pointer"
-									>
-										Fork
-									</button>
-								{/if}
-							</div>
+							<!-- Reference button -->
+							{#if stagedBlockNames.has(block.name)}
+								<button
+									onclick={() => onReference(block)}
+									class="mt-1.5 px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer bg-hub-cta/15 text-hub-cta"
+								>
+									+ Referenced
+								</button>
+							{:else}
+								<button
+									onclick={() => onReference(block)}
+									class="mt-1.5 px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer bg-hub-card text-hub-muted hover:bg-hub-cta/10 hover:text-hub-cta"
+								>
+									+ Reference
+								</button>
+							{/if}
 						</div>
 					</div>
 				</div>
