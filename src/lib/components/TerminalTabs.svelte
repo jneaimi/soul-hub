@@ -77,6 +77,16 @@
 	}
 
 	const activeTab = $derived(tabs.find((t) => t.id === activeTabId));
+
+	/** Send a prompt to the active terminal, or create a new one if none exists */
+	export function sendToActive(prompt: string) {
+		if (tabs.length === 0) {
+			createTab(prompt, true);
+		} else {
+			// Create a new tab with the prompt
+			createTab(prompt, true);
+		}
+	}
 </script>
 
 <div class="flex flex-col h-full">

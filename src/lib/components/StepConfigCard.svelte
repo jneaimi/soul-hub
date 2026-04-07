@@ -1,6 +1,6 @@
 <!--
   StepConfigCard — expandable step card showing block info, config widgets,
-  env status, and Swap/Fork actions. Pure presentation, Svelte 5.
+  and env status. Pure presentation, Svelte 5.
 -->
 <script lang="ts">
 	import ConfigWidget from './ConfigWidget.svelte';
@@ -50,8 +50,6 @@
 		expanded: boolean;
 		ontoggle: (stepId: string) => void;
 		onconfigchange: (stepId: string, name: string, value: unknown) => void;
-		onswap?: (stepId: string) => void;
-		onfork?: (stepId: string) => void;
 	}
 
 	let {
@@ -62,8 +60,6 @@
 		expanded,
 		ontoggle,
 		onconfigchange,
-		onswap,
-		onfork,
 	}: Props = $props();
 
 	// Derived: merge block defaults with step overrides
@@ -199,35 +195,15 @@
 				</div>
 			{/if}
 
-			<!-- Footer: block info + actions -->
+			<!-- Footer: block info -->
 			{#if block}
-				<div class="flex items-center justify-between pt-2 border-t border-hub-border/20">
+				<div class="pt-2 border-t border-hub-border/20">
 					<span class="text-[10px] text-hub-dim">
 						{block.name}{#if block.version} v{block.version}{/if}
 						{#if block.runtime}
 							<span class="text-hub-dim/60"> ({block.runtime})</span>
 						{/if}
 					</span>
-					<div class="flex items-center gap-2">
-						{#if onswap}
-							<button
-								onclick={() => onswap?.(step.id)}
-								class="px-2 py-1 rounded text-[10px] font-medium text-hub-muted border border-hub-border/40
-									hover:text-hub-text hover:border-hub-dim transition-colors cursor-pointer"
-							>
-								Swap Block
-							</button>
-						{/if}
-						{#if onfork}
-							<button
-								onclick={() => onfork?.(step.id)}
-								class="px-2 py-1 rounded text-[10px] font-medium text-hub-muted border border-hub-border/40
-									hover:text-hub-text hover:border-hub-dim transition-colors cursor-pointer"
-							>
-								Fork Block
-							</button>
-						{/if}
-					</div>
 				</div>
 			{/if}
 		</div>

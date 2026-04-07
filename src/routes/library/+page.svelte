@@ -465,6 +465,19 @@
 				</div>
 			{/if}
 
+			<!-- Actions -->
+			{#if selected.source === 'catalog' && (selected.type === 'script' || selected.type === 'agent')}
+				<a
+					href="/library/builder?fork={encodeURIComponent(selected.name)}"
+					class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-amber-500/40 text-amber-400 hover:bg-amber-500/10 transition-colors"
+				>
+					<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v1a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9"/><line x1="12" y1="12" x2="12" y2="15"/>
+					</svg>
+					Fork in Builder
+				</a>
+			{/if}
+
 			<!-- Path -->
 			<div class="text-[10px] text-hub-dim font-mono break-all">
 				{selected.path}

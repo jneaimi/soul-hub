@@ -114,9 +114,6 @@
 
 	// Block info
 	let installedBlocks = $state<BlockManifest[]>([]);
-	let blockCatalog = $state<BlockManifest[]>([]);
-	let showCatalogModal = $state(false);
-	let installingBlock = $state<string | null>(null);
 
 	let activeRunId = $state<string | null>(null);
 
@@ -255,7 +252,6 @@
 				envStatus = data.envStatus || [];
 				// Load block info
 				installedBlocks = data.installedBlocks || [];
-				blockCatalog = data.blockCatalog || [];
 				// Load output files
 				if (outputDir) loadOutputFiles();
 				// Load automation config for this pipeline
@@ -322,9 +318,6 @@
 		showFileContent = {};
 		gateSubmitting = new Set();
 		installedBlocks = [];
-		blockCatalog = [];
-		showCatalogModal = false;
-		installingBlock = null;
 		selectedSchedule = null;
 		webhookUrl = '';
 		editingSchedule = false;
@@ -656,47 +649,6 @@
 		stepConfigEdits[stepId] = { ...stepConfigEdits[stepId], [name]: value };
 	}
 
-	function handleSwapBlock(stepId: string) {
-		showCatalogModal = true;
-	}
-
-	async function handleForkBlock(stepId: string) {
-		if (!selectedName) return;
-		const step = selected?.steps.find(s => s.id === stepId);
-		if (!step?.block) return;
-		try {
-			const res = await fetch('/api/blocks/install', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ pipelineName: selectedName, blockName: step.block, fork: true }),
-			});
-			if (res.ok) {
-				// Refresh pipeline to pick up the forked block
-				await selectPipeline(selectedName);
-			}
-		} catch { /* silent */ }
-	}
-
-	async function handleInstallBlock(blockName: string) {
-		if (!selectedName) return;
-		installingBlock = blockName;
-		try {
-			const res = await fetch('/api/blocks/install', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ pipelineName: selectedName, blockName }),
-			});
-			if (res.ok) {
-				const data = await res.json();
-				installedBlocks = [...installedBlocks, data.block];
-			}
-		} catch { /* silent */ }
-		installingBlock = null;
-	}
-
-	let availableCatalogBlocks = $derived(
-		blockCatalog.filter(cb => !installedBlocks.some(ib => ib.name === cb.name))
-	);
 </script>
 
 <svelte:head>
@@ -720,9 +672,29 @@
 				{#if selected.version}
 					<span class="text-xs text-hub-dim font-mono">{selected.version}</span>
 				{/if}
+				<div class="flex-1"></div>
+				<a
+					href="/library/builder?pipeline={encodeURIComponent(selectedName)}"
+					class="flex items-center gap-1.5 border border-hub-border text-hub-muted px-3 py-1.5 rounded-lg text-sm hover:text-hub-text hover:border-hub-dim transition-colors"
+				>
+					<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+					</svg>
+					Edit in Builder
+				</a>
 			{:else}
 				<h1 class="text-lg font-semibold text-hub-text">Pipelines</h1>
 				<span class="text-sm text-hub-muted">{pipelines.length} available</span>
+				<div class="flex-1"></div>
+				<a
+					href="/library/builder?type=pipeline"
+					class="flex items-center gap-1.5 bg-hub-cta text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-hub-cta-hover transition-colors"
+				>
+					<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+						<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+					</svg>
+					New Pipeline
+				</a>
 			{/if}
 		</div>
 	</header>
@@ -1059,53 +1031,7 @@
 
 				<!-- Steps overview -->
 				<section class="mb-6">
-					<div class="flex items-center justify-between mb-3">
-						<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider">Steps</h2>
-						{#if availableCatalogBlocks.length > 0}
-							<button
-								onclick={() => { showCatalogModal = !showCatalogModal; }}
-								class="px-2.5 py-1 rounded-md text-[10px] font-medium text-hub-info border border-hub-info/30 hover:bg-hub-info/10 transition-colors cursor-pointer"
-							>
-								+ Install Blocks
-							</button>
-						{/if}
-					</div>
-
-					<!-- Catalog install panel -->
-					{#if showCatalogModal}
-						<div class="mb-4 rounded-lg border border-hub-info/30 bg-hub-surface p-4">
-							<div class="flex items-center justify-between mb-3">
-								<h3 class="text-xs font-medium text-hub-text">Available Catalog Blocks</h3>
-								<button onclick={() => { showCatalogModal = false; }} class="text-hub-dim hover:text-hub-text text-xs cursor-pointer">Close</button>
-							</div>
-							<div class="space-y-2 max-h-60 overflow-y-auto">
-								{#each availableCatalogBlocks as block}
-									<div class="flex items-center justify-between px-3 py-2 rounded-md bg-hub-bg/50 border border-hub-border/30">
-										<div class="flex-1 min-w-0">
-											<div class="flex items-center gap-2">
-												<span class="text-sm font-mono text-hub-text">{block.name}</span>
-												<span class="px-1.5 py-0.5 rounded text-[9px] font-medium bg-hub-dim/10 text-hub-dim">{block.type}</span>
-												{#if block.version}
-													<span class="text-[9px] text-hub-dim font-mono">v{block.version}</span>
-												{/if}
-											</div>
-											<p class="text-[10px] text-hub-dim mt-0.5 truncate">{block.description}</p>
-										</div>
-										<button
-											onclick={() => handleInstallBlock(block.name)}
-											disabled={installingBlock === block.name}
-											class="ml-3 px-2.5 py-1 rounded-md text-[10px] font-medium text-hub-cta border border-hub-cta/30 hover:bg-hub-cta/10 transition-colors cursor-pointer disabled:opacity-50"
-										>
-											{installingBlock === block.name ? 'Installing...' : 'Install'}
-										</button>
-									</div>
-								{/each}
-								{#if availableCatalogBlocks.length === 0}
-									<p class="text-xs text-hub-dim text-center py-4">All catalog blocks are already installed.</p>
-								{/if}
-							</div>
-						</div>
-					{/if}
+					<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-3">Steps</h2>
 
 					<div class="space-y-2">
 						{#each selected.steps as step}
@@ -1148,8 +1074,6 @@
 										expanded={isExpanded}
 										ontoggle={toggleStep}
 										onconfigchange={handleStepConfigChange}
-										onswap={handleSwapBlock}
-										onfork={handleForkBlock}
 									/>
 
 									<!-- Runtime: gate UI or terminal output (appended below config) -->

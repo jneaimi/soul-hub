@@ -4,7 +4,6 @@ import { resolve, dirname } from 'node:path';
 import { config } from '$lib/config.js';
 import { listPipelines, parsePipeline, getSavedInputs } from '$lib/pipeline/index.js';
 import { listInstalledBlocks } from '$lib/pipeline/block-installer.js';
-import { scanCatalog } from '$lib/pipeline/block-registry.js';
 import { getBlockConfigSchema, type BlockManifest, type ConfigField } from '$lib/pipeline/block.js';
 
 // Pipelines directory is alongside catalog in the soul-hub root
@@ -35,11 +34,9 @@ export const GET: RequestHandler = async ({ url }) => {
 			// Block info: installed blocks + catalog + merged config schema
 			const pipelineDir = resolve(PIPELINES_DIR, detail);
 			let installedBlocks: BlockManifest[] = [];
-			let blockCatalog: BlockManifest[] = [];
 			let configSchema: ConfigField[] = [];
 			try {
 				installedBlocks = await listInstalledBlocks(pipelineDir);
-				blockCatalog = await scanCatalog();
 				// Merge config fields from all installed blocks referenced in steps
 				for (const step of spec.steps) {
 					if (!step.block) continue;
@@ -57,7 +54,7 @@ export const GET: RequestHandler = async ({ url }) => {
 				// Block features degrade gracefully if blocks/ doesn't exist yet
 			}
 
-			return json({ pipeline: spec, path: yamlPath, outputDir, savedInputs: saved, envStatus, installedBlocks, blockCatalog, configSchema });
+			return json({ pipeline: spec, path: yamlPath, outputDir, savedInputs: saved, envStatus, installedBlocks, configSchema });
 		} catch (err) {
 			return json({ error: (err as Error).message }, { status: 404 });
 		}
