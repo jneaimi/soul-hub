@@ -113,6 +113,37 @@ When a user starts a conversation, ask these in order (adapt to context):
 
 ---
 
+## Fix Requests — When you can't fix it directly
+
+You can ONLY modify files in `catalog/` and `pipelines/`. If a bug is in core files (`src/`, `runner.ts`, `parser.ts`, etc.), **create a fix request** instead of trying to edit the file.
+
+Write to: `pipelines/<pipeline-name>/.fix-requests/<YYYY-MM-DD>-<short-name>.md`
+
+```markdown
+---
+type: fix-request
+file: src/lib/pipeline/runner.ts
+line: 279
+severity: blocking
+status: pending
+---
+
+# Short title of the bug
+
+## Bug
+What's broken and where (file:line, behavior, expected vs actual).
+
+## Fix
+The exact change needed (as a diff or clear description).
+
+## Workaround
+Any temporary workaround the user can apply while waiting for the fix.
+```
+
+The user will see this in the pipeline UI and can copy the fix to apply it outside the builder.
+
+---
+
 ## Available Catalog
 
 ### Scripts

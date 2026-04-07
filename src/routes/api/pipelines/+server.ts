@@ -1,6 +1,7 @@
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { resolve, dirname } from 'node:path';
+import { readFile, readdir } from 'node:fs/promises';
 import { config } from '$lib/config.js';
 import { listPipelines, parsePipeline, getSavedInputs } from '$lib/pipeline/index.js';
 import { listInstalledBlocks } from '$lib/pipeline/block-installer.js';
@@ -62,7 +63,20 @@ export const GET: RequestHandler = async ({ url }) => {
 				columns: c.columns || [],
 			}));
 
-			return json({ pipeline: spec, path: yamlPath, outputDir, savedInputs: saved, envStatus, installedBlocks, configSchema, config_files: configFiles });
+			// Scan for fix requests
+			let fixRequests: { name: string; content: string }[] = [];
+			try {
+				const fixDir = resolve(pipelineDir, '.fix-requests');
+				const files = await readdir(fixDir);
+				for (const f of files) {
+					if (f.endsWith('.md')) {
+						const content = await readFile(resolve(fixDir, f), 'utf-8');
+						fixRequests.push({ name: f, content });
+					}
+				}
+			} catch { /* no fix requests dir */ }
+
+			return json({ pipeline: spec, path: yamlPath, outputDir, savedInputs: saved, envStatus, installedBlocks, configSchema, config_files: configFiles, fixRequests });
 		} catch (err) {
 			return json({ error: (err as Error).message }, { status: 404 });
 		}

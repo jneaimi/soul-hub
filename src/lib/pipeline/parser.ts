@@ -190,15 +190,21 @@ export function resolveRef(
 	inputs: Record<string, string | number>,
 	stepOutputs: Record<string, string>,
 ): string {
-	return value.replace(/\$inputs\.([\w-]+)/g, (_, name) => {
-		const val = inputs[name];
-		if (val === undefined) throw new Error(`Unknown input reference: $inputs.${name}`);
-		return String(val);
-	}).replace(/\$steps\.([\w-]+)\.output/g, (_, stepId) => {
-		const val = stepOutputs[stepId];
-		if (val === undefined) throw new Error(`Unknown step output reference: $steps.${stepId}.output`);
-		return val;
-	});
+	return value
+		// Support both $inputs.name and {{inputs.name}} syntax
+		.replace(/(?:\$inputs\.([\w-]+)|\{\{\s*inputs\.([\w-]+)\s*\}\})/g, (_, n1, n2) => {
+			const name = n1 || n2;
+			const val = inputs[name];
+			if (val === undefined) throw new Error(`Unknown input reference: inputs.${name}`);
+			return String(val);
+		})
+		// Support both $steps.id.output and {{steps.id.output}} syntax
+		.replace(/(?:\$steps\.([\w-]+)\.output|\{\{\s*steps\.([\w-]+)\.output\s*\}\})/g, (_, s1, s2) => {
+			const stepId = s1 || s2;
+			const val = stepOutputs[stepId];
+			if (val === undefined) throw new Error(`Unknown step output reference: steps.${stepId}.output`);
+			return val;
+		});
 }
 
 /**

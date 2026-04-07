@@ -29,7 +29,22 @@ case "$FILE_PATH" in
 esac
 
 if [ "$ALLOWED" = "false" ]; then
-  echo "BLOCKED: Builder can only write to catalog/scripts/*, catalog/agents/*, or pipelines/*. Attempted: $FILE_PATH"
+  echo "BLOCKED: You cannot modify core files ($FILE_PATH). Instead, create a fix request:"
+  echo ""
+  echo "Write a fix request to: pipelines/<pipeline-name>/.fix-requests/<timestamp>.md"
+  echo "Format:"
+  echo "  ---"
+  echo "  type: fix-request"
+  echo "  file: <path to the file that needs fixing>"
+  echo "  severity: blocking|warning"
+  echo "  status: pending"
+  echo "  ---"
+  echo "  # Title"
+  echo "  ## Bug (what's wrong)"
+  echo "  ## Fix (diff or description)"
+  echo "  ## Workaround (if any)"
+  echo ""
+  echo "The user will review and apply the fix outside the builder."
   exit 2
 fi
 

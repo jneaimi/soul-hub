@@ -116,6 +116,7 @@
 
 	// Block info
 	let installedBlocks = $state<BlockManifest[]>([]);
+	let fixRequests = $state<{ name: string; content: string }[]>([]);
 
 	let activeRunId = $state<string | null>(null);
 
@@ -265,6 +266,7 @@
 				envStatus = data.envStatus || [];
 				// Load block info
 				installedBlocks = data.installedBlocks || [];
+				fixRequests = data.fixRequests || [];
 				// Load output files
 				if (outputDir) loadOutputFiles();
 				// Load automation config for this pipeline
@@ -329,6 +331,7 @@
 		showFileContent = {};
 		gateSubmitting = new Set();
 		installedBlocks = [];
+		fixRequests = [];
 		selectedSchedule = null;
 		webhookUrl = '';
 		editingSchedule = false;
@@ -1316,6 +1319,32 @@
 				<!-- Structured output viewer -->
 				{#if activeRun?.status === 'done' && runOutputs.length > 0}
 					<OutputViewer outputs={runOutputs} onPreview={(path, name) => { previewFile = { path, name }; }} />
+				{/if}
+
+				<!-- Fix Requests -->
+				{#if fixRequests.length > 0}
+					<section class="mt-6">
+						<h2 class="text-xs font-medium text-hub-danger uppercase tracking-wider mb-3 flex items-center gap-1.5">
+							<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+								<path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/>
+							</svg>
+							Fix Requests ({fixRequests.length})
+						</h2>
+						{#each fixRequests as req}
+							<div class="bg-hub-danger/5 border border-hub-danger/20 rounded-lg p-4 mb-3">
+								<div class="flex items-center justify-between mb-2">
+									<span class="text-xs font-medium text-hub-danger">{req.name}</span>
+									<button
+										onclick={() => navigator.clipboard.writeText(req.content)}
+										class="px-2 py-1 rounded text-[10px] font-medium text-hub-muted border border-hub-border hover:bg-hub-card transition-colors cursor-pointer"
+									>
+										Copy
+									</button>
+								</div>
+								<pre class="text-[11px] text-hub-muted bg-hub-bg rounded p-3 overflow-x-auto whitespace-pre-wrap max-h-60">{req.content}</pre>
+							</div>
+						{/each}
+					</section>
 				{/if}
 
 				<!-- Output Library -->
