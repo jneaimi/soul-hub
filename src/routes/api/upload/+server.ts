@@ -27,15 +27,31 @@ async function dirExists(path: string): Promise<boolean> {
 export const POST: RequestHandler = async ({ request }) => {
 	const formData = await request.formData();
 	const project = formData.get('project') as string;
+	const targetPath = formData.get('targetPath') as string;
 	const subfolder = (formData.get('subfolder') as string) || '';
 
-	if (!project || /[/\\.]/.test(project)) {
-		return json({ error: 'Invalid project name' }, { status: 400 });
-	}
+	let projectDir: string;
 
-	const projectDir = join(DEV_DIR, project);
-	if (!(await dirExists(projectDir))) {
-		return json({ error: 'Project not found' }, { status: 404 });
+	if (targetPath) {
+		// Absolute path mode (used by builder) — validate it's under an allowed root
+		const resolved = resolve(targetPath);
+		if (!resolved.startsWith(DEV_DIR + '/') && !resolved.startsWith(config.resolved.vaultDir + '/')) {
+			return json({ error: 'Invalid target path' }, { status: 403 });
+		}
+		if (!(await dirExists(resolved))) {
+			return json({ error: 'Target directory not found' }, { status: 404 });
+		}
+		projectDir = resolved;
+	} else if (project) {
+		if (/[/\\.]/.test(project)) {
+			return json({ error: 'Invalid project name' }, { status: 400 });
+		}
+		projectDir = join(DEV_DIR, project);
+		if (!(await dirExists(projectDir))) {
+			return json({ error: 'Project not found' }, { status: 404 });
+		}
+	} else {
+		return json({ error: 'Missing project or targetPath' }, { status: 400 });
 	}
 
 	// Determine target directory
@@ -44,6 +60,9 @@ export const POST: RequestHandler = async ({ request }) => {
 		// Sanitize subfolder — no path traversal
 		const cleanSub = subfolder.replace(/\.\./g, '').replace(/^\//, '');
 		targetDir = join(projectDir, cleanSub);
+		if (!targetDir.startsWith(projectDir + '/') && targetDir !== projectDir) {
+			return json({ error: 'Invalid subfolder path' }, { status: 400 });
+		}
 		await mkdir(targetDir, { recursive: true });
 	}
 

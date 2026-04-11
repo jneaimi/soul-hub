@@ -21,6 +21,12 @@ config:
     description: The city to fetch weather for
     default: Dubai
     required: true
+  - name: country
+    type: text
+    label: Country
+    description: Country to disambiguate cities (e.g. UAE, United Kingdom)
+    default: ""
+    required: false
 
 env: []
 

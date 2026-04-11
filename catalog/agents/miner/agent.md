@@ -54,12 +54,12 @@ sqlite3 ~/dev/signal-forge/db/signals.db "SELECT ..."
 Read TWO config files:
 
 ### 1a. Miner Config
-Read: `~/SecondBrain/02-areas/signal-forge/miner-config.md`
+Read: `~/vault/projects/signal-forge/miner-config.md`
 
 Key parameters: `lookback_days`, `min_posts_for_trend`, `min_engagement_threshold`, `pain_point_keywords`, `pillars`, `max_trending_topics`, `max_pain_points`, `include_transcript_quotes`.
 
 ### 1b. Market Context
-Read: `~/SecondBrain/02-areas/signal-forge/market-context.md`
+Read: `~/vault/projects/signal-forge/market-context.md`
 
 Key fields: `active_markets` (which markets to score), and for each market: `sectors`, `audience`, `relevance_signals`, `relevance_threshold`.
 
@@ -300,7 +300,7 @@ uv run ~/dev/signal-forge/scripts/scout_db.py update-run {run_id} --posts {N} --
 ## Step 8: Produce the Report
 
 Write a markdown report to:
-`~/SecondBrain/02-areas/signal-forge/reports/{DATE}-miner-{mode}.md`
+`~/vault/projects/signal-forge/reports/{DATE}-miner-{mode}.md`
 
 (daily → `2026-03-27-miner-daily.md`, weekly → `2026-03-27-miner-weekly.md`)
 
@@ -349,7 +349,7 @@ tags: [signal-forge, miner-daily]
 
 For weekly mode, the Miner reads the `findings` table for the past 7 days and produces a comprehensive report that aggregates across daily findings, shows trend velocity (topics that appeared on multiple days = stronger), persistent pain points, and cumulative opportunities.
 
-Write to: `~/SecondBrain/02-areas/signal-forge/reports/{DATE}-miner-weekly.md`
+Write to: `~/vault/projects/signal-forge/reports/{DATE}-miner-weekly.md`
 
 ### Article Radar (Weekly Mode ONLY)
 

@@ -4,23 +4,29 @@
 	import TerminalTabs from '$lib/components/TerminalTabs.svelte';
 	import FileTree from '$lib/components/FileTree.svelte';
 	import FilePreview from '$lib/components/FilePreview.svelte';
-	import CatalogPanel from '$lib/components/CatalogPanel.svelte';
+	import VaultProjectLens from '$lib/components/vault/VaultProjectLens.svelte';
 	import ProjectInfoDropdown from '$lib/components/ProjectInfoDropdown.svelte';
+	import type { SoulHubConfig } from '$lib/project/schema.js';
 
 	const { data } = $props();
 	const projectName = $derived(page.params.name ?? '');
+	const projectConfig = $derived(data.projectConfig as SoulHubConfig | null);
 
 	// Panel state (defaults, overridden from localStorage in onMount)
-	let sidePanel = $state<'code' | 'brain' | 'catalog' | null>('code');
+	let sidePanel = $state<'code' | 'vault' | null>('code');
 	let sidePanelWidth = $state(260);
 	let resizing = $state(false);
+
+	// Setup mode: auto-start terminal with guided Q&A after project creation
+	let isSetupMode = $state(false);
+	const showSetupBanner = $derived(!data.setupComplete && data.devPath != null && !isSetupMode);
 
 	// File preview state
 	let previewFile = $state<{ path: string; name: string } | null>(null);
 
 	// Mobile state
 	let isMobile = $state(false);
-	let mobileView = $state<'terminal' | 'files' | 'catalog'>('terminal');
+	let mobileView = $state<'terminal' | 'files' | 'vault'>('terminal');
 
 	// Git state
 	let gitInfo = $state<{
@@ -34,6 +40,35 @@
 	// Component refs
 	let terminalTabsRef: TerminalTabs | undefined = $state();
 
+	function startSetup() {
+		const pName = data.projectConfig?.name || data.name;
+		const desc = data.projectConfig?.description || '';
+		const pType = data.projectConfig?.type || 'web-app';
+
+		const prompt = [
+			`New project "${pName}" (type: ${pType}): "${desc}".`,
+			'',
+			'SETUP INSTRUCTIONS:',
+			'1. Read CLAUDE.md in the project root for the full Evaluate → Analyze → Apply framework.',
+			`2. Read /Users/jneaimi/dev/soul-hub/src/lib/project/schema.ts for TEMPLATE_FOR_FRAMEWORK mapping and SoulHubConfig interface.`,
+			`3. Read /Users/jneaimi/dev/soul-hub/src/lib/project/claude-md-generator.ts for CLAUDE.md generation patterns.`,
+			`4. Read /Users/jneaimi/dev/soul-hub/src/lib/project/hook-generator.ts for guard.sh generation patterns.`,
+			'',
+			'WORKFLOW:',
+			'- Ask ONE question at a time using AskUserQuestion tool (7 total: type, framework, database, focus, avoid, tooling, pipelines).',
+			'- After all answers: propose the full .soul-hub.json config and wait for approval.',
+			'- After approval: update .soul-hub.json, regenerate CLAUDE.md, regenerate guard.sh, copy template files using `cp -r`, run npm install or uv init.',
+			'',
+			'START by reading CLAUDE.md, then ask Question 1.',
+		].join('\n');
+
+		isSetupMode = true;
+
+		if (terminalTabsRef) {
+			terminalTabsRef.sendToActive(prompt);
+		}
+	}
+
 	onMount(() => {
 		// Load UI prefs from localStorage
 		try {
@@ -46,6 +81,17 @@
 				if (p.panelWidth) sidePanelWidth = p.panelWidth;
 			}
 		} catch { /* use defaults */ }
+
+		// Check for setup mode (redirected from project creation wizard)
+		const url = new URL(window.location.href);
+		if (url.searchParams.has('setup')) {
+			// Clean URL so refresh doesn't re-trigger
+			url.searchParams.delete('setup');
+			window.history.replaceState(null, '', url.toString());
+
+			// Auto-start setup after terminal mounts
+			setTimeout(() => startSetup(), 500);
+		}
 
 		// Fetch git info
 		if (data.devPath) {
@@ -107,10 +153,19 @@
 				sidePanel = sidePanel ? null : 'code';
 			}
 		}
+
+		if (e.key === 'v' && e.shiftKey) {
+			e.preventDefault();
+			if (isMobile) {
+				mobileView = mobileView === 'vault' ? 'terminal' : 'vault';
+			} else {
+				setSidePanel('vault');
+			}
+		}
 	}
 
 	// Toggle side panel tab — clicking the active tab closes it
-	function setSidePanel(tab: 'code' | 'brain' | 'catalog') {
+	function setSidePanel(tab: 'code' | 'vault') {
 		sidePanel = sidePanel === tab ? null : tab;
 	}
 </script>
@@ -134,9 +189,43 @@
 			<ProjectInfoDropdown
 				{projectName}
 				devPath={data.devPath}
-				brainPath={data.brainPath}
-				{gitInfo}
+								{gitInfo}
 			/>
+
+			<!-- Project type badge -->
+			{#if projectConfig?.type}
+				{@const typeColors: Record<string, string> = {
+					development: 'bg-hub-cta/10 text-hub-cta',
+					content: 'bg-hub-purple/10 text-hub-purple',
+					research: 'bg-hub-info/10 text-hub-info',
+					media: 'bg-hub-warning/10 text-hub-warning',
+					operations: 'bg-hub-danger/10 text-hub-danger',
+				}}
+				<span class="hidden md:inline-flex items-center px-2 py-0.5 rounded text-xs font-medium {typeColors[projectConfig.type] ?? 'bg-hub-dim/10 text-hub-dim'}">
+					{projectConfig.type}
+				</span>
+			{/if}
+
+			<!-- Stack badges -->
+			{#if projectConfig?.stack}
+				<div class="hidden md:flex items-center gap-1">
+					{#if projectConfig.stack.framework}
+						<span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-hub-surface text-hub-muted border border-hub-border">
+							{projectConfig.stack.framework}
+						</span>
+					{/if}
+					{#if projectConfig.stack.language}
+						<span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-hub-surface text-hub-muted border border-hub-border">
+							{projectConfig.stack.language}
+						</span>
+					{/if}
+					{#if projectConfig.stack.styling && projectConfig.stack.styling !== 'none'}
+						<span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-hub-surface text-hub-muted border border-hub-border">
+							{projectConfig.stack.styling}
+						</span>
+					{/if}
+				</div>
+			{/if}
 
 			<!-- Git branch badge -->
 			{#if gitInfo?.isGit && gitInfo.branch}
@@ -151,11 +240,11 @@
 
 			<!-- Desktop panel toggles -->
 			<div class="hidden md:flex items-center gap-1 ml-auto">
-				{#if data.devPath || data.brainPath}
+				{#if data.devPath}
 					<button
 						onclick={() => setSidePanel('code')}
 						class="px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer
-							{sidePanel === 'code' || sidePanel === 'brain' ? 'bg-hub-cta/15 text-hub-cta' : 'text-hub-dim hover:text-hub-muted hover:bg-hub-card'}"
+							{sidePanel === 'code' ? 'bg-hub-cta/15 text-hub-cta' : 'text-hub-dim hover:text-hub-muted hover:bg-hub-card'}"
 						title="Toggle file browser (Cmd+B)"
 					>
 						<svg class="w-3.5 h-3.5 inline-block mr-1 -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
@@ -163,13 +252,13 @@
 					</button>
 				{/if}
 				<button
-					onclick={() => setSidePanel('catalog')}
+					onclick={() => setSidePanel('vault')}
 					class="px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer
-						{sidePanel === 'catalog' ? 'bg-hub-warning/15 text-hub-warning' : 'text-hub-dim hover:text-hub-muted hover:bg-hub-card'}"
-					title="Toggle catalog"
+						{sidePanel === 'vault' ? 'bg-hub-purple/15 text-hub-purple' : 'text-hub-dim hover:text-hub-muted hover:bg-hub-card'}"
+					title="Toggle vault (Cmd+Shift+V)"
 				>
-					<svg class="w-3.5 h-3.5 inline-block mr-1 -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></svg>
-					Catalog
+					<svg class="w-3.5 h-3.5 inline-block mr-1 -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+					Vault
 				</button>
 			</div>
 
@@ -190,15 +279,66 @@
 					<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
 				</button>
 				<button
-					onclick={() => mobileView = 'catalog'}
+					onclick={() => mobileView = 'vault'}
 					class="px-2 py-1.5 rounded text-xs cursor-pointer
-						{mobileView === 'catalog' ? 'bg-hub-warning/15 text-hub-warning' : 'text-hub-dim'}"
+						{mobileView === 'vault' ? 'bg-hub-purple/15 text-hub-purple' : 'text-hub-dim'}"
 				>
-					<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></svg>
+					<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
 				</button>
 			</div>
 		</div>
 	</header>
+
+	<!-- Project info bar: description + pipelines -->
+	{#if projectConfig?.description || (projectConfig?.pipelines && projectConfig.pipelines.length > 0)}
+		<div class="flex-shrink-0 px-4 py-2 border-b border-hub-border bg-hub-surface/30 flex items-center gap-4 text-xs overflow-x-auto">
+			{#if projectConfig.description}
+				<span class="text-hub-muted truncate">{projectConfig.description}</span>
+			{/if}
+			{#if projectConfig.pipelines && projectConfig.pipelines.length > 0}
+				<span class="text-hub-dim">|</span>
+				<div class="flex items-center gap-2 flex-shrink-0">
+					<svg class="w-3.5 h-3.5 text-hub-info flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<polygon points="5 3 19 12 5 21 5 3"/>
+					</svg>
+					{#each projectConfig.pipelines as pipeline}
+						{@const triggerColors: Record<string, string> = {
+							manual: 'text-hub-muted',
+							'on-commit': 'text-hub-cta',
+							scheduled: 'text-hub-purple',
+						}}
+						<a
+							href="/pipelines?name={encodeURIComponent(pipeline.name)}"
+							class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-hub-card border border-hub-border hover:border-hub-info/50 transition-colors cursor-pointer group"
+						>
+							<span class="text-hub-text group-hover:text-hub-info transition-colors">{pipeline.name}</span>
+							<span class="text-hub-dim">{pipeline.role}</span>
+							<span class="px-1 py-px rounded text-[9px] font-medium {triggerColors[pipeline.trigger] ?? 'text-hub-dim'} bg-hub-surface">
+								{pipeline.trigger}
+							</span>
+						</a>
+					{/each}
+				</div>
+			{/if}
+		</div>
+	{/if}
+
+	{#if showSetupBanner}
+		<div class="mx-4 mt-2 mb-2 bg-hub-warning/10 border border-hub-warning/30 rounded-lg px-4 py-3 flex items-center justify-between">
+			<div class="flex items-center gap-2">
+				<svg class="w-4 h-4 text-hub-warning flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+				</svg>
+				<span class="text-sm text-hub-warning">Project setup incomplete — stack and governance not configured yet.</span>
+			</div>
+			<button
+				onclick={startSetup}
+				class="text-xs bg-hub-warning/20 hover:bg-hub-warning/30 text-hub-warning px-3 py-1.5 rounded-md transition-colors cursor-pointer whitespace-nowrap"
+			>
+				Run Setup
+			</button>
+		</div>
+	{/if}
 
 	<!-- Main content area -->
 	<div class="flex-1 min-h-0 flex">
@@ -208,16 +348,15 @@
 				class="flex-shrink-0 border-r border-hub-border overflow-hidden"
 				style="width: {sidePanelWidth}px"
 			>
-				{#if sidePanel === 'code' || sidePanel === 'brain'}
+				{#if sidePanel === 'code'}
 					<FileTree
 						codePath={data.devPath}
-						brainPath={data.brainPath}
-						onFileSelect={handleFileSelect}
+												onFileSelect={handleFileSelect}
 					/>
-				{:else if sidePanel === 'catalog'}
-					<CatalogPanel
+				{:else if sidePanel === 'vault'}
+					<VaultProjectLens
 						{projectName}
-						codePath={data.devPath}
+						onNoteSelect={(path) => { handleFileSelect(`${data.vaultDir}/${path}`, path.split('/').pop() ?? path); }}
 					/>
 				{/if}
 			</div>
@@ -243,13 +382,12 @@
 				{:else if mobileView === 'files'}
 					<FileTree
 						codePath={data.devPath}
-						brainPath={data.brainPath}
-						onFileSelect={handleFileSelect}
+												onFileSelect={handleFileSelect}
 					/>
-				{:else if mobileView === 'catalog'}
-					<CatalogPanel
+				{:else if mobileView === 'vault'}
+					<VaultProjectLens
 						{projectName}
-						codePath={data.devPath}
+						onNoteSelect={(path) => { handleFileSelect(`${data.vaultDir}/${path}`, path.split('/').pop() ?? path); }}
 					/>
 				{/if}
 			{:else}

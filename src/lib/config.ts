@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { homedir } from 'node:os';
 import type { ChannelsSettings } from './channels/types.js';
 
-const HOME = process.env.HOME || '';
+const HOME = homedir();
 
 export interface SoulHubConfig {
 	terminal: {
@@ -12,12 +13,12 @@ export interface SoulHubConfig {
 		cursorBlink: boolean;
 	};
 	interface: {
-		defaultPanel: 'code' | 'brain' | 'closed';
+		defaultPanel: 'code' | 'closed';
 		panelWidth: number;
 	};
 	paths: {
 		devDir: string;
-		brainDir: string;
+		vaultDir: string;
 		catalogDir: string;
 		claudeBinary: string;
 	};
@@ -25,6 +26,11 @@ export interface SoulHubConfig {
 		port: number;
 	};
 	channels: ChannelsSettings;
+	proxy: {
+		enabled: boolean;
+		allowedPortRange: [number, number];
+		blockedPorts: number[];
+	};
 }
 
 const DEFAULTS: SoulHubConfig = {
@@ -40,7 +46,7 @@ const DEFAULTS: SoulHubConfig = {
 	},
 	paths: {
 		devDir: '~/dev',
-		brainDir: '~/SecondBrain',
+		vaultDir: '~/vault',
 		catalogDir: '~/dev/soul-hub/catalog',
 		claudeBinary: '~/.local/bin/claude',
 	},
@@ -53,6 +59,11 @@ const DEFAULTS: SoulHubConfig = {
 			label: 'Telegram',
 			defaultFor: ['send'],
 		},
+	},
+	proxy: {
+		enabled: true,
+		allowedPortRange: [1024, 9999],
+		blockedPorts: [2400],
 	},
 };
 
@@ -78,27 +89,34 @@ function merge<T extends Record<string, any>>(a: T, b: Partial<T>): T {
 }
 
 function loadSettings(): SoulHubConfig {
-	const settingsPath = resolve(HOME, 'dev', 'soul-hub', 'settings.json');
-	try {
-		const raw = readFileSync(settingsPath, 'utf-8');
-		const parsed = JSON.parse(raw);
-		return merge(DEFAULTS, parsed);
-	} catch {
-		return DEFAULTS;
+	// Look for settings.json in: 1) project root (process.cwd), 2) env var, 3) legacy path
+	const candidates = [
+		resolve(process.cwd(), 'settings.json'),
+		process.env.SOUL_HUB_SETTINGS || '',
+		resolve(HOME, '.soul-hub', 'settings.json'),
+	].filter(Boolean);
+
+	for (const settingsPath of candidates) {
+		try {
+			const raw = readFileSync(settingsPath, 'utf-8');
+			const parsed = JSON.parse(raw);
+			return merge(DEFAULTS, parsed);
+		} catch {
+			continue;
+		}
 	}
+	return DEFAULTS;
 }
 
 // Load once at startup — config changes require restart for path/server values
 const _config = loadSettings();
 
 /** Resolved config with ~ expanded to absolute paths */
-export const config: SoulHubConfig & { resolved: { devDir: string; brainDir: string; brainProjects: string; brainAreas: string; catalogDir: string; claudeBinary: string } } = {
+export const config: SoulHubConfig & { resolved: { devDir: string; vaultDir: string; catalogDir: string; claudeBinary: string } } = {
 	..._config,
 	resolved: {
 		devDir: expandPath(_config.paths.devDir),
-		brainDir: expandPath(_config.paths.brainDir),
-		brainProjects: resolve(expandPath(_config.paths.brainDir), '01-projects'),
-		brainAreas: resolve(expandPath(_config.paths.brainDir), '02-areas'),
+		vaultDir: expandPath(_config.paths.vaultDir),
 		catalogDir: expandPath(_config.paths.catalogDir),
 		claudeBinary: expandPath(_config.paths.claudeBinary),
 	},

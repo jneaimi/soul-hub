@@ -1,0 +1,49 @@
+name: khaleej-times-daily
+description: Scrape Khaleej Times UAE news daily, analyze themes, and produce a structured summary
+version: 1.0.0
+
+env: []
+
+inputs: []
+
+shared_config:
+  - name: KT Sections
+    file: config/sections.json
+    description: Which Khaleej Times sections to scrape (enable/disable, add new sections)
+    columns:
+      - name: name
+        type: text
+        label: Section Name
+        placeholder: "e.g. UAE"
+        required: true
+      - name: keywords
+        type: text
+        label: Search Keywords
+        placeholder: "UAE"
+        required: true
+      - name: enabled
+        type: select
+        label: Enabled
+        options: ["true", "false"]
+        required: true
+      - name: description
+        type: text
+        label: Description
+        placeholder: "What this section covers"
+        required: false
+
+steps:
+  - id: fetch-kt
+    block: kt-scraper
+    timeout: 120
+    output: output/fetch-kt-result.json
+
+  - id: analyze-news
+    block: kt-analyzer
+    depends_on: [fetch-kt]
+    input: $steps.fetch-kt.output
+    timeout: 300
+    output: output/analyze-news-result.md
+
+on_failure:
+  strategy: halt

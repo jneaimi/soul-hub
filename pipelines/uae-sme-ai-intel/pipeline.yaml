@@ -1,0 +1,98 @@
+name: uae-sme-ai-intel
+description: Discover UAE SME support organizations, analyze their AI programs, and extract actionable leads
+version: 1.0.0
+
+env: []
+
+inputs:
+  - name: mode
+    type: select
+    description: Run mode — full research or monitor for updates only
+    options: [full, monitor]
+    default: full
+    required: true
+  - name: focus_area
+    type: text
+    description: Specific focus area for research
+    default: "AI adoption for SMEs"
+    required: false
+
+shared_config:
+  - name: Known Organizations
+    file: config/known-orgs.json
+    description: Seed list of known UAE SME support organizations (pipeline discovers more)
+    columns:
+      - name: name
+        type: text
+        label: Organization Name
+        placeholder: "e.g. Khalifa Fund"
+        required: true
+      - name: website
+        type: text
+        label: Website URL
+        placeholder: "https://..."
+        required: false
+      - name: notes
+        type: text
+        label: Notes
+        placeholder: "Any known programs or contacts"
+        required: false
+
+steps:
+  # Phase 1: Fetch org websites (script — fast, parallel, no agent needed)
+  - id: fetch-orgs
+    type: script
+    block: fetch-orgs
+    output: output/fetch-orgs-result.json
+    timeout: 120
+
+  # Phase 2: Agent reviews fetched data + discovers missing orgs
+  - id: discover-orgs
+    type: agent
+    block: discover-orgs
+    depends_on: [fetch-orgs]
+    input: $steps.fetch-orgs.output
+    config:
+      focus_area: "{{inputs.focus_area}}"
+    output: output/discover-orgs-result.json
+    timeout: 600
+
+  # Phase 3: Clean and normalize agent output (script — instant)
+  - id: clean-output
+    type: script
+    block: clean-output
+    depends_on: [discover-orgs]
+    input: $steps.discover-orgs.output
+    output: output/org-landscape.json
+    timeout: 30
+
+  - id: analyze-ai-programs
+    type: agent
+    block: analyze-ai-programs
+    depends_on: [clean-output]
+    input: $steps.clean-output.output
+    config:
+      analysis_depth: deep
+    output: output/analyze-ai-programs-result.md
+    timeout: 900
+
+  - id: extract-leads
+    type: agent
+    block: extract-leads
+    depends_on: [analyze-ai-programs]
+    input: $steps.analyze-ai-programs.output
+    config:
+      min_priority: medium
+    output: output/extract-leads-result.json
+    timeout: 600
+
+  - id: compile-report
+    type: script
+    block: compile-report
+    depends_on: [extract-leads]
+    input: [$steps.clean-output.output, $steps.analyze-ai-programs.output, $steps.extract-leads.output]
+    output: output/final-report.md
+    timeout: 120
+
+on_failure:
+  strategy: halt

@@ -1,0 +1,23 @@
+[
+  {
+    "name": "NewsAPI",
+    "type": "newsapi",
+    "enabled": "false",
+    "base_url": "https://newsapi.org/v2",
+    "env_key": "NEWSAPI_KEY"
+  },
+  {
+    "name": "Google News RSS",
+    "type": "google_rss",
+    "enabled": "false",
+    "base_url": "https://news.google.com/rss",
+    "env_key": ""
+  },
+  {
+    "name": "APIDirect News",
+    "type": "apidirect",
+    "enabled": "true",
+    "base_url": "https://api.apidirect.dev",
+    "env_key": "APIDIRECT_API_KEY"
+  }
+]

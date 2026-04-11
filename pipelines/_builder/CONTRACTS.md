@@ -172,6 +172,32 @@ shared_config:
 ### Step Types Whitelist
 Only valid types: `script`, `agent`, `approval`, `prompt`, `channel`
 
+### Conditional Execution
+Steps support `when:` and `skip_if:` for conditional branching:
+
+```yaml
+steps:
+  - id: daily-scan
+    type: script
+    block: catalog/scanner
+    when: $inputs.mode == "daily"       # only runs if mode is "daily"
+
+  - id: weekly-report
+    type: agent
+    block: catalog/strategist
+    when: $inputs.mode == "weekly"      # only runs if mode is "weekly"
+
+  - id: notify
+    type: script
+    block: catalog/notifier
+    skip_if: $steps.daily-scan.output contains "error"  # skip on error
+    depends_on: [daily-scan]
+```
+
+**Operators:** `==`, `!=`, `contains`, `not_contains`
+**References:** `$inputs.<name>`, `$steps.<id>.output`
+**Behavior:** Skipped steps get status `skipped` with reason. Downstream steps referencing a skipped step's output receive an empty string.
+
 ### Output Paths
 Each step should declare its output path:
 ```yaml
@@ -180,4 +206,77 @@ steps:
     block: block-name
     output: output/step-id-result.json
     timeout: 300
+```
+
+## 6. Vault Contract
+
+### Automatic Capture (zero-config)
+The pipeline runner automatically saves outputs to the vault — **no block code needed:**
+
+| What | When | Vault Zone | Tags |
+|------|------|-----------|------|
+| Step output | Each step completes | `projects/{pipelineName}/outputs` | `['pipeline', pipelineName, stepId]` |
+| Run summary | Pipeline completes (success or failure) | `projects/{pipelineName}/outputs` | `['pipeline', 'run-summary', pipelineName]` |
+
+**How it works:**
+- Runner reads each step's output file from `output/`
+- Wraps it in a markdown vault note with frontmatter (type, tags, run_id, step)
+- JSON → ```json code block, Markdown → as-is, Other → ``` code block
+- Failures are non-blocking — vault errors never break a pipeline
+
+**Auto-applied metadata:**
+```yaml
+type: output
+created: YYYY-MM-DD
+tags: [pipeline, <pipeline-name>, <step-id>]
+project: <pipeline-name>
+pipeline: <pipeline-name>
+run_id: <full-run-id>
+step: <step-id>
+```
+
+### Raw Output Files
+Raw files stay in `output/` inside the pipeline directory — browsable through the vault's "Pipeline Outputs" tab. The vault note is a processed copy; both exist.
+
+### Vault-Aware Blocks (optional)
+Blocks can write directly to the vault API for richer knowledge capture:
+
+```python
+import json, urllib.request
+
+def save_to_vault(zone, filename, meta, content):
+    """Save a note to the vault. Best-effort — failures don't break the block."""
+    try:
+        data = json.dumps({"zone": zone, "filename": filename, "meta": meta, "content": content}).encode()
+        req = urllib.request.Request(
+            "http://localhost:2400/api/vault/notes",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=5)
+    except Exception:
+        pass
+```
+
+**Use vault-aware blocks when:**
+- Saving structured findings (not just raw output)
+- Creating decision records or learnings from analysis
+- Writing reports that need different tags than auto-capture provides
+
+**Let auto-capture handle it when:**
+- Standard step outputs (JSON, CSV, markdown)
+- Run summaries
+- Output just needs to be stored and browsable
+
+### Project Scaffolding
+When a project is registered, the vault auto-creates:
+```
+~/vault/projects/{name}/
+├── CLAUDE.md          # Zone governance (allowed types, required fields)
+├── index.md           # Project index note
+├── decisions/         # Architecture decision records
+├── learnings/         # Insights and gotchas
+├── debugging/         # Bug investigations
+└── outputs/           # Auto-captured pipeline outputs
 ```

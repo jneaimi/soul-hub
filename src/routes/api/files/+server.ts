@@ -2,6 +2,7 @@ import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp']);
 const MIME_TYPES: Record<string, string> = {
@@ -15,8 +16,8 @@ import { config } from '$lib/config.js';
 // Only allow reading within these roots
 const ALLOWED_ROOTS = [
 	config.resolved.devDir,
-	config.resolved.brainDir,
-	'/tmp/pipeline-runs',
+	config.resolved.vaultDir,
+	join(tmpdir(), 'pipeline-runs'),
 ];
 
 // Skip these directories when listing

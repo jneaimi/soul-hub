@@ -413,7 +413,7 @@ Currently known vars (check `.data/secrets.env` or `/api/secrets` for current st
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — Telegram channel
 - `APIDIRECT_API_KEY` — Social media APIs (Twitter, Reddit, TikTok, Instagram)
 - `YOUTUBE_API_KEY` — YouTube Data API
-- `GOOGLE_API_KEY` — Gemini image + Veo video
+- `GEMINI_API_KEY` — Gemini image + Veo video
 - `ELEVENLABS_API_KEY` — Text-to-speech
 - `RESEND_API_KEY` — Email via Resend
 - `LINEAR_API_KEY` — Linear project management

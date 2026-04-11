@@ -10,8 +10,8 @@ env:
   - name: YOUTUBE_API_KEY
     description: YouTube Data API for video transcripts
     required: true
-  - name: GOOGLE_API_KEY
-    description: Google API (used by some collector endpoints)
+  - name: GEMINI_API_KEY
+    description: Gemini API (used by some collector endpoints)
     required: false
   - name: HF_API_TOKEN
     description: Hugging Face API (optional, for embeddings)

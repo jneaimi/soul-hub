@@ -2,13 +2,16 @@ import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { resolve, dirname } from 'node:path';
 import { config } from '$lib/config.js';
-import { runPipeline, parsePipeline, validatePipelineRun, sendInputToStep, killPipeline, approveGate, rejectGate, answerGate, getActivePipelines, getSavedInputs, saveInputs } from '$lib/pipeline/index.js';
+import { runPipeline, parsePipeline, validatePipelineRun, sendInputToStep, killPipeline, approveGate, rejectGate, answerGate, getActivePipelines, getSavedInputs, saveInputs, parseChain, validateChainRun, runChain, killChain, recordManualRun } from '$lib/pipeline/index.js';
 import type { PipelineRun } from '$lib/pipeline/types.js';
+import type { ChainRun } from '$lib/pipeline/chain-types.js';
+import { access } from 'node:fs/promises';
 
 const PIPELINES_DIR = resolve(dirname(config.resolved.catalogDir), 'pipelines');
 
 // Track active and completed runs (in-memory for live polling)
 const runs = new Map<string, PipelineRun>();
+const chainRuns = new Map<string, ChainRun>();
 const runEvents = new Map<string, { stepId: string; status: string; detail?: string; time: string }[]>();
 
 // Track terminal output per step (ring buffer — last 200 lines per step)
@@ -29,10 +32,25 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ ok: sent });
 	}
 
-	// Handle kill: abort a running pipeline
+	// Handle kill: abort a running pipeline or chain
 	if (body.action === 'kill') {
 		const { runId } = body;
 		if (!runId) return json({ error: 'Missing runId' }, { status: 400 });
+
+		// Try chain kill first, then pipeline
+		const chainKilled = killChain(runId);
+		if (chainKilled) {
+			const cr = chainRuns.get(runId);
+			if (cr) {
+				cr.status = 'failed';
+				cr.finishedAt = new Date().toISOString();
+				activePipelines.delete(cr.chainName);
+			}
+			const events = runEvents.get(runId);
+			events?.push({ stepId: '_chain', status: 'killed', detail: 'Killed by user', time: new Date().toISOString() });
+			return json({ ok: true });
+		}
+
 		const killed = killPipeline(runId);
 		if (killed) {
 			const run = runs.get(runId);
@@ -44,7 +62,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			const events = runEvents.get(runId);
 			events?.push({ stepId: '_pipeline', status: 'killed', detail: 'Killed by user', time: new Date().toISOString() });
 		}
-		return json({ ok: killed });
+		return json({ ok: killed || chainKilled });
 	}
 
 	// Handle approve: resolve a waiting approval gate
@@ -83,7 +101,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ ok });
 	}
 
-	const { name, inputs } = body as { name: string; inputs?: Record<string, string | number> };
+	const { name, inputs, resumeFrom } = body as { name: string; inputs?: Record<string, string | number>; resumeFrom?: string };
 
 	if (!name) {
 		return json({ error: 'Missing pipeline name' }, { status: 400 });
@@ -91,15 +109,129 @@ export const POST: RequestHandler = async ({ request }) => {
 
 	// Concurrency lock: reject if already running
 	if (activePipelines.has(name)) {
-		return json({ error: `Pipeline "${name}" is already running. Wait for it to finish or kill it.` }, { status: 409 });
+		return json({ error: `"${name}" is already running. Wait for it to finish or kill it.` }, { status: 409 });
 	}
 
+	// Detect chain vs pipeline
+	const chainYamlPath = resolve(PIPELINES_DIR, name, 'chain.yaml');
+	let isChain = false;
+	try { await access(chainYamlPath); isChain = true; } catch { /* not a chain */ }
+
+	const runId = crypto.randomUUID().slice(0, 8);
+	const events: { stepId: string; status: string; detail?: string; time: string }[] = [];
+	runEvents.set(runId, events);
+	const outputBuffers = new Map<string, string[]>();
+	stepOutputBuffers.set(runId, outputBuffers);
+
+	const evictRun = () => {
+		setTimeout(() => {
+			runs.delete(runId);
+			chainRuns.delete(runId);
+			runEvents.delete(runId);
+			stepOutputBuffers.delete(runId);
+		}, 10 * 60 * 1000);
+	};
+
+	if (isChain) {
+		// Chain run
+		let parsedChain;
+		try {
+			parsedChain = await parseChain(chainYamlPath);
+			const validation = validateChainRun(parsedChain, inputs || {});
+			if (!validation.ok) {
+				return json({ error: 'Validation failed', errors: validation.errors }, { status: 400 });
+			}
+		} catch (err) {
+			return json({ error: `Chain parse failed: ${(err as Error).message}` }, { status: 400 });
+		}
+
+		if (inputs && Object.keys(inputs).length > 0) {
+			saveInputs(name, inputs);
+		}
+
+		activePipelines.add(name);
+
+		// Create a live chain run state that updates as nodes progress
+		const liveChainRun = {
+			runId,
+			chainName: name,
+			type: 'chain' as const,
+			status: 'running' as string,
+			startedAt: new Date().toISOString(),
+			finishedAt: undefined as string | undefined,
+			nodes: parsedChain.nodes.map(n => ({
+				id: n.id,
+				pipelineName: n.pipeline,
+				status: 'pending' as string,
+				attempt: 0,
+				outputPath: undefined as string | undefined,
+				error: undefined as string | undefined,
+				durationMs: undefined as number | undefined,
+				pipelineRun: undefined as PipelineRun | undefined,
+			})),
+			resolvedInputs: inputs || {},
+		};
+		chainRuns.set(runId, liveChainRun as ChainRun);
+
+		const promise = runChain(
+			chainYamlPath,
+			inputs || {},
+			(nodeId, status, detail) => {
+				events.push({ stepId: `node:${nodeId}`, status, detail, time: new Date().toISOString() });
+				// Update live chain run state
+				const node = liveChainRun.nodes.find(n => n.id === nodeId);
+				if (node) {
+					node.status = status;
+					if (status === 'failed' && detail) node.error = detail;
+				}
+			},
+			(nodeId, stepId, status, detail) => {
+				events.push({ stepId: `${nodeId}:${stepId}`, status, detail, time: new Date().toISOString() });
+			},
+			(nodeId, stepId, data) => {
+				const key = `${nodeId}:${stepId}`;
+				if (!outputBuffers.has(key)) outputBuffers.set(key, []);
+				const buf = outputBuffers.get(key)!;
+				buf.push(data);
+				if (buf.length > 200) buf.shift();
+			},
+			runId,
+			parsedChain,
+		);
+
+		promise.then((result) => {
+			chainRuns.set(runId, result);
+			activePipelines.delete(name);
+			evictRun();
+			recordManualRun({ runId, pipelineName: name, status: result.status, startedAt: result.startedAt, finishedAt: result.finishedAt, steps: [] });
+		}).catch((err) => {
+			const failedAt = new Date().toISOString();
+			chainRuns.set(runId, {
+				runId,
+				chainName: name,
+				type: 'chain',
+				status: 'failed',
+				startedAt: failedAt,
+				finishedAt: failedAt,
+				nodes: [],
+				resolvedInputs: inputs || {},
+			});
+			events.push({ stepId: '_chain', status: 'failed', detail: (err as Error).message, time: new Date().toISOString() });
+			activePipelines.delete(name);
+			evictRun();
+			recordManualRun({ runId, pipelineName: name, status: 'failed', startedAt: failedAt, finishedAt: failedAt, steps: [] });
+		});
+
+		return json({ runId, status: 'started', type: 'chain' });
+	}
+
+	// Pipeline run (existing logic)
 	const yamlPath = resolve(PIPELINES_DIR, name, 'pipeline.yaml');
 
-	// Pre-run validation: check env vars and required inputs
+	let parsedSpec;
 	try {
-		const spec = await parsePipeline(yamlPath);
-		const validation = validatePipelineRun(spec, inputs || {});
+		parsedSpec = await parsePipeline(yamlPath);
+		const validation = validatePipelineRun(parsedSpec, inputs || {});
 		if (!validation.ok) {
 			return json({ error: 'Validation failed', errors: validation.errors }, { status: 400 });
 		}
@@ -107,24 +239,12 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ error: `Pipeline parse failed: ${(err as Error).message}` }, { status: 400 });
 	}
 
-	// Save inputs for next time (non-blocking)
 	if (inputs && Object.keys(inputs).length > 0) {
 		saveInputs(name, inputs);
 	}
 
-	// Run pipeline asynchronously — return run ID immediately
-	const runId = crypto.randomUUID().slice(0, 8);
-	const events: { stepId: string; status: string; detail?: string; time: string }[] = [];
-	runEvents.set(runId, events);
-
-	// Terminal output buffers per step
-	const outputBuffers = new Map<string, string[]>();
-	stepOutputBuffers.set(runId, outputBuffers);
-
-	// Acquire concurrency lock
 	activePipelines.add(name);
 
-	// Start pipeline in background (pass runId so gates can reference it)
 	const promise = runPipeline(
 		yamlPath,
 		inputs || {},
@@ -132,39 +252,80 @@ export const POST: RequestHandler = async ({ request }) => {
 			events.push({ stepId, status, detail, time: new Date().toISOString() });
 		},
 		(stepId, data) => {
-			// Capture terminal output per step (ring buffer)
 			if (!outputBuffers.has(stepId)) outputBuffers.set(stepId, []);
 			const buf = outputBuffers.get(stepId)!;
 			buf.push(data);
 			if (buf.length > 200) buf.shift();
 		},
 		runId,
+		resumeFrom,
+		parsedSpec,
 	);
 
 	promise.then((result) => {
-		runs.set(result.runId, result);
-		runs.set(runId, { ...result, runId });
+		const fullResult = { ...result, runId };
+		runs.set(runId, fullResult);
 		activePipelines.delete(name);
+		evictRun();
+		// Persist to run history
+		recordManualRun({ runId, pipelineName: name, status: result.status, startedAt: result.startedAt, finishedAt: result.finishedAt, steps: result.steps });
 	}).catch((err) => {
+		const failedAt = new Date().toISOString();
 		runs.set(runId, {
 			runId,
 			pipelineName: name,
 			status: 'failed',
-			startedAt: new Date().toISOString(),
-			finishedAt: new Date().toISOString(),
+			startedAt: failedAt,
+			finishedAt: failedAt,
 			steps: [],
 			resolvedInputs: inputs || {},
 		});
 		events.push({ stepId: '_pipeline', status: 'failed', detail: (err as Error).message, time: new Date().toISOString() });
 		activePipelines.delete(name);
+		evictRun();
+		recordManualRun({ runId, pipelineName: name, status: 'failed', startedAt: failedAt, finishedAt: failedAt, steps: [] });
 	});
 
-	return json({ runId, status: 'started' });
+	return json({ runId, status: 'started', type: 'pipeline' });
 };
 
 /** GET /api/pipelines/run?id=... — get run status */
 export const GET: RequestHandler = async ({ url }) => {
 	const runId = url.searchParams.get('id');
+
+	// Return last run for a specific pipeline/chain name
+	const lastName = url.searchParams.get('last');
+	if (lastName) {
+		// Search chain runs first
+		for (const [id, cr] of chainRuns) {
+			if (cr.chainName === lastName) {
+				const events = runEvents.get(id) || [];
+				const outputBuffers = stepOutputBuffers.get(id);
+				const stepOutput: Record<string, string> = {};
+				if (outputBuffers) {
+					for (const [stepId, lines] of outputBuffers) {
+						stepOutput[stepId] = lines.slice(-50).join('');
+					}
+				}
+				return json({ ...cr, events, stepOutput });
+			}
+		}
+		// Search pipeline runs
+		for (const [id, pr] of runs) {
+			if (pr.pipelineName === lastName) {
+				const events = runEvents.get(id) || [];
+				const outputBuffers = stepOutputBuffers.get(id);
+				const stepOutput: Record<string, string> = {};
+				if (outputBuffers) {
+					for (const [stepId, lines] of outputBuffers) {
+						stepOutput[stepId] = lines.slice(-50).join('');
+					}
+				}
+				return json({ ...pr, events, stepOutput });
+			}
+		}
+		return json({ error: 'No recent run found' }, { status: 404 });
+	}
 
 	if (!runId) {
 		// Return all runs
@@ -175,6 +336,7 @@ export const GET: RequestHandler = async ({ url }) => {
 	}
 
 	const run = runs.get(runId);
+	const chainRun = chainRuns.get(runId);
 	const events = runEvents.get(runId) || [];
 	const outputBuffers = stepOutputBuffers.get(runId);
 
@@ -186,8 +348,11 @@ export const GET: RequestHandler = async ({ url }) => {
 		}
 	}
 
+	if (chainRun) {
+		return json({ ...chainRun, events, stepOutput });
+	}
+
 	if (!run) {
-		// Pipeline might still be running — check events
 		if (events.length > 0) {
 			return json({ runId, status: 'running', events, stepOutput });
 		}

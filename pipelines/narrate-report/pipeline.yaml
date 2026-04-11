@@ -1,0 +1,24 @@
+name: narrate-report
+description: Agent-powered narrative summary of data quality results
+version: 1.0.0
+
+inputs:
+  - name: quality_report
+    type: file
+    description: Markdown quality report from quality-report pipeline
+    required: true
+  - name: repaired_csv
+    type: file
+    description: Final repaired CSV from repair-data pipeline
+    required: true
+
+steps:
+  - id: narrate
+    type: agent
+    block: narrator
+    input: [$inputs.quality_report, $inputs.repaired_csv]
+    output: output/narrated-report.md
+    timeout: 120
+
+on_failure:
+  strategy: halt

@@ -4,6 +4,7 @@ import { join, dirname } from 'node:path';
 import type { PipelineSpec } from './types.js';
 import { parseBlockManifest, validateBlockConfig } from './block.js';
 import type { BlockManifest } from './block.js';
+import { parseCondition, evaluateConditionOp } from './condition-evaluator.js';
 
 /** Resolve block references in pipeline steps.
  *  For steps with block:, reads BLOCK.md and auto-derives type, run, agent.
@@ -30,21 +31,22 @@ async function resolveBlockReferences(spec: PipelineSpec, pipelineDir: string): 
 		}
 
 		// Auto-derive run command for script blocks
-		if (step.type === 'script' && !step.run) {
+		// Use `uv run` for Python to ensure correct Python version and dependency management
+		if ((step.type === 'script' || ((step.type === 'chunk' || step.type === 'loop') && manifest.type === 'script')) && !step.run) {
 			const runtime = manifest.runtime || 'python';
 			if (runtime === 'python' || runtime === 'python3') {
-				step.run = `python3 blocks/${step.block}/run.py`;
+				step.run = `uv run python3 blocks/${step.block}/run.py`;
 			} else if (runtime === 'bash' || runtime === 'sh') {
 				step.run = `bash blocks/${step.block}/run.sh`;
 			} else if (runtime === 'node' || runtime === 'nodejs') {
 				step.run = `node blocks/${step.block}/run.js`;
 			} else {
-				step.run = `python3 blocks/${step.block}/run.py`;
+				step.run = `uv run python3 blocks/${step.block}/run.py`;
 			}
 		}
 
 		// Auto-derive agent for agent blocks
-		if (step.type === 'agent' && !step.agent) {
+		if ((step.type === 'agent' || ((step.type === 'chunk' || step.type === 'loop') && manifest.type === 'agent')) && !step.agent) {
 			step.agent = `blocks/${step.block}/agent.md`;
 		}
 
@@ -122,6 +124,35 @@ export async function parsePipeline(filePath: string): Promise<PipelineSpec> {
 			throw new Error(`Agent step "${step.id}" missing "agent" name`);
 		}
 
+		// Chunk step validation
+		if (step.type === 'chunk') {
+			if (!step.block) throw new Error(`Chunk step "${step.id}" requires a block reference`);
+			if (step.parallel !== undefined) {
+				if (step.parallel < 1) throw new Error(`Chunk step "${step.id}": parallel must be >= 1`);
+				if (step.parallel > 10) throw new Error(`Chunk step "${step.id}": parallel must be <= 10`);
+			}
+			if (step.max_chunks !== undefined && step.max_chunks > 1000) {
+				throw new Error(`Chunk step "${step.id}": max_chunks must be <= 1000`);
+			}
+			if (step.merge && step.merge !== 'skip' && !step.merge_output) {
+				throw new Error(`Chunk step "${step.id}": merge_output is required when merge is "${step.merge}"`);
+			}
+			if (!step.output) throw new Error(`Chunk step "${step.id}": output directory path is required`);
+		}
+
+		// Loop step validation
+		if (step.type === 'loop') {
+			if (!step.block) throw new Error(`Loop step "${step.id}" requires a block reference`);
+			if (!step.until) throw new Error(`Loop step "${step.id}" requires an "until" condition`);
+			const maxIter = step.max_iterations ?? 3;
+			if (maxIter > 10) throw new Error(`Loop step "${step.id}": max_iterations must be <= 10`);
+			if (maxIter < 1) throw new Error(`Loop step "${step.id}": max_iterations must be >= 1`);
+			if (!step.until.includes(`$steps.${step.id}.output`)) {
+				throw new Error(`Loop step "${step.id}": until condition must reference "$steps.${step.id}.output"`);
+			}
+			if (!step.output) throw new Error(`Loop step "${step.id}": output path is required`);
+		}
+
 		// Validate depends_on references
 		if (step.depends_on) {
 			const stepIds = new Set(spec.steps.map((s) => s.id));
@@ -165,10 +196,11 @@ export function validatePipelineRun(
 ): { ok: boolean; errors: string[] } {
 	const errors: string[] = [];
 
-	// Check required env vars are set in process.env
-	for (const env of spec.env || []) {
-		if (env.required !== false && !process.env[env.name]) {
-			errors.push(`Missing env var: ${env.name}${env.description ? ` (${env.description})` : ''}`);
+	// Check required env vars are set in process.env (loaded from .data/secrets.env at startup)
+	const missingEnv = (spec.env || []).filter(e => e.required !== false && !process.env[e.name]);
+	if (missingEnv.length > 0) {
+		for (const env of missingEnv) {
+			errors.push(`Missing env var: ${env.name}${env.description ? ` — ${env.description}` : ''}. Set it in Settings > Platform Environment.`);
 		}
 	}
 
@@ -218,38 +250,9 @@ export function evaluateCondition(
 	inputs: Record<string, string | number>,
 	stepOutputs: Record<string, string>,
 ): boolean {
-	// Parse the expression: left operator right
-	const operators = ['not_contains', 'contains', '!=', '=='] as const;
-	let left = '';
-	let op = '' as typeof operators[number];
-	let right = '';
-
-	for (const candidate of operators) {
-		const idx = expr.indexOf(` ${candidate} `);
-		if (idx !== -1) {
-			left = expr.substring(0, idx).trim();
-			op = candidate;
-			right = expr.substring(idx + candidate.length + 2).trim();
-			break;
-		}
-	}
-
-	if (!op) {
-		throw new Error(`Invalid condition expression: "${expr}". Use ==, !=, contains, or not_contains`);
-	}
-
-	// Resolve variable references on the left side
+	const { left, op, right } = parseCondition(expr);
 	const resolvedLeft = resolveRef(left, inputs, stepOutputs);
-
-	// Strip quotes from the right side
-	const resolvedRight = right.replace(/^["']|["']$/g, '');
-
-	switch (op) {
-		case '==': return resolvedLeft === resolvedRight;
-		case '!=': return resolvedLeft !== resolvedRight;
-		case 'contains': return resolvedLeft.includes(resolvedRight);
-		case 'not_contains': return !resolvedLeft.includes(resolvedRight);
-	}
+	return evaluateConditionOp(resolvedLeft, op, right);
 }
 
 /**

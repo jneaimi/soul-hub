@@ -23,13 +23,13 @@ export const POST: RequestHandler = async ({ request }) => {
 
 		// Validate structure — only allow known keys
 		const allowed = ['terminal', 'interface', 'paths', 'server', 'channels'];
-		const filtered: Record<string, any> = {};
+		const filtered: Record<string, unknown> = {};
 		for (const key of allowed) {
 			if (body[key] !== undefined) filtered[key] = body[key];
 		}
 
 		// Read existing to merge
-		let existing: Record<string, any> = {};
+		let existing: Record<string, unknown> = {};
 		try {
 			const raw = await readFile(SETTINGS_PATH, 'utf-8');
 			existing = JSON.parse(raw);

@@ -1,16 +1,31 @@
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { createInterface } from 'node:readline';
-import { mkdir, stat, readFile, writeFile, unlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { mkdir, stat, readFile, readdir, writeFile, unlink, copyFile } from 'node:fs/promises';
 import { resolve, dirname, join } from 'node:path';
 import { config } from '$lib/config.js';
-import { parsePipeline, resolveRef, getExecutionOrder, checkCondition } from './parser.js';
+import { spawnSession, writeInput, killSession as ptyKillSession } from '$lib/pty/manager.js';
+import { parsePipeline, resolveRef, getExecutionOrder, checkCondition, evaluateCondition } from './parser.js';
+import { parseChain } from './chain-parser.js';
 import type { PipelineStep, PipelineMcp, PipelineRun, StepStatus } from './types.js';
 import { sendViaChannel } from '$lib/channels/registry.js';
+import { savePipelineOutput, savePipelineRunSummary } from '../vault/pipeline-bridge.js';
+
+/** MCP server configuration entry */
+interface McpServerConfig {
+	command?: string;
+	args?: string[];
+	url?: string;
+	type?: string;
+	env?: Record<string, string>;
+}
+
+/** MCP configuration file format */
+interface McpJsonConfig {
+	mcpServers: Record<string, McpServerConfig>;
+}
 
 const execFileAsync = promisify(execFile);
-
-const BRIDGE_SCRIPT = resolve(dirname(config.resolved.catalogDir), 'scripts', 'pty_bridge.py');
 
 export type StepOutputCallback = (stepId: string, data: string) => void;
 export type StepEventCallback = (stepId: string, status: StepStatus, detail?: string) => void;
@@ -70,7 +85,7 @@ async function buildMcpConfig(
 	if (!mcpDeclarations || mcpDeclarations.length === 0) return null;
 
 	// Start with existing .mcp.json from pipeline dir (if any)
-	let mcpJson: { mcpServers: Record<string, any> } = { mcpServers: {} };
+	let mcpJson: McpJsonConfig = { mcpServers: {} };
 	try {
 		const existing = await readFile(join(pipelineDir, '.mcp.json'), 'utf-8');
 		mcpJson = JSON.parse(existing);
@@ -81,7 +96,7 @@ async function buildMcpConfig(
 	for (const mcp of mcpDeclarations) {
 		if (mcp.command || mcp.url) {
 			// Inline config — use as-is
-			const cfg: Record<string, any> = {};
+			const cfg: McpServerConfig = {};
 			if (mcp.command) cfg.command = mcp.command;
 			if (mcp.args) cfg.args = mcp.args;
 			if (mcp.url) { cfg.url = mcp.url; cfg.type = 'http'; }
@@ -103,11 +118,16 @@ async function buildMcpConfig(
 	return mcpPath;
 }
 
-/** Search ~/dev/ projects for an MCP server by name (case-insensitive) */
-async function findMcpServer(name: string): Promise<Record<string, any> | null> {
-	const nameLower = name.toLowerCase();
+/** Cached MCP server registry: { servers, timestamp } */
+let mcpRegistryCache: { servers: Map<string, McpServerConfig>; timestamp: number } | null = null;
+const MCP_CACHE_TTL = 60_000; // 60 seconds
+
+async function loadMcpRegistry(): Promise<Map<string, McpServerConfig>> {
+	if (mcpRegistryCache && Date.now() - mcpRegistryCache.timestamp < MCP_CACHE_TTL) {
+		return mcpRegistryCache.servers;
+	}
+	const servers = new Map<string, McpServerConfig>();
 	try {
-		const { readdir } = await import('node:fs/promises');
 		const devDir = config.resolved.devDir;
 		const projects = await readdir(devDir, { withFileTypes: true });
 		for (const project of projects) {
@@ -115,15 +135,20 @@ async function findMcpServer(name: string): Promise<Record<string, any> | null> 
 			try {
 				const raw = await readFile(join(devDir, project.name, '.mcp.json'), 'utf-8');
 				const parsed = JSON.parse(raw);
-				const servers = parsed.mcpServers || {};
-				// Case-insensitive match
-				for (const [key, cfg] of Object.entries(servers)) {
-					if (key.toLowerCase() === nameLower) return cfg as Record<string, any>;
+				for (const [key, cfg] of Object.entries(parsed.mcpServers || {})) {
+					servers.set(key.toLowerCase(), cfg as McpServerConfig);
 				}
 			} catch { /* skip */ }
 		}
 	} catch { /* devDir missing */ }
-	return null;
+	mcpRegistryCache = { servers, timestamp: Date.now() };
+	return servers;
+}
+
+/** Search ~/dev/ projects for an MCP server by name (case-insensitive) */
+async function findMcpServer(name: string): Promise<McpServerConfig | null> {
+	const registry = await loadMcpRegistry();
+	return registry.get(name.toLowerCase()) || null;
 }
 
 /** System env vars always passed through (safe, needed for execution) */
@@ -187,11 +212,13 @@ export async function runPipeline(
 	onStepEvent?: StepEventCallback,
 	onStepOutput?: StepOutputCallback,
 	externalRunId?: string,
+	resumeFrom?: string,
+	preSpec?: Awaited<ReturnType<typeof parsePipeline>>,
 ): Promise<PipelineRun> {
-	const spec = await parsePipeline(yamlPath);
+	const spec = preSpec || await parsePipeline(yamlPath);
 	const pipelineDir = dirname(yamlPath);
 	const runId = externalRunId || crypto.randomUUID().slice(0, 8);
-	const runDir = `/tmp/pipeline-runs/${runId}`;
+	const runDir = join(tmpdir(), 'pipeline-runs', runId);
 	await mkdir(runDir, { recursive: true });
 
 	// Build MCP config for agent steps (if pipeline declares mcp servers)
@@ -251,9 +278,43 @@ export async function runPipeline(
 		onStepEvent?.(stepId, status, detail);
 	};
 
+	// Resume mode: find the index to resume from
+	let resumeReached = !resumeFrom; // if no resumeFrom, run everything
+
 	// Execute steps in order
 	for (const stepId of order) {
 		const step = stepMap.get(stepId)!;
+
+		// Resume logic: skip steps before resumeFrom if their output exists on disk
+		if (!resumeReached) {
+			if (stepId === resumeFrom) {
+				resumeReached = true;
+				// This step failed — run it again
+			} else {
+				// Check if this step's output file exists (from the previous run)
+				const today = new Date().toISOString().slice(0, 10);
+				let cachedOutput = (step.output || '').replace('$RUN_ID', runId).replace('$DATE', today);
+				cachedOutput = resolveRef(cachedOutput, resolvedInputs, stepOutputs);
+				if (cachedOutput && !cachedOutput.startsWith(tmpdir()) && cachedOutput !== '/dev/null') {
+					if (!cachedOutput.startsWith('/')) cachedOutput = resolve(pipelineDir, cachedOutput);
+					try {
+						await stat(cachedOutput);
+						// Output exists — mark as done and cache the path
+						stepOutputs[stepId] = cachedOutput;
+						emit(stepId, 'done', 'Cached from previous run');
+						const sr = run.steps.find((s) => s.id === stepId);
+						if (sr) { sr.outputPath = cachedOutput; }
+						continue;
+					} catch {
+						// Output doesn't exist — need to re-run from here
+						resumeReached = true;
+					}
+				} else {
+					// No output path or temp path — need to re-run
+					resumeReached = true;
+				}
+			}
+		}
 
 		// Check when/skip_if conditions before executing
 		const condition = checkCondition(step, resolvedInputs, stepOutputs);
@@ -344,6 +405,11 @@ export async function runPipeline(
 					}
 				} else if (step.type === 'channel') {
 					await runChannelStep(resolvedStep, resolvedInputs, stepOutputs, outputCb);
+				} else if (step.type === 'chunk') {
+					const chunkResult = await runChunkStep(resolvedStep, pipelineDir, resolvedInputs, stepOutputs, spec, outputCb, onStepEvent, runId);
+					outputPath = chunkResult;
+				} else if (step.type === 'loop') {
+					await runLoopStep(resolvedStep, pipelineDir, resolvedInputs, stepOutputs, spec, outputCb, onStepEvent, runId);
 				}
 
 				// Verify output was produced (skip for action/webhook/approval/prompt/channel types)
@@ -364,6 +430,19 @@ export async function runPipeline(
 					sr.outputType = step.output_type || 'file';
 				}
 				emit(stepId, 'done');
+
+				// Save to vault (non-blocking)
+				if (outputPath && outputPath !== '/dev/null') {
+					savePipelineOutput({
+						pipelineName: spec.name,
+						runId,
+						stepId,
+						stepType: step.type,
+						outputPath,
+						outputType: step.output_type,
+					}).catch(() => {});
+				}
+
 				success = true;
 				break;
 			} catch (err) {
@@ -394,6 +473,25 @@ export async function runPipeline(
 		run.status = 'done';
 	}
 	run.finishedAt = new Date().toISOString();
+
+	// Save pipeline run summary to vault (non-blocking)
+	if (run.status === 'done' || run.status === 'failed') {
+		savePipelineRunSummary({
+			pipelineName: spec.name,
+			runId,
+			status: run.status,
+			startedAt: run.startedAt,
+			finishedAt: run.finishedAt,
+			steps: run.steps.map(s => ({
+				id: s.id,
+				status: s.status,
+				durationMs: s.durationMs,
+				error: s.error,
+				outputPath: s.outputPath,
+			})),
+			resolvedInputs: run.resolvedInputs,
+		}).catch(() => {});
+	}
 
 	// Clean up temp .mcp.json from pipeline dir (written by buildMcpConfig)
 	if (mcpConfigPath) {
@@ -447,6 +545,26 @@ async function runGateStep(
 	});
 }
 
+function splitCommand(cmd: string): string[] {
+	const result: string[] = [];
+	let current = '';
+	let inQuote = '';
+	for (const char of cmd) {
+		if (inQuote) {
+			if (char === inQuote) { inQuote = ''; }
+			else { current += char; }
+		} else if (char === '"' || char === "'") {
+			inQuote = char;
+		} else if (/\s/.test(char)) {
+			if (current) { result.push(current); current = ''; }
+		} else {
+			current += char;
+		}
+	}
+	if (current) result.push(current);
+	return result;
+}
+
 /** Execute a script step via child_process */
 async function runScriptStep(
 	step: PipelineStep,
@@ -457,7 +575,7 @@ async function runScriptStep(
 	onOutput?: (data: string) => void,
 	env?: Record<string, string>,
 ): Promise<void> {
-	const [cmd, ...args] = step.run!.split(/\s+/);
+	const [cmd, ...args] = splitCommand(step.run!);
 
 	// If the command references a relative script, resolve against pipeline dir
 	const resolvedArgs = args.map((a) => {
@@ -470,44 +588,51 @@ async function runScriptStep(
 	// Pass input path as first argument
 	if (inputPath) resolvedArgs.push(inputPath);
 
-	const { stdout, stderr } = await execFileAsync(cmd, resolvedArgs, {
-		cwd: pipelineDir,
-		timeout: timeoutSec * 1000,
-		env: env || process.env,
-	});
+	try {
+		const { stdout, stderr } = await execFileAsync(cmd, resolvedArgs, {
+			cwd: pipelineDir,
+			timeout: timeoutSec * 1000,
+			maxBuffer: 5 * 1024 * 1024,
+			env: env || process.env,
+		});
 
-	if (stderr) {
-		console.error(`[pipeline:${step.id}] stderr: ${stderr.trim()}`);
-		onOutput?.(stderr);
-	}
-	if (stdout) {
-		console.log(`[pipeline:${step.id}] ${stdout.trim()}`);
-		onOutput?.(stdout);
+		if (stderr) {
+			console.error(`[pipeline:${step.id}] stderr: ${stderr.trim()}`);
+			onOutput?.(stderr);
+		}
+		if (stdout) {
+			console.log(`[pipeline:${step.id}] ${stdout.trim()}`);
+			onOutput?.(stdout);
+		}
+	} catch (err) {
+		if (err instanceof Error && err.message.includes('maxBuffer')) {
+			throw new Error(`Step "${step.id}" exceeded 5MB output buffer limit. The script produced too much output.`);
+		}
+		throw err;
 	}
 }
 
 // Track active PTY sessions for pipeline steps (enables interaction)
-const activePtyBridges = new Map<string, import('node:child_process').ChildProcess>();
+const activePtySessions = new Map<string, string>(); // stepId → sessionId
 
-// Track which bridges belong to which run (for kill)
-const runBridges = new Map<string, Set<string>>();
+// Track which sessions belong to which run (for kill)
+const runSessions = new Map<string, Set<string>>();
 
-/** Kill all active PTY bridges for a pipeline run and reject pending gates */
+/** Kill all active PTY sessions for a pipeline run and reject pending gates */
 export function killPipeline(runId: string): boolean {
 	let killed = false;
 
-	// Kill PTY bridges
-	const bridgeKeys = runBridges.get(runId);
-	if (bridgeKeys && bridgeKeys.size > 0) {
-		for (const key of bridgeKeys) {
-			const bridge = activePtyBridges.get(key);
-			if (bridge) {
-				bridge.stdin?.write(JSON.stringify({ type: 'kill' }) + '\n');
-				bridge.kill();
-				activePtyBridges.delete(key);
+	// Kill PTY sessions
+	const sessionKeys = runSessions.get(runId);
+	if (sessionKeys && sessionKeys.size > 0) {
+		for (const stepId of sessionKeys) {
+			const sessionId = activePtySessions.get(stepId);
+			if (sessionId) {
+				ptyKillSession(sessionId);
+				activePtySessions.delete(stepId);
 			}
 		}
-		runBridges.delete(runId);
+		runSessions.delete(runId);
 		killed = true;
 	}
 
@@ -524,8 +649,7 @@ export function killPipeline(runId: string): boolean {
 	return killed;
 }
 
-/** Get an active PTY bridge for a step (for sending input/interaction) */
-/** Execute an agent step via pty_bridge.py (same PTY as interactive terminals) */
+/** Execute an agent step via shared PTY manager (same mechanism as interactive terminals) */
 async function runAgentStep(
 	step: PipelineStep,
 	pipelineDir: string,
@@ -555,97 +679,253 @@ async function runAgentStep(
 		} catch { /* use default model */ }
 	}
 
-	const bridgeArgs = JSON.stringify({
+	const session = spawnSession({
 		prompt,
 		cwd: pipelineDir,
 		cols: config.terminal.cols,
 		rows: config.terminal.rows,
-		claudeBinary: config.resolved.claudeBinary,
-		model,
+		model: model || undefined,
+		env,
 	});
 
+	// Track for interaction + kill
+	activePtySessions.set(step.id, session.id);
+	if (runId) {
+		if (!runSessions.has(runId)) runSessions.set(runId, new Set());
+		runSessions.get(runId)!.add(step.id);
+	}
+
 	return new Promise((resolvePromise, reject) => {
-		const bridge = spawn('python3', [BRIDGE_SCRIPT, bridgeArgs], {
-			stdio: ['pipe', 'pipe', 'pipe'],
-			env: env || process.env,
-		});
-
-		// Track for interaction + kill
-		const bridgeKey = `${step.id}`;
-		activePtyBridges.set(bridgeKey, bridge);
-		if (runId) {
-			if (!runBridges.has(runId)) runBridges.set(runId, new Set());
-			runBridges.get(runId)!.add(bridgeKey);
-		}
-
-		const rl = createInterface({ input: bridge.stdout! });
+		let resolved = false;
 
 		// Timeout guard
 		const timer = setTimeout(() => {
-			bridge.stdin?.write(JSON.stringify({ type: 'kill' }) + '\n');
-			bridge.kill();
-			activePtyBridges.delete(bridgeKey);
-			reject(new Error(`Agent step "${step.id}" timed out after ${timeoutSec}s`));
+			if (!resolved) {
+				resolved = true;
+				ptyKillSession(session.id);
+				activePtySessions.delete(step.id);
+				reject(new Error(`Agent step "${step.id}" timed out after ${timeoutSec}s`));
+			}
 		}, timeoutSec * 1000);
 
 		// Watchdog: poll for output file — if Claude wrote it but didn't exit, send /exit
-		let resolved = false;
+		let exitSent = false;
 		const watchdog = setInterval(async () => {
-			if (resolved) { clearInterval(watchdog); return; }
+			if (resolved || exitSent) { clearInterval(watchdog); return; }
 			try {
 				await stat(outputPath);
-				// Output file exists — wait 3s for Claude to exit naturally, then force /exit
+				exitSent = true;
+				clearInterval(watchdog);
 				setTimeout(() => {
-					if (!resolved && bridge.stdin?.writable) {
+					if (!resolved) {
 						console.log(`[pipeline:${step.id}] Output file detected, sending /exit`);
-						bridge.stdin.write(JSON.stringify({ type: 'input', data: '/exit\r' }) + '\n');
+						writeInput(session.id, '/exit\r');
 					}
 				}, 3000);
-				clearInterval(watchdog);
 			} catch { /* file doesn't exist yet */ }
 		}, 5000);
 
-		rl.on('line', (line) => {
-			try {
-				const msg = JSON.parse(line);
-				if (msg.type === 'output') {
-					onOutput?.(msg.data);
-				} else if (msg.type === 'exit') {
-					resolved = true;
-					clearTimeout(timer);
-					clearInterval(watchdog);
-					rl.close();
-					activePtyBridges.delete(bridgeKey);
-					// Exit code 0 = clean exit, -1 = PTY closed (normal for /exit command)
-					// Accept both as success if the output file was produced
-					if (msg.code === 0 || msg.code === -1) {
-						resolvePromise();
-					} else {
-						reject(new Error(`Agent step "${step.id}" exited with code ${msg.code}`));
-					}
-				}
-			} catch { /* skip non-JSON */ }
+		session.emitter.on('output', (data: string) => {
+			onOutput?.(data);
 		});
 
-		bridge.stderr!.on('data', (data) => {
-			console.error(`[pipeline:${step.id}] ${data.toString().trim()}`);
-		});
-
-		bridge.on('error', (err) => {
+		session.emitter.on('exit', (code: number) => {
+			if (resolved) return;
 			resolved = true;
 			clearTimeout(timer);
 			clearInterval(watchdog);
-			activePtyBridges.delete(bridgeKey);
-			reject(new Error(`Agent step "${step.id}" failed to spawn: ${err.message}`));
-		});
+			activePtySessions.delete(step.id);
 
-		bridge.on('exit', () => {
-			resolved = true;
-			clearTimeout(timer);
-			clearInterval(watchdog);
-			activePtyBridges.delete(bridgeKey);
+			// Exit code 0 = clean exit, -1 or other = PTY closed (normal for /exit command)
+			// Accept 0 and -1 as success if the output file was produced
+			if (code === 0 || code === -1) {
+				resolvePromise();
+			} else {
+				reject(new Error(`Agent step "${step.id}" exited with code ${code}`));
+			}
 		});
 	});
+}
+
+/** Execute a chunk step — process a directory of files in parallel batches */
+async function runChunkStep(
+	step: PipelineStep,
+	pipelineDir: string,
+	resolvedInputs: Record<string, string | number>,
+	stepOutputs: Record<string, string>,
+	spec: { env?: { name: string }[] },
+	onOutput?: (data: string) => void,
+	onEvent?: StepEventCallback,
+	runId?: string,
+): Promise<string> {
+	const inputDir = resolveRef(step.input as string, resolvedInputs, stepOutputs);
+
+	const inputStat = await stat(inputDir);
+	if (!inputStat.isDirectory()) {
+		throw new Error(`Chunk step "${step.id}" expects a directory as input, got a file: ${inputDir}`);
+	}
+
+	const chunkFiles = (await readdir(inputDir))
+		.filter(f => !f.startsWith('.'))
+		.sort();
+
+	if (chunkFiles.length === 0) {
+		onEvent?.(step.id, 'skipped', 'No chunks to process');
+		return step.output!;
+	}
+	const maxChunks = step.max_chunks ?? 500;
+	if (chunkFiles.length > maxChunks) {
+		throw new Error(`Chunk step "${step.id}": ${chunkFiles.length} chunks exceeds max_chunks (${maxChunks}). Increase chunk size.`);
+	}
+
+	const outputDir = resolve(pipelineDir, step.output!);
+	await mkdir(outputDir, { recursive: true });
+
+	const parallel = Math.min(step.parallel ?? 1, step.run ? 10 : 5);
+	const totalTimeout = (step.total_timeout ?? 1800) * 1000;
+	const startTime = Date.now();
+	let completed = 0;
+	let failed = 0;
+
+	for (let i = 0; i < chunkFiles.length; i += parallel) {
+		if (Date.now() - startTime > totalTimeout) {
+			throw new Error(`Chunk step "${step.id}" exceeded total timeout (${step.total_timeout ?? 1800}s)`);
+		}
+
+		const batch = chunkFiles.slice(i, i + parallel);
+		const results = await Promise.allSettled(
+			batch.map(async (chunkFile, batchIdx) => {
+				const chunkIdx = i + batchIdx;
+				const chunkInputPath = join(inputDir, chunkFile);
+				const chunkOutputPath = join(outputDir, `${String(chunkIdx).padStart(3, '0')}_${chunkFile}`);
+
+				const chunkEnv = buildIsolatedEnv(spec, pipelineDir, [chunkInputPath], chunkOutputPath, step.config);
+
+				if (step.run) {
+					await runScriptStep({ ...step, output: chunkOutputPath }, pipelineDir, chunkInputPath, chunkOutputPath, step.timeout ?? 300, onOutput, chunkEnv);
+				} else if (step.agent) {
+					await runAgentStep({ ...step, output: chunkOutputPath }, pipelineDir, chunkInputPath, chunkOutputPath, step.timeout ?? 300, onOutput, runId, chunkEnv);
+				}
+				return chunkOutputPath;
+			})
+		);
+
+		for (const r of results) {
+			if (r.status === 'fulfilled') {
+				completed++;
+			} else {
+				failed++;
+				const msg = r.reason instanceof Error ? r.reason.message : String(r.reason);
+				onOutput?.(`Chunk failed: ${msg}\n`);
+				if ((step.chunk_on_failure ?? 'halt') === 'halt') {
+					throw new Error(`Chunk step "${step.id}": chunk failed (${completed}/${chunkFiles.length} completed). Error: ${msg}`);
+				}
+			}
+		}
+
+		onOutput?.(`Chunks: ${completed}/${chunkFiles.length} done${failed > 0 ? `, ${failed} failed` : ''}\n`);
+	}
+
+	const merge = step.merge ?? 'skip';
+	if (merge !== 'skip' && step.merge_output) {
+		const mergeOutputPath = resolve(pipelineDir, step.merge_output);
+		await mkdir(dirname(mergeOutputPath), { recursive: true });
+
+		const outputFiles = (await readdir(outputDir)).filter(f => !f.startsWith('.')).sort();
+
+		if (merge === 'concat') {
+			const contents: string[] = [];
+			for (const f of outputFiles) {
+				contents.push(await readFile(join(outputDir, f), 'utf-8'));
+			}
+			await writeFile(mergeOutputPath, contents.join('\n'), 'utf-8');
+		} else if (merge === 'json-array') {
+			const items: unknown[] = [];
+			for (const f of outputFiles) {
+				const content = await readFile(join(outputDir, f), 'utf-8');
+				try {
+					items.push(JSON.parse(content));
+				} catch {
+					items.push({ _file: f, _error: 'Invalid JSON', _raw: content.slice(0, 500) });
+				}
+			}
+			await writeFile(mergeOutputPath, JSON.stringify(items, null, 2), 'utf-8');
+		}
+
+		return mergeOutputPath;
+	}
+
+	return outputDir;
+}
+
+/** Execute a loop step — repeat block execution until condition met or max iterations */
+async function runLoopStep(
+	step: PipelineStep,
+	pipelineDir: string,
+	resolvedInputs: Record<string, string | number>,
+	stepOutputs: Record<string, string>,
+	spec: { env?: { name: string }[] },
+	onOutput?: (data: string) => void,
+	onEvent?: StepEventCallback,
+	runId?: string,
+): Promise<void> {
+	const maxIterations = step.max_iterations ?? 3;
+	const totalTimeout = (step.total_timeout ?? 900) * 1000;
+	const startTime = Date.now();
+	const outputPath = resolve(pipelineDir, step.output!);
+
+	let currentInput = '';
+	if (step.input) {
+		const inputs = Array.isArray(step.input) ? step.input : [step.input];
+		currentInput = resolveRef(inputs[0], resolvedInputs, stepOutputs);
+	}
+
+	for (let iteration = 1; iteration <= maxIterations; iteration++) {
+		if (Date.now() - startTime > totalTimeout) {
+			onOutput?.(`Loop reached total timeout after ${iteration - 1} iterations\n`);
+			break;
+		}
+
+		onOutput?.(`Loop iteration ${iteration}/${maxIterations}\n`);
+
+		if (iteration > 1) {
+			const tempInput = join(tmpdir(), `loop-${step.id}-iter${iteration}-input`);
+			await copyFile(outputPath, tempInput);
+			currentInput = tempInput;
+		}
+
+		try { await unlink(outputPath); } catch { /* may not exist */ }
+		await mkdir(dirname(outputPath), { recursive: true });
+
+		const loopEnv = buildIsolatedEnv(spec, pipelineDir, [currentInput], outputPath, step.config);
+
+		if (step.run) {
+			await runScriptStep({ ...step }, pipelineDir, currentInput, outputPath, step.timeout ?? 300, onOutput, loopEnv);
+		} else if (step.agent) {
+			await runAgentStep({ ...step }, pipelineDir, currentInput, outputPath, step.timeout ?? 300, onOutput, runId, loopEnv);
+		}
+
+		stepOutputs[step.id] = outputPath;
+
+		if (step.until) {
+			try {
+				const outputContent = await readFile(outputPath, 'utf-8');
+				const result = evaluateCondition(
+					step.until,
+					resolvedInputs,
+					{ ...stepOutputs, [step.id]: outputContent },
+				);
+				if (result) {
+					onOutput?.(`Loop condition met at iteration ${iteration}\n`);
+					return;
+				}
+			} catch {
+				// Condition evaluation failed — continue looping
+			}
+		}
+	}
+
+	onOutput?.(`Loop completed after ${maxIterations} iterations (condition not met — using last output)\n`);
 }
 
 /** Execute a channel step — send a message via a configured channel adapter */
@@ -682,32 +962,82 @@ async function runChannelStep(
 
 /** Send input to a running pipeline step's PTY (for interaction) */
 export function sendInputToStep(stepId: string, data: string): boolean {
-	const bridge = activePtyBridges.get(stepId);
-	if (!bridge?.stdin?.writable) return false;
-	bridge.stdin.write(JSON.stringify({ type: 'input', data }) + '\n');
-	return true;
+	const sessionId = activePtySessions.get(stepId);
+	if (!sessionId) return false;
+	return writeInput(sessionId, data);
 }
 
-/** List available pipelines from the pipelines directory */
-export async function listPipelines(pipelinesDir: string): Promise<{ name: string; path: string; description: string }[]> {
-	const { readdir } = await import('node:fs/promises');
-	const results: { name: string; path: string; description: string }[] = [];
+/** Pipeline list cache: keyed by dir entry name → { spec summary, yamlMtime } */
+const pipelineListCache = new Map<string, { name: string; path: string; description: string; type: 'pipeline' | 'chain'; mtime: number }>();
+let pipelineListCacheDir = '';
+
+/** List available pipelines and chains from the pipelines directory */
+export async function listPipelines(pipelinesDir: string): Promise<{ name: string; path: string; description: string; type: 'pipeline' | 'chain' }[]> {
+	const results: { name: string; path: string; description: string; type: 'pipeline' | 'chain' }[] = [];
+
+	// Invalidate cache if directory changed
+	if (pipelinesDir !== pipelineListCacheDir) {
+		pipelineListCache.clear();
+		pipelineListCacheDir = pipelinesDir;
+	}
 
 	try {
 		const entries = await readdir(pipelinesDir, { withFileTypes: true });
+		const currentDirs = new Set<string>();
+
 		for (const entry of entries) {
 			if (!entry.isDirectory() || entry.name.startsWith('_')) continue;
-			const yamlPath = join(pipelinesDir, entry.name, 'pipeline.yaml');
+			currentDirs.add(entry.name);
+
+			// Try pipeline.yaml first
+			const pipelineYamlPath = join(pipelinesDir, entry.name, 'pipeline.yaml');
+			let found = false;
+
 			try {
-				const spec = await parsePipeline(yamlPath);
-				results.push({
-					name: spec.name,
-					path: yamlPath,
-					description: spec.description || '',
-				});
+				const yamlStat = await stat(pipelineYamlPath);
+				const mtime = yamlStat.mtimeMs;
+				const cached = pipelineListCache.get(entry.name);
+
+				if (cached && cached.mtime === mtime) {
+					results.push({ name: cached.name, path: cached.path, description: cached.description, type: cached.type });
+					found = true;
+				} else {
+					const spec = await parsePipeline(pipelineYamlPath);
+					const item = { name: spec.name, path: pipelineYamlPath, description: spec.description || '', type: 'pipeline' as const };
+					pipelineListCache.set(entry.name, { ...item, mtime });
+					results.push(item);
+					found = true;
+				}
 			} catch {
-				// Skip invalid pipelines
+				// No valid pipeline.yaml
 			}
+
+			// If no pipeline.yaml, try chain.yaml
+			if (!found) {
+				const chainYamlPath = join(pipelinesDir, entry.name, 'chain.yaml');
+				try {
+					const yamlStat = await stat(chainYamlPath);
+					const mtime = yamlStat.mtimeMs;
+					const cached = pipelineListCache.get(entry.name);
+
+					if (cached && cached.mtime === mtime) {
+						results.push({ name: cached.name, path: cached.path, description: cached.description, type: cached.type });
+					} else {
+						const spec = await parseChain(chainYamlPath);
+						const item = { name: spec.name, path: chainYamlPath, description: spec.description || '', type: 'chain' as const };
+						pipelineListCache.set(entry.name, { ...item, mtime });
+						results.push(item);
+					}
+				} catch {
+					// Skip — neither pipeline.yaml nor chain.yaml
+					pipelineListCache.delete(entry.name);
+				}
+			}
+		}
+
+		// Remove stale cache entries for deleted directories
+		for (const key of pipelineListCache.keys()) {
+			if (!currentDirs.has(key)) pipelineListCache.delete(key);
 		}
 	} catch {
 		// pipelines directory doesn't exist

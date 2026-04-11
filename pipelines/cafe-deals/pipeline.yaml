@@ -1,0 +1,53 @@
+name: cafe-deals
+description: Find nearby cafes with discounts and offers based on location
+version: 1.0.0
+
+env:
+  - name: GOOGLE_API_KEY
+    description: Google Maps Places API key
+    required: true
+
+inputs:
+  - name: location
+    type: text
+    description: Area or neighborhood name (e.g. "JBR, Dubai")
+    required: true
+  - name: radius_km
+    type: number
+    description: Search radius in kilometers
+    default: 5
+    required: false
+
+steps:
+  - id: find-cafes
+    block: cafe-finder
+    config:
+      max_results: "20"
+    input: $inputs.location
+    output: output/find-cafes-result.json
+    timeout: 60
+
+  - id: analyze-deals
+    type: agent
+    block: deal-analyzer
+    depends_on: [find-cafes]
+    input: $steps.find-cafes.output
+    output: output/analyze-deals-result.json
+    timeout: 120
+
+  - id: clean-output
+    block: output-cleaner
+    depends_on: [analyze-deals]
+    input: $steps.analyze-deals.output
+    output: output/clean-output-result.json
+    timeout: 30
+
+  - id: build-report
+    block: report-builder
+    depends_on: [clean-output]
+    input: $steps.clean-output.output
+    output: output/cafe-deals-report.md
+    timeout: 60
+
+on_failure:
+  strategy: halt

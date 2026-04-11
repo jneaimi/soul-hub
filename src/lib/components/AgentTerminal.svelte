@@ -6,9 +6,13 @@
 		cwd?: string;
 		autoSpawn?: boolean;
 		projectName?: string;
+		/** Pass --continue to resume the most recent Claude session in this cwd */
+		continueSession?: boolean;
+		/** Spawn a plain shell instead of Claude Code */
+		shell?: boolean;
 	}
 
-	let { prompt = '', cwd = '', autoSpawn = false, projectName = '' }: Props = $props();
+	let { prompt = '', cwd = '', autoSpawn = false, projectName = '', continueSession = false, shell = false }: Props = $props();
 
 	let fileInput: HTMLInputElement;
 	let uploading = $state(false);
@@ -90,9 +94,21 @@
 
 	let resizeObserver: ResizeObserver | null = null;
 
+	function handleBeforeUnload() {
+		if (sessionId && running) {
+			// Fire-and-forget kill on tab close — use sendBeacon for reliability
+			const blob = new Blob([JSON.stringify({ action: 'kill', sessionId })], { type: 'application/json' });
+			navigator.sendBeacon('/api/pty', blob);
+		}
+	}
+
 	onMount(() => {
+		window.addEventListener('beforeunload', handleBeforeUnload);
 		initTerminal();
-		return () => resizeObserver?.disconnect();
+		return () => {
+			window.removeEventListener('beforeunload', handleBeforeUnload);
+			resizeObserver?.disconnect();
+		};
 	});
 
 	// --- Kitty keyboard protocol negotiation ---
@@ -348,12 +364,28 @@
 
 	onDestroy(() => {
 		if (writeRafId !== null) cancelAnimationFrame(writeRafId);
+		if (inputRafId !== null) cancelAnimationFrame(inputRafId);
 		if (abortController) abortController.abort();
 		if (sessionId) killSession();
 		if (terminal) terminal.dispose();
 	});
 
-	async function sendInput(data: string) {
+	// --- RAF-batched input: coalesces rapid keystrokes into ~60 sends/sec ---
+	let inputQueue = '';
+	let inputRafId: number | null = null;
+
+	function sendInput(data: string) {
+		inputQueue += data;
+		if (inputRafId === null) {
+			inputRafId = requestAnimationFrame(flushInput);
+		}
+	}
+
+	async function flushInput() {
+		inputRafId = null;
+		if (!inputQueue || !sessionId) return;
+		const data = inputQueue;
+		inputQueue = '';
 		try {
 			await fetch('/api/pty', {
 				method: 'POST',
@@ -361,6 +393,8 @@
 				body: JSON.stringify({ action: 'input', sessionId, data }),
 			});
 		} catch { /* best effort */ }
+		// If more arrived during the fetch, schedule another flush
+		if (inputQueue) inputRafId = requestAnimationFrame(flushInput);
 	}
 
 	async function sendResize(cols: number, rows: number) {
@@ -383,15 +417,18 @@
 		} catch { /* best effort */ }
 	}
 
-	export function spawn(customPrompt?: string) {
+	export function spawn(customPrompt?: string, opts?: { continueSession?: boolean; shell?: boolean }) {
 		const p = customPrompt ?? prompt;
+		const shouldContinue = opts?.continueSession ?? continueSession;
+		const isShell = opts?.shell ?? shell;
 
 		error = '';
 		exitCode = null;
 		running = true;
 		sessionId = '';
 
-		terminal?.writeln(`\x1b[38;5;245m  Starting agent in ${cwd || 'HOME'}...${p ? '' : ' (no prompt)'}\x1b[0m`);
+		const label = isShell ? 'Opening shell' : shouldContinue ? 'Resuming session' : 'Starting agent';
+		terminal?.writeln(`\x1b[38;5;245m  ${label} in ${cwd || 'HOME'}...\x1b[0m`);
 		terminal?.focus();
 
 		abortController = new AbortController();
@@ -401,10 +438,12 @@
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
 				action: 'spawn',
-				prompt: p,
+				prompt: isShell ? undefined : p,
 				cwd: cwd || undefined,
 				cols: terminal?.cols || 120,
 				rows: terminal?.rows || 40,
+				continueSession: isShell ? undefined : shouldContinue || undefined,
+				shell: isShell || undefined,
 			}),
 			signal: abortController.signal,
 		}).then(async (res) => {
@@ -455,16 +494,108 @@
 				}
 			}
 
-			if (running) {
+			if (running && sessionId) {
+				// Stream dropped but process may still be alive — try reconnect
+				terminal?.writeln('\x1b[38;5;214m  Connection lost — reconnecting...\x1b[0m');
+				attemptReconnect();
+			} else if (running) {
 				running = false;
 				terminal?.writeln('\x1b[38;5;245m  Stream ended\x1b[0m');
 			}
 		}).catch((e) => {
 			if (e.name !== 'AbortError') {
-				error = e.message;
-				running = false;
+				if (sessionId && running) {
+					terminal?.writeln(`\x1b[38;5;214m  Connection lost — reconnecting...\x1b[0m`);
+					attemptReconnect();
+				} else {
+					error = e.message;
+					running = false;
+				}
 			}
 		});
+	}
+
+	async function attemptReconnect(retries = 3) {
+		for (let i = 0; i < retries; i++) {
+			await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+			try {
+				abortController = new AbortController();
+				const res = await fetch('/api/pty', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						action: 'reconnect',
+						sessionId,
+						cols: terminal?.cols || 120,
+						rows: terminal?.rows || 40,
+					}),
+					signal: abortController.signal,
+				});
+
+				if (!res.ok || !res.body) {
+					if (res.status === 404) {
+						// Session is gone — process exited
+						terminal?.writeln('\x1b[38;5;245m  Session ended\x1b[0m');
+						running = false;
+						sessionId = '';
+						return;
+					}
+					continue; // retry
+				}
+
+				terminal?.writeln('\x1b[38;5;82m  Reconnected\x1b[0m');
+
+				const reader = res.body.getReader();
+				const decoder = new TextDecoder();
+				let buffer = '';
+
+				while (true) {
+					const { done, value } = await reader.read();
+					if (done) break;
+
+					buffer += decoder.decode(value, { stream: true });
+					const lines = buffer.split('\n');
+					buffer = lines.pop() || '';
+
+					for (const line of lines) {
+						if (!line.startsWith('data: ')) continue;
+						const raw = line.slice(6);
+						if (raw === '[DONE]') continue;
+
+						try {
+							const msg = JSON.parse(raw);
+							switch (msg.type) {
+								case 'output':
+									batchWrite(msg.data);
+									break;
+								case 'exit':
+									exitCode = msg.code;
+									running = false;
+									sessionId = '';
+									terminal?.writeln('');
+									terminal?.writeln(`\x1b[38;5;${msg.code === 0 ? '82' : '203'}m  Process exited (code ${msg.code})\x1b[0m`);
+									return;
+							}
+						} catch { /* skip */ }
+					}
+				}
+
+				// Stream ended again — try reconnect again
+				if (running && sessionId) {
+					terminal?.writeln('\x1b[38;5;214m  Connection lost — reconnecting...\x1b[0m');
+					return attemptReconnect(retries);
+				}
+				return;
+			} catch (e: unknown) {
+				if (e instanceof Error && e.name === 'AbortError') return;
+				// retry
+			}
+		}
+
+		// All retries failed
+		terminal?.writeln('\x1b[38;5;203m  Could not reconnect after ' + retries + ' attempts\x1b[0m');
+		error = 'Connection lost — session may still be running on the server';
+		running = false;
 	}
 
 	export function kill() {
@@ -480,11 +611,16 @@
 	}
 
 	async function uploadFiles(files: FileList | File[]) {
-		if (!projectName || files.length === 0) return;
+		if ((!projectName && !cwd) || files.length === 0) return;
 		uploading = true;
 
 		const formData = new FormData();
-		formData.append('project', projectName);
+		if (cwd) {
+			formData.append('targetPath', cwd);
+		}
+		if (projectName) {
+			formData.append('project', projectName);
+		}
 		for (const file of files) {
 			formData.append('files', file);
 		}
@@ -570,7 +706,7 @@
 			{/if}
 		</div>
 		<div class="flex items-center gap-2">
-			{#if projectName}
+			{#if projectName || cwd}
 				<button
 					onclick={handleFileSelect}
 					disabled={uploading}

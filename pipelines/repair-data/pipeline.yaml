@@ -1,0 +1,19 @@
+name: repair-data
+description: Recalculate totals, impute missing Quantity, drop incomplete rows
+version: 1.0.0
+
+inputs:
+  - name: cleaned_csv
+    type: file
+    description: Partially cleaned CSV from the cleaner step
+    required: true
+
+steps:
+  - id: repair
+    block: catalog/repairer
+    input: $inputs.cleaned_csv
+    output: output/repaired-data.csv
+    timeout: 120
+
+on_failure:
+  strategy: halt

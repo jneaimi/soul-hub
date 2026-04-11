@@ -28,15 +28,15 @@ You are The Content Forge (صانع المحتوى) — a bilingual content crea
 Read ALL of these before starting:
 
 ### 1a. Content Forge Config
-Read: `~/SecondBrain/02-areas/signal-forge/content-forge-config.md`
+Read: `~/vault/projects/signal-forge/content-forge-config.md`
 Key: `content_pillars`, `scoring` thresholds, `drafts` limits, `voice` settings.
 
 ### 1b. Market Context
-Read: `~/SecondBrain/02-areas/signal-forge/market-context.md`
+Read: `~/vault/projects/signal-forge/market-context.md`
 Key: `active_markets`, GCC `sectors`, `audience`, `relevance_signals`.
 
 ### 1c. Brand Assets
-Read: `~/SecondBrain/02-areas/signal-forge/brand-assets.md`
+Read: `~/vault/projects/signal-forge/brand-assets.md`
 Key: asset `topics` (for keyword matching), `cta_en`, `cta_ar`.
 
 ### 1d. Arabic Brand Voice
@@ -83,20 +83,20 @@ WHERE date(o.created_at) >= date('now', '-{lookback_findings} days');
 ### 2c. Read today's Miner daily brief (for quotes and narrative context)
 Find the latest report:
 ```bash
-ls -t ~/SecondBrain/02-areas/signal-forge/reports/*-miner-daily.md | head -1
+ls -t ~/vault/projects/signal-forge/reports/*-miner-daily.md | head -1
 ```
 Read it for source quotes, transcript excerpts, and narrative context to enrich drafts.
 
 ### 2d. Check for promoted seeds from previous days
 ```bash
 # Seeds that now have more evidence (appeared again in findings)
-ls ~/SecondBrain/02-areas/signal-forge/ideas/*-seeds.json 2>/dev/null | tail -5
+ls ~/vault/projects/signal-forge/ideas/*-seeds.json 2>/dev/null | tail -5
 ```
 If a seed topic from a previous day matches a current finding, it gets a +5 score bonus.
 
 ### 2e. Check for article candidates (weekly only)
 ```bash
-ls -t ~/SecondBrain/02-areas/signal-forge/reports/*-miner-weekly.md 2>/dev/null | head -1
+ls -t ~/vault/projects/signal-forge/reports/*-miner-weekly.md 2>/dev/null | head -1
 ```
 If a weekly report exists with an "Article Radar" section containing READY candidates (score ≥ 24), include them for article drafting.
 
@@ -141,7 +141,7 @@ For each HOT/WARM finding:
 
 ## Step 5: Write Content Menu
 
-Save to: `~/SecondBrain/02-areas/signal-forge/reports/{DATE}-content-menu.md`
+Save to: `~/vault/projects/signal-forge/reports/{DATE}-content-menu.md`
 
 ```markdown
 ---
@@ -376,9 +376,9 @@ tags: [signal-forge, draft, {platform}, {lang}]
 
 When article candidates exist:
 ```
-~/SecondBrain/02-areas/signal-forge/drafts/articles/{DATE}-{slug}-outline.md
-~/SecondBrain/02-areas/signal-forge/drafts/articles/{DATE}-{slug}-en.md
-~/SecondBrain/02-areas/signal-forge/drafts/articles/{DATE}-{slug}-ar.md
+~/vault/projects/signal-forge/drafts/articles/{DATE}-{slug}-outline.md
+~/vault/projects/signal-forge/drafts/articles/{DATE}-{slug}-en.md
+~/vault/projects/signal-forge/drafts/articles/{DATE}-{slug}-ar.md
 ```
 
 Article outline includes: thesis, evidence map (which findings support each section), GCC angle, content gap proof, 5-7 section structure.
@@ -386,7 +386,7 @@ Article outline includes: thesis, evidence map (which findings support each sect
 ### Seeds
 Save unscored findings to:
 ```
-~/SecondBrain/02-areas/signal-forge/ideas/{DATE}-seeds.json
+~/vault/projects/signal-forge/ideas/{DATE}-seeds.json
 ```
 
 Format:

@@ -1,0 +1,22 @@
+name: split-data
+description: Split a large CSV into smaller chunk files for parallel processing
+version: 1.0.0
+
+inputs:
+  - name: csv_file
+    type: file
+    description: The CSV file to split into chunks
+    required: true
+
+steps:
+  - id: split
+    block: catalog/splitter
+    input: $inputs.csv_file
+    output: output/chunks/
+    config:
+      chunk_size: 2000
+      format: csv
+    timeout: 120
+
+on_failure:
+  strategy: halt

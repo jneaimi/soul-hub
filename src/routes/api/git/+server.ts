@@ -2,20 +2,11 @@ import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { config } from '$lib/config.js';
+import { dirExists } from '$lib/fs-utils.js';
 
 const execFileAsync = promisify(execFile);
-
-async function dirExists(path: string): Promise<boolean> {
-	try {
-		const s = await stat(path);
-		return s.isDirectory();
-	} catch {
-		return false;
-	}
-}
 
 async function git(args: string[], cwd: string): Promise<string> {
 	try {
@@ -43,8 +34,8 @@ export const GET: RequestHandler = async ({ url }) => {
 
 	const resolved = resolve(targetPath);
 
-	// Security: only allow paths under dev or brain dirs
-	if (!resolved.startsWith(config.resolved.devDir) && !resolved.startsWith(config.resolved.brainDir)) {
+	// Security: only allow paths under dev dir
+	if (!resolved.startsWith(config.resolved.devDir)) {
 		return json({ error: 'Access denied' }, { status: 403 });
 	}
 

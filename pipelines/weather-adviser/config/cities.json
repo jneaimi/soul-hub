@@ -1,6 +1,22 @@
 [
-  { "city": "Dubai", "country": "UAE" },
-  { "city": "Abu Dhabi", "country": "UAE" },
-  { "city": "London", "country": "UK" },
-  { "city": "Tokyo", "country": "Japan" }
+  {
+    "city": "Dubai",
+    "country": "UAE"
+  },
+  {
+    "city": "Abu Dhabi",
+    "country": "UAE"
+  },
+  {
+    "city": "London",
+    "country": "UK"
+  },
+  {
+    "city": "Tokyo",
+    "country": "Japan"
+  },
+  {
+    "city": "Al Ain",
+    "country": "UAE"
+  }
 ]

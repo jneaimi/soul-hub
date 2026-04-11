@@ -1,0 +1,32 @@
+name: clean-values
+description: Replace ERROR/UNKNOWN with null, standardize Payment Method, parse dates — chunked for large files
+version: 2.0.0
+
+inputs:
+  - name: csv_file
+    type: file
+    description: Directory of chunk CSV files to clean (from split-data)
+    required: true
+
+steps:
+  - id: clean
+    type: chunk
+    block: catalog/cleaner
+    input: $inputs.csv_file
+    output: output/cleaned/
+    parallel: 3
+    merge: concat
+    merge_output: output/cleaned-merged.csv
+    max_chunks: 50
+    chunk_on_failure: skip
+    timeout: 120
+
+  - id: dedup-headers
+    type: script
+    block: catalog/dedup-headers
+    input: $steps.clean.output
+    output: output/cleaned-data.csv
+    depends_on: [clean]
+
+on_failure:
+  strategy: halt

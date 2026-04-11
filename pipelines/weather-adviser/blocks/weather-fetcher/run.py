@@ -8,6 +8,7 @@ from urllib.parse import quote
 PIPELINE_DIR = Path(os.environ.get("PIPELINE_DIR", str(Path(__file__).resolve().parent.parent.parent)))
 OUTPUT_PATH = os.environ.get("PIPELINE_OUTPUT", "")
 CITY = os.environ.get("BLOCK_CONFIG_CITY", "Dubai")
+COUNTRY = os.environ.get("BLOCK_CONFIG_COUNTRY", "").strip()
 
 # WMO Weather Codes -> human-readable descriptions
 WMO_CODES = {
@@ -32,12 +33,45 @@ def fetch_json(url):
         return json.loads(resp.read().decode())
 
 
-def geocode(city):
-    url = f"https://geocoding-api.open-meteo.com/v1/search?name={quote(city)}&count=1&language=en"
+COUNTRY_ALIASES = {
+    "uae": ["united arab emirates", "ae"],
+    "uk": ["united kingdom", "gb"],
+    "us": ["united states", "usa"],
+    "ksa": ["saudi arabia", "sa"],
+}
+
+
+def _country_matches(query, name, code):
+    """Check if user's country query matches the geocoding result."""
+    q = query.lower()
+    name_l = name.lower()
+    code_l = code.lower()
+    # Direct match against name or code
+    if q in name_l or q == code_l:
+        return True
+    # Alias expansion: if query is an alias, check all variants
+    for alias, variants in COUNTRY_ALIASES.items():
+        if q == alias or q in variants:
+            targets = [alias] + variants
+            if any(t in name_l or t == code_l for t in targets):
+                return True
+    return False
+
+
+def geocode(city, country=""):
+    count = 10 if country else 1
+    url = f"https://geocoding-api.open-meteo.com/v1/search?name={quote(city)}&count={count}&language=en"
     data = fetch_json(url)
     if not data.get("results"):
         return None
-    r = data["results"][0]
+    results = data["results"]
+    # Filter by country if provided
+    if country:
+        matched = [r for r in results
+                   if _country_matches(country, r.get("country", ""), r.get("country_code", ""))]
+        if matched:
+            results = matched
+    r = results[0]
     return {
         "name": r["name"],
         "country": r.get("country", ""),
@@ -65,7 +99,7 @@ def main():
         sys.exit(1)
 
     # Geocode city name
-    location = geocode(city)
+    location = geocode(city, COUNTRY)
     if not location:
         print(json.dumps({"error": f"City not found: {city}"}))
         sys.exit(1)

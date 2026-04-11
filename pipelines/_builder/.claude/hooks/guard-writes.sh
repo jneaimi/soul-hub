@@ -26,6 +26,12 @@ case "$FILE_PATH" in
   "$CATALOG_AGENTS"/*)  ALLOWED=true ;;
   "$PIPELINES"/*)       ALLOWED=true ;;
   /tmp/*)               ALLOWED=true ;;
+  # Allow Claude Plan mode files (.claude/plan*, PLAN.md, etc.)
+  */.claude/plan*)      ALLOWED=true ;;
+  */PLAN.md)            ALLOWED=true ;;
+  */.plan*)             ALLOWED=true ;;
+  # Allow staged components review folder
+  "$SOUL_HUB"/pipelines/_builder/staged-components/*) ALLOWED=true ;;
 esac
 
 if [ "$ALLOWED" = "false" ]; then

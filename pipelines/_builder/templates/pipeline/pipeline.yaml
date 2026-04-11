@@ -49,3 +49,8 @@ steps:
 
 on_failure:
   strategy: halt
+
+# Vault: All step outputs are automatically saved as vault notes in
+# projects/{name}/outputs/ with tags [pipeline, {name}, {step-id}].
+# Run summaries (success/failure) are also auto-captured.
+# No extra config needed — see CONTRACTS.md § 6.

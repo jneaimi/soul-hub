@@ -1,11 +1,23 @@
-#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
 """BLOCK_NAME — DESCRIPTION."""
 # Check components/ before writing utility code: api_client, csv_writer, error_handler, progress
+# Add dependencies above (e.g. "pandas", "requests") — uv run installs them automatically
 import os, json, sys
 from pathlib import Path
 
-# Add components to import path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "_builder" / "components"))
+# Add components to import path — use PIPELINE_DIR (set by runner) for reliability
+_comp = Path(os.environ.get("PIPELINE_DIR", "")).parent / "_builder" / "components"
+if not _comp.is_dir():
+    _comp = Path(__file__).resolve().parent
+    while _comp != _comp.parent:
+        if (_comp / "_builder" / "components").is_dir():
+            _comp = _comp / "_builder" / "components"
+            break
+        _comp = _comp.parent
+sys.path.insert(0, str(_comp))
 from error_handler import with_error_handling
 
 # Pipeline context

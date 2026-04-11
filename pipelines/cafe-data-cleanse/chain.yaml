@@ -1,0 +1,61 @@
+name: cafe-data-cleanse
+description: End-to-end CSV data cleaning — split, clean (chunked), repair, quality-check (loop), report
+type: chain
+
+inputs:
+  - name: csv_file
+    type: file
+    description: Path to the dirty CSV file to process
+    required: true
+
+nodes:
+  - id: validate-schema
+    pipeline: validate-schema
+    inputs:
+      csv_file: $inputs.csv_file
+
+  - id: split-data
+    pipeline: split-data
+    inputs:
+      csv_file: $inputs.csv_file
+
+  - id: clean-values
+    pipeline: clean-values
+    depends_on: [split-data]
+    inputs:
+      csv_file: $nodes.split-data.output
+    timeout: 300
+
+  - id: repair-data
+    pipeline: repair-data
+    depends_on: [clean-values]
+    inputs:
+      cleaned_csv: $nodes.clean-values.output
+    timeout: 120
+
+  - id: quality-check
+    pipeline: quality-check
+    depends_on: [repair-data]
+    inputs:
+      repaired_csv: $nodes.repair-data.output
+    timeout: 600
+
+  - id: quality-report
+    pipeline: quality-report
+    depends_on: [validate-schema, repair-data, quality-check]
+    inputs:
+      validation_report: $nodes.validate-schema.output
+      repair_output: $nodes.repair-data.output
+      repaired_csv: $nodes.quality-check.output
+    timeout: 300
+
+  - id: narrate-report
+    pipeline: narrate-report
+    depends_on: [quality-report]
+    inputs:
+      quality_report: $nodes.quality-report.output
+      repaired_csv: $nodes.quality-check.output
+    timeout: 120
+
+on_failure:
+  strategy: halt-branch

@@ -1,0 +1,34 @@
+[
+  {
+    "setting": "lookback_days",
+    "value": "2"
+  },
+  {
+    "setting": "top_n",
+    "value": "3"
+  },
+  {
+    "setting": "min_comments_threshold",
+    "value": "50"
+  },
+  {
+    "setting": "max_pages_per_platform",
+    "value": "3"
+  },
+  {
+    "setting": "spam_keywords",
+    "value": "subscribe,follow me,giveaway,check my profile,link in bio,DM me,free followers,get rich,make money fast"
+  },
+  {
+    "setting": "search_platforms",
+    "value": "twitter,youtube,tiktok,reddit"
+  },
+  {
+    "setting": "max_per_platform",
+    "value": "10"
+  },
+  {
+    "setting": "max_total_trends",
+    "value": "20"
+  }
+]

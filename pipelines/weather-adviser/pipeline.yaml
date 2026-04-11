@@ -9,6 +9,10 @@ inputs:
     type: text
     description: City name (e.g. "Dubai", "London", "Tokyo")
     required: true
+  - name: country
+    type: text
+    description: Country name to disambiguate cities (e.g. "UAE", "United Kingdom")
+    required: false
 
 shared_config:
   - name: Favorite Cities
@@ -31,6 +35,7 @@ steps:
     block: weather-fetcher
     config:
       city: "{{inputs.city}}"
+      country: "{{inputs.country}}"
     output: output/fetch-weather-result.json
     timeout: 30
 
@@ -39,7 +44,7 @@ steps:
     input: $steps.fetch-weather.output
     depends_on: [fetch-weather]
     output: output/advise-activities-result.md
-    timeout: 120
+    timeout: 30
 
 on_failure:
   strategy: halt

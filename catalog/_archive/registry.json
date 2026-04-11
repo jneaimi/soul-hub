@@ -64,7 +64,7 @@
       "runtime": "python",
       "userOnly": true,
       "env_vars": [
-        { "name": "GOOGLE_API_KEY", "description": "Google Gemini image + Veo video generation", "required": true },
+        { "name": "GEMINI_API_KEY", "description": "Gemini API for image + Veo video generation", "required": true },
         { "name": "ELEVENLABS_API_KEY", "description": "ElevenLabs text-to-speech", "required": true }
       ],
       "tags": ["image", "video", "voice", "ai"]
@@ -141,7 +141,7 @@
       "effort": "medium",
       "dependsOn": ["generate"],
       "env_vars": [
-        { "name": "GOOGLE_API_KEY", "description": "Inherited from generate skill", "required": true },
+        { "name": "GEMINI_API_KEY", "description": "Inherited from generate skill", "required": true },
         { "name": "ELEVENLABS_API_KEY", "description": "Inherited from generate skill", "required": true }
       ],
       "tags": ["media", "generation", "creative"]

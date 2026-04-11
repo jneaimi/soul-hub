@@ -1,8 +1,14 @@
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { resolve, dirname } from 'node:path';
+import { timingSafeEqual } from 'node:crypto';
 import { config } from '$lib/config.js';
 import { executeScheduledRun, parsePipeline, getActivePipelines, isTriggerEnabled, getTriggerSecret } from '$lib/pipeline/index.js';
+
+function safeCompare(a: string, b: string): boolean {
+	if (a.length !== b.length) return false;
+	return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
 
 const PIPELINES_DIR = resolve(dirname(config.resolved.catalogDir), 'pipelines');
 
@@ -10,7 +16,7 @@ const PIPELINES_DIR = resolve(dirname(config.resolved.catalogDir), 'pipelines');
  * Trigger endpoint: /api/pipelines/trigger?name=<pipeline>
  *
  * Accepts any HTTP method. Pipeline name from query param.
- * Auth: ?token=<secret> or Authorization: Bearer <secret>
+ * Auth: Authorization: Bearer <secret> (header only)
  * Optional JSON body with { inputs: { ... } } to override defaults.
  */
 async function handleTrigger(request: Request, url: URL): Promise<Response> {
@@ -22,14 +28,16 @@ async function handleTrigger(request: Request, url: URL): Promise<Response> {
 		return json({ error: `Trigger is disabled for "${name}"` }, { status: 403 });
 	}
 
-	// Auth: check token from query param or Authorization header
+	// Fail-closed: if no secret configured, reject all webhook requests
 	const secret = getTriggerSecret(name);
-	if (secret) {
-		const queryToken = url.searchParams.get('token') || '';
-		const headerToken = request.headers.get('authorization')?.replace('Bearer ', '') || '';
-		if (queryToken !== secret && headerToken !== secret) {
-			return json({ error: 'Unauthorized — invalid or missing token' }, { status: 401 });
-		}
+	if (!secret) {
+		return json({ error: 'Webhook secret not configured — set a secret before triggering' }, { status: 403 });
+	}
+
+	// Only accept token from Authorization header (query string removed for security)
+	const headerToken = request.headers.get('authorization')?.replace('Bearer ', '') || '';
+	if (!headerToken || !safeCompare(headerToken, secret)) {
+		return json({ error: 'Unauthorized — invalid or missing token' }, { status: 401 });
 	}
 
 	// Validate pipeline exists

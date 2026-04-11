@@ -1,0 +1,19 @@
+name: quality-check
+description: Score data quality and fix issues in a single pass
+version: 1.0.0
+
+inputs:
+  - name: repaired_csv
+    type: file
+    description: The repaired CSV to quality-check and refine
+    required: true
+
+steps:
+  - id: refine
+    type: script
+    block: quality-checker
+    input: $inputs.repaired_csv
+    output: output/refined-data.csv
+
+on_failure:
+  strategy: halt

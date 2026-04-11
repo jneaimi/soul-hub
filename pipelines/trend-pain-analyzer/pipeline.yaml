@@ -1,0 +1,163 @@
+name: trend-pain-analyzer
+description: Scan influencer posts, rank top titles by engagement, research regional trends, collect and filter comments, analyze pain points — daily reports + weekly opportunity briefs
+version: 1.0.0
+
+env:
+  - name: APIDIRECT_API_KEY
+    description: ApiDirect key for Twitter, Reddit, TikTok, Instagram, LinkedIn, News, Forums, YouTube search
+    required: true
+  - name: YOUTUBE_API_KEY
+    description: YouTube Data API key for comments, channel info, and trending
+    required: true
+
+inputs:
+  - name: mode
+    type: select
+    description: Run mode — daily (scan + analyze) or weekly (aggregate + strategize)
+    options: [daily, weekly]
+    default: daily
+    required: true
+  - name: target_region
+    type: text
+    description: Target region for trend research (e.g. "UAE", "Dubai", "Saudi Arabia")
+    required: true
+  - name: lookback
+    type: select
+    description: How far back to search for trends and comments
+    options: ["24h", "48h", "7d"]
+    default: "24h"
+    required: true
+
+shared_config:
+  - name: Influencer Roster
+    file: config/influencer-roster.json
+    description: Influencers to track — name, platform, and handle
+    columns:
+      - name: name
+        type: text
+        label: Name
+        placeholder: "e.g. Ali Abdaal"
+        required: true
+      - name: platform
+        type: select
+        label: Platform
+        options: [twitter, youtube, tiktok, instagram, linkedin, reddit, facebook]
+        required: true
+      - name: handle
+        type: text
+        label: Handle / Username
+        placeholder: "e.g. aliabdaal"
+        required: true
+      - name: active
+        type: select
+        label: Active
+        options: ["true", "false"]
+        required: true
+  - name: Pipeline Settings
+    file: config/pipeline-settings.json
+    description: Lookback window, engagement thresholds, spam filter, platform selection, and result limits
+    columns:
+      - name: setting
+        type: text
+        label: Setting
+        required: true
+      - name: value
+        type: text
+        label: Value
+        required: true
+    setting_hints:
+      - setting: search_platforms
+        description: "Comma-separated platforms to search (twitter,youtube,tiktok,instagram,linkedin,reddit,facebook,news,forums)"
+      - setting: max_per_platform
+        description: "Max results per platform per query (default: 25)"
+      - setting: max_total_trends
+        description: "Max total trends after dedup (default: 75)"
+
+# ═══ DAILY MODE (steps 1-7) ═══
+
+steps:
+  - id: scan-posts
+    block: scan-posts
+    when: $inputs.mode == "daily"
+    config:
+      mode: "{{inputs.mode}}"
+    output: output/scan-posts-result.json
+    timeout: 300
+
+  - id: rank-titles
+    block: title-ranker
+    when: $inputs.mode == "daily"
+    depends_on: [scan-posts]
+    input: $steps.scan-posts.output
+    output: output/rank-titles-result.json
+    timeout: 60
+
+  - id: trend-research
+    block: trend-research
+    when: $inputs.mode == "daily"
+    depends_on: [rank-titles]
+    input: $steps.rank-titles.output
+    config:
+      target_region: "{{inputs.target_region}}"
+      lookback: "{{inputs.lookback}}"
+    output: output/trend-research-result.json
+    timeout: 300
+
+  - id: collect-comments
+    block: comment-collector
+    when: $inputs.mode == "daily"
+    depends_on: [trend-research]
+    input: $steps.trend-research.output
+    output: output/collect-comments-result.json
+    timeout: 300
+
+  - id: store-data
+    block: db-store
+    when: $inputs.mode == "daily"
+    depends_on: [scan-posts, rank-titles, trend-research, collect-comments]
+    input: [$steps.scan-posts.output, $steps.rank-titles.output, $steps.trend-research.output, $steps.collect-comments.output]
+    config:
+      mode: "{{inputs.mode}}"
+    output: output/store-data-result.json
+    timeout: 60
+
+  - id: prepare-data
+    block: prepare-data
+    when: $inputs.mode == "daily"
+    depends_on: [collect-comments]
+    input: $steps.collect-comments.output
+    output: output/prepare-data-result.json
+    timeout: 60
+
+  - id: analyze-pain-points
+    block: pain-analyzer
+    when: $inputs.mode == "daily"
+    depends_on: [store-data, prepare-data]
+    input: $steps.prepare-data.output
+    config:
+      target_region: "{{inputs.target_region}}"
+    output: output/daily-pain-report.md
+    timeout: 180
+
+  # ═══ WEEKLY MODE (steps 8-9) ═══
+
+  - id: extract-weekly
+    block: weekly-extractor
+    when: $inputs.mode == "weekly"
+    config:
+      mode: "{{inputs.mode}}"
+    output: output/weekly-extraction-result.json
+    timeout: 120
+
+  - id: weekly-strategy
+    block: weekly-strategist
+    when: $inputs.mode == "weekly"
+    depends_on: [extract-weekly]
+    input: $steps.extract-weekly.output
+    config:
+      target_region: "{{inputs.target_region}}"
+    output: output/weekly-opportunities.md
+    timeout: 300
+
+on_failure:
+  strategy: halt

@@ -34,3 +34,9 @@ data: {}
 # BLOCK_NAME
 
 DESCRIPTION — what this block does, when to use it, and how it fits into a pipeline.
+
+## Vault Integration
+
+Pipeline outputs are **automatically captured** to the vault as notes in `projects/{pipeline}/outputs/`. No code needed for standard outputs.
+
+If this block produces structured knowledge (findings, decisions, learnings) beyond its raw output, it can optionally write directly to the vault API — see CONTRACTS.md § 6 "Vault-Aware Blocks".

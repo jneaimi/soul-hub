@@ -64,8 +64,8 @@
 		content = '';
 		highlightedHtml = '';
 
-		// Images are loaded directly via <img> tag
-		if (isImage) {
+		// Media files are loaded directly via native elements
+		if (isMedia || isPdf) {
 			loading = false;
 			return;
 		}
@@ -112,8 +112,18 @@
 	const lineCount = $derived(content ? content.split('\n').length : 0);
 	const isMarkdown = $derived(/\.(md|mdx)$/i.test(fileName));
 	const isImage = $derived(/\.(png|jpg|jpeg|gif|webp|svg|bmp|ico)$/i.test(fileName));
+	const isVideo = $derived(/\.(mp4|webm|mov|avi|mkv)$/i.test(fileName));
+	const isAudio = $derived(/\.(mp3|wav|ogg|m4a|flac|aac)$/i.test(fileName));
+	const isCsv = $derived(/\.csv$/i.test(fileName));
+	const isPdf = $derived(/\.pdf$/i.test(fileName));
+	const isMedia = $derived(isImage || isVideo || isAudio);
 	const renderedMarkdown = $derived(isMarkdown && content ? marked.parse(content, { async: false }) as string : '');
 	const rawUrl = $derived(`/api/files?path=${encodeURIComponent(dir)}&action=raw&file=${encodeURIComponent(file)}`);
+
+	function parseCsv(raw: string): string[][] {
+		const lines = raw.trim().split('\n');
+		return lines.slice(0, 51).map(line => line.split(',').map(c => c.trim().replace(/^"|"$/g, '')));
+	}
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -132,12 +142,22 @@
 					<path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><polyline points="13 2 13 9 20 9"/>
 				</svg>
 				<span class="text-sm font-medium text-hub-text truncate">{fileName}</span>
-				<span class="text-[10px] text-hub-dim flex-shrink-0 px-1.5 py-0.5 bg-hub-card rounded">{getLanguage(fileName)}</span>
+				<span class="text-[10px] text-hub-dim flex-shrink-0 px-1.5 py-0.5 bg-hub-card rounded">{isVideo ? 'video' : isAudio ? 'audio' : isPdf ? 'pdf' : isCsv ? 'csv' : getLanguage(fileName)}</span>
 			</div>
-			<div class="flex items-center gap-3">
+			<div class="flex items-center gap-2">
 				{#if fileSize}
-					<span class="text-[10px] text-hub-dim">{formatBytes(fileSize)} · {lineCount} lines</span>
+					<span class="text-[10px] text-hub-dim mr-1">{formatBytes(fileSize)}{#if lineCount && !isMedia && !isPdf} · {lineCount} lines{/if}</span>
 				{/if}
+				<a
+					href={rawUrl}
+					download={fileName}
+					class="p-1 rounded hover:bg-hub-card transition-colors text-hub-dim hover:text-hub-text"
+					title="Download"
+				>
+					<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+					</svg>
+				</a>
 				<button
 					onclick={onClose}
 					class="p-1 rounded hover:bg-hub-card transition-colors cursor-pointer text-hub-dim hover:text-hub-text"
@@ -177,6 +197,62 @@
 						alt={fileName}
 						class="max-w-full max-h-full object-contain rounded-lg"
 					/>
+				</div>
+			{:else if isVideo}
+				<div class="flex items-center justify-center h-full p-6 bg-[#0a0a0f]">
+					<!-- svelte-ignore a11y_media_has_caption -->
+					<video src={rawUrl} controls class="max-w-full max-h-full rounded-lg"></video>
+				</div>
+			{:else if isAudio}
+				<div class="flex items-center justify-center h-full p-6 bg-[#0a0a0f]">
+					<div class="w-full max-w-md">
+						<div class="text-center mb-4">
+							<svg class="w-12 h-12 text-hub-dim mx-auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+								<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+							</svg>
+							<p class="text-sm text-hub-muted mt-2">{fileName}</p>
+						</div>
+						<audio src={rawUrl} controls class="w-full"></audio>
+					</div>
+				</div>
+			{:else if isPdf}
+				<div class="flex items-center justify-center h-full p-6 bg-[#0a0a0f]">
+					<div class="text-center">
+						<svg class="w-12 h-12 text-hub-dim mx-auto mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+							<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/>
+						</svg>
+						<p class="text-sm text-hub-muted mb-3">{fileName}</p>
+						<a href={rawUrl} download={fileName} class="px-4 py-2 rounded bg-hub-cta text-white text-sm hover:brightness-110 transition-all">Download PDF</a>
+					</div>
+				</div>
+			{:else if isCsv && content}
+				{@const rows = parseCsv(content)}
+				<div class="overflow-auto h-full">
+					<table class="w-full text-xs font-mono">
+						{#if rows.length > 0}
+							<thead class="sticky top-0">
+								<tr>
+									{#each rows[0] as header}
+										<th class="px-3 py-1.5 text-left text-hub-dim bg-hub-surface font-medium border-b border-hub-border/50">{header}</th>
+									{/each}
+								</tr>
+							</thead>
+							<tbody>
+								{#each rows.slice(1) as row, i}
+									<tr class="{i % 2 === 0 ? 'bg-hub-bg/30' : ''}">
+										{#each row as cell}
+											<td class="px-3 py-1 text-hub-text border-b border-hub-border/20">{cell}</td>
+										{/each}
+									</tr>
+								{/each}
+							</tbody>
+						{/if}
+					</table>
+					{#if rows.length > 50}
+						<div class="px-3 py-1.5 text-[10px] text-hub-dim bg-hub-surface border-t border-hub-border/30">
+							Showing first 50 rows
+						</div>
+					{/if}
 				</div>
 			{:else if isMarkdown}
 				<div class="prose-hub p-5 text-sm leading-relaxed">

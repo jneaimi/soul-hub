@@ -1,7 +1,6 @@
 <script lang="ts">
 	interface Props {
 		codePath: string | null;
-		brainPath: string | null;
 		onFileSelect: (path: string, fileName: string) => void;
 	}
 
@@ -17,12 +16,11 @@
 		expanded: boolean;
 	}
 
-	let { codePath, brainPath, onFileSelect }: Props = $props();
+	let { codePath, onFileSelect }: Props = $props();
 
-	let activeTab = $state<'code' | 'brain'>(codePath ? 'code' : 'brain');
 	let dirCache = $state<Record<string, DirState>>({});
 
-	const rootPath = $derived(activeTab === 'code' ? codePath : brainPath);
+	const rootPath = $derived(codePath);
 
 	// Load root when tab changes
 	$effect(() => {
@@ -80,37 +78,13 @@
 </script>
 
 <div class="flex flex-col h-full bg-hub-surface/50">
-	<!-- Tabs: Code / Brain -->
-	<div class="flex-shrink-0 flex border-b border-hub-border/50">
-		{#if codePath}
-			<button
-				onclick={() => activeTab = 'code'}
-				class="flex-1 px-3 py-2 text-xs font-medium transition-colors cursor-pointer
-					{activeTab === 'code' ? 'text-hub-text border-b-2 border-hub-cta bg-hub-surface' : 'text-hub-dim hover:text-hub-muted'}"
-			>
-				<svg class="w-3 h-3 inline-block mr-1 -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-				Code
-			</button>
-		{/if}
-		{#if brainPath}
-			<button
-				onclick={() => activeTab = 'brain'}
-				class="flex-1 px-3 py-2 text-xs font-medium transition-colors cursor-pointer
-					{activeTab === 'brain' ? 'text-hub-text border-b-2 border-hub-purple bg-hub-surface' : 'text-hub-dim hover:text-hub-muted'}"
-			>
-				<svg class="w-3 h-3 inline-block mr-1 -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
-				Brain
-			</button>
-		{/if}
-	</div>
-
 	<!-- File tree -->
 	<div class="flex-1 overflow-y-auto text-xs py-1">
 		{#if rootPath}
 			{@render dirNode(rootPath, 0)}
 		{:else}
 			<div class="px-3 py-6 text-center text-hub-dim">
-				{activeTab === 'code' ? 'No code directory' : 'No brain directory'}
+				No code directory
 			</div>
 		{/if}
 	</div>

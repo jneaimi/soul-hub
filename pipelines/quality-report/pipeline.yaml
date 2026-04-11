@@ -1,0 +1,27 @@
+name: quality-report
+description: Compare before/after data and generate a markdown quality report
+version: 1.0.0
+
+inputs:
+  - name: validation_report
+    type: file
+    description: JSON validation report from validate-schema
+    required: true
+  - name: repair_output
+    type: file
+    description: Repaired CSV from repair-data (repair-stats.json is a sidecar in same dir)
+    required: true
+  - name: repaired_csv
+    type: file
+    description: Final refined CSV from quality-check
+    required: true
+
+steps:
+  - id: report
+    block: catalog/reporter
+    input: [$inputs.validation_report, $inputs.repair_output, $inputs.repaired_csv]
+    output: output/quality-report.md
+    timeout: 300
+
+on_failure:
+  strategy: halt

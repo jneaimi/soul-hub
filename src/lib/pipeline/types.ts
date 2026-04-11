@@ -2,7 +2,7 @@
 
 export interface PipelineInput {
 	name: string;
-	type: 'text' | 'file' | 'path' | 'select' | 'number';
+	type: 'text' | 'file' | 'path' | 'folder' | 'select' | 'number';
 	description: string;
 	default?: string | number;
 	options?: string[]; // for type: select
@@ -17,7 +17,7 @@ export interface PipelineEnvVar {
 
 export interface PipelineStep {
 	id: string;
-	type: 'script' | 'agent' | 'approval' | 'prompt' | 'channel';
+	type: 'script' | 'agent' | 'approval' | 'prompt' | 'channel' | 'chunk' | 'loop';
 	/** Block reference — name of a block in <pipeline-dir>/blocks/ */
 	block?: string;
 	/** Config overrides for the referenced block (merged with block defaults) */
@@ -58,6 +58,22 @@ export interface PipelineStep {
 	action?: 'send';
 	/** For type: channel — file to attach */
 	attach?: string;
+	/** For type: chunk — max concurrent chunk executions (default: 1, max: 5 for agents) */
+	parallel?: number;
+	/** For type: chunk — how to merge chunk outputs: concat | json-array | skip (default: skip) */
+	merge?: 'concat' | 'json-array' | 'skip';
+	/** For type: chunk — path for merged output (required if merge != skip) */
+	merge_output?: string;
+	/** For type: chunk — max number of chunks to process (default: 500) */
+	max_chunks?: number;
+	/** For type: chunk — what to do when a chunk fails: halt | skip (default: halt) */
+	chunk_on_failure?: 'halt' | 'skip';
+	/** For type: loop — max iterations (default: 3, max: 10) */
+	max_iterations?: number;
+	/** For type: loop — condition to stop looping (must reference own step output) */
+	until?: string;
+	/** Total timeout for entire chunk/loop step in seconds (default: 1800 for chunk, 900 for loop) */
+	total_timeout?: number;
 	/** Condition: only run this step when expression is true */
 	when?: string;
 	/** Condition: skip this step when expression is true (inverse of when) */

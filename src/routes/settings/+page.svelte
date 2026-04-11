@@ -27,11 +27,10 @@
 	let rows = $state(40);
 	let cursorBlink = $state(true);
 
-	let defaultPanel = $state<'code' | 'brain' | 'closed'>('code');
+	let defaultPanel = $state<'code' | 'closed'>('code');
 	let panelWidth = $state(260);
 
 	let devDir = $state('~/dev');
-	let brainDir = $state('~/SecondBrain');
 	let catalogDir = $state('~/dev/soul-hub/catalog');
 	let claudeBinary = $state('~/.local/bin/claude');
 
@@ -81,7 +80,6 @@
 				}
 				if (data.paths) {
 					devDir = data.paths.devDir ?? '~/dev';
-					brainDir = data.paths.brainDir ?? '~/SecondBrain';
 					catalogDir = data.paths.catalogDir ?? '~/dev/soul-hub/catalog';
 					claudeBinary = data.paths.claudeBinary ?? '~/.local/bin/claude';
 				}
@@ -144,7 +142,7 @@
 				body: JSON.stringify({
 					terminal: { fontSize, cols, rows, cursorBlink },
 					interface: { defaultPanel, panelWidth },
-					paths: { devDir, brainDir, catalogDir, claudeBinary },
+					paths: { devDir, catalogDir, claudeBinary },
 					channels: channelConfigs,
 				}),
 			});
@@ -179,7 +177,6 @@
 		defaultPanel = 'code';
 		panelWidth = 260;
 		devDir = '~/dev';
-		brainDir = '~/SecondBrain';
 		catalogDir = '~/dev/soul-hub/catalog';
 		claudeBinary = '~/.local/bin/claude';
 		dirty = true;
@@ -214,20 +211,36 @@
 	</div>
 {/if}
 
-<div class="h-full overflow-y-auto">
-	<div class="max-w-2xl mx-auto px-4 py-6">
-		<!-- Header -->
-		<div class="flex items-center gap-3 mb-6">
+<div class="h-full flex flex-col">
+	<!-- Header -->
+	<header class="flex-shrink-0 px-4 sm:px-6 py-4 border-b border-hub-border">
+		<div class="max-w-3xl mx-auto flex items-center gap-3">
 			<a href="/" class="p-1.5 rounded-lg hover:bg-hub-card transition-colors text-hub-muted hover:text-hub-text cursor-pointer" aria-label="Back to home">
 				<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 					<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
 				</svg>
 			</a>
-			<h1 class="text-lg font-semibold text-hub-text">Settings</h1>
+			<div class="flex items-center gap-2">
+				<img src="/logo.png" alt="Soul Hub" class="w-5 h-5" />
+				<h1 class="text-lg font-semibold text-hub-text">Settings</h1>
+			</div>
+			<div class="flex-1"></div>
+			<button
+				onclick={save}
+				disabled={saving || !dirty}
+				class="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors cursor-pointer
+					{dirty ? 'bg-hub-cta text-black hover:bg-hub-cta-hover' : 'bg-hub-card text-hub-dim cursor-not-allowed'}"
+			>
+				{saving ? 'Saving...' : 'Save'}
+			</button>
 		</div>
+	</header>
+
+	<div class="flex-1 overflow-y-auto px-4 sm:px-6 py-6 sm:py-8">
+	<div class="max-w-3xl mx-auto">
 
 		<!-- Terminal section -->
-		<section class="mb-4">
+		<section class="mb-6">
 			<div class="bg-hub-surface border border-hub-border rounded-lg p-4">
 				<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-4">Terminal</h2>
 				<div class="grid grid-cols-2 gap-4">
@@ -289,7 +302,7 @@
 		</section>
 
 		<!-- Interface section -->
-		<section class="mb-4">
+		<section class="mb-6">
 			<div class="bg-hub-surface border border-hub-border rounded-lg p-4">
 				<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-4">Interface</h2>
 				<div class="grid grid-cols-2 gap-4">
@@ -302,7 +315,6 @@
 							class="w-full bg-hub-bg border border-hub-border rounded-md px-3 py-1.5 text-sm text-hub-text focus:outline-none focus:ring-1 focus:ring-hub-cta/50 cursor-pointer"
 						>
 							<option value="code">Code</option>
-							<option value="brain">Brain</option>
 							<option value="closed">Closed</option>
 						</select>
 					</div>
@@ -323,7 +335,7 @@
 		</section>
 
 		<!-- Paths section -->
-		<section class="mb-4">
+		<section class="mb-6">
 			<div class="bg-hub-surface border border-hub-border rounded-lg p-4">
 				<div class="flex items-center justify-between mb-4">
 					<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider">Paths</h2>
@@ -336,16 +348,6 @@
 							id="devDir"
 							type="text"
 							bind:value={devDir}
-							oninput={markDirty}
-							class="w-full bg-hub-bg border border-hub-border rounded-md px-3 py-1.5 text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-cta/50"
-						/>
-					</div>
-					<div>
-						<label for="brainDir" class="block text-xs text-hub-muted mb-1">Second Brain</label>
-						<input
-							id="brainDir"
-							type="text"
-							bind:value={brainDir}
 							oninput={markDirty}
 							class="w-full bg-hub-bg border border-hub-border rounded-md px-3 py-1.5 text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-cta/50"
 						/>
@@ -375,7 +377,7 @@
 		</section>
 
 		<!-- Server section (read-only) -->
-		<section class="mb-4">
+		<section class="mb-6">
 			<div class="bg-hub-surface border border-hub-border rounded-lg p-4">
 				<div class="flex items-center justify-between mb-4">
 					<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider">Server</h2>
@@ -461,31 +463,15 @@
 			</section>
 		{/if}
 
-		<!-- Action buttons -->
-		<div class="flex items-center justify-between">
-			<button
-				onclick={save}
-				disabled={saving || !dirty}
-				class="px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer
-					{dirty ? 'bg-hub-cta text-hub-bg hover:bg-hub-cta-hover' : 'bg-hub-card text-hub-dim cursor-not-allowed'}"
-			>
-				{#if saving}
-					<span class="inline-flex items-center gap-2">
-						<svg class="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-							<path d="M12 2v4m0 12v4m-7.07-3.93l2.83-2.83m8.48-8.48l2.83-2.83M2 12h4m12 0h4m-3.93 7.07l-2.83-2.83M7.76 7.76L4.93 4.93"/>
-						</svg>
-						Saving...
-					</span>
-				{:else}
-					Save Changes
-				{/if}
-			</button>
+		<!-- Reset -->
+		<div class="flex justify-end">
 			<button
 				onclick={resetToDefaults}
-				class="px-4 py-2 rounded-lg text-sm font-medium text-hub-muted border border-hub-border hover:bg-hub-card transition-colors cursor-pointer"
+				class="text-xs text-hub-dim hover:text-hub-muted transition-colors cursor-pointer"
 			>
-				Reset to Defaults
+				Reset to defaults
 			</button>
 		</div>
+	</div>
 	</div>
 </div>

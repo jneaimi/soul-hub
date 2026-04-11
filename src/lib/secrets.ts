@@ -130,5 +130,31 @@ export function getSecretValue(key: string): string | undefined {
 	return process.env[key];
 }
 
+/** Sync known env vars from process.env (shell) into .data/secrets.env.
+ *  Only imports keys that exist in process.env but not in secrets.env.
+ *  Returns the count of newly synced keys. */
+export function syncFromShell(keys: string[]): number {
+	const existing = existsSync(SECRETS_PATH)
+		? parseEnv(readFileSync(SECRETS_PATH, 'utf-8'))
+		: {};
+
+	let synced = 0;
+	for (const key of keys) {
+		// Only sync if the key exists in process.env and is not already in secrets.env
+		if (process.env[key] && !(key in existing)) {
+			existing[key] = process.env[key]!;
+			synced++;
+		}
+	}
+
+	if (synced > 0) {
+		const dir = dirname(SECRETS_PATH);
+		if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+		writeFileSync(SECRETS_PATH, serializeEnv(existing), 'utf-8');
+	}
+
+	return synced;
+}
+
 // Load secrets on module import (server startup)
 loadSecrets();

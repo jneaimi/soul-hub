@@ -13,16 +13,14 @@
 	interface Props {
 		projectName: string;
 		devPath: string | null;
-		brainPath: string | null;
 		gitInfo?: GitInfo | null;
 	}
 
-	let { projectName, devPath, brainPath, gitInfo = null }: Props = $props();
+	let { projectName, devPath, gitInfo = null }: Props = $props();
 
 	let open = $state(false);
 	let readmeContent = $state('');
 	let gitLog = $state<string[]>([]);
-	let brainFiles = $state<string[]>([]);
 	let loading = $state(false);
 
 	export function toggle() {
@@ -47,20 +45,6 @@
 			}
 		}
 
-		// Get brain files
-		if (brainPath) {
-			try {
-				const res = await fetch(`/api/files?path=${encodeURIComponent(brainPath)}`);
-				if (res.ok) {
-					const data = await res.json();
-					brainFiles = data.entries
-						.filter((e: { type: string }) => e.type === 'file')
-						.map((e: { name: string }) => e.name)
-						.slice(0, 8);
-				}
-			} catch { /* silent */ }
-		}
-
 		loading = false;
 	}
 
@@ -81,7 +65,7 @@
 	>
 		<div>
 			<h1 class="text-lg font-bold text-hub-text text-left">{projectName}</h1>
-			<p class="text-xs text-hub-dim">{devPath || brainPath || '~'}</p>
+			<p class="text-xs text-hub-dim">{devPath || '~'}</p>
 		</div>
 		<svg class="w-4 h-4 text-hub-dim transition-transform {open ? 'rotate-180' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 			<polyline points="6 9 12 15 18 9"/>
@@ -99,21 +83,6 @@
 						<h3 class="text-[10px] text-hub-dim uppercase tracking-wider mb-2">README</h3>
 						<div class="prose-hub text-xs max-h-40 overflow-y-auto">
 							{@html marked.parse(readmeContent + (readmeContent.length >= 1500 ? '\n\n...' : ''), { async: false })}
-						</div>
-					</div>
-				{/if}
-
-				<!-- Brain docs -->
-				{#if brainFiles.length > 0}
-					<div class="px-4 py-3 border-b border-hub-border/50">
-						<h3 class="text-[10px] text-hub-dim uppercase tracking-wider mb-2">Brain Docs</h3>
-						<div class="space-y-1">
-							{#each brainFiles as file}
-								<div class="flex items-center gap-1.5 text-xs text-hub-muted">
-									<svg class="w-3 h-3 text-hub-purple/60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-									{file}
-								</div>
-							{/each}
 						</div>
 					</div>
 				{/if}
@@ -156,12 +125,6 @@
 						<div class="flex items-center gap-1.5 text-xs text-hub-muted mb-1">
 							<svg class="w-3 h-3 text-hub-cta/60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
 							<span class="font-mono truncate">{devPath}</span>
-						</div>
-					{/if}
-					{#if brainPath}
-						<div class="flex items-center gap-1.5 text-xs text-hub-muted">
-							<svg class="w-3 h-3 text-hub-purple/60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
-							<span class="font-mono truncate">{brainPath}</span>
 						</div>
 					{/if}
 				</div>

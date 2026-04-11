@@ -1,0 +1,19 @@
+name: validate-schema
+description: Read a CSV, check columns exist, detect data types, count issues per column
+version: 1.0.0
+
+inputs:
+  - name: csv_file
+    type: file
+    description: The dirty CSV file to validate
+    required: true
+
+steps:
+  - id: validate
+    block: catalog/validator
+    input: $inputs.csv_file
+    output: output/validation-report.json
+    timeout: 120
+
+on_failure:
+  strategy: halt

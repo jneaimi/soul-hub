@@ -1,7 +1,8 @@
 import type { PageServerLoad } from './$types';
-import { resolve } from 'node:path';
-import { stat } from 'node:fs/promises';
+import { resolve, join } from 'node:path';
+import { stat, readFile } from 'node:fs/promises';
 import { config } from '$lib/config.js';
+import type { SoulHubConfig } from '$lib/project/schema.js';
 
 async function dirExists(path: string): Promise<boolean> {
 	try {
@@ -12,20 +13,40 @@ async function dirExists(path: string): Promise<boolean> {
 	}
 }
 
+async function loadProjectConfig(devPath: string): Promise<SoulHubConfig | null> {
+	try {
+		const raw = await readFile(join(devPath, '.soul-hub.json'), 'utf-8');
+		return JSON.parse(raw) as SoulHubConfig;
+	} catch {
+		return null;
+	}
+}
+
 export const load: PageServerLoad = async ({ params }) => {
 	const name = params.name;
 	const devPath = resolve(config.resolved.devDir, name);
-	const brainProject = resolve(config.resolved.brainProjects, name);
-	const brainArea = resolve(config.resolved.brainAreas, name);
+
+	// Prevent path traversal
+	if (!devPath.startsWith(config.resolved.devDir + '/')) {
+		return { name, devPath: null, cwd: process.env.HOME ?? '/tmp', projectConfig: null };
+	}
 
 	const hasDev = await dirExists(devPath);
-	const hasBrainProject = await dirExists(brainProject);
-	const hasBrainArea = await dirExists(brainArea);
+
+	const vaultProjectDir = resolve(config.resolved.vaultDir, 'projects', name);
+	const hasVaultZone = await dirExists(vaultProjectDir);
+
+	const projectConfig = hasDev ? await loadProjectConfig(devPath) : null;
+	const setupComplete = projectConfig?.stack?.framework != null;
 
 	return {
 		name,
 		devPath: hasDev ? devPath : null,
-		brainPath: hasBrainProject ? brainProject : hasBrainArea ? brainArea : null,
 		cwd: hasDev ? devPath : process.env.HOME ?? '/tmp',
+		projectConfig,
+		setupComplete,
+		hasVaultZone,
+		vaultDir: config.resolved.vaultDir,
+		vaultProjectName: name,
 	};
 };

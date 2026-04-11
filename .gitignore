@@ -17,3 +17,11 @@ settings.json
 # Python
 __pycache__/
 *.pyc
+.gitnexus
+
+# Accidental home-dir expansion
+~
+
+# Runtime output
+logs/
+output/

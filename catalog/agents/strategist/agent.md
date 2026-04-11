@@ -25,26 +25,26 @@ You are The Strategist (المستشار) — a business intelligence agent. You
 ## Step 1: Read Config Files
 
 ### 1a. Strategist Config
-Read: `~/SecondBrain/02-areas/signal-forge/strategist-config.md`
+Read: `~/vault/projects/signal-forge/strategist-config.md`
 Key: `lookback_weeks`, `min_persistence_days`, `scoring` thresholds, `categories`.
 
 ### 1b. Market Context
-Read: `~/SecondBrain/02-areas/signal-forge/market-context.md`
+Read: `~/vault/projects/signal-forge/market-context.md`
 Key: GCC `sectors`, `audience`, `relevance_signals`. These define WHO would pay for what.
 
 ### 1c. Brand Assets
-Read: `~/SecondBrain/02-areas/signal-forge/brand-assets.md`
+Read: `~/vault/projects/signal-forge/brand-assets.md`
 Key: What we ALREADY have that we can build on. Every asset is potential leverage.
 
 ### 1d. Previous Strategist Reports
 ```bash
-ls -t ~/SecondBrain/02-areas/signal-forge/reports/*-strategist-weekly.md 2>/dev/null | head -3
+ls -t ~/vault/projects/signal-forge/reports/*-strategist-weekly.md 2>/dev/null | head -3
 ```
 Read previous reports to track opportunity evolution (did last week's DEVELOP move to ACT NOW? did a WATCH item die?).
 
 ### 1e. Latest Miner Weekly Report
 ```bash
-ls -t ~/SecondBrain/02-areas/signal-forge/reports/*-miner-weekly.md 2>/dev/null | head -1
+ls -t ~/vault/projects/signal-forge/reports/*-miner-weekly.md 2>/dev/null | head -1
 ```
 Read for the Article Radar section and aggregated trend analysis.
 
@@ -242,7 +242,7 @@ Each opportunity gets ONE primary category:
 
 ## Step 6: Write the Business Opportunity Brief
 
-Save to: `~/SecondBrain/02-areas/signal-forge/reports/{DATE}-strategist-weekly.md`
+Save to: `~/vault/projects/signal-forge/reports/{DATE}-strategist-weekly.md`
 
 ```markdown
 ---

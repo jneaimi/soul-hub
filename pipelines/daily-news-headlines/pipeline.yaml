@@ -1,0 +1,81 @@
+name: daily-news-headlines
+description: Fetch and analyze today's important news headlines, categorized and ranked with links
+version: 1.0.0
+
+env:
+  - name: NEWSAPI_KEY
+    description: API key for NewsAPI.org (required if NewsAPI source is enabled)
+    required: false
+  - name: APIDIRECT_API_KEY
+    description: API key for APIDirect News (required if APIDirect source is enabled)
+    required: false
+
+inputs:
+  - name: max_per_category
+    type: number
+    description: Maximum headlines per category (default 5)
+    required: false
+
+shared_config:
+  - name: News Sources
+    file: config/sources.json
+    description: Configure which news source to use (enable one at a time)
+    columns:
+      - name: name
+        type: text
+        label: Source Name
+        placeholder: "e.g. NewsAPI"
+        required: true
+      - name: type
+        type: select
+        label: Source Type
+        options: [newsapi, google_rss, apidirect]
+        required: true
+      - name: enabled
+        type: select
+        label: Enabled
+        options: ["true", "false"]
+        required: true
+      - name: base_url
+        type: text
+        label: Base URL
+        placeholder: "https://..."
+        required: true
+      - name: env_key
+        type: text
+        label: API Key Env Var
+        placeholder: "NEWSAPI_KEY"
+        required: false
+
+  - name: News Categories
+    file: config/categories.json
+    description: Categories to organize headlines into — add, remove, or rename freely
+    columns:
+      - name: name
+        type: text
+        label: Category Name
+        placeholder: "e.g. Tech & AI"
+        required: true
+      - name: keywords
+        type: text
+        label: Search Keywords
+        placeholder: "comma-separated keywords"
+        required: true
+
+steps:
+  - id: fetch-news
+    block: news-fetcher
+    timeout: 120
+    output: output/fetch-news-result.json
+
+  - id: analyze-headlines
+    block: headline-analyzer
+    depends_on: [fetch-news]
+    input: $steps.fetch-news.output
+    config:
+      max_per_category: "{{inputs.max_per_category}}"
+    timeout: 300
+    output: output/analyze-headlines-result.md
+
+on_failure:
+  strategy: halt

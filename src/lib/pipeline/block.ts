@@ -46,12 +46,6 @@ export interface BlockEnvVar {
 	required?: boolean;
 }
 
-export interface BlockData {
-	requires?: string[];
-	produces?: string[];
-	database?: string;
-}
-
 export interface BlockManifest {
 	name: string;
 	type: BlockType;
@@ -63,7 +57,6 @@ export interface BlockManifest {
 	outputs?: BlockOutput[];
 	config?: ConfigField[];
 	env?: BlockEnvVar[];
-	data?: BlockData;
 	/** Raw markdown body (everything after the frontmatter) */
 	body?: string;
 }
@@ -212,7 +205,6 @@ export async function parseBlockManifest(blockDir: string): Promise<BlockManifes
 		outputs: Array.isArray(meta.outputs) ? (meta.outputs as BlockOutput[]).filter(o => o && o.name) : undefined,
 		config: Array.isArray(meta.config) ? (meta.config as ConfigField[]).filter(c => c && c.name) : undefined,
 		env: Array.isArray(meta.env) ? (meta.env as BlockEnvVar[]).filter(e => e && e.name) : undefined,
-		data: meta.data as BlockData | undefined,
 		body,
 	};
 }
@@ -238,6 +230,10 @@ export function validateBlockConfig(
 		}
 
 		if (!hasValue) continue;
+
+		// Skip validation for template references — resolved at runtime
+		const strVal = String(value);
+		if (strVal.includes('{{') || strVal.startsWith('$inputs.') || strVal.startsWith('$steps.')) continue;
 
 		switch (field.type) {
 			case 'number': {

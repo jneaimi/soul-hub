@@ -19,11 +19,13 @@
 		{ key: 'TELEGRAM_CHAT_ID', description: 'Telegram chat ID for notifications', usedBy: ['telegram channel'], required: false },
 		{ key: 'APIDIRECT_API_KEY', description: 'API key for Twitter, Reddit, TikTok, Instagram, LinkedIn', usedBy: ['collect skill', 'research skill', 'recipe skill'], required: false },
 		{ key: 'YOUTUBE_API_KEY', description: 'YouTube Data API key', usedBy: ['collect skill', 'research skill'], required: false },
-		{ key: 'GOOGLE_API_KEY', description: 'Google Gemini image + Veo video generation', usedBy: ['generate skill', 'media-creator agent'], required: false },
+		{ key: 'GEMINI_API_KEY', description: 'Gemini API for image + Veo video generation', usedBy: ['generate skill', 'media-creator agent'], required: false },
 		{ key: 'ELEVENLABS_API_KEY', description: 'ElevenLabs text-to-speech', usedBy: ['generate skill', 'media-creator agent'], required: false },
 		{ key: 'RESEND_API_KEY', description: 'Resend email API for newsletters', usedBy: ['newsletter skill'], required: false },
 		{ key: 'LINEAR_API_KEY', description: 'Linear project management API', usedBy: ['claude-soul agents'], required: false },
+		{ key: 'GOOGLE_API_KEY', description: 'Google Cloud Platform (Geocoding, Places, Maps)', usedBy: ['cafe-deals pipeline'], required: false },
 		{ key: 'HF_API_TOKEN', description: 'Hugging Face Inference API (optional)', usedBy: ['research skill'], required: false },
+		{ key: 'EODHD_API_KEY', description: 'EODHD financial data API', usedBy: ['market skill'], required: false },
 	];
 
 	let secrets = $state<EnvEntry[]>([]);
@@ -34,6 +36,10 @@
 	let editValue = $state('');
 	let saving = $state(false);
 	let saveResult = $state<{ ok: boolean; key: string } | null>(null);
+
+	// Sync from shell
+	let syncing = $state(false);
+	let syncResult = $state<{ count: number } | null>(null);
 
 	// Add new secret
 	let addingNew = $state(false);
@@ -133,6 +139,24 @@
 		newValue = '';
 	}
 
+	async function syncFromShell() {
+		syncing = true;
+		try {
+			const res = await fetch('/api/secrets', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action: 'sync-from-shell', keys: KNOWN_VARS.map(v => v.key) }),
+			});
+			const data = await res.json();
+			if (data.ok) {
+				syncResult = { count: data.synced };
+				await loadSecrets();
+				setTimeout(() => { syncResult = null; }, 4000);
+			}
+		} catch { /* ignore */ }
+		syncing = false;
+	}
+
 	async function saveNewSecret() {
 		if (!newKey.trim() || !newValue.trim()) return;
 		saving = true;
@@ -158,9 +182,22 @@
 	<div class="bg-hub-surface border border-hub-border rounded-lg p-4">
 		<div class="flex items-center justify-between mb-4">
 			<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider">Platform Environment</h2>
-			<span class="text-[10px] text-hub-dim font-medium">
-				{envList.filter((e) => e.set).length}/{envList.length} configured
-			</span>
+			<div class="flex items-center gap-3">
+				{#if syncResult}
+					<span class="text-[10px] text-hub-cta font-medium">{syncResult.count} keys synced</span>
+				{/if}
+				<button
+					onclick={syncFromShell}
+					disabled={syncing}
+					class="px-2 py-0.5 text-[10px] font-medium rounded border border-hub-border text-hub-muted hover:text-hub-text hover:border-hub-cta transition-colors cursor-pointer disabled:opacity-40"
+					title="Import API keys from shell environment into Soul Hub"
+				>
+					{syncing ? 'Syncing...' : 'Sync from shell'}
+				</button>
+				<span class="text-[10px] text-hub-dim font-medium">
+					{envList.filter((e) => e.set).length}/{envList.length} configured
+				</span>
+			</div>
 		</div>
 
 		{#if loading}
