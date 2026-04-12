@@ -1,4 +1,4 @@
-import { readFile, writeFile, stat, readdir } from 'node:fs/promises';
+import { readFile, writeFile, stat, readdir, rename, mkdir } from 'node:fs/promises';
 import { resolve, join, relative, dirname } from 'node:path';
 import { parseNote } from './parser.js';
 import { WikilinkResolver } from './resolver.js';
@@ -36,7 +36,10 @@ export class VaultIndexer {
 				}
 
 				const raw = await readFile(absPath, 'utf-8');
-				if (raw.length > MAX_NOTE_SIZE) continue;
+				if (raw.length > MAX_NOTE_SIZE) {
+					console.warn(`[vault/indexer] Skipped oversize file (${(raw.length / 1024).toFixed(0)} KB): ${relPath}`);
+					continue;
+				}
 
 				const parsed = parseNote(relPath, raw);
 				this.notes.set(relPath, {
@@ -77,7 +80,10 @@ export class VaultIndexer {
 		try {
 			const fileStat = await stat(absPath);
 			const raw = await readFile(absPath, 'utf-8');
-			if (raw.length > MAX_NOTE_SIZE) return;
+			if (raw.length > MAX_NOTE_SIZE) {
+				console.warn(`[vault/indexer] Skipped oversize file (${(raw.length / 1024).toFixed(0)} KB): ${relPath}`);
+				return;
+			}
 
 			const parsed = parseNote(relPath, raw);
 			this.notes.set(relPath, {
@@ -248,9 +254,10 @@ export class VaultIndexer {
 		}
 		try {
 			const dir = dirname(cachePath);
-			const { mkdir } = await import('node:fs/promises');
 			await mkdir(dir, { recursive: true });
-			await writeFile(cachePath, JSON.stringify(obj, null, 2));
+			const tmpPath = cachePath + '.tmp';
+			await writeFile(tmpPath, JSON.stringify(obj, null, 2));
+			await rename(tmpPath, cachePath);
 		} catch {
 			// non-critical — cache miss on next startup
 		}

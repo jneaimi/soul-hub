@@ -216,6 +216,7 @@ export const ZONE_COLORS: Record<string, string> = {
 	projects: '#6366f1',   // indigo
 	patterns: '#8b5cf6',   // violet
 	research: '#06b6d4',   // cyan
+	sessions: '#64748b',   // slate
 	inbox: '#f59e0b',      // amber
 	archive: '#6b7280',    // gray
 };
@@ -233,6 +234,7 @@ export const TYPE_COLORS: Record<string, string> = {
 	index: '#9ca3af',      // gray-400
 	adr: '#f59e0b',        // amber (same as decision)
 	analytics: '#06b6d4',  // cyan (same as research)
+	'session-log': '#64748b', // slate
 };
 
 /** Default zone for notes without a recognized zone */

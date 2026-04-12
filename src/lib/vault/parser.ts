@@ -19,7 +19,7 @@ export function parseNote(filePath: string, raw: string): ParsedNote {
 	};
 }
 
-export function extractLinks(content: string): VaultLink[] {
+function extractLinks(content: string): VaultLink[] {
 	const links: VaultLink[] = [];
 	let match: RegExpExecArray | null;
 	const re = new RegExp(WIKILINK_RE.source, WIKILINK_RE.flags);
@@ -37,12 +37,12 @@ export function extractLinks(content: string): VaultLink[] {
 	return links;
 }
 
-export function extractFirstHeading(content: string): string | null {
+function extractFirstHeading(content: string): string | null {
 	const match = /^#\s+(.+)$/m.exec(content);
 	return match ? match[1].trim() : null;
 }
 
-export function pathToTitle(filePath: string): string {
+function pathToTitle(filePath: string): string {
 	const basename = filePath.split('/').pop() ?? filePath;
 	const withoutExt = basename.replace(/\.md$/i, '');
 	const withoutDate = withoutExt.replace(/^\d{4}-\d{2}-\d{2}-/, '');

@@ -1,5 +1,5 @@
 import { resolve, join, dirname } from 'node:path';
-import { readFile, writeFile, rename, stat, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, rename, stat, mkdir, unlink } from 'node:fs/promises';
 import matter from 'gray-matter';
 import type {
 	VaultNote, VaultConfig, SearchQuery, SearchResult,
@@ -24,6 +24,7 @@ export class VaultEngine {
 	private governance: GovernanceResolver;
 	private templates: TemplateLoader;
 	private config: VaultConfig;
+	private pruneInterval: ReturnType<typeof setInterval> | null = null;
 
 	constructor(config: VaultConfig) {
 		this.config = config;
@@ -52,11 +53,18 @@ export class VaultEngine {
 			}
 		});
 
+		// Prune ephemeral zones on startup, then every 24 hours
+		this.pruneZone('sessions', 7).catch(() => {});
+		this.pruneInterval = setInterval(() => {
+			this.pruneZone('sessions', 7).catch(() => {});
+		}, 24 * 60 * 60 * 1000);
+
 		console.log(`[vault] Initialized: ${this.indexer.all().length} notes indexed`);
 	}
 
 	shutdown(): void {
 		this.watcher.stop();
+		if (this.pruneInterval) clearInterval(this.pruneInterval);
 	}
 
 	// ── Read Operations ──
@@ -314,6 +322,36 @@ export class VaultEngine {
 		await this.indexer.scan();
 		this.searcher.rebuild(this.indexer.all());
 		return this.indexer.stats();
+	}
+
+	/**
+	 * Delete notes in a zone older than maxAgeDays.
+	 * Used for ephemeral zones like sessions/ that auto-cleanup.
+	 */
+	async pruneZone(zone: string, maxAgeDays: number): Promise<{ pruned: string[] }> {
+		const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+		const pruned: string[] = [];
+
+		const notes = this.indexer.filter({ zone });
+		for (const note of notes) {
+			if (note.mtime < cutoff) {
+				const absPath = resolve(this.config.rootDir, note.path);
+				try {
+					await unlink(absPath);
+					this.indexer.remove(note.path);
+					this.searcher.remove(note.path);
+					pruned.push(note.path);
+				} catch {
+					// file may already be gone
+				}
+			}
+		}
+
+		if (pruned.length > 0) {
+			console.log(`[vault] Pruned ${pruned.length} notes from ${zone}/ (older than ${maxAgeDays} days)`);
+		}
+
+		return { pruned };
 	}
 
 	async scaffoldProject(projectName: string): Promise<{ created: string[]; existed: string[] }> {

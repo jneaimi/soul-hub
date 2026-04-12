@@ -20,7 +20,10 @@ interface PlaybookRunSummaryContext {
  */
 export async function savePlaybookRunSummary(ctx: PlaybookRunSummaryContext): Promise<void> {
 	const engine = getVaultEngine();
-	if (!engine) return;
+	if (!engine) {
+		console.warn('[vault/playbook] Engine not initialized — skipping run summary save');
+		return;
+	}
 
 	try {
 		const zone = `projects/${ctx.playbookName}/outputs`;
@@ -141,10 +144,10 @@ export async function savePlaybookRunSummary(ctx: PlaybookRunSummaryContext): Pr
 			content,
 		});
 
-		if ('success' in result && result.success) {
-			console.log(`[vault/playbook] Run summary saved: ${(result as { success: true; path: string }).path}`);
-		} else if ('error' in result) {
-			console.log(`[vault/playbook] Run summary skipped: ${(result as { error: string }).error}`);
+		if (result.success) {
+			console.log(`[vault/playbook] Run summary saved: ${result.path}`);
+		} else {
+			console.log(`[vault/playbook] Run summary skipped: ${result.error}`);
 		}
 	} catch (err) {
 		console.error(`[vault/playbook] Run summary failed:`, err instanceof Error ? err.message : err);

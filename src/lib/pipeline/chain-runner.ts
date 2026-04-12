@@ -5,6 +5,7 @@ import { parsePipeline } from './parser.js';
 import { parseCondition, evaluateConditionOp } from './condition-evaluator.js';
 import type { ChainSpec, ChainRun, ChainNodeRun, ChainNodeStatus } from './chain-types.js';
 import type { StepStatus } from './types.js';
+import { getVaultEngine } from '../vault/index.js';
 
 /** Track active chain runs for kill support: chainRunId → set of inner pipeline runIds */
 const activeChainRuns = new Map<string, Set<string>>();
@@ -281,6 +282,68 @@ export async function runChain(
 	chainRun.finishedAt = new Date().toISOString();
 
 	activeChainRuns.delete(runId);
+
+	// Save chain run summary to vault (non-blocking)
+	try {
+		const engine = getVaultEngine();
+		if (engine) {
+			const date = chainRun.startedAt.slice(0, 10);
+			const shortId = runId.slice(0, 8);
+			const zone = `projects/${chainRun.chainName}/outputs`;
+			const filename = `${date}-chain-run-${shortId}.md`;
+
+			const durationSec = Math.floor(
+				(new Date(chainRun.finishedAt!).getTime() - new Date(chainRun.startedAt).getTime()) / 1000
+			);
+			const durationStr = durationSec < 60 ? `${durationSec}s` :
+				`${Math.floor(durationSec / 60)}m ${durationSec % 60}s`;
+
+			const nodeCounts = { done: 0, failed: 0, skipped: 0 };
+			for (const node of chainRun.nodes) {
+				if (node.status === 'done') nodeCounts.done++;
+				else if (node.status === 'failed') nodeCounts.failed++;
+				else nodeCounts.skipped++;
+			}
+
+			let content = `# Chain Run: ${chainRun.chainName}\n\n`;
+			content += `## Summary\n\n`;
+			content += `- **Status**: ${chainRun.status === 'done' ? 'Success' : 'Failed'}\n`;
+			content += `- **Run ID**: \`${runId}\`\n`;
+			content += `- **Duration**: ${durationStr}\n`;
+			content += `- **Nodes**: ${nodeCounts.done} done, ${nodeCounts.failed} failed, ${nodeCounts.skipped} skipped\n`;
+			content += `- **Date**: ${date}\n\n`;
+
+			content += `## Nodes\n\n`;
+			content += `| Node | Pipeline | Status | Duration |\n`;
+			content += `|------|----------|--------|----------|\n`;
+			for (const node of chainRun.nodes) {
+				const dur = node.durationMs ? `${(node.durationMs / 1000).toFixed(1)}s` : '-';
+				content += `| ${node.id} | ${node.pipelineName} | ${node.status} | ${dur} |\n`;
+			}
+
+			const tags = ['chain', 'run-summary', chainRun.chainName];
+			if (chainRun.status === 'failed') tags.push('failed');
+
+			engine.createNote({
+				zone,
+				filename,
+				meta: {
+					type: 'output',
+					created: date,
+					tags,
+					project: chainRun.chainName,
+					chain: chainRun.chainName,
+					run_id: runId,
+					status: chainRun.status,
+					duration_sec: durationSec,
+				},
+				content,
+			}).catch(err => console.error('[vault/chain] Chain summary save failed:', err));
+		}
+	} catch (err) {
+		console.error('[vault/chain] Chain summary error:', err);
+	}
+
 	return chainRun;
 }
 

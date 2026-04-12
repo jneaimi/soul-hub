@@ -3,6 +3,7 @@ import { existsSync, readdirSync } from 'node:fs';
 import { join, basename, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import type { PlaybookOutput, PlaybookOutputItem, PlaybookRun } from './types.js';
+import { getVaultEngine } from '../vault/index.js';
 
 export interface LandingResult {
 	type: string;
@@ -107,17 +108,42 @@ async function landKnowledge(
 		return { type: 'knowledge', target: 'n/a', status: 'skipped', error: `Output file not found: ${output.file}` };
 	}
 
-	const vaultDir = resolve(homedir(), 'vault');
-	const zone = output.vault_zone || 'inbox';
-	const targetDir = join(vaultDir, zone);
-	await mkdir(targetDir, { recursive: true });
-
 	const content = await readFile(sourcePath, 'utf-8');
-
 	const date = new Date().toISOString().slice(0, 10);
 	const shortRunId = run.runId.slice(0, 8);
-	const targetFilename = `${date}-${basename(output.file).replace(/\.[^.]+$/, '')}-${shortRunId}.md`;
-	const targetPath = join(targetDir, targetFilename);
+	const zone = output.vault_zone || 'inbox';
+	const filename = `${date}-${basename(output.file).replace(/\.[^.]+$/, '')}-${shortRunId}.md`;
+
+	const engine = getVaultEngine();
+	if (engine) {
+		const result = await engine.createNote({
+			zone,
+			filename,
+			meta: {
+				type: 'output',
+				created: date,
+				tags: ['playbook', run.playbookName],
+				project: run.playbookName,
+				run_id: run.runId,
+			},
+			content,
+		});
+
+		if ('success' in result && result.success) {
+			console.log(`[vault/knowledge] Saved: ${result.path}`);
+			return { type: 'knowledge', target: result.path, status: 'landed' };
+		} else if ('error' in result) {
+			console.log(`[vault/knowledge] Skipped: ${result.error}`);
+			return { type: 'knowledge', target: zone, status: 'failed', error: result.error };
+		}
+	}
+
+	// Fallback: direct filesystem write if vault engine unavailable
+	console.warn('[vault/knowledge] Engine not initialized — falling back to direct write');
+	const vaultDir = resolve(homedir(), 'vault');
+	const targetDir = join(vaultDir, zone);
+	await mkdir(targetDir, { recursive: true });
+	const targetPath = join(targetDir, filename);
 
 	let finalContent = content;
 	if (!content.startsWith('---')) {
@@ -135,7 +161,6 @@ async function landKnowledge(
 	}
 
 	await writeFile(targetPath, finalContent, 'utf-8');
-
 	return { type: 'knowledge', target: targetPath, status: 'landed' };
 }
 

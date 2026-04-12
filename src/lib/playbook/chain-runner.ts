@@ -3,6 +3,7 @@ import { parsePlaybookChain, getChainExecutionLevels } from './chain-parser.js';
 import { runPlaybook } from './engine.js';
 import type { PlaybookChainSpec, PlaybookChainRun, PlaybookChainNodeRun, ChainNodeStatus } from './chain-types.js';
 import type { PlaybookEventCallback, PlaybookOutputCallback } from './engine.js';
+import { getVaultEngine } from '../vault/index.js';
 
 const activeChainRuns = new Map<string, PlaybookChainRun>();
 const chainAbortFlags = new Map<string, boolean>();
@@ -153,6 +154,67 @@ export async function runPlaybookChain(
 	run.completedAt = new Date().toISOString();
 	chainAbortFlags.delete(runId);
 	setTimeout(() => activeChainRuns.delete(runId), 10 * 60 * 1000);
+
+	// Save chain run summary to vault (non-blocking)
+	try {
+		const engine = getVaultEngine();
+		if (engine) {
+			const date = run.startedAt.slice(0, 10);
+			const shortId = runId.slice(0, 8);
+			const zone = `projects/${run.chainName}/outputs`;
+			const filename = `${date}-chain-run-${shortId}.md`;
+
+			const durationSec = Math.floor(
+				(new Date(run.completedAt).getTime() - new Date(run.startedAt).getTime()) / 1000
+			);
+			const durationStr = durationSec < 60 ? `${durationSec}s` :
+				`${Math.floor(durationSec / 60)}m ${durationSec % 60}s`;
+
+			const nodeCounts = { completed: 0, failed: 0, skipped: 0 };
+			for (const node of run.nodes) {
+				if (node.status === 'completed') nodeCounts.completed++;
+				else if (node.status === 'failed') nodeCounts.failed++;
+				else nodeCounts.skipped++;
+			}
+
+			let content = `# Chain Run: ${run.chainName}\n\n`;
+			content += `## Summary\n\n`;
+			content += `- **Status**: ${run.status === 'completed' ? 'Success' : 'Failed'}\n`;
+			content += `- **Run ID**: \`${runId}\`\n`;
+			content += `- **Duration**: ${durationStr}\n`;
+			content += `- **Nodes**: ${nodeCounts.completed} completed, ${nodeCounts.failed} failed, ${nodeCounts.skipped} skipped\n`;
+			content += `- **Date**: ${date}\n\n`;
+
+			content += `## Nodes\n\n`;
+			content += `| Node | Playbook | Status | Duration |\n`;
+			content += `|------|----------|--------|----------|\n`;
+			for (const node of run.nodes) {
+				const dur = node.durationMs ? `${(node.durationMs / 1000).toFixed(1)}s` : '-';
+				content += `| ${node.id} | ${node.playbookName} | ${node.status} | ${dur} |\n`;
+			}
+
+			const tags = ['chain', 'run-summary', run.chainName];
+			if (run.status === 'failed') tags.push('failed');
+
+			engine.createNote({
+				zone,
+				filename,
+				meta: {
+					type: 'output',
+					created: date,
+					tags,
+					project: run.chainName,
+					chain: run.chainName,
+					run_id: runId,
+					status: run.status,
+					duration_sec: durationSec,
+				},
+				content,
+			}).catch(err => console.error('[vault/chain] Playbook chain summary save failed:', err));
+		}
+	} catch (err) {
+		console.error('[vault/chain] Playbook chain summary error:', err);
+	}
 
 	return run;
 }

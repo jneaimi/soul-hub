@@ -51,6 +51,9 @@ export const POST: RequestHandler = async ({ request }) => {
 	if (!zone || typeof zone !== 'string') {
 		return json({ success: false, error: 'zone is required and must be a string' }, { status: 400 });
 	}
+	if (/\.\./.test(zone) || zone.startsWith('/') || zone.includes('\0') || !/^[\w\-./]+$/.test(zone)) {
+		return json({ success: false, error: 'Invalid zone path' }, { status: 400 });
+	}
 	if (!filename || typeof filename !== 'string') {
 		return json({ success: false, error: 'filename is required and must be a string' }, { status: 400 });
 	}

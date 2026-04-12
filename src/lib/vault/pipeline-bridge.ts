@@ -32,7 +32,10 @@ interface PipelineOutputContext {
  */
 export async function savePipelineOutput(ctx: PipelineOutputContext): Promise<void> {
 	const engine = getVaultEngine();
-	if (!engine) return;
+	if (!engine) {
+		console.warn('[vault/pipeline] Engine not initialized — skipping output save');
+		return;
+	}
 
 	try {
 		const rawContent = await readFile(ctx.outputPath, 'utf-8');
@@ -74,10 +77,10 @@ export async function savePipelineOutput(ctx: PipelineOutputContext): Promise<vo
 			content,
 		});
 
-		if ('success' in result && result.success) {
-			console.log(`[vault/pipeline] Saved output: ${(result as { success: true; path: string }).path}`);
-		} else if ('error' in result) {
-			console.log(`[vault/pipeline] Skipped: ${(result as { error: string }).error}`);
+		if (result.success) {
+			console.log(`[vault/pipeline] Saved output: ${result.path}`);
+		} else {
+			console.log(`[vault/pipeline] Skipped: ${result.error}`);
 		}
 	} catch (err) {
 		console.error(`[vault/pipeline] Failed to save output:`, err instanceof Error ? err.message : err);
@@ -91,7 +94,10 @@ export async function savePipelineOutput(ctx: PipelineOutputContext): Promise<vo
  */
 export async function savePipelineRunSummary(ctx: PipelineRunContext): Promise<void> {
 	const engine = getVaultEngine();
-	if (!engine) return;
+	if (!engine) {
+		console.warn('[vault/pipeline] Engine not initialized — skipping run summary save');
+		return;
+	}
 
 	try {
 		const zone = `projects/${ctx.pipelineName}/outputs`;
@@ -168,10 +174,10 @@ export async function savePipelineRunSummary(ctx: PipelineRunContext): Promise<v
 			content,
 		});
 
-		if ('success' in result && result.success) {
-			console.log(`[vault/pipeline] Run summary saved: ${(result as { success: true; path: string }).path}`);
-		} else if ('error' in result) {
-			console.log(`[vault/pipeline] Run summary skipped: ${(result as { error: string }).error}`);
+		if (result.success) {
+			console.log(`[vault/pipeline] Run summary saved: ${result.path}`);
+		} else {
+			console.log(`[vault/pipeline] Run summary skipped: ${result.error}`);
 		}
 	} catch (err) {
 		console.error(`[vault/pipeline] Run summary failed:`, err instanceof Error ? err.message : err);

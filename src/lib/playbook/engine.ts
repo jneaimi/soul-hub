@@ -12,6 +12,7 @@ import type { TaskAssignment, TaskOutputCallback } from './providers/types.js';
 import { PlaybookContext } from './context.js';
 import { runHooks, checkPrerequisites, extractTimeout, extractScanSummary } from './hooks.js';
 import type { HookResult } from './hooks.js';
+import { savePlaybookRunSummary } from '../vault/playbook-bridge.js';
 
 // ─── Helpers ───
 
@@ -887,22 +888,17 @@ export async function runPlaybook(
 	emit(run.status === 'completed' ? 'run_complete' : 'run_failed');
 
 	// Save run summary to vault (non-blocking)
-	try {
-		const { savePlaybookRunSummary } = await import('../vault/playbook-bridge.js');
-		savePlaybookRunSummary({
-			playbookName: spec.name,
-			runId,
-			status: run.status === 'completed' ? 'completed' : 'failed',
-			startedAt: run.startedAt,
-			completedAt: run.completedAt || new Date().toISOString(),
-			phases: run.phases,
-			resolvedInputs: run.resolvedInputs,
-			outputDir: run.outputDir,
-			landingResults,
-		}).catch(err => console.error('[playbook] Vault save error:', err));
-	} catch (err) {
-		console.error('[playbook] Vault bridge import error:', err);
-	}
+	savePlaybookRunSummary({
+		playbookName: spec.name,
+		runId,
+		status: run.status === 'completed' ? 'completed' : 'failed',
+		startedAt: run.startedAt,
+		completedAt: run.completedAt || new Date().toISOString(),
+		phases: run.phases,
+		resolvedInputs: run.resolvedInputs,
+		outputDir: run.outputDir,
+		landingResults,
+	}).catch(err => console.error('[playbook] Vault save error:', err));
 
 	// Clean up abort flag
 	runAbortFlags.delete(runId);

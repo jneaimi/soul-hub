@@ -13,10 +13,12 @@ const DATA_DIR = resolve(dirname(config.resolved.catalogDir), '.data');
 // Initialize scheduler on server startup
 initScheduler(PIPELINES_DIR, DATA_DIR);
 
-// Initialize vault engine (fire-and-forget — endpoints return 503 until ready)
-initVault(config.resolved.vaultDir).catch(err => {
+// Initialize vault engine (block server until vault is ready)
+try {
+	await initVault(config.resolved.vaultDir);
+} catch (err) {
 	console.error('[vault] Failed to initialize:', err);
-});
+}
 
 // Graceful shutdown handler for PM2 reload/restart
 function gracefulShutdown(signal: string) {

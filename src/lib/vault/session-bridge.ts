@@ -7,7 +7,10 @@ import { readLogTail, type SessionMeta } from '../pty/store.js';
  */
 export async function captureSessionToVault(sessionId: string, meta: SessionMeta): Promise<void> {
   const engine = getVaultEngine();
-  if (!engine) return;
+  if (!engine) {
+    console.warn('[vault/session] Engine not initialized — skipping session capture');
+    return;
+  }
 
   // Skip very short sessions (< 5 seconds or < 100 bytes logged)
   if (meta.logSize < 100) return;
@@ -21,13 +24,13 @@ export async function captureSessionToVault(sessionId: string, meta: SessionMeta
     // Strip ANSI escape codes for clean markdown
     const log = rawLog.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
 
-    // Detect project from cwd
+    // Detect project from cwd (for tagging, not zone routing)
     const cwdParts = meta.cwd.split('/');
     const devIdx = cwdParts.indexOf('dev');
     const projectName = devIdx >= 0 && cwdParts[devIdx + 1] ? cwdParts[devIdx + 1] : null;
 
-    // Determine zone
-    const zone = projectName ? `projects/${projectName}/outputs` : 'inbox';
+    // All sessions go to the dedicated sessions zone (auto-pruned after 7 days)
+    const zone = 'sessions';
 
     // Generate filename
     const date = meta.startedAt.slice(0, 10);
@@ -40,8 +43,11 @@ export async function captureSessionToVault(sessionId: string, meta: SessionMeta
       durationSec < 3600 ? `${Math.floor(durationSec / 60)}m ${durationSec % 60}s` :
       `${Math.floor(durationSec / 3600)}h ${Math.floor((durationSec % 3600) / 60)}m`;
 
-    // Build content
+    // Build content — link back to project so graph shows the connection
     let content = `# Session ${shortId}\n\n`;
+    if (projectName) {
+      content += `Part of [[projects/${projectName}/index|${projectName}]]\n\n`;
+    }
     content += `## Context\n\n`;
     content += `- **Working Directory**: \`${meta.cwd}\`\n`;
     content += `- **Started**: ${meta.startedAt}\n`;
@@ -63,7 +69,7 @@ export async function captureSessionToVault(sessionId: string, meta: SessionMeta
       zone,
       filename,
       meta: {
-        type: 'output',
+        type: 'session-log',
         created: date,
         tags,
         project: projectName || undefined,

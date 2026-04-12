@@ -14,7 +14,7 @@ export class VaultWatcher {
 	/** Temporarily suppress watcher events for a path (used during engine writes) */
 	suppress(relPath: string): void {
 		this.suppressedPaths.add(relPath);
-		setTimeout(() => this.suppressedPaths.delete(relPath), 2000);
+		setTimeout(() => this.suppressedPaths.delete(relPath), 5000);
 	}
 
 	start(vaultRoot: string, onEvent: (event: WatcherEvent) => void): void {
