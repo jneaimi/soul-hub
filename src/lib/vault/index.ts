@@ -423,6 +423,8 @@ export function getVaultEngine(): VaultEngine | null {
 
 export async function initVault(vaultDir: string): Promise<VaultEngine> {
 	if (engine) return engine;
+	// Ensure vault root exists — fresh installs won't have it
+	await mkdir(vaultDir, { recursive: true });
 	const config: VaultConfig = {
 		rootDir: vaultDir,
 		templateDir: resolve(vaultDir, '.vault', 'templates'),

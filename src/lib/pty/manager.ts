@@ -30,6 +30,8 @@ export interface PtySessionOptions {
 	resumeSessionId?: string;
 	/** Spawn a plain shell (zsh/bash) instead of Claude Code */
 	shell?: boolean;
+	/** Extra CLI args to pass to Claude Code */
+	extraArgs?: string[];
 }
 
 export interface PtySession {
@@ -84,7 +86,13 @@ export function spawnSession(opts: PtySessionOptions): PtySession {
 		spawnBinary = process.env.SHELL || (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash');
 		args = ['--login'];
 	} else {
-		// Claude Code
+		// Claude Code — verify binary exists before attempting spawn
+		if (!existsSync(claudeBinary)) {
+			throw new Error(
+				`Claude Code CLI not found at: ${claudeBinary}. ` +
+				`Install it (npm i -g @anthropic-ai/claude-code) or set paths.claudeBinary in settings.json.`
+			);
+		}
 		spawnBinary = claudeBinary;
 		args = ['--dangerously-skip-permissions'];
 		if (opts.continueSession) {
@@ -94,6 +102,9 @@ export function spawnSession(opts: PtySessionOptions): PtySession {
 		}
 		if (opts.model) {
 			args.push('--model', opts.model);
+		}
+		if (opts.extraArgs) {
+			args.push(...opts.extraArgs);
 		}
 	}
 

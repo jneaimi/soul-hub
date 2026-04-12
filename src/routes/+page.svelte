@@ -21,6 +21,17 @@
 	let gitBranches = $state<Record<string, GitBranchInfo>>({});
 	let dashboard = $state<DashboardData | null>(null);
 
+	// Playbooks
+	interface PlaybookSummary {
+		name: string;
+		description: string;
+		roles: { id: string; provider: string }[];
+		phases: { id: string; type: string }[];
+	}
+	let playbookCount = $state(0);
+	let playbookItems = $state<PlaybookSummary[]>([]);
+	let playbookProviders = $state<Record<string, boolean>>({});
+
 	// Vault
 	let vaultNoteCount = $state(0);
 	let vaultRecent = $state<VaultRecent[]>([]);
@@ -81,6 +92,18 @@
 		} catch { /* silent */ }
 	}
 
+	async function loadPlaybooks() {
+		try {
+			const res = await fetch('/api/playbooks');
+			if (res.ok) {
+				const data = await res.json();
+				playbookItems = data.playbooks || [];
+				playbookCount = playbookItems.length;
+				playbookProviders = data.providers || {};
+			}
+		} catch { /* silent */ }
+	}
+
 	async function loadVault() {
 		try {
 			const [statsRes, recentRes] = await Promise.all([
@@ -101,6 +124,7 @@
 	onMount(() => {
 		loadProjects();
 		loadDashboard();
+		loadPlaybooks();
 		loadVault();
 	});
 
@@ -372,9 +396,10 @@
 							<p class="text-hub-dim text-xs py-6 text-center">No projects match "{filter}"</p>
 						{/if}
 					</div>
+				{/if}
 
 					<!-- Pipelines + Vault — side by side on desktop, stacked on mobile -->
-					<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+					<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
 						<!-- Pipelines -->
 						<div class="bg-hub-card rounded-xl p-4 border border-hub-border">
 							<div class="flex items-center justify-between mb-3">
@@ -400,6 +425,46 @@
 								</div>
 							{:else}
 								<p class="text-xs text-hub-dim py-3 text-center">No pipelines yet</p>
+							{/if}
+						</div>
+
+						<!-- Playbooks -->
+						<div class="bg-hub-card rounded-xl p-4 border border-hub-border">
+							<div class="flex items-center justify-between mb-3">
+								<div class="flex items-center gap-2">
+									<h3 class="text-sm font-semibold text-hub-text">Playbooks</h3>
+									{#if playbookCount > 0}
+										<span class="text-[11px] text-hub-dim bg-hub-bg px-1.5 py-0.5 rounded">{playbookCount}</span>
+									{/if}
+								</div>
+								<a href="/playbooks" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">View all</a>
+							</div>
+							{#if playbookItems.length === 0}
+								<p class="text-xs text-hub-dim py-3 text-center">No playbooks yet</p>
+							{:else}
+								<div class="space-y-1.5">
+									{#each playbookItems.slice(0, 3) as pb}
+										<a
+											href="/playbooks/{encodeURIComponent(pb.name)}"
+											class="block py-1.5 px-2 rounded-lg hover:bg-hub-surface transition-colors cursor-pointer group"
+										>
+											<div class="text-xs text-hub-muted group-hover:text-hub-text transition-colors">{pb.name}</div>
+											<div class="text-[11px] text-hub-dim mt-0.5">
+												{pb.roles.length} role{pb.roles.length === 1 ? '' : 's'}, {pb.phases.length} phase{pb.phases.length === 1 ? '' : 's'}
+											</div>
+										</a>
+									{/each}
+								</div>
+							{/if}
+							{#if Object.keys(playbookProviders).length > 0}
+								<div class="mt-3 pt-2 border-t border-hub-border/50 flex gap-3 text-[10px] text-hub-dim">
+									{#each Object.entries(playbookProviders) as [name, available]}
+										<span class="flex items-center gap-1">
+											<span class="w-1.5 h-1.5 rounded-full {available ? 'bg-hub-cta' : 'bg-hub-border'}"></span>
+											{name}
+										</span>
+									{/each}
+								</div>
 							{/if}
 						</div>
 
@@ -437,7 +502,7 @@
 					</div>
 
 					<!-- Suggestions hint (subtle) -->
-					{#if suggestions.length > 0}
+					{#if suggestions.length > 0 && projects.length > 0}
 						<div class="mt-6 flex items-center justify-center">
 							<button
 								onclick={() => { showAddModal = true; }}
@@ -447,7 +512,6 @@
 							</button>
 						</div>
 					{/if}
-				{/if}
 			{/if}
 		</div>
 	</div>
