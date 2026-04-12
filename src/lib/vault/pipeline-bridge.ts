@@ -59,7 +59,7 @@ export async function savePipelineOutput(ctx: PipelineOutputContext): Promise<vo
 		}
 
 		if (!isMarkdown) {
-			content = `# Pipeline Output: ${ctx.stepId}\n\n## Pipeline Context\n\n- **Pipeline**: ${ctx.pipelineName}\n- **Run ID**: ${ctx.runId}\n- **Step**: ${ctx.stepId} (${ctx.stepType})\n- **Date**: ${today}\n\n${content}`;
+			content = `# Pipeline Output: ${ctx.stepId}\n\nPart of [[projects/${ctx.pipelineName}/index|${ctx.pipelineName}]]\n\n## Pipeline Context\n\n- **Pipeline**: ${ctx.pipelineName}\n- **Run ID**: ${ctx.runId}\n- **Step**: ${ctx.stepId} (${ctx.stepType})\n- **Date**: ${today}\n\n${content}`;
 		}
 
 		const result = await engine.createNote({
@@ -119,7 +119,7 @@ export async function savePipelineRunSummary(ctx: PipelineRunContext): Promise<v
 			else stepCounts.other++;
 		}
 
-		let content = `# Pipeline Run: ${ctx.pipelineName}\n\n`;
+		let content = `# Pipeline Run: ${ctx.pipelineName}\n\nPart of [[projects/${ctx.pipelineName}/index|${ctx.pipelineName}]]\n\n`;
 		content += `## Summary\n\n`;
 		content += `- **Status**: ${ctx.status === 'done' ? 'Success' : 'Failed'}\n`;
 		content += `- **Run ID**: \`${ctx.runId}\`\n`;

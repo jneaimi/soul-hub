@@ -177,7 +177,7 @@ export async function runPlaybookChain(
 				else nodeCounts.skipped++;
 			}
 
-			let content = `# Chain Run: ${run.chainName}\n\n`;
+			let content = `# Chain Run: ${run.chainName}\n\nPart of [[projects/${run.chainName}/index|${run.chainName}]]\n\n`;
 			content += `## Summary\n\n`;
 			content += `- **Status**: ${run.status === 'completed' ? 'Success' : 'Failed'}\n`;
 			content += `- **Run ID**: \`${runId}\`\n`;

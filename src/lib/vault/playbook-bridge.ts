@@ -46,7 +46,7 @@ export async function savePlaybookRunSummary(ctx: PlaybookRunSummaryContext): Pr
 			else phaseCounts.other++;
 		}
 
-		let content = `# Playbook Run: ${ctx.playbookName}\n\n`;
+		let content = `# Playbook Run: ${ctx.playbookName}\n\nPart of [[projects/${ctx.playbookName}/index|${ctx.playbookName}]]\n\n`;
 		content += `## Summary\n\n`;
 		content += `- **Status**: ${ctx.status === 'completed' ? 'Completed' : 'Failed'}\n`;
 		content += `- **Run ID**: \`${ctx.runId}\`\n`;

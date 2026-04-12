@@ -305,7 +305,7 @@ export async function runChain(
 				else nodeCounts.skipped++;
 			}
 
-			let content = `# Chain Run: ${chainRun.chainName}\n\n`;
+			let content = `# Chain Run: ${chainRun.chainName}\n\nPart of [[projects/${chainRun.chainName}/index|${chainRun.chainName}]]\n\n`;
 			content += `## Summary\n\n`;
 			content += `- **Status**: ${chainRun.status === 'done' ? 'Success' : 'Failed'}\n`;
 			content += `- **Run ID**: \`${runId}\`\n`;
