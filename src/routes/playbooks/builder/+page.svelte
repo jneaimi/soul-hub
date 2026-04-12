@@ -111,12 +111,39 @@
 
 		const parts: string[] = [];
 
-		parts.push(`IMPORTANT: Use the Evaluate \u2192 Analyze \u2192 Apply framework. Ask ONE question at a time:
-1. What problem does this solve?
-2. What roles/agents are needed?
-3. What phases (parallel, sequential, handoff, gate)?
-4. What could go wrong?
-Then propose a plan. Only create files after I approve.`);
+		parts.push(`You are building a Soul Hub playbook. Read CLAUDE.md and CONTRACTS.md for governance rules.
+
+WORKFLOW — follow these steps in order:
+
+Step 1: DISCOVER (ask ONE question at a time)
+- What business process is this automating?
+- How would a professional team do this? (who does what, in what order)
+- What inputs does the user provide? What outputs do they expect?
+- What could go wrong? (timeout, bad input, 0 results)
+
+Step 2: DESIGN (propose plan — get approval before creating files)
+- Map the professional workflow to phase types:
+  Independent experts → parallel | Sequential handoff → sequential
+  Iterative refinement → handoff | Need human input → human + revision + gate
+  Need human approval → gate | Fast pre-work → pre_run hooks
+- Identify roles, inputs, prerequisites
+- Sketch the phase flow
+
+Step 3: BUILD (only after user approves the plan)
+- Copy the closest template from templates/ — never write from scratch
+- Create playbook.yaml, roles/*.md, hooks/*.py (if needed)
+- Guard hooks will BLOCK invalid files automatically:
+  • playbook.yaml must have: type, roles, phases, output
+  • Model must be aliases: sonnet, opus, haiku (NOT claude-sonnet-4)
+  • Handoff phases must have between: and loop_until:
+  • Variable refs ($inputs.X) must match declared inputs
+
+Step 4: VALIDATE (mandatory before finishing)
+- Run: python3 -c "import yaml; yaml.safe_load(open('playbooks/<name>/playbook.yaml'))"
+- Verify every role's agent .md file exists
+- Verify variable references ($inputs.X, $phases.X.Y) resolve
+- Check prerequisites are declared for any external tools
+- Confirm the playbook appears in the library: curl -s http://localhost:5173/api/playbooks | python3 -m json.tool | grep <name>`);
 
 		parts.push(`Build type: ${buildTypes.find((bt) => bt.value === buildType)?.label || buildType}`);
 
