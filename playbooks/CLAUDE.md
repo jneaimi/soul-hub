@@ -13,25 +13,95 @@ Always start from `_templates/`. Copy the closest template and modify — never 
 
 | Building | Copy from |
 |----------|-----------|
-| Parallel review | `_templates/code-review/` |
-| Research + design | `_templates/solution-design/` |
-| Iterative refinement | `_templates/architecture-review/` |
-| Content pipeline | `_templates/content-creation/` |
-| Bug debugging | `_templates/bug-investigation/` |
+| Parallel review with hooks | `_templates/code-review/` |
+| Content pipeline with human feedback | `_templates/content-creation/` |
+| Research + design + gate | `_templates/solution-design/` |
+| Iterative refinement (handoff) | `_templates/architecture-review/` |
+| Multi-angle investigation | `_templates/bug-investigation/` |
 
-### 2. Model Aliases Only
+### 2. Think Like a Professional
+Before designing phases, ask: **how would a real professional team do this job?**
+
+| Business process | Playbook pattern |
+|-----------------|------------------|
+| Independent experts reviewing the same thing | `parallel` phase (code-review) |
+| One person hands off to the next | `sequential` phase |
+| Two people iterate until they agree | `handoff` phase (architecture-review) |
+| Boss needs to approve before continuing | `gate` phase |
+| Need human judgment or creative direction | `human` phase → revision → gate |
+| Fast pre-work before the experts arrive | `pre_run hooks` |
+
+### 3. Pre-Run Hooks: Tools Before Judgment
+Real professionals use tools first, expert judgment second:
+- **Code review**: Static analyzers scan → reviewers verify findings
+- **Content creation**: Signal search + brand context loaded → writer uses them
+- **Security audit**: Automated scanner → auditor reviews results
+
+Hooks run in milliseconds. Agents take minutes. Always front-load what can be automated.
+
+### 4. Human Feedback Loop
+When a human needs to provide feedback (not just approve/reject):
+
+```yaml
+# Phase N: human reviews and types feedback
+- id: review
+  type: human
+  depends_on: [prior-phase]
+  prompt: "Review the draft. Type feedback or 'approved'."
+  assignments:
+    - role: presenter-role
+      task: "Prepare the work for human review"
+      output: review-package.md
+
+# Phase N+1: agent incorporates human feedback
+- id: revise
+  type: sequential
+  depends_on: [review]
+  assignments:
+    - role: worker-role
+      task: "Apply the human's feedback"
+      input: $phases.review.human-response
+      output: revised.md
+
+# Phase N+2: final yes/no
+- id: approve
+  type: gate
+  depends_on: [revise]
+```
+
+This gives users one round of feedback + final approval. Gate reject = run fails (user can troubleshoot or run again).
+
+### 5. Brand Voice & Anti-Slop (Content Playbooks)
+Any content playbook should:
+- Accept `brand_voice` as an optional text input (empty = sensible default)
+- Load anti-slop rules via hook (see `_templates/content-creation/hooks/load-brand-context.py`)
+- Inject brand context into writer AND editor roles
+- Editor must check anti-slop compliance before approving
+
+Anti-slop list is in the hook — never hardcode it in role files.
+
+### 6. Prerequisites
+Declare all external dependencies. Types:
+
+| Type | Check | Required? |
+|------|-------|-----------|
+| CLI tool | `which claude` | `true` — blocks run |
+| Python | `which python3` | `true` — blocks run if hooks need it |
+| API key | `test -n "$API_KEY"` | `false` — enhances but doesn't block |
+| npm package | `which eslint` | depends on playbook |
+
+API keys as `required: false` show as warnings on the detail page with install instructions.
+
+### 7. Model Aliases Only
 Use `sonnet`, `opus`, `haiku` — never `claude-sonnet-4` or full model IDs.
 
-### 3. Pre-Analysis Hooks for Any Code Task
-If the playbook analyzes code, add pre_run hooks with Python scripts that produce structured reports. Agents review reports — they don't scan raw files.
+### 8. Constrain Agents on 0 Findings
+Every role .md must include guidance for when there's nothing to find. Without this, agents do 20+ minute unbounded searches.
 
-### 4. Constrain Agents on 0 Findings
-Every role .md must include guidance for when the scanner finds nothing. Without this, agents do 20+ minute unbounded manual reviews.
-
-### 5. Output Path First in Prompts
+### 9. Output Path First in Prompts
 The engine puts the output file path at the start of every agent prompt. Don't repeat it in the task field.
 
-### 6. Folder Structure
+### 10. Folder Structure
 ```
 playbooks/<name>/
   playbook.yaml       # spec
@@ -41,17 +111,43 @@ playbooks/<name>/
   output/              # run outputs (gitignored)
 ```
 
-### 7. Variable References
+### 11. Variable References
 - `$inputs.X` — user input
 - `$phases.X.Y` — output from phase X, file Y
 - `$hooks.X.field` — hook JSON output field
 
-### 8. MCP Servers
+### 12. MCP Servers
 Headless agents use `--strict-mcp-config` — they can't access user MCP servers or do interactive auth. Only declare MCP servers that work without auth.
 
-### 9. Prerequisites
-Declare all external tools. The UI blocks runs when required tools are missing.
-
-### 10. Test Both Paths
+### 13. Test Both Paths
 - Happy path: all agents complete, outputs land correctly
-- Sad path: agent timeout, 0 findings, missing prerequisites
+- Sad path: agent timeout, 0 findings, missing prerequisites, human rejects at gate
+
+## Pattern Reference
+
+### Code Review (parallel + hooks)
+```
+hooks: scan-target, analyze-logic, analyze-security, analyze-perf
+research → 3 parallel reviewers → consolidation
+Each reviewer reads hook report + spot-checks
+```
+
+### Content Creation (human feedback loop)
+```
+hooks: gather-signals (social search), load-brand-context (voice + anti-slop)
+research → draft → edit (handoff writer↔editor) → human review → revision → final gate
+Brand voice as input, format-specific guidelines per content type
+```
+
+### Architecture Review (iterative handoff)
+```
+architect drafts → reviewer critiques → architect revises → loop until APPROVED
+Max 3 iterations, gate for final human approval
+```
+
+### Bug Investigation (parallel + diagnosis)
+```
+3 parallel investigators (reproducer, tracer, fixer perspective)
+→ sequential diagnosis combining all findings
+→ gate for human to approve the fix plan
+```
