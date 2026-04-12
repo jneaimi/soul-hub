@@ -187,29 +187,21 @@ export function spawnSession(opts: PtySessionOptions): PtySession {
 				seenStatusBar = true;
 			}
 
-			if (seenStatusBar) {
+			if (seenStatusBar || (elapsed > 8.0 && promptCharCount >= 1)) {
 				setTimeout(() => {
 					if (!session.promptSent) {
+						session.promptSent = true;
+						// Write prompt, then Enter after a brief pause
+						// Claude Code shows "Pasted text" preview — needs Enter to confirm
 						pty.write(opts.prompt!);
 						setTimeout(() => {
 							pty.write('\r');
-							session.promptSent = true;
+							// Send a second Enter after 500ms in case paste preview needs confirmation
+							setTimeout(() => pty.write('\r'), 500);
 							emitter.emit('prompt_sent');
-						}, 100);
+						}, 200);
 					}
-				}, 300);
-			} else if (elapsed > 8.0 && promptCharCount >= 1) {
-				// Fallback: after 8s send prompt anyway
-				setTimeout(() => {
-					if (!session.promptSent) {
-						pty.write(opts.prompt!);
-						setTimeout(() => {
-							pty.write('\r');
-							session.promptSent = true;
-							emitter.emit('prompt_sent');
-						}, 100);
-					}
-				}, 300);
+				}, 500);
 			}
 		}
 	});

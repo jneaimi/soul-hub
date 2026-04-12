@@ -1,0 +1,87 @@
+name: Content Creation
+type: playbook
+description: Research-driven content creation with editorial review
+
+inputs:
+  - id: topic
+    type: text
+    description: The topic or subject to write about
+    required: true
+  - id: format
+    type: select
+    description: Content format
+    required: true
+    options: [blog-post, newsletter, linkedin-post, technical-article]
+    default: blog-post
+  - id: audience
+    type: text
+    description: Target audience
+    required: false
+    default: "developers and tech professionals"
+
+roles:
+  - id: researcher
+    provider: claude
+    model: sonnet
+    agent: roles/researcher.md
+  - id: writer
+    provider: claude
+    model: sonnet
+    agent: roles/writer.md
+  - id: editor
+    provider: claude
+    model: sonnet
+    agent: roles/editor.md
+
+phases:
+  - id: research
+    type: sequential
+    assignments:
+      - role: researcher
+        task: "Research the following topic thoroughly. Find key insights, data points, and examples: $inputs.topic. Target audience: $inputs.audience"
+        output: research.md
+
+  - id: draft
+    type: sequential
+    depends_on: [research]
+    assignments:
+      - role: writer
+        task: "Write a $inputs.format about: $inputs.topic. Use the research findings as your foundation. Target audience: $inputs.audience"
+        input: $phases.research.research
+        output: draft.md
+
+  - id: edit
+    type: handoff
+    depends_on: [draft]
+    between: [writer, editor]
+    loop_until: "review contains 'APPROVED'"
+    max_iterations: 2
+    assignments:
+      - role: writer
+        task: "Revise the draft based on editorial feedback"
+        input: $phases.draft.draft
+        output: revised.md
+      - role: editor
+        task: "Review the content for clarity, accuracy, tone, and engagement. If the content meets quality standards, include 'APPROVED' in your response. Otherwise provide specific feedback."
+        output: review.md
+
+  - id: approve
+    type: gate
+    depends_on: [edit]
+    prompt: "Review the final content. Approve for publication or reject with feedback."
+    assignments:
+      - role: editor
+        task: "Provide a final summary of the content for approval"
+        output: summary.md
+
+output:
+  type: composite
+  vault_capture: true
+  items:
+    - type: knowledge
+      file: draft.md
+      vault_zone: content
+    - type: artifact
+      file: summary.md
+  on_complete:
+    notify: true
