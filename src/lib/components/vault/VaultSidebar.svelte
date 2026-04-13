@@ -1,47 +1,19 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { getVaultStore } from '$lib/vault/store.svelte.js';
 
-  interface VaultStats {
-    totalNotes: number;
-    notesByType: Record<string, number>;
-    notesByZone: Record<string, number>;
-    totalLinks: number;
-    unresolvedLinks: number;
-    orphanNotes: number;
-    lastIndexed: string;
-  }
-
-  interface VaultZone {
-    path: string;
-    allowedTypes: string[];
-    requireTemplate: boolean;
-    requiredFields: string[];
-    rawGovernance: string;
-  }
-
-  interface RecentNote {
-    path: string;
-    title: string;
-    meta: { type?: string; [key: string]: unknown };
-    mtime: number;
-  }
+  const store = getVaultStore();
 
   interface Props {
-    stats: VaultStats | null;
-    zones: VaultZone[];
     selectedPath: string | null;
-    vaultDir?: string;
-    pipelinesDir?: string;
     onSelect: (path: string) => void;
     onFilterChange: (filter: { zone?: string; type?: string }) => void;
   }
 
-  let { stats, zones, selectedPath, vaultDir = '', pipelinesDir = '', onSelect, onFilterChange }: Props = $props();
+  let { selectedPath, onSelect, onFilterChange }: Props = $props();
 
   let activeZone = $state<string | null>(null);
   let activeType = $state<string | null>(null);
-  let recentNotes = $state<RecentNote[]>([]);
-  let loadingRecent = $state(true);
   let sidebarTab = $state<'overview' | 'files'>('overview');
 
   // File browser state
@@ -52,8 +24,8 @@
   let loadingDir = $state(false);
 
   function getBasePath(): string {
-    if (fileRoot === 'outputs' && pipelinesDir) return pipelinesDir;
-    return vaultDir;
+    if (fileRoot === 'outputs' && store.pipelinesDir) return store.pipelinesDir;
+    return store.vaultDir;
   }
 
   async function browseDir(dir: string) {
@@ -70,11 +42,10 @@
           entries = entries.filter((e: FileEntry) => !e.name.startsWith('.') && e.name !== 'CLAUDE.md');
         }
         if (fileRoot === 'outputs' && !dir) {
-          // At pipelines root, only show folders that have an output/ subfolder
           const withOutput: FileEntry[] = [];
           for (const e of entries) {
             if (e.type !== 'dir') continue;
-            const outRes = await fetch(`/api/files?path=${encodeURIComponent(pipelinesDir + '/' + e.name + '/output')}`);
+            const outRes = await fetch(`/api/files?path=${encodeURIComponent(store.pipelinesDir + '/' + e.name + '/output')}`);
             if (outRes.ok) withOutput.push(e);
           }
           entries = withOutput;
@@ -93,7 +64,6 @@
   function handleFileClick(entry: FileEntry) {
     if (entry.type === 'dir') {
       if (fileRoot === 'outputs' && !currentDir) {
-        // Jump directly into the output/ subfolder
         browseDir(entry.name + '/output');
       } else {
         browseDir(currentDir ? `${currentDir}/${entry.name}` : entry.name);
@@ -102,7 +72,6 @@
       const fullPath = currentDir ? `${currentDir}/${entry.name}` : entry.name;
       onSelect(fullPath);
     } else {
-      // For pipeline outputs, open via file preview with absolute path
       const absPath = getBasePath() + '/' + (currentDir ? `${currentDir}/${entry.name}` : entry.name);
       onSelect('__file__:' + absPath);
     }
@@ -173,25 +142,6 @@
     activeType = activeType === type ? null : type;
     onFilterChange({ zone: activeZone ?? undefined, type: activeType ?? undefined });
   }
-
-  async function loadRecent() {
-    loadingRecent = true;
-    try {
-      const res = await fetch('/api/vault/recent?limit=10');
-      if (res.ok) {
-        const data = await res.json();
-        recentNotes = data.notes;
-      }
-    } catch {
-      // silent
-    } finally {
-      loadingRecent = false;
-    }
-  }
-
-  onMount(() => {
-    loadRecent();
-  });
 </script>
 
 <div class="h-full flex flex-col bg-hub-surface overflow-hidden">
@@ -212,7 +162,7 @@
     <!-- File browser -->
     <div class="p-3">
       <!-- Root switcher -->
-      {#if pipelinesDir}
+      {#if store.pipelinesDir}
         <div class="flex gap-1 mb-2">
           <button
             class="flex-1 text-[11px] py-1 rounded transition-colors {fileRoot === 'vault' ? 'bg-hub-cta/15 text-hub-cta' : 'text-hub-dim hover:text-hub-muted'}"
@@ -266,13 +216,13 @@
       >
         <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
         <span>All</span>
-        {#if stats}
-          <span class="ml-auto text-xs text-hub-dim">{stats.totalNotes}</span>
+        {#if store.stats}
+          <span class="ml-auto text-xs text-hub-dim">{store.stats.totalNotes}</span>
         {/if}
       </button>
 
-      {#if stats}
-        {#each Object.entries(stats.notesByZone) as [zone, count]}
+      {#if store.stats}
+        {#each Object.entries(store.stats.notesByZone) as [zone, count]}
           <button
             class="w-full flex items-center gap-2 px-2 py-1.5 rounded text-sm transition-colors {activeZone === zone ? 'bg-hub-cta/10 text-hub-cta' : 'text-hub-muted hover:text-hub-text hover:bg-hub-card'}"
             onclick={() => selectZone(zone)}
@@ -288,11 +238,11 @@
     </div>
 
     <!-- Type filters -->
-    {#if stats && Object.keys(stats.notesByType).length > 0}
+    {#if store.stats && Object.keys(store.stats.notesByType).length > 0}
       <div class="px-3 pb-3">
         <h3 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-2">Types</h3>
         <div class="flex flex-wrap gap-1.5">
-          {#each Object.entries(stats.notesByType) as [type, count]}
+          {#each Object.entries(store.stats.notesByType) as [type, count]}
             <button
               class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs transition-colors {activeType === type ? 'ring-1 ring-hub-cta ' : ''}{typeColors[type] ?? 'bg-hub-card text-hub-muted'}"
               onclick={() => toggleType(type)}
@@ -311,13 +261,11 @@
     <!-- Recent notes -->
     <div class="p-3">
       <h3 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-2">Recent</h3>
-      {#if loadingRecent}
-        <div class="text-xs text-hub-dim animate-pulse py-2">Loading...</div>
-      {:else if recentNotes.length === 0}
+      {#if store.recentNotes.length === 0}
         <div class="text-xs text-hub-dim py-2">No notes yet</div>
       {:else}
         <div class="space-y-0.5">
-          {#each recentNotes as note}
+          {#each store.recentNotes as note}
             <button
               class="w-full text-left px-2 py-1.5 rounded text-sm transition-colors group {selectedPath === note.path ? 'bg-hub-cta/10 text-hub-cta' : 'text-hub-muted hover:text-hub-text hover:bg-hub-card'}"
               onclick={() => onSelect(note.path)}
@@ -342,14 +290,14 @@
   </div>
 
   <!-- Stats footer -->
-  {#if stats}
+  {#if store.stats}
     <div class="flex-shrink-0 border-t border-hub-border px-3 py-2 text-[10px] text-hub-dim flex items-center gap-3">
-      <span>{stats.totalLinks} links</span>
-      {#if stats.unresolvedLinks > 0}
-        <span class="text-hub-warning">{stats.unresolvedLinks} unresolved</span>
+      <span>{store.stats.totalLinks} links</span>
+      {#if store.stats.unresolvedLinks > 0}
+        <span class="text-hub-warning">{store.stats.unresolvedLinks} unresolved</span>
       {/if}
-      {#if stats.orphanNotes > 0}
-        <span class="text-hub-danger">{stats.orphanNotes} orphans</span>
+      {#if store.stats.orphanNotes > 0}
+        <span class="text-hub-danger">{store.stats.orphanNotes} orphans</span>
       {/if}
     </div>
   {/if}

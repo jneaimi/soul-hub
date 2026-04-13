@@ -1,15 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-
-  interface SearchResult {
-    path: string;
-    title: string;
-    type?: string;
-    tags?: string[];
-    project?: string;
-    score: number;
-    snippet?: string;
-  }
+  import type { SearchResult } from '$lib/vault/types';
 
   interface Props {
     onSelect: (path: string) => void;
@@ -24,6 +15,7 @@
   let searching = $state(false);
   let inputEl: HTMLInputElement | undefined = $state();
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+  let searchController: AbortController | null = null;
 
   const typeColors: Record<string, string> = {
     learning: 'bg-emerald-500/20 text-emerald-400',
@@ -43,16 +35,21 @@
       results = [];
       return;
     }
+    searchController?.abort();
+    searchController = new AbortController();
+
     searching = true;
+    activeIndex = 0;
     try {
-      const res = await fetch(`/api/vault/notes?q=${encodeURIComponent(q)}&limit=10`);
+      const res = await fetch(`/api/vault/notes?q=${encodeURIComponent(q)}&limit=10`, {
+        signal: searchController.signal,
+      });
       if (res.ok) {
         const data = await res.json();
-        results = data.results;
-        activeIndex = 0;
+        results = data.results || [];
       }
-    } catch {
-      // silent
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') results = [];
     } finally {
       searching = false;
     }
@@ -61,6 +58,11 @@
   function handleInput() {
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => search(query), 200);
+  }
+
+  function handleClose() {
+    searchController?.abort();
+    onClose();
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -75,7 +77,7 @@
       onSelect(results[activeIndex].path);
     } else if (e.key === 'Escape') {
       e.preventDefault();
-      onClose();
+      handleClose();
     }
   }
 
@@ -85,7 +87,10 @@
 
   onMount(() => {
     inputEl?.focus();
-    return () => clearTimeout(debounceTimer);
+    return () => {
+      clearTimeout(debounceTimer);
+      searchController?.abort();
+    };
   });
 </script>
 
@@ -93,7 +98,7 @@
 <div class="fixed inset-0 z-50 flex items-start justify-center pt-[15vh]" onkeydown={handleKeydown}>
   <!-- Backdrop -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={onClose}></div>
+  <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={handleClose}></div>
 
   <!-- Modal -->
   <div class="relative w-full max-w-lg mx-4 bg-hub-surface border border-hub-border rounded-xl shadow-2xl overflow-hidden">

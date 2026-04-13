@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { marked } from 'marked';
-	import { onMount } from 'svelte';
 	import type { VaultNote } from '$lib/vault/types';
 	import { TYPE_COLORS } from '$lib/vault/types';
 

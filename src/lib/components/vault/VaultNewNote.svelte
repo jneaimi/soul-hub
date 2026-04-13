@@ -1,28 +1,16 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import type { VaultTemplate } from '$lib/vault/types';
+  import { getVaultStore } from '$lib/vault/store.svelte.js';
 
-  interface VaultZone {
-    path: string;
-    allowedTypes: string[];
-    requireTemplate: boolean;
-    requiredFields: string[];
-    rawGovernance: string;
-  }
-
-  interface VaultTemplate {
-    name: string;
-    raw: string;
-    requiredFields: string[];
-    expectedSections: string[];
-  }
+  const store = getVaultStore();
 
   interface Props {
-    zones: VaultZone[];
     onCreated: (path: string) => void;
     onClose: () => void;
   }
 
-  let { zones, onCreated, onClose }: Props = $props();
+  let { onCreated, onClose }: Props = $props();
 
   let step = $state<'template' | 'form'>('template');
   let templates = $state<VaultTemplate[]>([]);
@@ -74,8 +62,8 @@
     selectedTemplate = t;
     step = 'form';
     content = t.raw;
-    if (zones.length > 0) {
-      zone = zones[0].path;
+    if (store.zones.length > 0) {
+      zone = store.zones[0].path;
     }
   }
 
@@ -219,7 +207,7 @@
               bind:value={zone}
               class="w-full bg-hub-card border border-hub-border rounded-lg px-3 py-2 text-sm text-hub-text outline-none focus:border-hub-cta transition-colors"
             >
-              {#each zones as z}
+              {#each store.zones as z}
                 <option value={z.path}>{z.path}</option>
               {/each}
             </select>

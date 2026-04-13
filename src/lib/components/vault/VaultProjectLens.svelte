@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import type { GraphNode, GraphEdge } from '$lib/vault/types.js';
 	import { TYPE_COLORS } from '$lib/vault/types.js';
+	import { getVaultStore } from '$lib/vault/store.svelte.js';
 
 	interface Props {
 		projectName: string;
@@ -9,6 +10,8 @@
 	}
 
 	let { projectName, onNoteSelect }: Props = $props();
+
+	const store = getVaultStore();
 
 	// Notes state
 	let notes = $state<{ path: string; title: string; type?: string; mtime?: number }[]>([]);
@@ -86,6 +89,7 @@
 		if (res.ok) {
 			scaffolded = true;
 			await fetchNotes();
+			await store.invalidate('overview', 'graph');
 		}
 		scaffolding = false;
 	}
@@ -167,6 +171,7 @@
 
 			// Refresh and select
 			await fetchNotes();
+			await store.invalidate('overview', 'recent', 'graph');
 			if (result.path) onNoteSelect(result.path);
 		} catch (e) {
 			error = (e as Error).message;

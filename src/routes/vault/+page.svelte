@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { getVaultStore } from '$lib/vault/store.svelte.js';
   import VaultSidebar from '$lib/components/vault/VaultSidebar.svelte';
   import VaultGraph from '$lib/components/vault/VaultGraph.svelte';
   import VaultNoteView from '$lib/components/vault/VaultNoteView.svelte';
@@ -7,163 +8,68 @@
   import VaultSearch from '$lib/components/vault/VaultSearch.svelte';
   import VaultNewNote from '$lib/components/vault/VaultNewNote.svelte';
   import FilePreview from '$lib/components/FilePreview.svelte';
-  import type { VaultNote } from '$lib/vault/types';
 
-  interface VaultStats {
-    totalNotes: number;
-    notesByType: Record<string, number>;
-    notesByZone: Record<string, number>;
-    totalLinks: number;
-    unresolvedLinks: number;
-    orphanNotes: number;
-    lastIndexed: string;
-  }
+  const store = getVaultStore();
 
-  interface VaultZone {
-    path: string;
-    allowedTypes: string[];
-    requireTemplate: boolean;
-    requiredFields: string[];
-  }
-
-  interface GraphNode {
-    id: string;
-    label: string;
-    type?: string;
-    zone: string;
-    size: number;
-    color: string;
-  }
-
-  interface GraphEdge {
-    source: string;
-    target: string;
-    label?: string;
-  }
-
-  let stats = $state<VaultStats | null>(null);
-  let zones = $state<VaultZone[]>([]);
-  let vaultDir = $state('');
-  let pipelinesDir = $state('');
-  let loading = $state(true);
-  let error = $state<string | null>(null);
-
+  // Local UI state only
   let view = $state<'graph' | 'note' | 'edit'>('graph');
-  let selectedNote = $state<VaultNote | null>(null);
-  let selectedPath = $state<string | null>(null);
-
-  let graphNodes = $state<GraphNode[]>([]);
-  let graphEdges = $state<GraphEdge[]>([]);
-
   let sidebarWidth = $state(280);
   let resizing = $state(false);
-  let sidebarFilter = $state<{ zone?: string; type?: string; tags?: string[] }>({});
-
   let showNewNote = $state(false);
   let showSearch = $state(false);
   let previewFile = $state<{ path: string; name: string } | null>(null);
-
   let scaffoldingAll = $state(false);
   let scaffoldMessage = $state<string | null>(null);
-
   let isMobile = $state(false);
   let mobileView = $state<'sidebar' | 'main'>('main');
 
-  async function loadVault() {
-    try {
-      const res = await fetch('/api/vault');
-      if (!res.ok) {
-        error = 'Vault not ready';
-        return;
-      }
-      const data = await res.json();
-      stats = data.stats;
-      zones = data.zones;
-      vaultDir = data.paths?.vaultDir || '';
-      pipelinesDir = data.paths?.pipelinesDir || '';
-      error = null;
-    } catch {
-      error = 'Failed to load vault';
-    } finally {
-      loading = false;
-    }
-  }
-
-  async function loadGraph(opts?: { zone?: string; type?: string; project?: string }) {
-    const params = new URLSearchParams();
-    if (opts?.zone) params.set('zone', opts.zone);
-    if (opts?.project) params.set('project', opts.project);
-    const url = `/api/vault/graph${params.toString() ? '?' + params : ''}`;
-    const res = await fetch(url);
-    if (res.ok) {
-      const data = await res.json();
-      let nodes = data.nodes;
-      let edges = data.edges;
-      // Client-side type filter (API doesn't support type param)
-      if (opts?.type) {
-        const typeFilter = opts.type;
-        const filteredIds = new Set(nodes.filter((n: GraphNode) => n.type === typeFilter).map((n: GraphNode) => n.id));
-        nodes = nodes.filter((n: GraphNode) => filteredIds.has(n.id));
-        edges = edges.filter((e: GraphEdge) => filteredIds.has(e.source) && filteredIds.has(e.target));
-      }
-      graphNodes = nodes;
-      graphEdges = edges;
-    }
-  }
-
-  async function selectNote(path: string) {
-    // Pipeline output files use absolute path with __file__: prefix — open in FilePreview
+  function handleSelectNote(path: string) {
     if (path.startsWith('__file__:')) {
       const absPath = path.slice(9);
-      const fileName = absPath.split('/').pop() || absPath;
-      previewFile = { path: absPath, name: fileName };
+      previewFile = { path: absPath, name: absPath.split('/').pop() || absPath };
       return;
     }
-    selectedPath = path;
+    store.selectNote(path);
     view = 'note';
-    const res = await fetch(`/api/vault/notes/${encodeURIComponent(path)}`);
-    if (res.ok) {
-      selectedNote = await res.json();
-    }
+    if (isMobile) mobileView = 'main';
   }
 
   function backToGraph() {
     view = 'graph';
-    selectedNote = null;
-    selectedPath = null;
+    store.clearSelection();
   }
 
   async function handleArchive() {
-    if (!selectedPath) return;
-    const res = await fetch(`/api/vault/notes/${encodeURIComponent(selectedPath)}`, { method: 'DELETE' });
+    if (!store.selectedPath) return;
+    const res = await fetch(`/api/vault/notes/${encodeURIComponent(store.selectedPath)}`, { method: 'DELETE' });
     if (res.ok) {
-      backToGraph();
-      await loadVault();
-      await loadGraph(sidebarFilter);
+      view = 'graph';
+      store.clearSelection();
+      await store.invalidate('overview', 'recent', 'graph');
     }
   }
 
   async function handleNoteSaved(path: string) {
     view = 'note';
-    await selectNote(path);
-    await loadVault();
-  }
-
-  function handleNavigate(path: string) {
-    if (!path) { backToGraph(); return; }
-    selectNote(path);
+    await store.selectNote(path);
+    await store.invalidate('overview', 'graph');
   }
 
   async function handleNoteCreated(path: string) {
     showNewNote = false;
-    await loadVault();
-    await loadGraph(sidebarFilter);
-    await selectNote(path);
+    await store.invalidate('overview', 'recent', 'graph');
+    await store.selectNote(path);
+    view = 'note';
   }
 
-  async function handleFilterChange(filter: { zone?: string; type?: string }) {
-    sidebarFilter = filter;
-    await loadGraph(filter);
+  function handleFilterChange(filter: { zone?: string; type?: string }) {
+    store.setFilters(filter);
+  }
+
+  function handleNavigate(path: string) {
+    if (!path) { view = 'graph'; store.clearSelection(); return; }
+    store.selectNote(path);
+    view = 'note';
   }
 
   async function scaffoldAll() {
@@ -183,8 +89,7 @@
         }
       }
 
-      await loadVault();
-      await loadGraph();
+      await store.invalidate('overview', 'graph');
       scaffoldMessage = count > 0 ? `Scaffolded ${count} projects` : 'All projects already scaffolded';
       setTimeout(() => { scaffoldMessage = null; }, 3000);
     } finally {
@@ -227,22 +132,22 @@
   }
 
   onMount(() => {
-    const checkMobile = () => {
-      isMobile = window.innerWidth < 768;
-    };
+    const checkMobile = () => { isMobile = window.innerWidth < 768; };
     checkMobile();
     window.addEventListener('resize', checkMobile);
-    loadVault().then(() => {
-      loadGraph();
-      // Deep link: ?note=path opens a specific note
+
+    store.init().then(() => {
       const params = new URLSearchParams(window.location.search);
       const notePath = params.get('note');
       if (notePath) {
-        selectNote(decodeURIComponent(notePath));
-        if (isMobile) mobileView = 'main';
+        handleSelectNote(decodeURIComponent(notePath));
       }
     });
-    return () => window.removeEventListener('resize', checkMobile);
+
+    return () => {
+      window.removeEventListener('resize', checkMobile);
+      store.destroy();
+    };
   });
 </script>
 
@@ -256,8 +161,8 @@
     </a>
     <h1 class="text-lg font-semibold text-hub-text">Vault</h1>
 
-    {#if stats}
-      <span class="text-xs text-hub-dim">{stats.totalNotes} notes</span>
+    {#if store.stats}
+      <span class="text-xs text-hub-dim">{store.stats.totalNotes} notes</span>
     {/if}
 
     <div class="flex-1"></div>
@@ -320,12 +225,8 @@
         style={isMobile ? '' : `width: ${sidebarWidth}px`}
       >
         <VaultSidebar
-          {stats}
-          {zones}
-          {vaultDir}
-          {pipelinesDir}
-          selectedPath={selectedPath}
-          onSelect={selectNote}
+          selectedPath={store.selectedPath}
+          onSelect={handleSelectNote}
           onFilterChange={handleFilterChange}
         />
       </div>
@@ -340,42 +241,42 @@
 
     {#if !isMobile || mobileView === 'main'}
       <div class="flex-1 min-w-0 min-h-0 flex flex-col">
-        {#if loading}
+        {#if store.loading}
           <div class="flex-1 flex items-center justify-center">
             <div class="text-hub-muted animate-pulse">Loading vault...</div>
           </div>
-        {:else if error}
+        {:else if store.error}
           <div class="flex-1 flex items-center justify-center">
             <div class="text-center">
-              <p class="text-hub-danger mb-2">{error}</p>
-              <button onclick={loadVault} class="text-sm text-hub-muted hover:text-hub-text">Retry</button>
+              <p class="text-hub-danger mb-2">{store.error}</p>
+              <button onclick={() => store.init()} class="text-sm text-hub-muted hover:text-hub-text">Retry</button>
             </div>
           </div>
         {:else if view === 'graph'}
           <div class="flex-1 min-h-0 relative bg-hub-bg">
             <VaultGraph
-              nodes={graphNodes}
-              edges={graphEdges}
-              onNodeClick={selectNote}
+              nodes={store.graphNodes}
+              edges={store.graphEdges}
+              onNodeClick={handleSelectNote}
             />
           </div>
-        {:else if view === 'note' && selectedNote}
+        {:else if view === 'note' && store.selectedNote}
           <div class="flex-1 min-h-0 overflow-y-auto p-4 md:p-6">
             <div class="max-w-4xl mx-auto">
               <VaultNoteView
-                note={selectedNote}
-                {vaultDir}
+                note={store.selectedNote}
+                vaultDir={store.vaultDir}
                 onNavigate={handleNavigate}
                 onEdit={() => { view = 'edit'; }}
                 onArchive={handleArchive}
               />
             </div>
           </div>
-        {:else if view === 'edit' && selectedNote}
+        {:else if view === 'edit' && store.selectedNote}
           <div class="flex-1 min-h-0 overflow-y-auto p-4 md:p-6">
             <div class="max-w-4xl mx-auto">
               <VaultNoteEditor
-                note={selectedNote}
+                note={store.selectedNote}
                 onSave={handleNoteSaved}
                 onCancel={() => { view = 'note'; }}
               />
@@ -389,14 +290,14 @@
 
 {#if showSearch}
   <VaultSearch
-    onSelect={(path) => { showSearch = false; selectNote(path); }}
+    onSelect={(path) => { showSearch = false; handleSelectNote(path); }}
     onClose={() => { showSearch = false; }}
   />
 {/if}
 
 {#if showNewNote}
   <VaultNewNote
-    {zones}
+    zones={store.zones}
     onCreated={handleNoteCreated}
     onClose={() => { showNewNote = false; }}
   />
@@ -409,4 +310,3 @@
     onClose={() => { previewFile = null; }}
   />
 {/if}
-
