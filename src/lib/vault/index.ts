@@ -145,6 +145,14 @@ export class VaultEngine {
 		return this.templates.list();
 	}
 
+	async saveTemplate(name: string, raw: string): Promise<VaultTemplate> {
+		return this.templates.save(name, raw);
+	}
+
+	async deleteTemplate(name: string): Promise<boolean> {
+		return this.templates.remove(name);
+	}
+
 	// ── Write Operations ──
 
 	async createNote(req: CreateNoteRequest): Promise<WriteResult | WriteError> {
@@ -176,7 +184,7 @@ export class VaultEngine {
 
 		// Validate against template if required
 		if (zone.requireTemplate && req.meta.type) {
-			const validation = this.templates.validate(req.meta.type, req.content);
+			const validation = this.templates.validate(req.meta.type, req.content, true);
 			if (!validation.valid) {
 				return { success: false, error: `Missing template sections: ${validation.missing.join(', ')}` };
 			}

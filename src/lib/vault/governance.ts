@@ -123,7 +123,13 @@ function extractNamingPattern(raw: string): string | null {
 
 	// Only accept actual regex patterns (must start with ^ for anchoring)
 	if (candidate.startsWith('^')) {
-		return candidate;
+		try {
+			new RegExp(candidate);
+			return candidate;
+		} catch {
+			console.warn(`[vault/governance] Invalid naming pattern regex: ${candidate}`);
+			return null;
+		}
 	}
 
 	return null;

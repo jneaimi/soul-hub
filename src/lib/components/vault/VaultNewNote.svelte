@@ -97,10 +97,23 @@
   function pickTemplate(t: VaultTemplate) {
     selectedTemplate = t;
     step = 'form';
-    content = t.raw;
+    // Auto-substitute known placeholders
+    content = t.raw
+      .replace(/\{\{date\}\}/g, today)
+      .replace(/\{\{title\}\}/g, '')
+      .replace(/\{\{content\}\}/g, '');
     if (store.zones.length > 0) {
       zone = store.zones[0].path;
     }
+  }
+
+  // Substitute project/language placeholders when zone changes
+  function substituteZonePlaceholders() {
+    const parts = zone.split('/');
+    const projectName = parts[0] === 'projects' && parts[1] ? parts[1] : '';
+    content = content
+      .replace(/\{\{project\}\}/g, projectName)
+      .replace(/\{\{language\}\}/g, '');
   }
 
   function backToTemplates() {
@@ -261,6 +274,7 @@
             <select
               id="zone-select"
               bind:value={zone}
+              onchange={substituteZonePlaceholders}
               class="w-full bg-hub-card border border-hub-border rounded-lg px-3 py-2 text-sm text-hub-text outline-none focus:border-hub-cta transition-colors"
             >
               {#each store.zones as z}
