@@ -68,7 +68,10 @@ export class VaultSearch {
 
 		if (query.q) {
 			const filterFn = (result: Record<string, unknown>) => {
-				if (query.type && result['type'] !== query.type) return false;
+				if (query.type) {
+					const types = Array.isArray(query.type) ? query.type : [query.type];
+					if (!types.includes(result['type'] as string)) return false;
+				}
 				if (query.project && result['project'] !== query.project) return false;
 				if (query.tags && query.tags.length > 0) {
 					const resultTags = (result['tags'] as string).split(' ');
@@ -102,7 +105,8 @@ export class VaultSearch {
 		let notes = Array.from(this.noteMap.values());
 
 		if (query.type) {
-			notes = notes.filter((n) => n.meta.type === query.type);
+			const types = Array.isArray(query.type) ? query.type : [query.type];
+			notes = notes.filter((n) => n.meta.type && types.includes(n.meta.type));
 		}
 		if (query.project) {
 			notes = notes.filter((n) => n.meta.project === query.project);

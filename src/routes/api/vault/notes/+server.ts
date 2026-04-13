@@ -13,10 +13,17 @@ export const GET: RequestHandler = async ({ url }) => {
 	const limitParam = parseInt(url.searchParams.get('limit') || '20', 10) || 20;
 	const offsetParam = parseInt(url.searchParams.get('offset') || '0', 10) || 0;
 
+	// Parse multi-value params (comma-separated)
+	const typeParam = url.searchParams.get('type');
+	const types = typeParam ? typeParam.split(',').map(t => t.trim()).filter(Boolean) : [];
+
+	const tagsParam = url.searchParams.get('tags');
+	const tags = tagsParam ? tagsParam.split(',').map(t => t.trim()).filter(Boolean) : [];
+
 	const query: SearchQuery = {
 		q: url.searchParams.get('q') || undefined,
-		type: url.searchParams.get('type') || undefined,
-		tags: url.searchParams.get('tags')?.split(',').filter(Boolean) || undefined,
+		type: types.length > 1 ? types : types.length === 1 ? types[0] : undefined,
+		tags: tags.length > 0 ? tags : undefined,
 		zone: url.searchParams.get('zone') || undefined,
 		project: url.searchParams.get('project') || undefined,
 		limit: Math.min(Math.max(1, limitParam), 100),

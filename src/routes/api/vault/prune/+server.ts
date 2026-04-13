@@ -16,7 +16,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ error: 'Invalid JSON body' }, { status: 400 });
 	}
 
-	const { zone, maxAgeDays } = body as Record<string, unknown>;
+	const { zone, maxAgeDays, typeFilter } = body as Record<string, unknown>;
 
 	if (!zone || typeof zone !== 'string') {
 		return json({ error: 'zone is required and must be a string' }, { status: 400 });
@@ -24,9 +24,12 @@ export const POST: RequestHandler = async ({ request }) => {
 	if (typeof maxAgeDays !== 'number' || maxAgeDays < 1) {
 		return json({ error: 'maxAgeDays is required and must be a positive number' }, { status: 400 });
 	}
+	if (typeFilter !== undefined && typeof typeFilter !== 'string') {
+		return json({ error: 'typeFilter must be a string if provided' }, { status: 400 });
+	}
 
 	try {
-		const result = await engine.pruneZone(zone, maxAgeDays);
+		const result = await engine.pruneZone(zone, maxAgeDays, typeFilter as string | undefined);
 		return json(result);
 	} catch (err) {
 		return json({ error: (err as Error).message }, { status: 500 });

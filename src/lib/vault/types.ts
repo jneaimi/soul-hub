@@ -90,8 +90,8 @@ export interface VaultZone {
 export interface SearchQuery {
 	/** Text query (fuzzy matched against title + content + tags) */
 	q?: string;
-	/** Filter by note type */
-	type?: string;
+	/** Filter by note type (single or multiple, OR logic) */
+	type?: string | string[];
 	/** Filter by tags (AND logic — all must match) */
 	tags?: string[];
 	/** Filter by zone (top-level folder) */
@@ -213,28 +213,70 @@ export interface VaultTemplate {
 // ── Zone color mapping ──────────────────────────────────────
 
 export const ZONE_COLORS: Record<string, string> = {
-	projects: '#6366f1',   // indigo
-	patterns: '#8b5cf6',   // violet
-	research: '#06b6d4',   // cyan
-	sessions: '#64748b',   // slate
-	inbox: '#f59e0b',      // amber
-	archive: '#6b7280',    // gray
+	inbox: '#f59e0b',        // amber
+	projects: '#6366f1',     // indigo
+	knowledge: '#06b6d4',    // cyan
+	content: '#8b5cf6',      // violet
+	operations: '#64748b',   // slate
+	archive: '#6b7280',      // gray
+	// Legacy zones (kept during migration)
+	patterns: '#06b6d4',     // cyan (same as knowledge)
+	research: '#06b6d4',     // cyan (same as knowledge)
+	sessions: '#64748b',     // slate (same as operations)
 };
 
 export const TYPE_COLORS: Record<string, string> = {
-	learning: '#10b981',   // emerald
-	decision: '#f59e0b',   // amber
-	debugging: '#ef4444',  // red
-	pattern: '#8b5cf6',    // violet
-	research: '#06b6d4',   // cyan
-	output: '#3b82f6',     // blue
-	daily: '#6b7280',      // gray
-	snippet: '#ec4899',    // pink
-	report: '#14b8a6',     // teal
-	index: '#9ca3af',      // gray-400
-	adr: '#f59e0b',        // amber (same as decision)
-	analytics: '#06b6d4',  // cyan (same as research)
-	'session-log': '#64748b', // slate
+	// Knowledge types
+	learning: '#10b981',     // emerald
+	decision: '#f59e0b',     // amber
+	debugging: '#ef4444',    // red
+	pattern: '#8b5cf6',      // violet
+	research: '#06b6d4',     // cyan
+	snippet: '#ec4899',      // pink
+	report: '#14b8a6',       // teal
+	analysis: '#06b6d4',     // cyan
+	review: '#14b8a6',       // teal
+	recipe: '#f97316',       // orange
+	evaluation: '#06b6d4',   // cyan
+	'data-pack': '#06b6d4',  // cyan
+	reference: '#9ca3af',    // gray-400
+	guide: '#9ca3af',        // gray-400
+	wiki: '#9ca3af',         // gray-400
+	// Content types
+	draft: '#a78bfa',        // violet-400
+	'social-draft': '#a78bfa',
+	'social-post': '#8b5cf6',
+	'article-draft': '#a78bfa',
+	'video-script': '#c084fc',
+	'video-script-draft': '#c084fc',
+	'content-menu': '#8b5cf6',
+	'content-prep': '#8b5cf6',
+	ideas: '#d946ef',        // fuchsia
+	'daily-quote': '#d946ef',
+	'media-asset': '#8b5cf6',
+	'insight-draft': '#a78bfa',
+	'miner-report': '#14b8a6',
+	'signal-report': '#14b8a6',
+	'strategist-prep': '#14b8a6',
+	// Project types
+	project: '#6366f1',      // indigo
+	output: '#3b82f6',       // blue
+	index: '#9ca3af',        // gray-400
+	task: '#3b82f6',         // blue
+	design: '#6366f1',       // indigo
+	requirements: '#6366f1', // indigo
+	// Operations types
+	'agent-profile': '#64748b',
+	config: '#64748b',
+	'session-log': '#64748b',
+	playbook: '#64748b',
+	'system-config': '#64748b',
+	identity: '#64748b',
+	boundaries: '#64748b',
+	// Legacy (migration compat)
+	daily: '#6b7280',
+	adr: '#f59e0b',
+	analytics: '#06b6d4',
 };
 
 /** Default zone for notes without a recognized zone */

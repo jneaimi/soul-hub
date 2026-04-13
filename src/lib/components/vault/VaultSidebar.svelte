@@ -6,13 +6,13 @@
   interface Props {
     selectedPath: string | null;
     onSelect: (path: string) => void;
-    onFilterChange: (filter: { zone?: string; type?: string }) => void;
+    onFilterChange: (filter: { zone?: string }) => void;
   }
 
   let { selectedPath, onSelect, onFilterChange }: Props = $props();
 
-  let activeZone = $state<string | null>(null);
-  let activeType = $state<string | null>(null);
+  // Read zone from store so it syncs with smart views
+  let activeZone = $derived(store.filters.zone ?? null);
   let sidebarTab = $state<'overview' | 'files'>('overview');
 
   // File browser state
@@ -97,32 +97,80 @@
   }
 
   const zoneIcons: Record<string, string> = {
-    projects: 'M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z',
-    patterns: 'M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z',
-    research: 'M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z',
     inbox: 'M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4',
+    projects: 'M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z',
+    knowledge: 'M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253',
+    content: 'M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z',
+    operations: 'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z',
     archive: 'M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4',
   };
 
   const zoneColors: Record<string, string> = {
-    projects: 'text-indigo-400',
-    patterns: 'text-violet-400',
-    research: 'text-cyan-400',
     inbox: 'text-amber-400',
+    projects: 'text-indigo-400',
+    knowledge: 'text-cyan-400',
+    content: 'text-violet-400',
+    operations: 'text-slate-400',
     archive: 'text-gray-400',
   };
 
+  const zoneOrder = ['inbox', 'projects', 'knowledge', 'content', 'operations', 'archive'];
+  // Legacy zones to hide from sidebar (still exist on disk but being migrated)
+  const legacyZones = new Set(['patterns', 'research', 'sessions']);
+
+  const sortedZones = $derived.by(() => {
+    if (!store.stats) return [];
+    const allZones = new Set([...zoneOrder, ...Object.keys(store.stats.notesByZone)]);
+    return [...allZones].filter(z => !legacyZones.has(z)).sort((a, b) => {
+      const ai = zoneOrder.indexOf(a);
+      const bi = zoneOrder.indexOf(b);
+      if (ai >= 0 && bi >= 0) return ai - bi;
+      if (ai >= 0) return -1;
+      if (bi >= 0) return 1;
+      return a.localeCompare(b);
+    }).map(z => ({ name: z, count: store.stats?.notesByZone[z] ?? 0 }));
+  });
+
   const typeColors: Record<string, string> = {
+    // Knowledge types
     learning: 'bg-emerald-500/20 text-emerald-400',
     decision: 'bg-amber-500/20 text-amber-400',
     debugging: 'bg-red-500/20 text-red-400',
     pattern: 'bg-violet-500/20 text-violet-400',
     research: 'bg-cyan-500/20 text-cyan-400',
-    output: 'bg-blue-500/20 text-blue-400',
-    daily: 'bg-gray-500/20 text-gray-400',
     snippet: 'bg-pink-500/20 text-pink-400',
     report: 'bg-teal-500/20 text-teal-400',
+    analysis: 'bg-cyan-500/20 text-cyan-400',
+    review: 'bg-teal-500/20 text-teal-400',
+    recipe: 'bg-orange-500/20 text-orange-400',
+    reference: 'bg-gray-500/20 text-gray-400',
+    guide: 'bg-gray-500/20 text-gray-400',
+    wiki: 'bg-gray-500/20 text-gray-400',
+    // Content types
+    draft: 'bg-violet-500/20 text-violet-300',
+    'social-draft': 'bg-violet-500/20 text-violet-300',
+    'social-post': 'bg-violet-500/20 text-violet-400',
+    'article-draft': 'bg-violet-500/20 text-violet-300',
+    'video-script': 'bg-purple-500/20 text-purple-400',
+    'content-menu': 'bg-violet-500/20 text-violet-400',
+    ideas: 'bg-fuchsia-500/20 text-fuchsia-400',
+    'daily-quote': 'bg-fuchsia-500/20 text-fuchsia-400',
+    'media-asset': 'bg-violet-500/20 text-violet-400',
+    'miner-report': 'bg-teal-500/20 text-teal-400',
+    'signal-report': 'bg-teal-500/20 text-teal-400',
+    // Project types
+    project: 'bg-indigo-500/20 text-indigo-400',
+    output: 'bg-blue-500/20 text-blue-400',
     index: 'bg-gray-500/20 text-gray-400',
+    task: 'bg-blue-500/20 text-blue-400',
+    design: 'bg-indigo-500/20 text-indigo-400',
+    // Operations types
+    'agent-profile': 'bg-slate-500/20 text-slate-400',
+    config: 'bg-slate-500/20 text-slate-400',
+    'session-log': 'bg-slate-500/20 text-slate-400',
+    playbook: 'bg-slate-500/20 text-slate-400',
+    // Legacy
+    daily: 'bg-gray-500/20 text-gray-400',
     adr: 'bg-amber-500/20 text-amber-400',
     analytics: 'bg-cyan-500/20 text-cyan-400',
   };
@@ -150,13 +198,7 @@
   }
 
   function selectZone(zone: string | null) {
-    activeZone = zone;
-    onFilterChange({ zone: zone ?? undefined, type: activeType ?? undefined });
-  }
-
-  function toggleType(type: string) {
-    activeType = activeType === type ? null : type;
-    onFilterChange({ zone: activeZone ?? undefined, type: activeType ?? undefined });
+    onFilterChange({ zone: zone ?? undefined });
   }
 </script>
 
@@ -239,61 +281,38 @@
         {/if}
       </button>
 
-      {#if store.stats}
-        {#each Object.entries(store.stats.notesByZone) as [zone, count]}
-          <button
-            class="w-full flex items-center gap-2 px-2 py-1.5 rounded text-sm transition-colors {activeZone === zone ? 'bg-hub-cta/10 text-hub-cta' : 'text-hub-muted hover:text-hub-text hover:bg-hub-card'}"
-            onclick={() => selectZone(zone)}
-          >
-            <svg class="w-4 h-4 {zoneColors[zone] ?? 'text-hub-dim'}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d={zoneIcons[zone] ?? 'M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z'} />
-            </svg>
-            <span class="capitalize">{zone}</span>
-            <span class="ml-auto text-xs text-hub-dim">{count}</span>
-          </button>
-          {#if activeZone === zone}
-            {@const zoneRules = getZoneRules(zone)}
-            <div class="pl-8 pr-2 py-1 text-[10px] text-hub-dim space-y-0.5">
-              {#if zoneRules}
-                <div>Types: {formatAllowedTypes(zoneRules.allowedTypes)}</div>
-                {#if zoneRules.requiredFields.length > 0}
-                  <div>Required: {zoneRules.requiredFields.join(', ')}</div>
-                {/if}
-                {#if zoneRules.namingPattern}
-                  <div>Naming: <code class="text-[9px] bg-hub-bg px-1 rounded">{zoneRules.namingPattern}</code></div>
-                {/if}
-                {#if zoneRules.requireTemplate}
-                  <div class="text-hub-cta">Template required</div>
-                {/if}
-              {:else}
-                <div>No governance rules</div>
+      {#each sortedZones as zone}
+        <button
+          class="w-full flex items-center gap-2 px-2 py-1.5 rounded text-sm transition-colors cursor-pointer {activeZone === zone.name ? 'bg-hub-cta/10 text-hub-cta' : 'text-hub-muted hover:text-hub-text hover:bg-hub-card'}"
+          onclick={() => selectZone(zone.name)}
+        >
+          <svg class="w-4 h-4 {zoneColors[zone.name] ?? 'text-hub-dim'}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d={zoneIcons[zone.name] ?? 'M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z'} />
+          </svg>
+          <span class="capitalize">{zone.name}</span>
+          <span class="ml-auto text-xs text-hub-dim">{zone.count}</span>
+        </button>
+        {#if activeZone === zone.name}
+          {@const zoneRules = getZoneRules(zone.name)}
+          <div class="pl-8 pr-2 py-1 text-[10px] text-hub-dim space-y-0.5">
+            {#if zoneRules}
+              <div>Types: {formatAllowedTypes(zoneRules.allowedTypes)}</div>
+              {#if zoneRules.requiredFields.length > 0}
+                <div>Required: {zoneRules.requiredFields.join(', ')}</div>
               {/if}
-            </div>
-          {/if}
-        {/each}
-      {/if}
+              {#if zoneRules.namingPattern}
+                <div>Naming: <code class="text-[9px] bg-hub-bg px-1 rounded">{zoneRules.namingPattern}</code></div>
+              {/if}
+              {#if zoneRules.requireTemplate}
+                <div class="text-hub-cta">Template required</div>
+              {/if}
+            {:else}
+              <div>No governance rules</div>
+            {/if}
+          </div>
+        {/if}
+      {/each}
     </div>
-
-    <!-- Type filters -->
-    {#if store.stats && Object.keys(store.stats.notesByType).length > 0}
-      <div class="px-3 pb-3">
-        <h3 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-2">Types</h3>
-        <div class="flex flex-wrap gap-1.5">
-          {#each Object.entries(store.stats.notesByType) as [type, count]}
-            <button
-              class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs transition-colors {activeType === type ? 'ring-1 ring-hub-cta ' : ''}{typeColors[type] ?? 'bg-hub-card text-hub-muted'}"
-              onclick={() => toggleType(type)}
-            >
-              {type}
-              <span class="opacity-60">{count}</span>
-            </button>
-          {/each}
-        </div>
-      </div>
-    {/if}
-
-    <!-- Divider -->
-    <div class="border-t border-hub-border mx-3"></div>
 
     <!-- Recent notes -->
     <div class="p-3">
@@ -326,16 +345,25 @@
   {/if}
   </div>
 
-  <!-- Stats footer -->
+  <!-- Health footer -->
   {#if store.stats}
-    <div class="flex-shrink-0 border-t border-hub-border px-3 py-2 text-[10px] text-hub-dim flex items-center gap-3">
-      <span>{store.stats.totalLinks} links</span>
-      {#if store.stats.unresolvedLinks > 0}
-        <span class="text-hub-warning">{store.stats.unresolvedLinks} unresolved</span>
-      {/if}
-      {#if store.stats.orphanNotes > 0}
-        <span class="text-hub-danger">{store.stats.orphanNotes} orphans</span>
-      {/if}
+    <div class="flex-shrink-0 border-t border-hub-border px-3 py-2">
+      <div class="flex items-center gap-2 mb-1">
+        <div class="w-2 h-2 rounded-full {store.stats.orphanNotes === 0 && store.stats.unresolvedLinks === 0 ? 'bg-green-400' : 'bg-amber-400'}"></div>
+        <span class="text-[10px] text-hub-dim font-medium">Health</span>
+      </div>
+      <div class="text-[10px] text-hub-dim flex flex-wrap gap-x-3 gap-y-0.5">
+        <span>{store.stats.totalLinks} links</span>
+        {#if store.stats.unresolvedLinks > 0}
+          <span class="text-amber-400">{store.stats.unresolvedLinks} broken</span>
+        {/if}
+        {#if store.stats.orphanNotes > 0}
+          <span class="text-amber-400">{store.stats.orphanNotes} orphans</span>
+        {/if}
+        {#if store.stats.orphanNotes === 0 && store.stats.unresolvedLinks === 0}
+          <span class="text-green-400">All clean</span>
+        {/if}
+      </div>
     </div>
   {/if}
 </div>

@@ -54,10 +54,14 @@ export class VaultEngine {
 		});
 
 		// Prune ephemeral zones on startup, then every 24 hours
-		this.pruneZone('sessions', 7).catch(() => {});
-		this.pruneInterval = setInterval(() => {
-			this.pruneZone('sessions', 7).catch(() => {});
-		}, 24 * 60 * 60 * 1000);
+		const runPrune = async () => {
+			await this.pruneZone('sessions', 7).catch(() => {});
+			await this.pruneZone('operations', 7, 'session-log').catch(() => {});
+			await this.archiveOldNotes('inbox', 30).catch(() => {});
+			await this.pruneZone('archive', 90).catch(() => {});
+		};
+		runPrune();
+		this.pruneInterval = setInterval(runPrune, 24 * 60 * 60 * 1000);
 
 		console.log(`[vault] Initialized: ${this.indexer.all().length} notes indexed`);
 	}
@@ -361,13 +365,16 @@ export class VaultEngine {
 	 * Delete notes in a zone older than maxAgeDays.
 	 * Used for ephemeral zones like sessions/ that auto-cleanup.
 	 */
-	async pruneZone(zone: string, maxAgeDays: number): Promise<{ pruned: string[] }> {
+	async pruneZone(zone: string, maxAgeDays: number, typeFilter?: string): Promise<{ pruned: string[] }> {
 		const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
 		const pruned: string[] = [];
 
 		const notes = this.indexer.filter({ zone });
 		for (const note of notes) {
 			if (note.mtime < cutoff) {
+				// If typeFilter specified, only prune notes of that type
+				if (typeFilter && note.meta.type !== typeFilter) continue;
+
 				const absPath = resolve(this.config.rootDir, note.path);
 				try {
 					await unlink(absPath);
@@ -385,6 +392,27 @@ export class VaultEngine {
 		}
 
 		return { pruned };
+	}
+
+	async archiveOldNotes(zone: string, maxAgeDays: number): Promise<{ archived: string[] }> {
+		const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+		const archived: string[] = [];
+
+		const notes = this.indexer.filter({ zone });
+		for (const note of notes) {
+			if (note.mtime < cutoff) {
+				const result = await this.moveNote(note.path, 'archive');
+				if (result.success) {
+					archived.push(note.path);
+				}
+			}
+		}
+
+		if (archived.length > 0) {
+			console.log(`[vault] Archived ${archived.length} notes from ${zone}/ (older than ${maxAgeDays} days)`);
+		}
+
+		return { archived };
 	}
 
 	async scaffoldProject(projectName: string): Promise<{ created: string[]; existed: string[] }> {

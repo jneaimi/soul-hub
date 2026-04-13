@@ -7,6 +7,8 @@
   import VaultNoteEditor from '$lib/components/vault/VaultNoteEditor.svelte';
   import VaultSearch from '$lib/components/vault/VaultSearch.svelte';
   import VaultNewNote from '$lib/components/vault/VaultNewNote.svelte';
+  import VaultCommandBar from '$lib/components/vault/VaultCommandBar.svelte';
+  import VaultSmartViews from '$lib/components/vault/VaultSmartViews.svelte';
   import FilePreview from '$lib/components/FilePreview.svelte';
 
   const store = getVaultStore();
@@ -20,15 +22,38 @@
   let previewFile = $state<{ path: string; name: string } | null>(null);
   let scaffoldingAll = $state(false);
   let scaffoldMessage = $state<string | null>(null);
+  let allTags = $state<Record<string, number>>({});
   let isMobile = $state(false);
   let mobileView = $state<'sidebar' | 'main'>('main');
+
+  // Local note state — workaround for $state reactivity in .svelte.ts modules
+  let localNote = $state<any>(null);
+  let localNotePath = $state<string | null>(null);
+
+  async function loadNote(path: string) {
+    localNotePath = path;
+    localNote = null;
+    try {
+      const url = `/api/vault/notes/${path.split('/').map(encodeURIComponent).join('/')}`;
+      const res = await fetch(url);
+      if (res.ok) {
+        localNote = await res.json();
+      }
+    } catch { /* silent */ }
+  }
 
   function buildUrlParams(): string {
     const params = new URLSearchParams();
     if (view !== 'graph') params.set('view', view);
     if (store.selectedPath) params.set('note', store.selectedPath);
     if (store.filters.zone) params.set('zone', store.filters.zone);
-    if (store.filters.type) params.set('type', store.filters.type);
+    if (store.filters.type) {
+      const types = Array.isArray(store.filters.type) ? store.filters.type : [store.filters.type];
+      params.set('type', types.join(','));
+    }
+    if (store.filters.tags && store.filters.tags.length > 0) {
+      params.set('tags', store.filters.tags.join(','));
+    }
     const qs = params.toString();
     return `/vault${qs ? '?' + qs : ''}`;
   }
@@ -47,14 +72,17 @@
       previewFile = { path: absPath, name: absPath.split('/').pop() || absPath };
       return;
     }
-    store.selectNote(path);
     view = 'note';
     if (isMobile) mobileView = 'main';
+    loadNote(path);
+    store.selectNote(path);
     updateUrl();
   }
 
   function backToGraph() {
     view = 'graph';
+    localNote = null;
+    localNotePath = null;
     store.clearSelection();
     updateUrl();
   }
@@ -72,7 +100,7 @@
 
   async function handleNoteSaved(path: string) {
     view = 'note';
-    await store.selectNote(path);
+    await loadNote(path);
     await store.invalidate('overview', 'graph');
     replaceUrl();
   }
@@ -85,13 +113,19 @@
     updateUrl();
   }
 
-  function handleFilterChange(filter: { zone?: string; type?: string }) {
-    store.setFilters(filter);
+  function handleFilterChange(filter: { zone?: string }) {
+    // Sidebar sends zone only — merge with existing type/tag filters
+    store.setFilters({
+      zone: filter.zone,
+      type: store.filters.type,
+      tags: store.filters.tags,
+    });
     replaceUrl();
   }
 
   function handleNavigate(path: string) {
-    if (!path) { view = 'graph'; store.clearSelection(); return; }
+    if (!path) { view = 'graph'; store.clearSelection(); localNote = null; return; }
+    loadNote(path);
     store.selectNote(path);
     view = 'note';
   }
@@ -170,8 +204,11 @@
       store.clearSelection();
     }
 
-    if (urlZone || urlType) {
-      store.setFilters({ zone: urlZone || undefined, type: urlType || undefined });
+    const urlTags = params.get('tags');
+    const tagsArray = urlTags ? urlTags.split(',').filter(Boolean) : undefined;
+    const typesArray = urlType ? urlType.split(',').filter(Boolean) : undefined;
+    if (urlZone || typesArray || tagsArray) {
+      store.setFilters({ zone: urlZone || undefined, type: typesArray, tags: tagsArray });
     }
 
     if (isMobile && notePath) mobileView = 'main';
@@ -183,20 +220,30 @@
     window.addEventListener('resize', checkMobile);
     window.addEventListener('popstate', handlePopState);
 
-    store.init().then(() => {
+    store.init().then(async () => {
       const params = new URLSearchParams(window.location.search);
       const notePath = params.get('note');
       const urlView = params.get('view') as 'graph' | 'note' | 'edit' | null;
       const urlZone = params.get('zone');
       const urlType = params.get('type');
+      const urlTags = params.get('tags');
 
-      if (urlZone || urlType) {
-        store.setFilters({ zone: urlZone || undefined, type: urlType || undefined });
+      const typesArray = urlType ? urlType.split(',').filter(Boolean) : undefined;
+      const tagsArray = urlTags ? urlTags.split(',').filter(Boolean) : undefined;
+
+      if (urlZone || typesArray || tagsArray) {
+        store.setFilters({ zone: urlZone || undefined, type: typesArray, tags: tagsArray });
       }
       if (notePath) {
         handleSelectNote(decodeURIComponent(notePath));
         if (urlView === 'edit') view = 'edit';
       }
+
+      // Fetch tags
+      try {
+        const tagsRes = await fetch('/api/vault/tags');
+        if (tagsRes.ok) allTags = await tagsRes.json();
+      } catch { /* silent */ }
     });
 
     return () => {
@@ -258,6 +305,33 @@
     {/if}
   </header>
 
+  <VaultCommandBar
+    allTypes={Object.keys(store.stats?.notesByType ?? {})}
+    allTags={Object.keys(allTags)}
+    activeTypes={Array.isArray(store.filters.type) ? store.filters.type : store.filters.type ? [store.filters.type] : []}
+    activeTags={store.filters.tags ?? []}
+    onFilterChange={(f) => {
+      store.setFilters({
+        zone: store.filters.zone,
+        type: f.type && f.type.length > 0 ? f.type : undefined,
+        tags: f.tags && f.tags.length > 0 ? f.tags : undefined,
+      });
+      replaceUrl();
+    }}
+  />
+
+  <VaultSmartViews
+    activeFilters={store.filters}
+    onApply={(f) => {
+      store.setFilters({
+        zone: f.zone,
+        type: f.type && f.type.length > 0 ? f.type : undefined,
+        tags: f.tags && f.tags.length > 0 ? f.tags : undefined,
+      });
+      replaceUrl();
+    }}
+  />
+
   {#if isMobile}
     <div class="flex border-b border-hub-border bg-hub-surface/30">
       <button
@@ -316,11 +390,11 @@
               onNodeClick={handleSelectNote}
             />
           </div>
-        {:else if view === 'note' && store.selectedNote}
+        {:else if view === 'note' && localNote}
           <div class="flex-1 min-h-0 overflow-y-auto p-4 md:p-6">
             <div class="max-w-4xl mx-auto">
               <VaultNoteView
-                note={store.selectedNote}
+                note={localNote}
                 vaultDir={store.vaultDir}
                 onNavigate={handleNavigate}
                 onEdit={() => { view = 'edit'; }}
@@ -328,11 +402,15 @@
               />
             </div>
           </div>
-        {:else if view === 'edit' && store.selectedNote}
+        {:else if view === 'note' && !localNote}
+          <div class="flex-1 flex items-center justify-center">
+            <div class="text-hub-muted animate-pulse">Loading note...</div>
+          </div>
+        {:else if view === 'edit' && localNote}
           <div class="flex-1 min-h-0 overflow-y-auto p-4 md:p-6">
             <div class="max-w-4xl mx-auto">
               <VaultNoteEditor
-                note={store.selectedNote}
+                note={localNote}
                 onSave={handleNoteSaved}
                 onCancel={() => { view = 'note'; }}
               />

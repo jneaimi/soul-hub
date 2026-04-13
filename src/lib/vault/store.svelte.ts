@@ -13,7 +13,7 @@ let selectedNote = $state<VaultNote | null>(null);
 let selectedPath = $state<string | null>(null);
 let loading = $state(true);
 let error = $state<string | null>(null);
-let filters = $state<{ zone?: string; type?: string }>({});
+let filters = $state<{ zone?: string; type?: string | string[]; tags?: string[] }>({});
 
 // ── AbortController pool ──
 const controllers = new Map<string, AbortController>();
@@ -59,9 +59,14 @@ async function fetchRecent(): Promise<void> {
   }
 }
 
-async function fetchGraph(opts?: { zone?: string; type?: string; project?: string }): Promise<void> {
+async function fetchGraph(opts?: { zone?: string; type?: string | string[]; tags?: string[]; project?: string }): Promise<void> {
   const params = new URLSearchParams();
   if (opts?.zone) params.set('zone', opts.zone);
+  if (opts?.type) {
+    const types = Array.isArray(opts.type) ? opts.type : [opts.type];
+    params.set('type', types.join(','));
+  }
+  if (opts?.tags) params.set('tags', opts.tags.join(','));
   if (opts?.project) params.set('project', opts.project);
   const url = `/api/vault/graph${params.toString() ? '?' + params : ''}`;
   try {
@@ -72,7 +77,8 @@ async function fetchGraph(opts?: { zone?: string; type?: string; project?: strin
       let nodes: GraphNode[] = data.nodes;
       let edges: GraphEdge[] = data.edges;
       if (opts?.type) {
-        const ids = new Set(nodes.filter(n => n.type === opts.type).map(n => n.id));
+        const types = Array.isArray(opts.type) ? opts.type : [opts.type];
+        const ids = new Set(nodes.filter(n => n.type && types.includes(n.type)).map(n => n.id));
         nodes = nodes.filter(n => ids.has(n.id));
         edges = edges.filter(e => ids.has(e.source) && ids.has(e.target));
       }
@@ -88,7 +94,8 @@ async function fetchNote(path: string): Promise<void> {
   selectedPath = path;
   try {
     const signal = abortAndReplace('note', 5000);
-    const res = await fetch(`/api/vault/notes/${encodeURIComponent(path)}`, { signal });
+    const url = `/api/vault/notes/${path.split('/').map(encodeURIComponent).join('/')}`;
+    const res = await fetch(url, { signal });
     if (res.ok) {
       selectedNote = await res.json();
     } else if (res.status === 404) {
@@ -136,7 +143,7 @@ function clearSelection(): void {
   selectedPath = null;
 }
 
-function setFilters(f: { zone?: string; type?: string }): void {
+function setFilters(f: { zone?: string; type?: string | string[]; tags?: string[] }): void {
   filters = f;
   fetchGraph(f);
 }
