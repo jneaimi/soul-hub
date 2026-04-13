@@ -2,7 +2,7 @@ import { watch, type FSWatcher } from 'chokidar';
 import { resolve, relative, isAbsolute } from 'node:path';
 import { IGNORED_FOLDERS } from './types.js';
 
-export type WatcherEvent =
+type WatcherEvent =
 	| { type: 'add' | 'change'; path: string }
 	| { type: 'unlink'; path: string };
 

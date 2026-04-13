@@ -1,4 +1,3 @@
-import Graph from 'graphology';
 import type { VaultNote, GraphData, GraphNode, GraphEdge } from './types.js';
 import { ZONE_COLORS, TYPE_COLORS, DEFAULT_ZONE } from './types.js';
 
@@ -136,39 +135,13 @@ export class VaultGraph {
 		return this.build(localNotes);
 	}
 
-	buildGraphology(data: GraphData): Graph {
-		const g = new Graph();
-
-		for (const node of data.nodes) {
-			g.addNode(node.id, {
-				label: node.label,
-				size: node.size,
-				color: node.color,
-				x: Math.random() * 1000,
-				y: Math.random() * 1000,
-			});
-		}
-
-		for (const edge of data.edges) {
-			if (g.hasNode(edge.source) && g.hasNode(edge.target)) {
-				try {
-					g.addEdge(edge.source, edge.target, { label: edge.label });
-				} catch {
-					// parallel edge in simple graph — skip
-				}
-			}
-		}
-
-		return g;
-	}
 }
 
 function getZone(path: string): string {
 	const segments = path.split('/');
 	if (segments.length <= 1) return DEFAULT_ZONE;
 	const first = segments[0];
-	return ['inbox', 'projects', 'knowledge', 'content', 'operations', 'archive',
-		'patterns', 'research', 'sessions'].includes(first)
+	return ['inbox', 'projects', 'knowledge', 'content', 'operations', 'archive'].includes(first)
 		? first
 		: DEFAULT_ZONE;
 }

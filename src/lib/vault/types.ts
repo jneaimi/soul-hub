@@ -199,6 +199,19 @@ export interface WriteError {
 	field?: string;
 }
 
+export interface WriteLogEntry {
+	timestamp: string;
+	action: 'create' | 'update' | 'archive' | 'move' | 'delete';
+	path: string;
+	previousPath?: string;
+	agent?: string;
+	context?: string;
+	zone: string;
+	type?: string;
+	success: boolean;
+	error?: string;
+}
+
 // ── Template ────────────────────────────────────────────────
 
 export interface VaultTemplate {
@@ -221,10 +234,6 @@ export const ZONE_COLORS: Record<string, string> = {
 	content: '#8b5cf6',      // violet
 	operations: '#64748b',   // slate
 	archive: '#6b7280',      // gray
-	// Legacy zones (kept during migration)
-	patterns: '#06b6d4',     // cyan (same as knowledge)
-	research: '#06b6d4',     // cyan (same as knowledge)
-	sessions: '#64748b',     // slate (same as operations)
 };
 
 export const TYPE_COLORS: Record<string, string> = {

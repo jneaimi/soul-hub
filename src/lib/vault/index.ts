@@ -4,7 +4,8 @@ import matter from 'gray-matter';
 import type {
 	VaultNote, VaultConfig, SearchQuery, SearchResult,
 	GraphData, VaultStats, VaultHealth, VaultZone, VaultTemplate,
-	CreateNoteRequest, UpdateNoteRequest, WriteResult, WriteError
+	CreateNoteRequest, UpdateNoteRequest, WriteResult, WriteError,
+	WriteLogEntry
 } from './types.js';
 import { GLOBAL_REQUIRED_FIELDS, MAX_NOTE_SIZE } from './types.js';
 import { VaultIndexer } from './indexer.js';
@@ -25,6 +26,11 @@ export class VaultEngine {
 	private templates: TemplateLoader;
 	private config: VaultConfig;
 	private pruneInterval: ReturnType<typeof setInterval> | null = null;
+	private writeLog: WriteLogEntry[] = [];
+	private static readonly MAX_LOG_ENTRIES = 500;
+	private agentWriteCounts = new Map<string, { count: number; windowStart: number }>();
+	private static readonly RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+	private static readonly RATE_LIMIT_MAX_WRITES = 50; // per agent per hour
 
 	constructor(config: VaultConfig) {
 		this.config = config;
@@ -198,6 +204,71 @@ export class VaultEngine {
 		return this.templates.remove(name);
 	}
 
+	// ── Write Audit Log ──
+
+	private logWrite(entry: Omit<WriteLogEntry, 'timestamp'>): void {
+		this.writeLog.unshift({ ...entry, timestamp: new Date().toISOString() });
+		if (this.writeLog.length > VaultEngine.MAX_LOG_ENTRIES) {
+			this.writeLog.length = VaultEngine.MAX_LOG_ENTRIES;
+		}
+	}
+
+	getWriteLog(opts?: { agent?: string; zone?: string; limit?: number }): WriteLogEntry[] {
+		let log = this.writeLog;
+		if (opts?.agent) log = log.filter(e => e.agent === opts.agent);
+		if (opts?.zone) log = log.filter(e => e.zone === opts.zone);
+		return log.slice(0, opts?.limit ?? 50);
+	}
+
+	private checkRateLimit(agent: string): { allowed: boolean; remaining: number; resetAt: string } {
+		const now = Date.now();
+		const entry = this.agentWriteCounts.get(agent);
+
+		if (!entry || (now - entry.windowStart) > VaultEngine.RATE_LIMIT_WINDOW_MS) {
+			this.agentWriteCounts.set(agent, { count: 1, windowStart: now });
+			return { allowed: true, remaining: VaultEngine.RATE_LIMIT_MAX_WRITES - 1, resetAt: new Date(now + VaultEngine.RATE_LIMIT_WINDOW_MS).toISOString() };
+		}
+
+		if (entry.count >= VaultEngine.RATE_LIMIT_MAX_WRITES) {
+			const resetAt = new Date(entry.windowStart + VaultEngine.RATE_LIMIT_WINDOW_MS).toISOString();
+			return { allowed: false, remaining: 0, resetAt };
+		}
+
+		entry.count++;
+		return { allowed: true, remaining: VaultEngine.RATE_LIMIT_MAX_WRITES - entry.count, resetAt: new Date(entry.windowStart + VaultEngine.RATE_LIMIT_WINDOW_MS).toISOString() };
+	}
+
+	private checkDuplicate(zone: string, content: string, title: string): { isDuplicate: boolean; similarPath?: string } {
+		const normalize = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+		const normalizedContent = normalize(content);
+		const normalizedTitle = normalize(title);
+
+		const zoneNotes = this.indexer.filter({ zone: zone.split('/')[0] });
+
+		for (const note of zoneNotes) {
+			if (normalize(note.title) === normalizedTitle) {
+				return { isDuplicate: true, similarPath: note.path };
+			}
+
+			const existingNorm = normalize(note.content.slice(0, 500));
+			const newNorm = normalizedContent.slice(0, 500);
+
+			if (existingNorm.length > 50 && newNorm.length > 50) {
+				const existingWords = new Set(existingNorm.split(' '));
+				const newWords = new Set(newNorm.split(' '));
+				const intersection = [...newWords].filter(w => existingWords.has(w)).length;
+				const union = new Set([...existingWords, ...newWords]).size;
+				const similarity = union > 0 ? intersection / union : 0;
+
+				if (similarity > 0.9) {
+					return { isDuplicate: true, similarPath: note.path };
+				}
+			}
+		}
+
+		return { isDuplicate: false };
+	}
+
 	// ── Write Operations ──
 
 	async createNote(req: CreateNoteRequest): Promise<WriteResult | WriteError> {
@@ -241,6 +312,43 @@ export class VaultEngine {
 			req.meta.tags = [...(req.meta.tags ?? []), 'auto-generated'];
 		}
 
+		// Rate limit agent writes
+		if (req.meta.source_agent) {
+			const rateCheck = this.checkRateLimit(req.meta.source_agent);
+			if (!rateCheck.allowed) {
+				this.logWrite({
+					action: 'create',
+					path: join(req.zone, req.filename),
+					agent: req.meta.source_agent,
+					context: req.meta.source_context as string | undefined,
+					zone: req.zone.split('/')[0],
+					type: req.meta.type as string | undefined,
+					success: false,
+					error: `Rate limit exceeded (${VaultEngine.RATE_LIMIT_MAX_WRITES}/hour). Resets at ${rateCheck.resetAt}`,
+				});
+				return { success: false, error: `Rate limit exceeded for agent "${req.meta.source_agent}". Max ${VaultEngine.RATE_LIMIT_MAX_WRITES} writes per hour. Resets at ${rateCheck.resetAt}` };
+			}
+		}
+
+		// Content dedup check (agent writes only)
+		if (req.meta.source_agent) {
+			const titleFromContent = req.content.split('\n').find(l => l.startsWith('# '))?.replace('# ', '') || req.filename.replace('.md', '');
+			const dupCheck = this.checkDuplicate(req.zone, req.content, titleFromContent);
+			if (dupCheck.isDuplicate) {
+				this.logWrite({
+					action: 'create',
+					path: join(req.zone, req.filename),
+					agent: req.meta.source_agent,
+					context: req.meta.source_context as string | undefined,
+					zone: req.zone.split('/')[0],
+					type: req.meta.type as string | undefined,
+					success: false,
+					error: `Duplicate content detected (similar to ${dupCheck.similarPath})`,
+				});
+				return { success: false, error: `Duplicate content detected. Similar note exists at: ${dupCheck.similarPath}` };
+			}
+		}
+
 		const content = matter.stringify(req.content, req.meta);
 		if (Buffer.byteLength(content) > MAX_NOTE_SIZE) {
 			return { success: false, error: `Note exceeds maximum size of ${MAX_NOTE_SIZE} bytes` };
@@ -267,12 +375,32 @@ export class VaultEngine {
 			await writeFile(tmpPath, content, 'utf-8');
 			await rename(tmpPath, absPath);
 		} catch (err) {
+			this.logWrite({
+				action: 'create',
+				path: relPath,
+				agent: req.meta.source_agent as string | undefined,
+				context: req.meta.source_context as string | undefined,
+				zone: req.zone.split('/')[0],
+				type: req.meta.type as string | undefined,
+				success: false,
+				error: err instanceof Error ? err.message : String(err),
+			});
 			return { success: false, error: `Write failed: ${err instanceof Error ? err.message : String(err)}` };
 		}
 
 		await this.indexer.reindex(relPath);
 		const note = this.indexer.get(relPath);
 		if (note) this.searcher.upsert(note);
+
+		this.logWrite({
+			action: 'create',
+			path: relPath,
+			agent: req.meta.source_agent as string | undefined,
+			context: req.meta.source_context as string | undefined,
+			zone: req.zone.split('/')[0],
+			type: req.meta.type as string | undefined,
+			success: true,
+		});
 
 		return { success: true, path: relPath };
 	}
@@ -306,12 +434,32 @@ export class VaultEngine {
 			await writeFile(tmpPath, content, 'utf-8');
 			await rename(tmpPath, absPath);
 		} catch (err) {
+			this.logWrite({
+				action: 'update',
+				path,
+				agent: existing.meta.source_agent as string | undefined,
+				context: existing.meta.source_context as string | undefined,
+				zone: path.split('/')[0],
+				type: existing.meta.type as string | undefined,
+				success: false,
+				error: err instanceof Error ? err.message : String(err),
+			});
 			return { success: false, error: `Write failed: ${err instanceof Error ? err.message : String(err)}` };
 		}
 
 		await this.indexer.reindex(path);
 		const note = this.indexer.get(path);
 		if (note) this.searcher.upsert(note);
+
+		this.logWrite({
+			action: 'update',
+			path,
+			agent: existing.meta.source_agent as string | undefined,
+			context: existing.meta.source_context as string | undefined,
+			zone: path.split('/')[0],
+			type: existing.meta.type as string | undefined,
+			success: true,
+		});
 
 		return { success: true, path };
 	}
@@ -331,6 +479,17 @@ export class VaultEngine {
 			await mkdir(dirname(absTarget), { recursive: true });
 			await rename(absSource, absTarget);
 		} catch (err) {
+			this.logWrite({
+				action: 'archive',
+				path: archivePath,
+				previousPath: path,
+				agent: existing.meta.source_agent as string | undefined,
+				context: existing.meta.source_context as string | undefined,
+				zone: 'archive',
+				type: existing.meta.type as string | undefined,
+				success: false,
+				error: err instanceof Error ? err.message : String(err),
+			});
 			return { success: false, error: `Archive failed: ${err instanceof Error ? err.message : String(err)}` };
 		}
 
@@ -339,6 +498,17 @@ export class VaultEngine {
 		await this.indexer.reindex(archivePath);
 		const note = this.indexer.get(archivePath);
 		if (note) this.searcher.upsert(note);
+
+		this.logWrite({
+			action: 'archive',
+			path: archivePath,
+			previousPath: path,
+			agent: existing.meta.source_agent as string | undefined,
+			context: existing.meta.source_context as string | undefined,
+			zone: 'archive',
+			type: existing.meta.type as string | undefined,
+			success: true,
+		});
 
 		return { success: true, path: archivePath };
 	}
@@ -364,6 +534,17 @@ export class VaultEngine {
 			await mkdir(dirname(absTarget), { recursive: true });
 			await rename(absSource, absTarget);
 		} catch (err) {
+			this.logWrite({
+				action: 'move',
+				path: newPath,
+				previousPath: path,
+				agent: existing.meta.source_agent as string | undefined,
+				context: existing.meta.source_context as string | undefined,
+				zone: targetZone.split('/')[0],
+				type: existing.meta.type as string | undefined,
+				success: false,
+				error: err instanceof Error ? err.message : String(err),
+			});
 			return { success: false, error: `Move failed: ${err instanceof Error ? err.message : String(err)}` };
 		}
 
@@ -372,6 +553,17 @@ export class VaultEngine {
 		await this.indexer.reindex(newPath);
 		const note = this.indexer.get(newPath);
 		if (note) this.searcher.upsert(note);
+
+		this.logWrite({
+			action: 'move',
+			path: newPath,
+			previousPath: path,
+			agent: existing.meta.source_agent as string | undefined,
+			context: existing.meta.source_context as string | undefined,
+			zone: targetZone.split('/')[0],
+			type: existing.meta.type as string | undefined,
+			success: true,
+		});
 
 		return { success: true, path: newPath };
 	}
@@ -402,6 +594,15 @@ export class VaultEngine {
 					this.indexer.remove(note.path);
 					this.searcher.remove(note.path);
 					pruned.push(note.path);
+					this.logWrite({
+						action: 'delete',
+						path: note.path,
+						agent: note.meta.source_agent as string | undefined,
+						context: note.meta.source_context as string | undefined,
+						zone,
+						type: note.meta.type as string | undefined,
+						success: true,
+					});
 				} catch {
 					// file may already be gone
 				}
@@ -485,11 +686,11 @@ Search the vault for relevant knowledge before starting work:
 curl -s "http://localhost:2400/api/vault/notes?project=${projectName}&limit=10"
 curl -s "http://localhost:2400/api/vault/notes?q=<your-topic>&limit=5"
 \`\`\`
-Check: patterns (reusable solutions), decisions (why things are the way they are), debugging (known pitfalls).
+Check: decisions (why things are the way they are), debugging (known pitfalls), learnings (reusable solutions).
 
 ## After You Build
 Save valuable knowledge:
-- **Reusable pattern** → POST to /api/vault/notes with zone "patterns"
+- **Reusable pattern** → POST to /api/vault/notes with zone "projects/${projectName}/learnings"
 - **Design decision** → POST with zone "projects/${projectName}/decisions"
 - **Surprising learning** → POST with zone "projects/${projectName}/learnings"
 - **Bug investigation** → POST with zone "projects/${projectName}/debugging"

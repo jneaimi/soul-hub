@@ -44,10 +44,6 @@ export class TemplateLoader {
 		}
 	}
 
-	get(name: string): VaultTemplate | undefined {
-		return this.templates.get(name);
-	}
-
 	list(): VaultTemplate[] {
 		return Array.from(this.templates.values());
 	}
