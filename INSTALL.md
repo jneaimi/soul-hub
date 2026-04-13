@@ -78,14 +78,14 @@ npm run dev
 
 Open [http://localhost:5173](http://localhost:5173).
 
-### Production Mode
+### Production Mode (PM2)
 
 ```bash
 # Build the app
 npm run build
 
-# Start with PM2
-./scripts/start_prod.sh start
+# Start with PM2 (runs on port 2400)
+npm run prod:start
 ```
 
 Open [http://localhost:2400](http://localhost:2400).
@@ -93,13 +93,22 @@ Open [http://localhost:2400](http://localhost:2400).
 ### Production Commands
 
 ```bash
-./scripts/start_prod.sh start     # Build and start
-./scripts/start_prod.sh stop      # Stop all processes
-./scripts/start_prod.sh restart   # Rebuild and zero-downtime reload
-./scripts/start_prod.sh status    # Show process status
-./scripts/start_prod.sh logs      # Tail logs
-./scripts/start_prod.sh startup   # Enable auto-start on boot
+npm run prod:start      # Start all processes (app + tunnel)
+npm run prod:stop       # Stop all processes
+npm run prod:restart    # Zero-downtime reload
+npm run prod:status     # Show process status
+npm run prod:logs       # Tail logs
+npm run prod:startup    # Enable auto-start on boot
 ```
+
+The PM2 config is in `ecosystem.config.cjs`. It runs two processes:
+
+| Process | Purpose | Port |
+|---------|---------|------|
+| `soul-hub` | SvelteKit app | 2400 |
+| `soul-hub-tunnel` | Cloudflare Tunnel (optional) | - |
+
+Logs are written to `~/.soul-hub/logs/`. The app auto-restarts on crash with exponential backoff, and respects a 512MB memory limit.
 
 ## Configuration Reference
 
