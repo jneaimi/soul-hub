@@ -26,6 +26,16 @@
 	let savedMtime = $state(note.mtime);
 	let showConflict = $state(false);
 
+	function isRtl(text: string): boolean {
+		const rtlChars = text.match(/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u0590-\u05FF]/g);
+		if (!rtlChars) return false;
+		const latinChars = text.match(/[a-zA-Z]/g);
+		const totalAlpha = (rtlChars?.length || 0) + (latinChars?.length || 0);
+		return totalAlpha > 0 && (rtlChars.length / totalAlpha) > 0.3;
+	}
+
+	const contentIsRtl = $derived(isRtl(editContent));
+
 	const isDirty = $derived(
 		editContent !== note.content ||
 		editType !== (note.meta.type || 'learning') ||
@@ -230,6 +240,7 @@
 			bind:value={editContent}
 			onkeydown={handleKeydown}
 			rows={20}
+			dir={contentIsRtl ? 'rtl' : 'ltr'}
 			class="w-full bg-transparent text-hub-text text-sm p-4 font-mono resize-y min-h-[20rem] border-none outline-none"
 			spellcheck="false"
 		></textarea>
@@ -246,7 +257,7 @@
 	</div>
 
 	{#if showPreview}
-		<div class="vault-prose bg-hub-surface rounded-lg p-6 border border-hub-border">
+		<div class="vault-prose bg-hub-surface rounded-lg p-6 border border-hub-border" dir={contentIsRtl ? 'rtl' : undefined} lang={contentIsRtl ? 'ar' : undefined}>
 			{@html previewHtml}
 		</div>
 	{/if}

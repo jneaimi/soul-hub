@@ -339,7 +339,7 @@
                 onclick={() => onSelect(note.path)}
               >
                 <div class="flex items-center gap-1.5">
-                  <span class="truncate flex-1">{note.title}</span>
+                  <span class="truncate flex-1" style="unicode-bidi: plaintext;">{note.title}</span>
                 </div>
                 <div class="flex items-center gap-1.5 mt-0.5">
                   {#if note.meta?.type}

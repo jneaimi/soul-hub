@@ -199,6 +199,21 @@
 		}
 	}
 
+	/**
+	 * Detect if text is predominantly RTL (Arabic, Hebrew, etc.)
+	 * Returns true if >30% of alphabetic characters are RTL script.
+	 */
+	function isRtl(text: string): boolean {
+		const rtlChars = text.match(/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u0590-\u05FF]/g);
+		if (!rtlChars) return false;
+		const latinChars = text.match(/[a-zA-Z]/g);
+		const totalAlpha = (rtlChars?.length || 0) + (latinChars?.length || 0);
+		return totalAlpha > 0 && (rtlChars.length / totalAlpha) > 0.3;
+	}
+
+	const contentIsRtl = $derived(isRtl(note.content));
+	const titleIsRtl = $derived(isRtl(note.title));
+
 	const resolvedLinks = $derived(note.links.filter(l => l.resolved));
 	const unresolvedLinks = $derived(note.links.filter(l => !l.resolved));
 </script>
@@ -256,7 +271,7 @@
 
 	<!-- Metadata -->
 	<div class="bg-hub-surface rounded-lg p-4 border border-hub-border">
-		<h1 class="text-xl font-semibold text-hub-text mb-3">{note.title}</h1>
+		<h1 class="text-xl font-semibold text-hub-text mb-3" dir={titleIsRtl ? 'rtl' : undefined}>{note.title}</h1>
 
 		{#if note.meta.tags && note.meta.tags.length > 0}
 			<div class="flex items-center gap-2 flex-wrap mb-2">
@@ -287,6 +302,8 @@
 	<div
 		bind:this={contentEl}
 		class="vault-prose bg-hub-surface rounded-lg p-6 border border-hub-border"
+		dir={contentIsRtl ? 'rtl' : undefined}
+		lang={contentIsRtl ? 'ar' : undefined}
 		onclick={handleContentClick}
 		role="presentation"
 	>
@@ -351,7 +368,7 @@
 	:global(.vault-prose h2) { font-size: 1.25rem; font-weight: 600; margin: 1.25rem 0 0.5rem; }
 	:global(.vault-prose h3) { font-size: 1.1rem; font-weight: 600; margin: 1rem 0 0.5rem; }
 	:global(.vault-prose p) { margin: 0.5rem 0; }
-	:global(.vault-prose ul, .vault-prose ol) { padding-left: 1.5rem; margin: 0.5rem 0; }
+	:global(.vault-prose ul, .vault-prose ol) { padding-inline-start: 1.5rem; margin: 0.5rem 0; }
 	:global(.vault-prose li) { margin: 0.25rem 0; }
 
 	/* Inline code */
@@ -454,8 +471,8 @@
 
 	/* Blockquotes */
 	:global(.vault-prose blockquote) {
-		border-left: 3px solid var(--color-hub-border, #334155);
-		padding-left: 1rem;
+		border-inline-start: 3px solid var(--color-hub-border, #334155);
+		padding-inline-start: 1rem;
 		color: var(--color-hub-muted, #94A3B8);
 		margin: 0.75rem 0;
 	}
@@ -492,7 +509,7 @@
 	:global(.vault-prose th, .vault-prose td) {
 		border: 1px solid var(--color-hub-border, #334155);
 		padding: 0.5rem 0.75rem;
-		text-align: left;
+		text-align: start;
 	}
 	:global(.vault-prose th) {
 		background: var(--color-hub-card, #1E293B);
