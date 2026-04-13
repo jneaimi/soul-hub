@@ -163,6 +163,22 @@ export class VaultEngine {
 				results.push({ path: note.path, violations });
 			}
 		}
+
+		// Check for orphan notes (no incoming or outgoing links) — skip inbox and archive
+		const orphanExemptZones = ['inbox', 'archive'];
+		for (const note of this.indexer.all()) {
+			const zone = note.path.split('/')[0];
+			if (orphanExemptZones.includes(zone)) continue;
+			if (note.links.length === 0 && note.backlinks.length === 0) {
+				const existing = results.find(r => r.path === note.path);
+				if (existing) {
+					existing.violations.push('No wikilinks (orphan note — add at least one [[link]])');
+				} else {
+					results.push({ path: note.path, violations: ['No wikilinks (orphan note — add at least one [[link]])'] });
+				}
+			}
+		}
+
 		return results;
 	}
 
@@ -220,6 +236,11 @@ export class VaultEngine {
 		}
 
 		// Validate file size
+		// Auto-tag agent-generated notes
+		if (req.meta.source_agent && !req.meta.tags?.includes('auto-generated')) {
+			req.meta.tags = [...(req.meta.tags ?? []), 'auto-generated'];
+		}
+
 		const content = matter.stringify(req.content, req.meta);
 		if (Buffer.byteLength(content) > MAX_NOTE_SIZE) {
 			return { success: false, error: `Note exceeds maximum size of ${MAX_NOTE_SIZE} bytes` };

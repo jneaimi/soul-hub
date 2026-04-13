@@ -31,6 +31,8 @@ export interface VaultMeta {
 	source?: string;
 	language?: string;
 	resolved?: boolean;
+	source_agent?: string;
+	source_context?: string;
 	/** Catch-all for custom frontmatter fields */
 	[key: string]: unknown;
 }
