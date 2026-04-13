@@ -38,6 +38,8 @@
 	let vaultOrphans = $state(0);
 	let vaultUnresolved = $state(0);
 	let vaultLastIndexed = $state('');
+	let vaultZones = $state<Record<string, number>>({});
+	let vaultThisWeek = $state(0);
 
 	// Add project modal
 	let showAddModal = $state(false);
@@ -107,6 +109,16 @@
 		} catch { /* silent */ }
 	}
 
+	const zoneColors: Record<string, string> = {
+		inbox: '#f59e0b',
+		projects: '#6366f1',
+		knowledge: '#06b6d4',
+		content: '#8b5cf6',
+		operations: '#64748b',
+		archive: '#6b7280',
+	};
+	const zoneOrder = ['knowledge', 'content', 'projects', 'operations', 'inbox', 'archive'];
+
 	async function loadVault() {
 		try {
 			const [statsRes, recentRes] = await Promise.all([
@@ -119,6 +131,17 @@
 				vaultOrphans = data.stats?.orphanNotes ?? 0;
 				vaultUnresolved = data.stats?.unresolvedLinks ?? 0;
 				vaultLastIndexed = data.stats?.lastIndexed ?? '';
+				vaultZones = data.stats?.notesByZone ?? {};
+				// Count notes modified in last 7 days
+				const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+				try {
+					const allRes = await fetch('/api/vault/recent?limit=200');
+					if (allRes.ok) {
+						const allData = await allRes.json();
+						const notes = allData.notes ?? allData;
+						vaultThisWeek = notes.filter((n: VaultRecent) => n.mtime > weekAgo).length;
+					}
+				} catch { /* silent */ }
 			}
 			if (recentRes.ok) {
 				const data = await recentRes.json();
@@ -481,13 +504,35 @@
 									<h3 class="text-sm font-semibold text-hub-text">
 										Vault
 										{#if vaultNoteCount > 0}
-											<span class="text-hub-dim font-normal ml-1">({vaultNoteCount} notes)</span>
+											<span class="text-hub-dim font-normal ml-1">({vaultNoteCount})</span>
 										{/if}
 									</h3>
 									<span class="w-2 h-2 rounded-full {vaultUnresolved > 0 ? 'bg-amber-400' : 'bg-emerald-400'}"></span>
 								</div>
 								<a href="/vault" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">Open vault</a>
 							</div>
+
+							<!-- Zone distribution -->
+							{#if vaultNoteCount > 0 && Object.keys(vaultZones).length > 0}
+								<div class="space-y-1 mb-3">
+									{#each zoneOrder.filter(z => vaultZones[z]) as zone}
+										{@const count = vaultZones[zone] ?? 0}
+										{@const pct = Math.round((count / vaultNoteCount) * 100)}
+										<div class="flex items-center gap-2">
+											<span class="text-[10px] text-hub-dim w-16 text-right truncate">{zone}</span>
+											<div class="flex-1 h-1.5 rounded-full bg-hub-bg overflow-hidden">
+												<div
+													class="h-full rounded-full transition-all duration-500"
+													style="width: {pct}%; background-color: {zoneColors[zone] ?? '#64748b'}"
+												></div>
+											</div>
+											<span class="text-[10px] text-hub-dim w-6">{count}</span>
+										</div>
+									{/each}
+								</div>
+							{/if}
+
+							<!-- Recent notes -->
 							{#if vaultRecent.length > 0}
 								<div class="space-y-1.5">
 									{#each vaultRecent as note}
@@ -507,15 +552,19 @@
 							{:else}
 								<p class="text-xs text-hub-dim py-3 text-center">No notes yet</p>
 							{/if}
-							<!-- Health indicators -->
+
+							<!-- Health + activity -->
 							<div class="flex items-center gap-3 mt-2 text-[10px]">
+								{#if vaultThisWeek > 0}
+									<span class="text-hub-cta">+{vaultThisWeek} this week</span>
+								{/if}
 								{#if vaultUnresolved > 0}
-									<span class="text-hub-warning">{vaultUnresolved} broken links</span>
+									<span class="text-hub-warning">{vaultUnresolved} broken</span>
 								{/if}
 								{#if vaultOrphans > 0}
 									<span class="text-hub-dim">{vaultOrphans} orphans</span>
 								{/if}
-								{#if vaultUnresolved === 0 && vaultOrphans === 0}
+								{#if vaultUnresolved === 0 && vaultOrphans === 0 && vaultThisWeek === 0}
 									<span class="text-emerald-400">Healthy</span>
 								{/if}
 							</div>
