@@ -22,6 +22,7 @@
   let currentDir = $state('');
   let dirEntries = $state<FileEntry[]>([]);
   let loadingDir = $state(false);
+  let dirError = $state<string | null>(null);
 
   function getBasePath(): string {
     if (fileRoot === 'outputs' && store.pipelinesDir) return store.pipelinesDir;
@@ -31,12 +32,17 @@
   async function browseDir(dir: string) {
     if (!getBasePath()) return;
     loadingDir = true;
+    dirError = null;
     currentDir = dir;
     try {
       const fullPath = getBasePath() + (dir ? '/' + dir : '');
       const res = await fetch(`/api/files?path=${encodeURIComponent(fullPath)}`);
-      if (res.ok) {
-        const data = await res.json();
+      if (!res.ok) {
+        dirError = `Failed to load: ${res.statusText}`;
+        dirEntries = [];
+        return;
+      }
+      const data = await res.json();
         let entries = (data.entries || []) as FileEntry[];
         if (fileRoot === 'vault') {
           entries = entries.filter((e: FileEntry) => !e.name.startsWith('.') && e.name !== 'CLAUDE.md');
@@ -56,9 +62,10 @@
           if (aDir !== bDir) return aDir ? -1 : 1;
           return a.name.localeCompare(b.name);
         });
-      }
-    } catch { dirEntries = []; }
-    finally { loadingDir = false; }
+    } catch (e) {
+      dirError = (e as Error).name === 'AbortError' ? null : 'Network error';
+      dirEntries = [];
+    } finally { loadingDir = false; }
   }
 
   function handleFileClick(entry: FileEntry) {
@@ -186,6 +193,8 @@
 
       {#if loadingDir}
         <div class="text-xs text-hub-dim animate-pulse py-2">Loading...</div>
+      {:else if dirError}
+        <div class="text-xs text-hub-danger py-2">{dirError} <button onclick={() => browseDir(currentDir)} class="underline text-hub-muted hover:text-hub-text ml-1">Retry</button></div>
       {:else if dirEntries.length === 0}
         <div class="text-xs text-hub-dim py-2">Empty folder</div>
       {:else}

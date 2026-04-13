@@ -18,10 +18,11 @@ let filters = $state<{ zone?: string; type?: string }>({});
 // ── AbortController pool ──
 const controllers = new Map<string, AbortController>();
 
-function abortAndReplace(key: string): AbortSignal {
+function abortAndReplace(key: string, timeoutMs = 10000): AbortSignal {
   controllers.get(key)?.abort();
   const c = new AbortController();
   controllers.set(key, c);
+  setTimeout(() => c.abort(), timeoutMs);
   return c.signal;
 }
 
@@ -29,7 +30,7 @@ function abortAndReplace(key: string): AbortSignal {
 
 async function fetchOverview(): Promise<void> {
   try {
-    const signal = abortAndReplace('overview');
+    const signal = abortAndReplace('overview', 5000);
     const res = await fetch('/api/vault', { signal });
     if (!res.ok) { error = 'Vault not ready'; return; }
     const data = await res.json();
@@ -47,7 +48,7 @@ async function fetchOverview(): Promise<void> {
 
 async function fetchRecent(): Promise<void> {
   try {
-    const signal = abortAndReplace('recent');
+    const signal = abortAndReplace('recent', 5000);
     const res = await fetch('/api/vault/recent?limit=10', { signal });
     if (res.ok) {
       const data = await res.json();
@@ -86,10 +87,13 @@ async function fetchGraph(opts?: { zone?: string; type?: string; project?: strin
 async function fetchNote(path: string): Promise<void> {
   selectedPath = path;
   try {
-    const signal = abortAndReplace('note');
+    const signal = abortAndReplace('note', 5000);
     const res = await fetch(`/api/vault/notes/${encodeURIComponent(path)}`, { signal });
     if (res.ok) {
       selectedNote = await res.json();
+    } else if (res.status === 404) {
+      selectedNote = null;
+      error = `Note not found: ${path}`;
     }
   } catch (e) {
     if ((e as Error).name !== 'AbortError') { /* silent */ }

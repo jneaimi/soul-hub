@@ -13,6 +13,7 @@
   let results = $state<SearchResult[]>([]);
   let activeIndex = $state(0);
   let searching = $state(false);
+  let searchError = $state<string | null>(null);
   let inputEl: HTMLInputElement | undefined = $state();
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
   let searchController: AbortController | null = null;
@@ -37,8 +38,10 @@
     }
     searchController?.abort();
     searchController = new AbortController();
+    const timeout = setTimeout(() => searchController?.abort(), 8000);
 
     searching = true;
+    searchError = null;
     activeIndex = 0;
     try {
       const res = await fetch(`/api/vault/notes?q=${encodeURIComponent(q)}&limit=10`, {
@@ -47,10 +50,19 @@
       if (res.ok) {
         const data = await res.json();
         results = data.results || [];
+      } else {
+        searchError = `Search failed: ${res.statusText}`;
+        results = [];
       }
     } catch (e) {
-      if ((e as Error).name !== 'AbortError') results = [];
+      if ((e as Error).name === 'AbortError') {
+        searchError = timeout ? null : 'Search timed out';
+      } else {
+        searchError = 'Network error';
+        results = [];
+      }
     } finally {
+      clearTimeout(timeout);
       searching = false;
     }
   }
@@ -151,6 +163,8 @@
           </button>
         {/each}
       </div>
+    {:else if searchError}
+      <div class="px-4 py-8 text-center text-sm text-hub-danger">{searchError}</div>
     {:else if query.trim() && !searching}
       <div class="px-4 py-8 text-center text-sm text-hub-dim">No results found</div>
     {:else if !query.trim()}

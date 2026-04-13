@@ -280,7 +280,10 @@
 		{#if loading}
 			<div class="px-3 py-6 text-center text-hub-dim text-xs">Loading notes...</div>
 		{:else if error}
-			<div class="px-3 py-4 text-center text-hub-danger text-xs">{error}</div>
+			<div class="px-3 py-4 text-center text-xs">
+				<p class="text-hub-danger mb-1">{error}</p>
+				<button onclick={() => { error = null; loading = true; fetchNotes(); }} class="text-hub-muted hover:text-hub-text underline">Retry</button>
+			</div>
 		{:else if notes.length === 0}
 			<!-- Empty state -->
 			{#if scaffolded === false}

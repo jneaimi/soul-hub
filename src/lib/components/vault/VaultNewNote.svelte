@@ -23,6 +23,7 @@
   let content = $state('');
   let creating = $state(false);
   let formError = $state<string | null>(null);
+  let templateError = $state<string | null>(null);
 
   const today = new Date().toISOString().slice(0, 10);
 
@@ -45,14 +46,17 @@
 
   async function loadTemplates() {
     loadingTemplates = true;
+    templateError = null;
     try {
       const res = await fetch('/api/vault/templates');
       if (res.ok) {
         const data = await res.json();
         templates = data.templates;
+      } else {
+        templateError = `Failed to load templates: ${res.statusText}`;
       }
-    } catch {
-      // silent
+    } catch (e) {
+      templateError = (e as Error).message || 'Network error';
     } finally {
       loadingTemplates = false;
     }
@@ -173,6 +177,11 @@
       {#if step === 'template'}
         {#if loadingTemplates}
           <div class="px-4 py-12 text-center text-hub-dim animate-pulse">Loading templates...</div>
+        {:else if templateError}
+          <div class="px-4 py-12 text-center">
+            <p class="text-hub-danger text-sm mb-2">{templateError}</p>
+            <button onclick={loadTemplates} class="text-xs text-hub-muted hover:text-hub-text underline">Retry</button>
+          </div>
         {:else if templates.length === 0}
           <div class="px-4 py-12 text-center text-hub-dim">No templates found</div>
         {:else}
