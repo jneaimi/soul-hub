@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { getVaultStore } from '$lib/vault/store.svelte.js';
 
   const store = getVaultStore();
@@ -140,6 +139,16 @@
     return `${Math.floor(days / 30)}mo ago`;
   }
 
+  function getZoneRules(zonePath: string) {
+    return store.zones.find(z => z.path === zonePath) ?? null;
+  }
+
+  function formatAllowedTypes(types: string[]): string {
+    if (types.length === 0) return 'all';
+    if (types.length <= 4) return types.join(', ');
+    return types.slice(0, 4).join(', ') + ` +${types.length - 4} more`;
+  }
+
   function selectZone(zone: string | null) {
     activeZone = zone;
     onFilterChange({ zone: zone ?? undefined, type: activeType ?? undefined });
@@ -242,6 +251,25 @@
             <span class="capitalize">{zone}</span>
             <span class="ml-auto text-xs text-hub-dim">{count}</span>
           </button>
+          {#if activeZone === zone}
+            {@const zoneRules = getZoneRules(zone)}
+            <div class="pl-8 pr-2 py-1 text-[10px] text-hub-dim space-y-0.5">
+              {#if zoneRules}
+                <div>Types: {formatAllowedTypes(zoneRules.allowedTypes)}</div>
+                {#if zoneRules.requiredFields.length > 0}
+                  <div>Required: {zoneRules.requiredFields.join(', ')}</div>
+                {/if}
+                {#if zoneRules.namingPattern}
+                  <div>Naming: <code class="text-[9px] bg-hub-bg px-1 rounded">{zoneRules.namingPattern}</code></div>
+                {/if}
+                {#if zoneRules.requireTemplate}
+                  <div class="text-hub-cta">Template required</div>
+                {/if}
+              {:else}
+                <div>No governance rules</div>
+              {/if}
+            </div>
+          {/if}
         {/each}
       {/if}
     </div>

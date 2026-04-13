@@ -11,7 +11,8 @@ export const GET: RequestHandler = async () => {
 
 	try {
 		const health = await engine.getHealth();
-		return json(health);
+		const violations = engine.getGovernanceViolations();
+		return json({ ...health, violations, violationCount: violations.length });
 	} catch (err) {
 		return json({ error: (err as Error).message }, { status: 500 });
 	}

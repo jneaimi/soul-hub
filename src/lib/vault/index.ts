@@ -137,6 +137,31 @@ export class VaultEngine {
 		return this.indexer.health();
 	}
 
+	getGovernanceViolations(): { path: string; violations: string[] }[] {
+		const results: { path: string; violations: string[] }[] = [];
+		for (const note of this.indexer.all()) {
+			const violations: string[] = [];
+			const zone = this.governance.resolve(note.path.split('/').slice(0, -1).join('/'));
+
+			// Check type allowed
+			if (zone.allowedTypes.length > 0 && note.meta.type && !zone.allowedTypes.includes(note.meta.type)) {
+				violations.push(`Type "${note.meta.type}" not allowed (allowed: ${zone.allowedTypes.join(', ')})`);
+			}
+
+			// Check required fields
+			for (const field of zone.requiredFields) {
+				if (!(field in note.meta) || note.meta[field] === undefined || note.meta[field] === '') {
+					violations.push(`Missing required field: ${field}`);
+				}
+			}
+
+			if (violations.length > 0) {
+				results.push({ path: note.path, violations });
+			}
+		}
+		return results;
+	}
+
 	getZones(): VaultZone[] {
 		return this.governance.getZones();
 	}

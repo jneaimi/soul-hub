@@ -64,12 +64,16 @@ async function findClaudeMdFiles(dir: string, vaultRoot: string): Promise<string
 }
 
 function parseGovernance(zonePath: string, raw: string): VaultZone {
-	const allowedTypes = extractListSection(raw, 'Allowed Types');
-	const requiredFields = extractListSection(raw, 'Required Fields');
+	const allowedTypes = extractListSection(raw, 'Allowed Types', zonePath);
+	const requiredFields = extractListSection(raw, 'Required Fields', zonePath);
 	const namingPattern = extractNamingPattern(raw);
 	const requireTemplate =
 		/template\s+.*(?:required|MUST\s+use)/i.test(raw) ||
 		/(?:required|MUST\s+use)\s+.*template/i.test(raw);
+
+	if (allowedTypes.length === 0 && requiredFields.length === 0 && !namingPattern && !requireTemplate) {
+		console.warn(`[vault/governance] Zone "${zonePath}": CLAUDE.md has no recognized governance sections`);
+	}
 
 	return {
 		path: zonePath,
@@ -81,7 +85,7 @@ function parseGovernance(zonePath: string, raw: string): VaultZone {
 	};
 }
 
-function extractListSection(raw: string, heading: string): string[] {
+function extractListSection(raw: string, heading: string, zonePath?: string): string[] {
 	const pattern = new RegExp(`^##\\s+${heading}\\s*$`, 'im');
 	const match = pattern.exec(raw);
 	if (!match) return [];
@@ -91,7 +95,10 @@ function extractListSection(raw: string, heading: string): string[] {
 	const block = nextSection === -1 ? afterHeading : afterHeading.slice(0, nextSection);
 	const trimmed = block.trim();
 
-	if (!trimmed) return [];
+	if (trimmed === '') {
+		console.warn(`[vault/governance] Zone "${zonePath}": section "${heading}" is empty`);
+		return [];
+	}
 
 	// Handle bullet lists: - item or * item
 	const bullets = trimmed.match(/^[-*]\s+(.+)$/gm);
