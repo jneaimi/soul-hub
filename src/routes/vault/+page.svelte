@@ -9,6 +9,7 @@
   import VaultNewNote from '$lib/components/vault/VaultNewNote.svelte';
   import VaultCommandBar from '$lib/components/vault/VaultCommandBar.svelte';
   import VaultSmartViews from '$lib/components/vault/VaultSmartViews.svelte';
+  import VaultBulkBar from '$lib/components/vault/VaultBulkBar.svelte';
   import FilePreview from '$lib/components/FilePreview.svelte';
 
   const store = getVaultStore();
@@ -25,6 +26,14 @@
   let allTags = $state<Record<string, number>>({});
   let isMobile = $state(false);
   let mobileView = $state<'sidebar' | 'main'>('main');
+  let bulkSelected = $state<Set<string>>(new Set());
+
+  function toggleBulk(path: string) {
+    const next = new Set(bulkSelected);
+    if (next.has(path)) next.delete(path);
+    else next.add(path);
+    bulkSelected = next;
+  }
 
   // Local note state — workaround for $state reactivity in .svelte.ts modules
   let localNote = $state<any>(null);
@@ -356,8 +365,10 @@
       >
         <VaultSidebar
           selectedPath={store.selectedPath}
+          {bulkSelected}
           onSelect={handleSelectNote}
           onFilterChange={handleFilterChange}
+          onToggleBulk={toggleBulk}
         />
       </div>
 
@@ -421,6 +432,12 @@
     {/if}
   </div>
 </div>
+
+<VaultBulkBar
+  selected={bulkSelected}
+  onClear={() => { bulkSelected = new Set(); }}
+  onDone={() => { store.invalidate('overview', 'recent'); }}
+/>
 
 {#if showSearch}
   <VaultSearch

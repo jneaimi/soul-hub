@@ -5,11 +5,13 @@
 
   interface Props {
     selectedPath: string | null;
+    bulkSelected: Set<string>;
     onSelect: (path: string) => void;
     onFilterChange: (filter: { zone?: string }) => void;
+    onToggleBulk: (path: string) => void;
   }
 
-  let { selectedPath, onSelect, onFilterChange }: Props = $props();
+  let { selectedPath, bulkSelected, onSelect, onFilterChange, onToggleBulk }: Props = $props();
 
   // Read zone from store so it syncs with smart views
   let activeZone = $derived(store.filters.zone ?? null);
@@ -322,22 +324,33 @@
       {:else}
         <div class="space-y-0.5">
           {#each store.recentNotes as note}
-            <button
-              class="w-full text-left px-2 py-1.5 rounded text-sm transition-colors group {selectedPath === note.path ? 'bg-hub-cta/10 text-hub-cta' : 'text-hub-muted hover:text-hub-text hover:bg-hub-card'}"
-              onclick={() => onSelect(note.path)}
-            >
-              <div class="flex items-center gap-1.5">
-                <span class="truncate flex-1">{note.title}</span>
-              </div>
-              <div class="flex items-center gap-1.5 mt-0.5">
-                {#if note.meta?.type}
-                  <span class="text-[10px] px-1 rounded {typeColors[note.meta.type] ?? 'bg-hub-card text-hub-dim'}">
-                    {note.meta.type}
-                  </span>
+            <div class="flex items-start gap-1 group">
+              <button
+                class="flex-shrink-0 mt-2 w-3.5 h-3.5 rounded border cursor-pointer transition-colors {bulkSelected.has(note.path) ? 'bg-hub-cta border-hub-cta' : 'border-hub-border hover:border-hub-dim'}"
+                onclick={(e) => { e.stopPropagation(); onToggleBulk(note.path); }}
+                aria-label="Select {note.title}"
+              >
+                {#if bulkSelected.has(note.path)}
+                  <svg class="w-3.5 h-3.5 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>
                 {/if}
-                <span class="text-[10px] text-hub-dim ml-auto">{relativeTime(note.mtime)}</span>
-              </div>
-            </button>
+              </button>
+              <button
+                class="flex-1 text-left px-1.5 py-1.5 rounded text-sm transition-colors {selectedPath === note.path ? 'bg-hub-cta/10 text-hub-cta' : 'text-hub-muted hover:text-hub-text hover:bg-hub-card'}"
+                onclick={() => onSelect(note.path)}
+              >
+                <div class="flex items-center gap-1.5">
+                  <span class="truncate flex-1">{note.title}</span>
+                </div>
+                <div class="flex items-center gap-1.5 mt-0.5">
+                  {#if note.meta?.type}
+                    <span class="text-[10px] px-1 rounded {typeColors[note.meta.type] ?? 'bg-hub-card text-hub-dim'}">
+                      {note.meta.type}
+                    </span>
+                  {/if}
+                  <span class="text-[10px] text-hub-dim ml-auto">{relativeTime(note.mtime)}</span>
+                </div>
+              </button>
+            </div>
           {/each}
         </div>
       {/if}
