@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { type Project, type Suggestion, type GitBranchInfo, fetchProjects, fetchGitBranches, addProjectApi, removeProjectApi, timeAgo, typeColors } from '$lib/data/projects.js';
+	import { type Project, type Suggestion, type GitBranchInfo, fetchProjects, fetchGitBranches, addProjectApi, removeProjectApi, timeAgo } from '$lib/data/projects.js';
 
 	interface DashboardData {
 		pipelineSummary: { total: number; names: string[]; items?: { name: string; type: 'pipeline' | 'chain' }[] };
@@ -35,6 +35,9 @@
 	// Vault
 	let vaultNoteCount = $state(0);
 	let vaultRecent = $state<VaultRecent[]>([]);
+	let vaultOrphans = $state(0);
+	let vaultUnresolved = $state(0);
+	let vaultLastIndexed = $state('');
 
 	// Add project modal
 	let showAddModal = $state(false);
@@ -113,6 +116,9 @@
 			if (statsRes.ok) {
 				const data = await statsRes.json();
 				vaultNoteCount = data.stats?.totalNotes ?? 0;
+				vaultOrphans = data.stats?.orphanNotes ?? 0;
+				vaultUnresolved = data.stats?.unresolvedLinks ?? 0;
+				vaultLastIndexed = data.stats?.lastIndexed ?? '';
 			}
 			if (recentRes.ok) {
 				const data = await recentRes.json();
@@ -471,12 +477,15 @@
 						<!-- Vault -->
 						<div class="bg-hub-card rounded-xl p-4 border border-hub-border">
 							<div class="flex items-center justify-between mb-3">
-								<h3 class="text-sm font-semibold text-hub-text">
-									Vault
-									{#if vaultNoteCount > 0}
-										<span class="text-hub-dim font-normal ml-1">({vaultNoteCount} notes)</span>
-									{/if}
-								</h3>
+								<div class="flex items-center gap-1.5">
+									<h3 class="text-sm font-semibold text-hub-text">
+										Vault
+										{#if vaultNoteCount > 0}
+											<span class="text-hub-dim font-normal ml-1">({vaultNoteCount} notes)</span>
+										{/if}
+									</h3>
+									<span class="w-2 h-2 rounded-full {vaultUnresolved > 0 ? 'bg-amber-400' : 'bg-emerald-400'}"></span>
+								</div>
 								<a href="/vault" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">Open vault</a>
 							</div>
 							{#if vaultRecent.length > 0}
@@ -498,6 +507,18 @@
 							{:else}
 								<p class="text-xs text-hub-dim py-3 text-center">No notes yet</p>
 							{/if}
+							<!-- Health indicators -->
+							<div class="flex items-center gap-3 mt-2 text-[10px]">
+								{#if vaultUnresolved > 0}
+									<span class="text-hub-warning">{vaultUnresolved} broken links</span>
+								{/if}
+								{#if vaultOrphans > 0}
+									<span class="text-hub-dim">{vaultOrphans} orphans</span>
+								{/if}
+								{#if vaultUnresolved === 0 && vaultOrphans === 0}
+									<span class="text-emerald-400">Healthy</span>
+								{/if}
+							</div>
 						</div>
 					</div>
 

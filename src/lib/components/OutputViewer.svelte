@@ -12,9 +12,10 @@
 	interface Props {
 		outputs: OutputEntry[];
 		onPreview?: (path: string, name: string) => void;
+		vaultBaseUrl?: string;
 	}
 
-	let { outputs, onPreview }: Props = $props();
+	let { outputs, onPreview, vaultBaseUrl }: Props = $props();
 
 	let expandedPreviews = $state<Set<string>>(new Set());
 	let previewContent = $state<Record<string, string>>({});
@@ -189,6 +190,16 @@
 								class="text-[11px] px-2.5 py-1 rounded border border-hub-border/50 text-hub-muted hover:text-hub-text hover:border-hub-border transition-colors"
 							>
 								Download
+							</a>
+						{/if}
+
+						{#if vaultBaseUrl && entry.type === 'file'}
+							<a
+								href="{vaultBaseUrl}{entry.name.replace(/\.[^.]+$/, '.md')}"
+								class="text-[11px] px-2.5 py-1 rounded border border-hub-border/50 text-hub-muted hover:text-hub-text hover:border-hub-border transition-colors"
+								target="_blank"
+							>
+								Open in Vault
 							</a>
 						{/if}
 					</div>

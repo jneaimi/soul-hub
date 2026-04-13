@@ -58,6 +58,7 @@
 	let runResult = $state<{ status: string; phases: any[] } | null>(null);
 	let outputFiles = $state<Record<string, string>>({});
 	let activeReportTab = $state('');
+	let vaultNotes = $state<{path: string; title: string; type?: string}[]>([]);
 
 	// Gate / Human
 	let waitingForGate = $state('');
@@ -209,6 +210,7 @@
 				}
 				running = false;
 				stopTimers();
+				loadPlaybookVaultNotes();
 			}
 		} catch { /* retry next poll */ }
 	}
@@ -284,6 +286,21 @@
 		waitingForGate = '';
 		waitingForHuman = '';
 		showRejectInput = false;
+		vaultNotes = [];
+	}
+
+	async function loadPlaybookVaultNotes() {
+		if (!playbookName || !runId) return;
+		try {
+			const res = await fetch(`/api/vault/notes?project=${encodeURIComponent(playbookName)}&limit=20`);
+			if (res.ok) {
+				const data = await res.json();
+				const shortId = runId.slice(0, 8);
+				vaultNotes = (data.results || []).filter((n: any) =>
+					n.path.includes(shortId)
+				);
+			}
+		} catch { vaultNotes = []; }
 	}
 
 	onDestroy(stopTimers);
@@ -395,6 +412,29 @@
 				</div>
 			</div>
 		</section>
+	{/if}
+
+	<!-- Vault Notes -->
+	{#if vaultNotes.length > 0}
+		<div class="mt-4">
+			<h3 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-2">Vault Notes</h3>
+			<div class="space-y-1">
+				{#each vaultNotes as note}
+					<a
+						href="/vault?note={encodeURIComponent(note.path)}"
+						class="flex items-center gap-2 px-3 py-2 rounded-lg bg-hub-card border border-hub-border hover:border-hub-dim transition-colors text-sm text-hub-muted hover:text-hub-text"
+					>
+						<svg class="w-4 h-4 text-hub-dim flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+						</svg>
+						<span class="truncate">{note.title}</span>
+						{#if note.type}
+							<span class="text-[10px] px-1.5 rounded bg-hub-surface text-hub-dim ml-auto flex-shrink-0">{note.type}</span>
+						{/if}
+					</a>
+				{/each}
+			</div>
+		</div>
 	{/if}
 
 	<!-- Actions -->
