@@ -75,6 +75,21 @@ export const PUT: RequestHandler = async ({ params, request }) => {
 		return json({ error: 'content must be a string' }, { status: 400 });
 	}
 
+	// Check for edit conflicts
+	const ifMtime = request.headers.get('x-note-mtime');
+	if (ifMtime) {
+		const clientMtime = parseInt(ifMtime, 10);
+		const current = await engine.getNote(path);
+		if (current && !isNaN(clientMtime) && current.mtime !== clientMtime) {
+			return json({
+				success: false,
+				error: 'Note was modified externally. Reload to see the latest version.',
+				conflict: true,
+				serverMtime: current.mtime,
+			}, { status: 409 });
+		}
+	}
+
 	try {
 		const result = await engine.updateNote(path, {
 			meta: meta as Record<string, unknown> | undefined,

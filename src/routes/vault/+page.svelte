@@ -23,6 +23,24 @@
   let isMobile = $state(false);
   let mobileView = $state<'sidebar' | 'main'>('main');
 
+  function buildUrlParams(): string {
+    const params = new URLSearchParams();
+    if (view !== 'graph') params.set('view', view);
+    if (store.selectedPath) params.set('note', store.selectedPath);
+    if (store.filters.zone) params.set('zone', store.filters.zone);
+    if (store.filters.type) params.set('type', store.filters.type);
+    const qs = params.toString();
+    return `/vault${qs ? '?' + qs : ''}`;
+  }
+
+  function updateUrl() {
+    history.pushState({ view, note: store.selectedPath }, '', buildUrlParams());
+  }
+
+  function replaceUrl() {
+    history.replaceState({ view, note: store.selectedPath }, '', buildUrlParams());
+  }
+
   function handleSelectNote(path: string) {
     if (path.startsWith('__file__:')) {
       const absPath = path.slice(9);
@@ -32,11 +50,13 @@
     store.selectNote(path);
     view = 'note';
     if (isMobile) mobileView = 'main';
+    updateUrl();
   }
 
   function backToGraph() {
     view = 'graph';
     store.clearSelection();
+    updateUrl();
   }
 
   async function handleArchive() {
@@ -46,6 +66,7 @@
       view = 'graph';
       store.clearSelection();
       await store.invalidate('overview', 'recent', 'graph');
+      updateUrl();
     }
   }
 
@@ -53,6 +74,7 @@
     view = 'note';
     await store.selectNote(path);
     await store.invalidate('overview', 'graph');
+    replaceUrl();
   }
 
   async function handleNoteCreated(path: string) {
@@ -60,10 +82,12 @@
     await store.invalidate('overview', 'recent', 'graph');
     await store.selectNote(path);
     view = 'note';
+    updateUrl();
   }
 
   function handleFilterChange(filter: { zone?: string; type?: string }) {
     store.setFilters(filter);
+    replaceUrl();
   }
 
   function handleNavigate(path: string) {
@@ -131,21 +155,53 @@
     window.addEventListener('mouseup', onUp);
   }
 
+  function handlePopState(e: PopStateEvent) {
+    const params = new URLSearchParams(window.location.search);
+    const notePath = params.get('note');
+    const urlView = params.get('view') as 'graph' | 'note' | 'edit' | null;
+    const urlZone = params.get('zone');
+    const urlType = params.get('type');
+
+    if (notePath) {
+      store.selectNote(decodeURIComponent(notePath));
+      view = urlView || 'note';
+    } else {
+      view = 'graph';
+      store.clearSelection();
+    }
+
+    if (urlZone || urlType) {
+      store.setFilters({ zone: urlZone || undefined, type: urlType || undefined });
+    }
+
+    if (isMobile && notePath) mobileView = 'main';
+  }
+
   onMount(() => {
     const checkMobile = () => { isMobile = window.innerWidth < 768; };
     checkMobile();
     window.addEventListener('resize', checkMobile);
+    window.addEventListener('popstate', handlePopState);
 
     store.init().then(() => {
       const params = new URLSearchParams(window.location.search);
       const notePath = params.get('note');
+      const urlView = params.get('view') as 'graph' | 'note' | 'edit' | null;
+      const urlZone = params.get('zone');
+      const urlType = params.get('type');
+
+      if (urlZone || urlType) {
+        store.setFilters({ zone: urlZone || undefined, type: urlType || undefined });
+      }
       if (notePath) {
         handleSelectNote(decodeURIComponent(notePath));
+        if (urlView === 'edit') view = 'edit';
       }
     });
 
     return () => {
       window.removeEventListener('resize', checkMobile);
+      window.removeEventListener('popstate', handlePopState);
       store.destroy();
     };
   });

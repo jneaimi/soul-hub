@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { marked } from 'marked';
 	import type { VaultNote } from '$lib/vault/types';
 	import { TYPE_COLORS } from '$lib/vault/types';
@@ -22,6 +23,8 @@
 	let saving = $state(false);
 	let saveError: string | null = $state(null);
 	let showPreview = $state(false);
+	let savedMtime = $state(note.mtime);
+	let showConflict = $state(false);
 
 	const isDirty = $derived(
 		editContent !== note.content ||
@@ -49,11 +52,22 @@
 		try {
 			const res = await fetch(`/api/vault/notes/${encodeURIComponent(note.path)}`, {
 				method: 'PUT',
-				headers: { 'Content-Type': 'application/json' },
+				headers: {
+					'Content-Type': 'application/json',
+					'X-Note-Mtime': savedMtime.toString(),
+				},
 				body: JSON.stringify({ meta, content: editContent }),
 			});
+
+			if (res.status === 409) {
+				showConflict = true;
+				saving = false;
+				return;
+			}
+
 			const data = await res.json();
 			if (data.success) {
+				savedMtime = Date.now();
 				onSave(note.path);
 			} else {
 				saveError = data.error || 'Save failed';
@@ -64,6 +78,22 @@
 
 		saving = false;
 	}
+
+	// Reset savedMtime when note prop changes (user navigates to different note)
+	$effect(() => {
+		savedMtime = note.mtime;
+		showConflict = false;
+	});
+
+	onMount(() => {
+		function handleBeforeUnload(e: BeforeUnloadEvent) {
+			if (isDirty) {
+				e.preventDefault();
+			}
+		}
+		window.addEventListener('beforeunload', handleBeforeUnload);
+		return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+	});
 
 	function handleCancel() {
 		if (isDirty) {
@@ -108,6 +138,20 @@
 			</button>
 		</div>
 	</div>
+
+	{#if showConflict}
+		<div class="mb-4 px-4 py-3 rounded-lg bg-hub-warning/10 border border-hub-warning/30">
+			<p class="text-sm text-hub-warning font-medium">This note was modified externally.</p>
+			<div class="flex gap-2 mt-2">
+				<button onclick={() => { onCancel(); }} class="text-xs px-3 py-1 rounded bg-hub-card border border-hub-border text-hub-muted hover:text-hub-text">
+					Reload latest
+				</button>
+				<button onclick={() => { showConflict = false; savedMtime = Date.now(); save(); }} class="text-xs px-3 py-1 rounded bg-hub-warning/20 text-hub-warning hover:brightness-110">
+					Overwrite anyway
+				</button>
+			</div>
+		</div>
+	{/if}
 
 	{#if saveError}
 		<div class="px-3 py-2 rounded bg-hub-danger/10 text-hub-danger text-sm border border-hub-danger/30">

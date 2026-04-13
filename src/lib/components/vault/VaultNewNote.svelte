@@ -24,14 +24,46 @@
   let creating = $state(false);
   let formError = $state<string | null>(null);
   let templateError = $state<string | null>(null);
+  let extraFields = $state<Record<string, string>>({});
 
   const today = new Date().toISOString().slice(0, 10);
+
+  // Walk from most specific to least specific zone path to find governance rules
+  const selectedZoneRules = $derived.by(() => {
+    if (!zone) return null;
+    const parts = zone.split('/');
+    for (let i = parts.length; i >= 0; i--) {
+      const candidate = parts.slice(0, i).join('/');
+      const match = store.zones.find(z => z.path === candidate);
+      if (match) return match;
+    }
+    return null;
+  });
+
+  // Filter type list by zone's allowedTypes (empty = allow all)
+  const allowedTypes = $derived.by(() => {
+    const rules = selectedZoneRules;
+    if (!rules || rules.allowedTypes.length === 0) {
+      return ['learning', 'decision', 'debugging', 'output', 'pattern', 'snippet', 'research', 'report'];
+    }
+    return rules.allowedTypes;
+  });
 
   const filename = $derived(
     title.trim()
       ? `${today}-${title.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')}.md`
       : ''
   );
+
+  // Validate filename against zone's naming pattern
+  const namingError = $derived.by(() => {
+    const rules = selectedZoneRules;
+    if (!rules?.namingPattern || !filename) return null;
+    try {
+      const re = new RegExp(rules.namingPattern);
+      return re.test(filename) ? null : `Filename must match: ${rules.namingPattern}`;
+    } catch { return null; }
+  });
 
   const templateIcons: Record<string, string> = {
     learning: 'M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253',
@@ -78,7 +110,21 @@
     tags = '';
     content = '';
     formError = null;
+    extraFields = {};
   }
+
+  // Validate type against zone's allowedTypes when zone changes
+  $effect(() => {
+    const rules = selectedZoneRules;
+    if (rules && rules.allowedTypes.length > 0) {
+      const currentType = selectedTemplate?.name || '';
+      if (currentType && !rules.allowedTypes.includes(currentType)) {
+        formError = `Type "${currentType}" not allowed in zone "${zone}". Allowed: ${rules.allowedTypes.join(', ')}`;
+      } else {
+        formError = null;
+      }
+    }
+  });
 
   async function createNote() {
     if (!title.trim()) {
@@ -103,6 +149,7 @@
       created: today,
       tags: tagList,
       title: title.trim(),
+      ...extraFields,
     };
 
     try {
@@ -220,6 +267,11 @@
                 <option value={z.path}>{z.path}</option>
               {/each}
             </select>
+            {#if selectedZoneRules && selectedZoneRules.allowedTypes.length > 0}
+              <p class="text-[10px] text-hub-dim mt-1">Allowed: {selectedZoneRules.allowedTypes.join(', ')}</p>
+            {:else if zone && !selectedZoneRules}
+              <p class="text-[10px] text-hub-warning mt-1">Zone not configured</p>
+            {/if}
           </div>
 
           <!-- Title -->
@@ -239,6 +291,9 @@
             <div class="text-xs text-hub-dim">
               <span class="text-hub-muted">Filename:</span> {filename}
             </div>
+            {#if namingError}
+              <p class="text-xs text-hub-danger mt-0.5">{namingError}</p>
+            {/if}
           {/if}
 
           <!-- Tags -->
@@ -252,6 +307,20 @@
               class="w-full bg-hub-card border border-hub-border rounded-lg px-3 py-2 text-sm text-hub-text outline-none focus:border-hub-cta transition-colors placeholder:text-hub-dim"
             />
           </div>
+
+          <!-- Zone-specific required fields -->
+          {#if selectedZoneRules?.requiredFields}
+            {#each selectedZoneRules.requiredFields.filter(f => !['type', 'created', 'tags'].includes(f)) as field}
+              <div>
+                <label class="block text-xs font-medium text-hub-dim mb-1 capitalize">{field} <span class="text-hub-danger">*</span></label>
+                <input
+                  bind:value={extraFields[field]}
+                  class="w-full bg-hub-card border border-hub-border rounded-lg px-3 py-2 text-sm text-hub-text outline-none focus:border-hub-cta transition-colors placeholder:text-hub-dim"
+                  placeholder={field}
+                />
+              </div>
+            {/each}
+          {/if}
 
           <!-- Content -->
           <div>
@@ -284,7 +353,7 @@
         >Cancel</button>
         <button
           onclick={createNote}
-          disabled={creating || !title.trim() || !zone}
+          disabled={creating || !title.trim() || !zone || !!namingError || !!formError}
           class="px-4 py-1.5 rounded-lg text-sm font-medium bg-hub-cta text-white hover:brightness-110 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {creating ? 'Creating...' : 'Create Note'}
