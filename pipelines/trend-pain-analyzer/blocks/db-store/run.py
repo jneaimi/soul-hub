@@ -45,8 +45,8 @@ def load_all_inputs():
             elif "comments" in data and "spam_filtered" in data:
                 inputs["comments"] = data
     else:
-        # Single input — try to load from known output paths
-        output_dir = PIPELINE_DIR / "output"
+        # Single input — try to load from known output paths (run-scoped, then legacy)
+        output_dir = Path(os.environ.get("PIPELINE_OUTPUT_DIR", str(PIPELINE_DIR / "output")))
         for name, filename in [
             ("posts", "scan-posts-result.json"),
             ("titles", "rank-titles-result.json"),

@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
-import { mkdir, stat, readFile, readdir, writeFile, unlink, copyFile } from 'node:fs/promises';
-import { resolve, dirname, join } from 'node:path';
+import { mkdir, stat, readFile, readdir, writeFile, unlink, copyFile, symlink, readlink, lstat } from 'node:fs/promises';
+import { resolve, dirname, join, relative, sep } from 'node:path';
 import { config } from '$lib/config.js';
 import { spawnSession, writeInput, killSession as ptyKillSession } from '$lib/pty/manager.js';
 import { parsePipeline, resolveRef, getExecutionOrder, checkCondition, evaluateCondition } from './parser.js';
@@ -10,6 +10,48 @@ import { parseChain } from './chain-parser.js';
 import type { PipelineStep, PipelineMcp, PipelineRun, StepStatus } from './types.js';
 import { sendViaChannel } from '$lib/channels/registry.js';
 import { savePipelineOutput, savePipelineRunSummary } from '../vault/pipeline-bridge.js';
+
+/**
+ * Compute the run-scoped output directory name.
+ * Format: {date}_{shortRunId} e.g. "2026-04-14_a8f3c1d2"
+ */
+function runScopedDir(runId: string): string {
+	const date = new Date().toISOString().slice(0, 10);
+	return `${date}_${runId}`;
+}
+
+/**
+ * Inject run scope into a relative output/ path.
+ * "output/result.json" → "output/runs/{date}_{runId}/result.json"
+ * Skips paths that already contain $RUN_ID, are absolute, /dev/null, or don't start with "output/".
+ */
+function injectRunScope(rawOutput: string, runId: string): string {
+	if (!rawOutput || rawOutput === '/dev/null') return rawOutput;
+	if (rawOutput.includes('$RUN_ID')) return rawOutput; // already versioned
+	if (rawOutput.startsWith('/') || rawOutput.startsWith('~')) return rawOutput; // absolute
+	if (!rawOutput.startsWith('output/') && !rawOutput.startsWith('output\\')) return rawOutput;
+	// "output/result.json" → "output/runs/{scope}/result.json"
+	const rest = rawOutput.slice('output/'.length);
+	return `output/runs/${runScopedDir(runId)}/${rest}`;
+}
+
+/**
+ * Update the output/latest symlink to point to the most recent run directory.
+ * Non-blocking — failures are logged but don't break the pipeline.
+ */
+async function updateLatestSymlink(pipelineDir: string, runId: string): Promise<void> {
+	const runsDir = join(pipelineDir, 'output', 'runs');
+	const latestLink = join(pipelineDir, 'output', 'latest');
+	const target = runScopedDir(runId);
+	try {
+		// Remove existing symlink (or file/dir at that path)
+		try { await lstat(latestLink); await unlink(latestLink); } catch { /* doesn't exist */ }
+		// Create relative symlink: output/latest → runs/{date}_{runId}
+		await symlink(join('runs', target), latestLink);
+	} catch (err) {
+		console.warn(`[pipeline] Failed to update latest symlink:`, err instanceof Error ? err.message : err);
+	}
+}
 
 /** MCP server configuration entry */
 interface McpServerConfig {
@@ -178,6 +220,7 @@ function buildIsolatedEnv(
 	// Pipeline-specific vars
 	env.PIPELINE_INPUT = inputPaths[0] || '';
 	env.PIPELINE_OUTPUT = outputPath;
+	env.PIPELINE_OUTPUT_DIR = dirname(outputPath);
 	env.PIPELINE_DIR = pipelineDir;
 
 	// Numbered inputs for multi-input steps
@@ -291,22 +334,37 @@ export async function runPipeline(
 				resumeReached = true;
 				// This step failed — run it again
 			} else {
-				// Check if this step's output file exists (from the previous run)
+				// Check if this step's output file exists (from current or previous run)
 				const today = new Date().toISOString().slice(0, 10);
-				let cachedOutput = (step.output || '').replace('$RUN_ID', runId).replace('$DATE', today);
-				cachedOutput = resolveRef(cachedOutput, resolvedInputs, stepOutputs);
+				let rawResume = (step.output || '').replace('$RUN_ID', runId).replace('$DATE', today);
+				rawResume = injectRunScope(rawResume, runId);
+				let cachedOutput = resolveRef(rawResume, resolvedInputs, stepOutputs);
 				if (cachedOutput && !cachedOutput.startsWith(tmpdir()) && cachedOutput !== '/dev/null') {
 					if (!cachedOutput.startsWith('/')) cachedOutput = resolve(pipelineDir, cachedOutput);
+					let found = false;
 					try {
 						await stat(cachedOutput);
-						// Output exists — mark as done and cache the path
+						found = true;
+					} catch {
+						// Current run dir doesn't have it — check output/latest/ symlink
+						const latestPath = cachedOutput.replace(`/runs/${runScopedDir(runId)}/`, '/latest/');
+						if (latestPath !== cachedOutput) {
+							try {
+								await stat(latestPath);
+								// Found in latest — copy into new run dir so downstream steps find it
+								await mkdir(dirname(cachedOutput), { recursive: true });
+								await copyFile(latestPath, cachedOutput);
+								found = true;
+							} catch { /* not there either */ }
+						}
+					}
+					if (found) {
 						stepOutputs[stepId] = cachedOutput;
 						emit(stepId, 'done', 'Cached from previous run');
 						const sr = run.steps.find((s) => s.id === stepId);
 						if (sr) { sr.outputPath = cachedOutput; }
 						continue;
-					} catch {
-						// Output doesn't exist — need to re-run from here
+					} else {
 						resumeReached = true;
 					}
 				} else {
@@ -337,8 +395,10 @@ export async function runPipeline(
 			try {
 				// Resolve output path (replace built-in variables and refs)
 				const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-				let outputPath = (step.output || '/dev/null').replace('$RUN_ID', runId).replace('$DATE', today);
-				outputPath = resolveRef(outputPath, resolvedInputs, stepOutputs);
+				let outputRaw = (step.output || '/dev/null').replace('$RUN_ID', runId).replace('$DATE', today);
+				// Inject run scope: output/X → output/runs/{date}_{runId}/X
+				outputRaw = injectRunScope(outputRaw, runId);
+				let outputPath = resolveRef(outputRaw, resolvedInputs, stepOutputs);
 				// Resolve relative output paths against the pipeline directory
 				if (outputPath !== '/dev/null' && !outputPath.startsWith('/')) {
 					outputPath = resolve(pipelineDir, outputPath);
@@ -478,6 +538,9 @@ export async function runPipeline(
 		run.status = 'done';
 	}
 	run.finishedAt = new Date().toISOString();
+
+	// Update output/latest symlink (non-blocking, best-effort)
+	updateLatestSymlink(pipelineDir, runId).catch(() => {});
 
 	// Save pipeline run summary to vault (non-blocking)
 	if (run.status === 'done' || run.status === 'failed') {

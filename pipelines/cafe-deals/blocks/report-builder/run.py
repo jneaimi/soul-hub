@@ -35,8 +35,12 @@ SENTIMENT_ICON = {
 
 def load_cafe_source() -> dict:
     """Load original cafe-finder data for address/maps_url/reviews."""
+    # Use PIPELINE_OUTPUT_DIR (run-scoped) first, fall back to PIPELINE_DIR/output for legacy
+    output_dir = os.environ.get("PIPELINE_OUTPUT_DIR", "")
     pipeline_dir = os.environ.get("PIPELINE_DIR", "")
-    finder_path = Path(pipeline_dir) / "output" / "find-cafes-result.json" if pipeline_dir else None
+    finder_path = Path(output_dir) / "find-cafes-result.json" if output_dir else None
+    if not (finder_path and finder_path.exists()) and pipeline_dir:
+        finder_path = Path(pipeline_dir) / "output" / "find-cafes-result.json"
     if finder_path and finder_path.exists():
         try:
             finder_data = json.loads(finder_path.read_text())
@@ -141,6 +145,76 @@ def normalize(data: dict) -> tuple[str, list[dict], dict]:
             })
 
         return location, normalized, insights
+
+    # Agent drift format: cafes have value_score/deal_tags/recommendation but no deal_score
+    if "cafes" in data and isinstance(data["cafes"], list) and data["cafes"]:
+        first = data["cafes"][0]
+        if "value_score" in first or "recommendation" in first or "deal_tags" in first:
+            deal_signals_lookup = {}
+            for section_key in ("deal_insights", "insights"):
+                section = data.get(section_key, {})
+                if isinstance(section, dict):
+                    for _cat, items in section.items():
+                        if isinstance(items, list):
+                            for item in items:
+                                if isinstance(item, dict) and "cafe" in item:
+                                    deal_signals_lookup.setdefault(item["cafe"].lower(), []).append(item)
+
+            normalized = []
+            for cafe in data["cafes"]:
+                name = cafe.get("name", "Unknown")
+                src = cafe_source.get(name.lower(), {})
+                signals = deal_signals_lookup.get(name.lower(), [])
+
+                # Derive deal_score from deal_tags
+                tags = cafe.get("deal_tags", [])
+                deal_score = min(len(tags) * 2, 10) if tags else 0
+                # Boost if there are matching deal_insights signals
+                if signals:
+                    deal_score = min(deal_score + len(signals) * 2, 10)
+
+                deal_details = []
+                for tag in tags:
+                    deal_details.append({
+                        "type": tag,
+                        "description": tag.replace("_", " ").title(),
+                        "confidence": "medium",
+                        "recency": "unknown",
+                    })
+                for sig in signals:
+                    detail_text = sig.get("detail") or sig.get("note") or sig.get("program") or ""
+                    deal_details.append({
+                        "type": "deal",
+                        "description": detail_text,
+                        "confidence": "medium",
+                        "recency": "recent",
+                    })
+
+                # Map value_score: numeric rating -> category
+                vs = cafe.get("value_score")
+                if isinstance(vs, (int, float)):
+                    value_cat = "excellent" if vs >= 4.5 else "good" if vs >= 4.0 else "average" if vs >= 3.5 else "poor"
+                else:
+                    value_cat = str(vs) if vs else "unknown"
+
+                normalized.append({
+                    "name": name,
+                    "address": src.get("address", ""),
+                    "rating": cafe.get("rating"),
+                    "price_level": cafe.get("price_level"),
+                    "maps_url": cafe.get("maps_url") or src.get("maps_url", ""),
+                    "status": cafe.get("business_status", src.get("business_status", "OPERATIONAL")),
+                    "deal_score": deal_score,
+                    "deal_summary": "; ".join(d["description"] for d in deal_details if d["description"]) or cafe.get("recommendation", ""),
+                    "deal_details": deal_details,
+                    "sentiment": cafe.get("sentiment", "neutral"),
+                    "value_score": value_cat,
+                    "highlights": [cafe["recommendation"]] if cafe.get("recommendation") else [],
+                    "concerns": [cafe["caveat"]] if cafe.get("caveat") else [],
+                    "recommendation": cafe.get("recommendation", ""),
+                })
+
+            return location, normalized, data.get("deal_insights", insights)
 
     # Agent deviation: {"cafe_analysis": [...], "deals": [...]}
     cafes_analysis = data.get("cafe_analysis", [])
