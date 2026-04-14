@@ -440,7 +440,7 @@ export async function runPipeline(
 						stepType: step.type,
 						outputPath,
 						outputType: step.output_type,
-					}).catch(() => {});
+					}).catch((err) => console.warn(`[vault] Failed to save output for ${stepId}:`, err?.message ?? err));
 				}
 
 				success = true;
@@ -490,7 +490,7 @@ export async function runPipeline(
 				outputPath: s.outputPath,
 			})),
 			resolvedInputs: run.resolvedInputs,
-		}).catch(() => {});
+		}).catch((err) => console.warn(`[vault] Failed to save run summary for ${spec.name}:`, err?.message ?? err));
 	}
 
 	// Clean up temp .mcp.json from pipeline dir (written by buildMcpConfig)
@@ -702,6 +702,7 @@ async function runAgentStep(
 		const timer = setTimeout(() => {
 			if (!resolved) {
 				resolved = true;
+				clearInterval(watchdog);
 				ptyKillSession(session.id);
 				activePtySessions.delete(step.id);
 				reject(new Error(`Agent step "${step.id}" timed out after ${timeoutSec}s`));
@@ -846,6 +847,7 @@ async function runChunkStep(
 				try {
 					items.push(JSON.parse(content));
 				} catch {
+					onOutput?.(`Warning: chunk "${f}" produced invalid JSON, included as error placeholder\n`);
 					items.push({ _file: f, _error: 'Invalid JSON', _raw: content.slice(0, 500) });
 				}
 			}
@@ -880,6 +882,7 @@ async function runLoopStep(
 		currentInput = resolveRef(inputs[0], resolvedInputs, stepOutputs);
 	}
 
+	let conditionBroken = false;
 	for (let iteration = 1; iteration <= maxIterations; iteration++) {
 		if (Date.now() - startTime > totalTimeout) {
 			onOutput?.(`Loop reached total timeout after ${iteration - 1} iterations\n`);
@@ -907,7 +910,7 @@ async function runLoopStep(
 
 		stepOutputs[step.id] = outputPath;
 
-		if (step.until) {
+		if (step.until && !conditionBroken) {
 			try {
 				const outputContent = await readFile(outputPath, 'utf-8');
 				const result = evaluateCondition(
@@ -919,8 +922,10 @@ async function runLoopStep(
 					onOutput?.(`Loop condition met at iteration ${iteration}\n`);
 					return;
 				}
-			} catch {
-				// Condition evaluation failed — continue looping
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				onOutput?.(`Warning: loop condition failed — ${msg}. Remaining iterations will ignore the condition.\n`);
+				conditionBroken = true;
 			}
 		}
 	}
