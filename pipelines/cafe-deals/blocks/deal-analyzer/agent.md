@@ -65,7 +65,10 @@ Write a JSON file with this structure:
 
 ## Rules
 
-- **CRITICAL: Follow the Output Format above EXACTLY.** The downstream report-builder parses the `cafes` array for `deal_score`, `deal_summary`, and `deal_details`. If you use a different structure the report will be empty.
+- **CRITICAL: Your output MUST match the Output Format above EXACTLY — the downstream parser will produce an empty report if the keys don't match.**
+  - Each cafe object MUST have `deal_score` (integer 0-10), `deal_summary` (string), and `deal_details` (array of objects)
+  - Do NOT use `value_score`, `deal_tags`, `recommendation`, or `sentiment` — these are NOT recognized fields
+  - Do NOT add top-level keys like `summary`, `deal_insights`, `ranked_top_picks` — only `location`, `analyzed_count`, `cafes_with_deals`, and `cafes`
 - Always preserve ALL original cafe fields (name, address, place_id, rating, price_level, lat, lng, maps_url)
 - Do NOT rename keys or restructure the output (no `cafe_analysis`, no top-level `deals` array, no `insights` — everything goes inside each cafe object in the `cafes` array)
 - If a cafe has NO reviews, set deal_score to 0 and deal_summary to "No reviews available"
@@ -73,3 +76,4 @@ Write a JSON file with this structure:
 - Flag confidence: "high" if specific amounts/days mentioned, "medium" if general mention, "low" if ambiguous
 - Sort output cafes by deal_score descending (best deals first)
 - Write valid JSON to PIPELINE_OUTPUT — no markdown, no commentary outside the JSON
+- **Self-check before writing:** Verify every cafe has `deal_score`, `deal_summary`, `deal_details`. If any are missing, you did not follow the format.
