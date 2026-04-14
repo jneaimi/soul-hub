@@ -49,7 +49,7 @@ async function fetchOverview(): Promise<void> {
 async function fetchRecent(): Promise<void> {
   try {
     const signal = abortAndReplace('recent', 5000);
-    const res = await fetch('/api/vault/recent?limit=10', { signal });
+    const res = await fetch('/api/vault/recent?limit=50', { signal });
     if (res.ok) {
       const data = await res.json();
       recentNotes = data.notes ?? data;
@@ -76,11 +76,18 @@ async function fetchGraph(opts?: { zone?: string; type?: string | string[]; tags
       const data = await res.json();
       let nodes: GraphNode[] = data.nodes;
       let edges: GraphEdge[] = data.edges;
-      if (opts?.type) {
-        const types = Array.isArray(opts.type) ? opts.type : [opts.type];
-        const ids = new Set(nodes.filter(n => n.type && types.includes(n.type)).map(n => n.id));
-        nodes = nodes.filter(n => ids.has(n.id));
-        edges = edges.filter(e => ids.has(e.source) && ids.has(e.target));
+      const filterTypes = opts?.type ? (Array.isArray(opts.type) ? opts.type : [opts.type]) : null;
+      const filterTags = opts?.tags && opts.tags.length > 0 ? opts.tags : null;
+      if (filterTypes || filterTags) {
+        const matchIds = new Set(
+          nodes.filter(n => {
+            if (filterTypes && !(n.type && filterTypes.includes(n.type))) return false;
+            if (filterTags && !(n.tags && filterTags.every(t => n.tags!.includes(t)))) return false;
+            return true;
+          }).map(n => n.id)
+        );
+        nodes = nodes.filter(n => matchIds.has(n.id));
+        edges = edges.filter(e => matchIds.has(e.source) && matchIds.has(e.target));
       }
       graphNodes = nodes;
       graphEdges = edges;

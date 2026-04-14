@@ -133,6 +133,8 @@ export interface GraphNode {
 	type?: string;
 	/** Top-level zone folder */
 	zone: string;
+	/** Note tags from frontmatter */
+	tags?: string[];
 	/** Node size (based on total link count: outgoing + incoming) */
 	size: number;
 	/** Color (derived from zone) */

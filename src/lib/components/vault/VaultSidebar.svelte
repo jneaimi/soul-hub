@@ -17,6 +17,23 @@
   let activeZone = $derived(store.filters.zone ?? null);
   let sidebarTab = $state<'overview' | 'files'>('overview');
 
+  // Filter recent notes by active filters
+  let filteredRecent = $derived.by(() => {
+    let notes = store.recentNotes;
+    const f = store.filters;
+    if (f.zone) {
+      notes = notes.filter(n => n.path.split('/')[0] === f.zone);
+    }
+    if (f.type) {
+      const types = Array.isArray(f.type) ? f.type : [f.type];
+      notes = notes.filter(n => n.meta?.type && types.includes(n.meta.type));
+    }
+    if (f.tags && f.tags.length > 0) {
+      notes = notes.filter(n => n.meta?.tags && f.tags!.every(t => n.meta.tags!.includes(t)));
+    }
+    return notes;
+  });
+
   // File browser state
   interface FileEntry { name: string; type: string; size?: number; }
   let fileRoot = $state<'vault' | 'outputs'>('vault');
@@ -319,11 +336,11 @@
     <!-- Recent notes -->
     <div class="p-3">
       <h3 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-2">Recent</h3>
-      {#if store.recentNotes.length === 0}
-        <div class="text-xs text-hub-dim py-2">No notes yet</div>
+      {#if filteredRecent.length === 0}
+        <div class="text-xs text-hub-dim py-2">{store.filters.zone || store.filters.type || (store.filters.tags && store.filters.tags.length > 0) ? 'No matching notes' : 'No notes yet'}</div>
       {:else}
         <div class="space-y-0.5">
-          {#each store.recentNotes as note}
+          {#each filteredRecent as note}
             <div class="flex items-start gap-1 group">
               <button
                 class="flex-shrink-0 mt-2 w-3.5 h-3.5 rounded border cursor-pointer transition-colors {bulkSelected.has(note.path) ? 'bg-hub-cta border-hub-cta' : 'border-hub-border hover:border-hub-dim'}"
