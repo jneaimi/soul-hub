@@ -7,15 +7,16 @@
 		type: string;
 		format?: string;
 		status?: string;
+		/** Vault note path from pipeline-bridge (e.g. projects/my-pipeline/outputs/2026-04-14-step-abc.md) */
+		vaultNotePath?: string;
 	}
 
 	interface Props {
 		outputs: OutputEntry[];
 		onPreview?: (path: string, name: string) => void;
-		vaultBaseUrl?: string;
 	}
 
-	let { outputs, onPreview, vaultBaseUrl }: Props = $props();
+	let { outputs, onPreview }: Props = $props();
 
 	let expandedPreviews = $state<Set<string>>(new Set());
 	let previewContent = $state<Record<string, string>>({});
@@ -193,9 +194,9 @@
 							</a>
 						{/if}
 
-						{#if vaultBaseUrl && entry.type === 'file'}
+						{#if entry.vaultNotePath}
 							<a
-								href="{vaultBaseUrl}{entry.name.replace(/\.[^.]+$/, '.md')}"
+								href="/vault?note={encodeURIComponent(entry.vaultNotePath)}"
 								class="text-[11px] px-2.5 py-1 rounded border border-hub-border/50 text-hub-muted hover:text-hub-text hover:border-hub-border transition-colors"
 								target="_blank"
 							>

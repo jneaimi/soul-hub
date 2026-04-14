@@ -431,7 +431,7 @@ export async function runPipeline(
 				}
 				emit(stepId, 'done');
 
-				// Save to vault (non-blocking)
+				// Save to vault (non-blocking, but capture note path when it resolves)
 				if (outputPath && outputPath !== '/dev/null') {
 					savePipelineOutput({
 						pipelineName: spec.name,
@@ -440,6 +440,11 @@ export async function runPipeline(
 						stepType: step.type,
 						outputPath,
 						outputType: step.output_type,
+					}).then((notePath) => {
+						if (notePath) {
+							const sr = run.steps.find(s => s.id === stepId);
+							if (sr) sr.vaultNotePath = notePath;
+						}
 					}).catch((err) => console.warn(`[vault] Failed to save output for ${stepId}:`, err?.message ?? err));
 				}
 

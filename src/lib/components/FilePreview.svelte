@@ -13,6 +13,14 @@
 	let highlightedHtml = $state('');
 	let loading = $state(true);
 	let error = $state('');
+	let copied = $state(false);
+
+	async function copyContent() {
+		if (!content) return;
+		await navigator.clipboard.writeText(content);
+		copied = true;
+		setTimeout(() => { copied = false; }, 2000);
+	}
 	let fileSize = $state(0);
 
 	// Extract directory and file from full path
@@ -158,6 +166,23 @@
 						<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
 					</svg>
 				</a>
+				{#if content && !isMedia && !isPdf}
+					<button
+						onclick={copyContent}
+						class="p-1 rounded hover:bg-hub-card transition-colors cursor-pointer {copied ? 'text-hub-cta' : 'text-hub-dim hover:text-hub-text'}"
+						title={copied ? 'Copied!' : 'Copy to clipboard'}
+					>
+						{#if copied}
+							<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+								<polyline points="20 6 9 17 4 12"/>
+							</svg>
+						{:else}
+							<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+								<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+							</svg>
+						{/if}
+					</button>
+				{/if}
 				<button
 					onclick={onClose}
 					class="p-1 rounded hover:bg-hub-card transition-colors cursor-pointer text-hub-dim hover:text-hub-text"

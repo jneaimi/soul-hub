@@ -30,7 +30,7 @@ interface PipelineOutputContext {
  * Save a pipeline step output as a vault note.
  * Non-blocking — failures are logged but don't break the pipeline.
  */
-export async function savePipelineOutput(ctx: PipelineOutputContext): Promise<void> {
+export async function savePipelineOutput(ctx: PipelineOutputContext): Promise<string | undefined> {
 	const engine = getVaultEngine();
 	if (!engine) {
 		console.warn('[vault/pipeline] Engine not initialized — skipping output save');
@@ -79,12 +79,14 @@ export async function savePipelineOutput(ctx: PipelineOutputContext): Promise<vo
 
 		if (result.success) {
 			console.log(`[vault/pipeline] Saved output: ${result.path}`);
+			return result.path;
 		} else {
 			console.log(`[vault/pipeline] Skipped: ${result.error}`);
 		}
 	} catch (err) {
 		console.error(`[vault/pipeline] Failed to save output:`, err instanceof Error ? err.message : err);
 	}
+	return undefined;
 }
 
 /**

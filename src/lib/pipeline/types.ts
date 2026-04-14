@@ -138,6 +138,8 @@ export interface StepResult {
 	error?: string;
 	outputPath?: string;
 	outputType?: 'file' | 'media' | 'action' | 'response' | 'webhook';
+	/** Vault note path created by savePipelineOutput (e.g. projects/my-pipeline/outputs/2026-04-14-step-abc123de.md) */
+	vaultNotePath?: string;
 	attempt: number;
 }
 

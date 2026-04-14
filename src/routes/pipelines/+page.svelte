@@ -327,8 +327,22 @@
 	});
 
 	// Build structured output entries from completed run steps + block manifests
+	const EXT_FORMAT: Record<string, string> = {
+		'.json': 'json', '.md': 'markdown', '.csv': 'csv', '.html': 'html', '.htm': 'html',
+		'.txt': 'text', '.xml': 'text', '.yaml': 'text', '.yml': 'text', '.log': 'text',
+		'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+		'.webp': 'image/webp', '.svg': 'image/svg+xml',
+		'.mp4': 'video/mp4', '.webm': 'video/webm', '.mp3': 'audio/mpeg', '.wav': 'audio/wav',
+	};
+
+	function formatFromPath(filePath: string): string {
+		const dot = filePath.lastIndexOf('.');
+		if (dot === -1) return 'text';
+		return EXT_FORMAT[filePath.slice(dot).toLowerCase()] || 'text';
+	}
+
 	let runOutputs = $derived.by((): OutputEntry[] => {
-		if (!activeRun || activeRun.status !== 'done') return [];
+		if (!activeRun || (activeRun.status !== 'done' && activeRun.status !== 'failed')) return [];
 		const entries: OutputEntry[] = [];
 		for (const step of activeRun.steps) {
 			if (step.status !== 'done' || !step.outputPath) continue;
@@ -344,16 +358,18 @@
 					name: fileName,
 					path: step.outputPath,
 					type: out.type || 'file',
-					format: out.format,
+					format: out.format || formatFromPath(step.outputPath),
+					vaultNotePath: step.vaultNotePath,
 				});
 			} else {
-				// Fallback: use actual filename from path
+				// Fallback: detect format from file extension
 				const fallbackName = step.outputPath.split('/').pop() || step.id;
 				entries.push({
 					name: fallbackName,
 					path: step.outputPath,
 					type: 'file',
-					format: 'text',
+					format: formatFromPath(step.outputPath),
+					vaultNotePath: step.vaultNotePath,
 				});
 			}
 		}
@@ -2232,8 +2248,8 @@
 				{/if}
 
 				<!-- Structured output viewer -->
-				{#if activeRun?.status === 'done' && runOutputs.length > 0}
-					<OutputViewer outputs={runOutputs} onPreview={(path, name) => { previewFile = { path, name }; }} vaultBaseUrl="/vault?note=projects/{encodeURIComponent(selectedName)}/outputs/" />
+				{#if (activeRun?.status === 'done' || activeRun?.status === 'failed') && runOutputs.length > 0}
+					<OutputViewer outputs={runOutputs} onPreview={(path, name) => { previewFile = { path, name }; }} />
 				{/if}
 
 				<!-- Vault Notes -->
@@ -2300,7 +2316,7 @@
 										<span class="text-hub-dim ml-auto">{formatDuration(new Date(record.finishedAt).getTime() - new Date(record.startedAt).getTime())}</span>
 									{/if}
 								</div>
-								{#if record.status === 'done'}
+								{#if record.status === 'done' || record.status === 'failed'}
 									{@const outputs = record.stepSummary.filter(s => s.outputPath)}
 									{#if outputs.length > 0}
 										<div class="ml-7 mb-1 space-y-0.5">
