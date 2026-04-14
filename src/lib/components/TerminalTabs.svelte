@@ -7,6 +7,8 @@
 		projectName: string;
 		initialPrompt?: string;
 		autoStart?: boolean;
+		/** When autoStart is true, spawn a shell instead of a Claude Code session */
+		autoStartShell?: boolean;
 		onReady?: () => void;
 	}
 
@@ -38,7 +40,7 @@
 		alive: boolean;
 	}
 
-	let { cwd, projectName, initialPrompt = '', autoStart = false, onReady }: Props = $props();
+	let { cwd, projectName, initialPrompt = '', autoStart = false, autoStartShell = false, onReady }: Props = $props();
 
 	let tabs = $state<Tab[]>([]);
 	let activeTabId = $state('');
@@ -228,7 +230,7 @@
 		if (autoStart && !initialTabCreated && tabs.length === 0) {
 			initialTabCreated = true;
 			// Use tick to ensure DOM is ready
-			setTimeout(() => createTab(initialPrompt || '', true), 100);
+			setTimeout(() => createTab(initialPrompt || '', true, { shell: autoStartShell }), 100);
 		}
 	});
 

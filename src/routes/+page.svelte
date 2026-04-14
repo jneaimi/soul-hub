@@ -215,6 +215,15 @@
 					Vault
 				</a>
 				<a
+					href="/terminal"
+					class="p-2 rounded-lg text-hub-dim hover:text-hub-muted hover:bg-hub-card transition-colors cursor-pointer"
+					aria-label="Terminal"
+				>
+					<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+					</svg>
+				</a>
+				<a
 					href="/settings"
 					class="p-2 rounded-lg text-hub-dim hover:text-hub-muted hover:bg-hub-card transition-colors cursor-pointer"
 					aria-label="Settings"
