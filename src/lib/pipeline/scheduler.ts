@@ -567,6 +567,29 @@ export function getSavedInputs(name: string): Record<string, string | number> {
 	return savedInputs[name] || {};
 }
 
+/** Remove all automation state for a pipeline (schedule, watcher, saved inputs) */
+export async function cleanupPipelineState(name: string): Promise<void> {
+	// Stop scheduled job
+	const job = scheduledJobs.get(name);
+	if (job) { job.task.stop(); scheduledJobs.delete(name); }
+
+	// Stop folder watcher
+	const watcher = folderWatchers.get(name);
+	if (watcher) { clearInterval(watcher.timer); folderWatchers.delete(name); }
+
+	// Remove automation config
+	if (automationConfigs[name]) {
+		delete automationConfigs[name];
+		await persistAutomation();
+	}
+
+	// Remove saved inputs
+	if (savedInputs[name]) {
+		delete savedInputs[name];
+		try { await writeFile(inputsPath, JSON.stringify(savedInputs, null, 2)); } catch { /* best effort */ }
+	}
+}
+
 /** Save inputs for a pipeline (persists to disk) */
 export async function saveInputs(name: string, inputs: Record<string, string | number>): Promise<void> {
 	savedInputs[name] = inputs;

@@ -202,6 +202,57 @@
 	let installedBlocks = $state<BlockManifest[]>([]);
 	let fixRequests = $state<{ name: string; content: string }[]>([]);
 
+	// Delete pipeline
+	let showDeleteModal = $state(false);
+	let deleteConfirmText = $state('');
+	let deleting = $state(false);
+	let deleteError = $state('');
+	let deleteChainWarnings = $state<string[]>([]);
+
+	async function checkDeleteWarnings() {
+		deleteChainWarnings = [];
+		deleteError = '';
+		deleteConfirmText = '';
+		// Pre-check chain references via a dry-run style check
+		try {
+			const res = await fetch(`/api/pipelines`, {
+				method: 'DELETE',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name: selectedName, permanent: false, dryRun: true }),
+			});
+			// We'll just open the modal — chain warnings come back after actual delete
+		} catch { /* proceed */ }
+		showDeleteModal = true;
+	}
+
+	async function deletePipeline(permanent: boolean) {
+		deleting = true;
+		deleteError = '';
+		try {
+			const res = await fetch(`/api/pipelines`, {
+				method: 'DELETE',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name: selectedName, permanent }),
+			});
+			const data = await res.json();
+			if (!res.ok) {
+				deleteError = data.error || 'Failed to delete pipeline';
+				deleting = false;
+				return;
+			}
+			showDeleteModal = false;
+			selectedName = '';
+			// Refresh pipeline list
+			try {
+				const listRes = await fetch('/api/pipelines');
+				if (listRes.ok) { pipelines = (await listRes.json()).pipelines || []; }
+			} catch { /* silent */ }
+		} catch (err) {
+			deleteError = err instanceof Error ? err.message : 'Network error';
+		}
+		deleting = false;
+	}
+
 	let activeRunId = $state<string | null>(null);
 
 	// Chain state
@@ -1132,6 +1183,12 @@
 				>
 					Edit
 				</a>
+				<button
+					onclick={() => { showDeleteModal = true; deleteError = ''; deleteConfirmText = ''; }}
+					class="text-hub-dim text-sm hover:text-hub-danger transition-colors cursor-pointer"
+				>
+					Delete
+				</button>
 				<!-- Run button in header -->
 				{#if running}
 					<button
@@ -2343,6 +2400,87 @@
 		</div>
 	</div>
 </div>
+
+<!-- Delete pipeline modal -->
+{#if showDeleteModal && selectedName}
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div
+		class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+		onclick={() => { if (!deleting) showDeleteModal = false; }}
+	>
+		<!-- svelte-ignore a11y_click_events_have_key_events -->
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div class="bg-hub-surface border border-hub-border rounded-xl shadow-2xl w-full max-w-md mx-4" onclick={(e) => e.stopPropagation()}>
+			<div class="px-5 py-4 border-b border-hub-border">
+				<h2 class="text-base font-semibold text-hub-text">Delete Pipeline</h2>
+				<p class="text-sm text-hub-muted mt-1">
+					What would you like to do with <span class="font-mono text-hub-text">{selectedName}</span>?
+				</p>
+			</div>
+
+			<div class="px-5 py-4 space-y-4">
+				{#if deleteError}
+					<div class="bg-hub-danger/10 border border-hub-danger/30 rounded-lg px-3 py-2 text-sm text-hub-danger">
+						{deleteError}
+					</div>
+				{/if}
+
+				<!-- Archive option (default, safe) -->
+				<button
+					onclick={() => deletePipeline(false)}
+					disabled={deleting}
+					class="w-full text-left px-4 py-3 rounded-lg border border-hub-border hover:border-hub-cta/50 hover:bg-hub-card/50 transition-colors cursor-pointer disabled:opacity-50 group"
+				>
+					<div class="flex items-center gap-2">
+						<svg class="w-4 h-4 text-hub-muted group-hover:text-hub-cta" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+							<path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/>
+						</svg>
+						<span class="text-sm font-medium text-hub-text">Archive</span>
+						<span class="text-[10px] text-hub-cta bg-hub-cta/10 px-1.5 py-0.5 rounded ml-auto">Recommended</span>
+					</div>
+					<p class="text-xs text-hub-dim mt-1 ml-6">Moves to _archive/. Can be restored later.</p>
+				</button>
+
+				<!-- Permanent delete option -->
+				<div class="border border-hub-danger/20 rounded-lg px-4 py-3">
+					<div class="flex items-center gap-2 mb-2">
+						<svg class="w-4 h-4 text-hub-danger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+							<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+						</svg>
+						<span class="text-sm font-medium text-hub-danger">Delete Permanently</span>
+					</div>
+					<p class="text-xs text-hub-dim mb-3 ml-6">This cannot be undone. Type the pipeline name to confirm:</p>
+					<div class="flex gap-2 ml-6">
+						<input
+							bind:value={deleteConfirmText}
+							type="text"
+							placeholder={selectedName}
+							class="flex-1 bg-hub-card border border-hub-border rounded px-2 py-1.5 text-sm text-hub-text placeholder:text-hub-dim/40 focus:outline-none focus:border-hub-danger/50"
+						/>
+						<button
+							onclick={() => deletePipeline(true)}
+							disabled={deleting || deleteConfirmText !== selectedName}
+							class="px-3 py-1.5 rounded bg-hub-danger/10 text-hub-danger text-sm font-medium hover:bg-hub-danger/20 transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+						>
+							{deleting ? 'Deleting...' : 'Delete'}
+						</button>
+					</div>
+				</div>
+			</div>
+
+			<div class="px-5 py-3 border-t border-hub-border/50 flex justify-end">
+				<button
+					onclick={() => { showDeleteModal = false; }}
+					disabled={deleting}
+					class="px-4 py-1.5 rounded text-sm text-hub-muted hover:text-hub-text transition-colors cursor-pointer"
+				>
+					Cancel
+				</button>
+			</div>
+		</div>
+	</div>
+{/if}
 
 <!-- File preview slide-over -->
 {#if previewFile}

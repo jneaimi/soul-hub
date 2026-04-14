@@ -1,12 +1,13 @@
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
-import { resolve, dirname } from 'node:path';
-import { readFile, readdir } from 'node:fs/promises';
+import { resolve, dirname, basename } from 'node:path';
+import { readFile, readdir, rename, rm } from 'node:fs/promises';
 import { config } from '$lib/config.js';
-import { listPipelines, parsePipeline, parseChain, aggregateChainEnvVars, getSavedInputs } from '$lib/pipeline/index.js';
+import { listPipelines, findChainReferences, parsePipeline, parseChain, aggregateChainEnvVars, getSavedInputs } from '$lib/pipeline/index.js';
 import { listInstalledBlocks } from '$lib/pipeline/block-installer.js';
 import { getBlockConfigSchema, type BlockManifest, type ConfigField } from '$lib/pipeline/block.js';
-import { access } from 'node:fs/promises';
+import { getActivePipelines, cleanupPipelineState } from '$lib/pipeline/scheduler.js';
+import { access, mkdir } from 'node:fs/promises';
 
 // Pipelines directory is alongside catalog in the soul-hub root
 const PIPELINES_DIR = resolve(dirname(config.resolved.catalogDir), 'pipelines');
@@ -104,4 +105,66 @@ export const GET: RequestHandler = async ({ url }) => {
 	// List all pipelines
 	const pipelines = await listPipelines(PIPELINES_DIR);
 	return json({ pipelines });
+};
+
+/** DELETE /api/pipelines — archive or permanently delete a pipeline */
+export const DELETE: RequestHandler = async ({ request }) => {
+	const body = await request.json();
+	const { name, permanent } = body as { name?: string; permanent?: boolean };
+
+	if (!name || typeof name !== 'string') {
+		return json({ error: 'Missing pipeline name' }, { status: 400 });
+	}
+
+	// Sanitize: prevent path traversal
+	if (name.includes('/') || name.includes('..') || name.startsWith('.') || name.startsWith('_')) {
+		return json({ error: 'Invalid pipeline name' }, { status: 400 });
+	}
+
+	const pipelineDir = resolve(PIPELINES_DIR, name);
+
+	// Verify the pipeline exists
+	try {
+		await access(pipelineDir);
+	} catch {
+		return json({ error: `Pipeline "${name}" not found` }, { status: 404 });
+	}
+
+	// Block if actively running
+	const active = getActivePipelines();
+	if (active.has(name)) {
+		return json({ error: `Pipeline "${name}" is currently running. Stop it first.` }, { status: 409 });
+	}
+
+	// Check chain references
+	const chainRefs = await findChainReferences(name);
+
+	// Clean up scheduler state (cron jobs, watchers, saved inputs, automation config)
+	await cleanupPipelineState(name);
+
+	if (permanent) {
+		// Permanent delete
+		await rm(pipelineDir, { recursive: true, force: true });
+	} else {
+		// Archive: move to _archive/
+		const archiveDir = resolve(PIPELINES_DIR, '_archive');
+		await mkdir(archiveDir, { recursive: true });
+		const archiveDest = resolve(archiveDir, name);
+		// If already archived with same name, append timestamp
+		try {
+			await access(archiveDest);
+			const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+			await rename(pipelineDir, resolve(archiveDir, `${name}_${ts}`));
+		} catch {
+			await rename(pipelineDir, archiveDest);
+		}
+	}
+
+	return json({
+		ok: true,
+		action: permanent ? 'deleted' : 'archived',
+		chainWarnings: chainRefs.length > 0
+			? `This pipeline is referenced by chain(s): ${chainRefs.join(', ')}. Those chains will fail until the reference is removed.`
+			: undefined,
+	});
 };

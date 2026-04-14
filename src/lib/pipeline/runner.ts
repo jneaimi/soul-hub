@@ -1118,3 +1118,23 @@ export async function listPipelines(pipelinesDir: string): Promise<{ name: strin
 
 	return results;
 }
+
+/** Find all chains that reference a given pipeline by name */
+export async function findChainReferences(pipelineName: string): Promise<string[]> {
+	const pipDir = config.resolved.pipelinesDir || join(config.resolved.devDir, 'soul-hub', 'pipelines');
+	const refs: string[] = [];
+	try {
+		const entries = await readdir(pipDir, { withFileTypes: true });
+		for (const entry of entries) {
+			if (!entry.isDirectory() || entry.name.startsWith('_') || entry.name.startsWith('.')) continue;
+			const chainPath = join(pipDir, entry.name, 'chain.yaml');
+			try {
+				const raw = await readFile(chainPath, 'utf-8');
+				if (raw.includes(`pipeline: ${pipelineName}`) || raw.includes(`pipeline: "${pipelineName}"`)) {
+					refs.push(entry.name);
+				}
+			} catch { /* no chain.yaml */ }
+		}
+	} catch { /* pipelines dir missing */ }
+	return refs;
+}

@@ -1,7 +1,7 @@
 export { parsePipeline, validatePipelineRun, resolveRef, getExecutionOrder } from './parser.js';
 export { parseCondition, evaluateConditionOp } from './condition-evaluator.js';
-export { runPipeline, listPipelines, sendInputToStep, killPipeline, approveGate, rejectGate, answerGate } from './runner.js';
-export { initScheduler, getSchedules, toggleSchedule, getRunHistory, recordManualRun, executeScheduledRun, getActivePipelines, getAutomationConfig, setAutomationConfig, isTriggerEnabled, getTriggerSecret, getSavedInputs, saveInputs, getWatchStatus } from './scheduler.js';
+export { runPipeline, listPipelines, findChainReferences, sendInputToStep, killPipeline, approveGate, rejectGate, answerGate } from './runner.js';
+export { initScheduler, getSchedules, toggleSchedule, getRunHistory, recordManualRun, executeScheduledRun, getActivePipelines, getAutomationConfig, setAutomationConfig, isTriggerEnabled, getTriggerSecret, getSavedInputs, saveInputs, getWatchStatus, cleanupPipelineState } from './scheduler.js';
 export type { PipelineSpec, PipelineStep, PipelineInput, PipelineRun, StepResult, StepStatus } from './types.js';
 export type { WatchConfig } from './folder-watcher.js';
 export type { StepOutputCallback, StepEventCallback } from './runner.js';
