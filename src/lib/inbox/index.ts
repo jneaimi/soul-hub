@@ -15,6 +15,9 @@ export type {
 
 export { encrypt, decrypt } from './crypto.js';
 
+export { getAuthUrl, exchangeCode, refreshAccessToken, getValidToken, isTokenExpired } from './oauth.js';
+export type { OAuthTokens } from './oauth.js';
+
 export {
 	startSync, stopSync, startAccountSync, stopAccountSync,
 	getSyncEmitter, getSyncStatus,

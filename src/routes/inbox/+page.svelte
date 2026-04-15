@@ -236,46 +236,62 @@
 				<div class="border-b border-hub-border p-4">
 					<h2 class="text-sm font-medium text-hub-text mb-3">Add Email Account</h2>
 					<div class="grid grid-cols-2 gap-3 max-w-md">
-						<div>
+						<div class="col-span-2">
 							<label class="text-[10px] text-hub-dim uppercase tracking-wider">Provider</label>
 							<select bind:value={addProvider} class="w-full mt-1 px-2 py-1.5 rounded bg-hub-surface border border-hub-border text-sm text-hub-text focus:outline-none">
 								<option value="icloud">iCloud</option>
-								<option value="gmail">Gmail</option>
+								<option value="gmail">Gmail (OAuth2)</option>
 								<option value="outlook">Outlook</option>
 								<option value="imap">Custom IMAP</option>
 							</select>
 						</div>
-						<div>
-							<label class="text-[10px] text-hub-dim uppercase tracking-wider">Label (optional)</label>
-							<input type="text" bind:value={addLabel} placeholder="Work, Personal..." class="w-full mt-1 px-2 py-1.5 rounded bg-hub-surface border border-hub-border text-sm text-hub-text placeholder:text-hub-dim focus:outline-none" />
-						</div>
-						<div class="col-span-2">
-							<label class="text-[10px] text-hub-dim uppercase tracking-wider">Email</label>
-							<input type="email" bind:value={addEmail} placeholder="you@example.com" class="w-full mt-1 px-2 py-1.5 rounded bg-hub-surface border border-hub-border text-sm text-hub-text placeholder:text-hub-dim focus:outline-none" />
-						</div>
-						<div class="col-span-2">
-							<label class="text-[10px] text-hub-dim uppercase tracking-wider">
-								{addProvider === 'icloud' ? 'App-Specific Password' : addProvider === 'gmail' ? 'App Password' : 'Password'}
-							</label>
-							<input type="password" bind:value={addPassword} placeholder="App-specific password" class="w-full mt-1 px-2 py-1.5 rounded bg-hub-surface border border-hub-border text-sm text-hub-text placeholder:text-hub-dim focus:outline-none" />
-							{#if addProvider === 'icloud'}
-								<p class="text-[10px] text-hub-dim mt-1">Generate at appleid.apple.com > Sign-In and Security > App-Specific Passwords</p>
-							{:else if addProvider === 'gmail'}
-								<p class="text-[10px] text-hub-dim mt-1">Generate at myaccount.google.com > Security > 2-Step Verification > App passwords</p>
-							{/if}
-						</div>
+
+						{#if addProvider === 'gmail'}
+							<!-- Gmail uses OAuth2 — redirect to Google consent -->
+							<div class="col-span-2">
+								<p class="text-xs text-hub-muted mb-3">Gmail uses secure OAuth2 authentication. Click below to sign in with Google.</p>
+								<a
+									href="/api/inbox/oauth"
+									class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/15 text-red-400 text-sm font-medium hover:bg-red-500/25 transition-colors"
+								>
+									<svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12.545 10.239v3.821h5.445c-.712 2.315-2.647 3.972-5.445 3.972a6.033 6.033 0 110-12.064c1.498 0 2.866.549 3.921 1.453l2.814-2.814A9.969 9.969 0 0012.545 2C7.021 2 2.543 6.477 2.543 12s4.478 10 10.002 10c8.396 0 10.249-7.85 9.426-11.748l-9.426-.013z"/></svg>
+									Sign in with Google
+								</a>
+							</div>
+						{:else}
+							<!-- Password-based providers -->
+							<div>
+								<label class="text-[10px] text-hub-dim uppercase tracking-wider">Label (optional)</label>
+								<input type="text" bind:value={addLabel} placeholder="Work, Personal..." class="w-full mt-1 px-2 py-1.5 rounded bg-hub-surface border border-hub-border text-sm text-hub-text placeholder:text-hub-dim focus:outline-none" />
+							</div>
+							<div>
+								<label class="text-[10px] text-hub-dim uppercase tracking-wider">Email</label>
+								<input type="email" bind:value={addEmail} placeholder="you@example.com" class="w-full mt-1 px-2 py-1.5 rounded bg-hub-surface border border-hub-border text-sm text-hub-text placeholder:text-hub-dim focus:outline-none" />
+							</div>
+							<div class="col-span-2">
+								<label class="text-[10px] text-hub-dim uppercase tracking-wider">
+									{addProvider === 'icloud' ? 'App-Specific Password' : 'Password'}
+								</label>
+								<input type="password" bind:value={addPassword} placeholder="App-specific password" class="w-full mt-1 px-2 py-1.5 rounded bg-hub-surface border border-hub-border text-sm text-hub-text placeholder:text-hub-dim focus:outline-none" />
+								{#if addProvider === 'icloud'}
+									<p class="text-[10px] text-hub-dim mt-1">Generate at appleid.apple.com > Sign-In and Security > App-Specific Passwords</p>
+								{/if}
+							</div>
+						{/if}
 					</div>
 					{#if addError}
 						<p class="text-xs text-hub-danger mt-2">{addError}</p>
 					{/if}
 					<div class="flex gap-2 mt-3">
-						<button
-							onclick={addAccount}
-							disabled={adding}
-							class="px-3 py-1.5 rounded-lg bg-hub-cta/15 text-hub-cta text-sm hover:bg-hub-cta/25 transition-colors cursor-pointer disabled:opacity-50"
-						>
-							{adding ? 'Adding...' : 'Add Account'}
-						</button>
+						{#if addProvider !== 'gmail'}
+							<button
+								onclick={addAccount}
+								disabled={adding}
+								class="px-3 py-1.5 rounded-lg bg-hub-cta/15 text-hub-cta text-sm hover:bg-hub-cta/25 transition-colors cursor-pointer disabled:opacity-50"
+							>
+								{adding ? 'Adding...' : 'Add Account'}
+							</button>
+						{/if}
 						<button
 							onclick={() => { showAddForm = false; }}
 							class="px-3 py-1.5 rounded-lg text-hub-dim text-sm hover:text-hub-muted transition-colors cursor-pointer"

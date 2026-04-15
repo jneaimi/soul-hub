@@ -21,8 +21,10 @@ import { EventEmitter } from 'node:events';
 import {
 	getAccountCredential, listAccounts, updateAccountStatus,
 	updateAccountLastSync, upsertMessages, getSyncState,
-	upsertSyncState, getMessageCount,
+	upsertSyncState, getMessageCount, getInboxDb,
 } from './db.js';
+import { getValidToken, type OAuthTokens } from './oauth.js';
+import { encrypt } from './crypto.js';
 import type { InboxAccount, InboxMessage, SyncState } from './types.js';
 
 const MAX_RECONNECT_DELAY = 5 * 60 * 1000; // 5 min cap
@@ -129,17 +131,56 @@ async function connectWorker(worker: AccountWorker, account: InboxAccount): Prom
 		port: account.port || 993,
 		secure: true,
 		maxIdleTime: IDLE_TIMEOUT,
-		logger: false, // disable verbose logging in production
+		logger: false,
 		tls: {
-			rejectUnauthorized: true, // NEVER disable TLS verification
+			rejectUnauthorized: true,
 		},
 	};
 
-	// Auth config — password-based for now (OAuth2 in Phase 3)
-	clientConfig.auth = {
-		user: account.email,
-		pass: credential,
-	};
+	// Determine auth type: OAuth2 (JSON with type:oauth2) or plain password
+	let parsedCred: { type?: string; accessToken?: string; refreshToken?: string; expiresAt?: number } | null = null;
+	try { parsedCred = JSON.parse(credential); } catch { /* plain password */ }
+
+	if (parsedCred?.type === 'oauth2' && parsedCred.refreshToken) {
+		// OAuth2 — refresh token if expired before connecting
+		try {
+			const tokens = await getValidToken({
+				accessToken: parsedCred.accessToken || '',
+				refreshToken: parsedCred.refreshToken,
+				expiresAt: parsedCred.expiresAt || 0,
+			});
+
+			// Persist refreshed tokens back to DB (encrypted)
+			if (tokens.accessToken !== parsedCred.accessToken) {
+				const updatedCred = JSON.stringify({
+					type: 'oauth2',
+					accessToken: tokens.accessToken,
+					refreshToken: tokens.refreshToken,
+					expiresAt: tokens.expiresAt,
+				});
+				const db = getInboxDb();
+				db.prepare('UPDATE accounts SET encrypted_credential = ? WHERE id = ?')
+					.run(encrypt(updatedCred), account.id);
+			}
+
+			clientConfig.auth = {
+				user: account.email,
+				accessToken: tokens.accessToken,
+			};
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : 'Token refresh failed';
+			console.error(`[inbox-sync:${account.id}] OAuth2 refresh failed:`, msg);
+			updateAccountStatus(account.id, 'error', `OAuth2 refresh failed: ${msg}`);
+			if (!worker.stopping) scheduleReconnect(worker, account);
+			return;
+		}
+	} else {
+		// Plain password (iCloud, generic IMAP)
+		clientConfig.auth = {
+			user: account.email,
+			pass: credential,
+		};
+	}
 
 	const client = new ImapFlow(clientConfig as unknown as ConstructorParameters<typeof ImapFlow>[0]);
 	worker.client = client;
