@@ -383,6 +383,7 @@
         <span class="text-[10px] text-hub-dim font-medium">Health</span>
       </div>
       <div class="text-[10px] text-hub-dim flex flex-wrap gap-x-3 gap-y-0.5">
+        <span>{store.stats.totalNotes} notes</span>
         <span>{store.stats.totalLinks} links</span>
         {#if store.stats.unresolvedLinks > 0}
           <span class="text-amber-400">{store.stats.unresolvedLinks} broken</span>

@@ -13,9 +13,10 @@
   import FilePreview from '$lib/components/FilePreview.svelte';
 
   const store = getVaultStore();
+  let { data } = $props();
 
   // Local UI state only
-  let view = $state<'graph' | 'note' | 'edit'>('graph');
+  let view = $state<'graph' | 'note' | 'edit'>(data.initialView as 'graph' | 'note' | 'edit');
   let sidebarWidth = $state(280);
   let resizing = $state(false);
   let showNewNote = $state(false);
@@ -35,21 +36,33 @@
     bulkSelected = next;
   }
 
-  // Local note state — workaround for $state reactivity in .svelte.ts modules
-  let localNote = $state<any>(null);
-  let localNotePath = $state<string | null>(null);
+  // Note state — initialized from load() data, updated via fetchNote
+  let currentNote = $state<any>(data.initialNote);
+  let noteError = $state<string | null>(data.initialNoteError);
 
-  async function loadNote(path: string) {
-    localNotePath = path;
-    localNote = null;
+  async function fetchNote(path: string) {
+    currentNote = null;
+    noteError = null;
     try {
       const url = `/api/vault/notes/${path.split('/').map(encodeURIComponent).join('/')}`;
       const res = await fetch(url);
       if (res.ok) {
-        localNote = await res.json();
+        currentNote = await res.json();
+      } else {
+        const body = await res.json().catch(() => ({}));
+        noteError = body.error ?? `Failed to load note (${res.status})`;
       }
-    } catch { /* silent */ }
+    } catch (e) {
+      noteError = (e as Error).message || 'Network error';
+    }
   }
+
+  $effect(() => {
+    const path = store.selectedPath;
+    if (path && view !== 'graph') {
+      fetchNote(path);
+    }
+  });
 
   function buildUrlParams(): string {
     const params = new URLSearchParams();
@@ -83,15 +96,15 @@
     }
     view = 'note';
     if (isMobile) mobileView = 'main';
-    loadNote(path);
+    noteError = null;
     store.selectNote(path);
     updateUrl();
   }
 
   function backToGraph() {
     view = 'graph';
-    localNote = null;
-    localNotePath = null;
+    currentNote = null;
+    noteError = null;
     store.clearSelection();
     updateUrl();
   }
@@ -109,7 +122,7 @@
 
   async function handleNoteSaved(path: string) {
     view = 'note';
-    await loadNote(path);
+    await fetchNote(path);
     await store.invalidate('overview', 'graph');
     replaceUrl();
   }
@@ -133,8 +146,8 @@
   }
 
   function handleNavigate(path: string) {
-    if (!path) { view = 'graph'; store.clearSelection(); localNote = null; return; }
-    loadNote(path);
+    if (!path) { view = 'graph'; store.clearSelection(); currentNote = null; return; }
+    noteError = null;
     store.selectNote(path);
     view = 'note';
   }
@@ -206,7 +219,9 @@
     const urlType = params.get('type');
 
     if (notePath) {
-      store.selectNote(decodeURIComponent(notePath));
+      const decoded = decodeURIComponent(notePath);
+      noteError = null;
+      store.selectNote(decoded);
       view = urlView || 'note';
     } else {
       view = 'graph';
@@ -230,30 +245,24 @@
     window.addEventListener('popstate', handlePopState);
 
     store.init().then(async () => {
-      const params = new URLSearchParams(window.location.search);
-      const notePath = params.get('note');
-      const urlView = params.get('view') as 'graph' | 'note' | 'edit' | null;
-      const urlZone = params.get('zone');
-      const urlType = params.get('type');
-      const urlTags = params.get('tags');
-
-      const typesArray = urlType ? urlType.split(',').filter(Boolean) : undefined;
-      const tagsArray = urlTags ? urlTags.split(',').filter(Boolean) : undefined;
-
-      if (urlZone || typesArray || tagsArray) {
-        store.setFilters({ zone: urlZone || undefined, type: typesArray, tags: tagsArray });
+      if (data.initialZone || data.initialTypes || data.initialTags) {
+        store.setFilters({ zone: data.initialZone || undefined, type: data.initialTypes, tags: data.initialTags });
       }
-      if (notePath) {
-        handleSelectNote(decodeURIComponent(notePath));
-        if (urlView === 'edit') view = 'edit';
+      if (data.initialNotePath) {
+        store.selectNote(data.initialNotePath);
+        if (data.initialView === 'edit') view = 'edit';
       }
 
-      // Fetch tags
       try {
         const tagsRes = await fetch('/api/vault/tags');
-        if (tagsRes.ok) allTags = await tagsRes.json();
+        if (tagsRes.ok) {
+          const tagsData = await tagsRes.json();
+          allTags = tagsData.tags ?? tagsData;
+        }
       } catch { /* silent */ }
     });
+
+    if (isMobile && data.initialNotePath) mobileView = 'main';
 
     return () => {
       window.removeEventListener('resize', checkMobile);
@@ -401,11 +410,11 @@
               onNodeClick={handleSelectNote}
             />
           </div>
-        {:else if view === 'note' && localNote}
+        {:else if view === 'note' && currentNote}
           <div class="flex-1 min-h-0 overflow-y-auto p-4 md:p-6">
             <div class="max-w-4xl mx-auto">
               <VaultNoteView
-                note={localNote}
+                note={currentNote}
                 vaultDir={store.vaultDir}
                 onNavigate={handleNavigate}
                 onEdit={() => { view = 'edit'; }}
@@ -413,15 +422,25 @@
               />
             </div>
           </div>
-        {:else if view === 'note' && !localNote}
+        {:else if view === 'note' && !currentNote && noteError}
+          <div class="flex-1 flex items-center justify-center">
+            <div class="text-center space-y-3">
+              <div class="text-hub-muted">{noteError}</div>
+              <button
+                class="text-sm text-hub-accent hover:underline"
+                onclick={() => store.selectedPath && fetchNote(store.selectedPath)}
+              >Retry</button>
+            </div>
+          </div>
+        {:else if view === 'note' && !currentNote}
           <div class="flex-1 flex items-center justify-center">
             <div class="text-hub-muted animate-pulse">Loading note...</div>
           </div>
-        {:else if view === 'edit' && localNote}
+        {:else if view === 'edit' && currentNote}
           <div class="flex-1 min-h-0 overflow-y-auto p-4 md:p-6">
             <div class="max-w-4xl mx-auto">
               <VaultNoteEditor
-                note={localNote}
+                note={currentNote}
                 onSave={handleNoteSaved}
                 onCancel={() => { view = 'note'; }}
               />

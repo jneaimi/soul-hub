@@ -126,6 +126,8 @@ export function spawnSession(opts: PtySessionOptions): PtySession {
 	const pathSep = process.platform === 'win32' ? ';' : ':';
 	env.PATH = `${dirname(claudeBinary)}${pathSep}${env.PATH || ''}`;
 	env.TERM = 'xterm-256color';
+	// Prevent nvm/npm_config_prefix conflict in PTY shells
+	delete env.npm_config_prefix;
 	if (!isShell) {
 		env.CLAUDE_CODE_DISABLE_HOOKS = '1';
 	}

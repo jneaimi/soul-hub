@@ -29,13 +29,13 @@ export async function captureSessionToVault(sessionId: string, meta: SessionMeta
     const devIdx = cwdParts.indexOf('dev');
     const projectName = devIdx >= 0 && cwdParts[devIdx + 1] ? cwdParts[devIdx + 1] : null;
 
-    // All sessions go to the dedicated sessions zone (auto-pruned after 7 days)
-    const zone = 'sessions';
+    // Sessions go to operations/sessions/ (valid vault zone)
+    const zone = 'operations';
 
-    // Generate filename
+    // Generate filename with sessions/ subdir
     const date = meta.startedAt.slice(0, 10);
     const shortId = sessionId.slice(0, 8);
-    const filename = `${date}-session-${shortId}.md`;
+    const filename = `sessions/${date}-session-${shortId}.md`;
 
     // Calculate duration
     const durationSec = Math.floor((endTime - startTime) / 1000);

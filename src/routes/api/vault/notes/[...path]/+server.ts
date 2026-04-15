@@ -1,7 +1,7 @@
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { getVaultEngine } from '$lib/vault/index.js';
-import { marked } from 'marked';
+import { renderMarkdown, isRtl } from '$lib/vault/renderer.js';
 
 /** Reject path traversal and invalid note paths */
 function validateVaultPath(path: string): boolean {
@@ -28,7 +28,13 @@ export const GET: RequestHandler = async ({ params }) => {
 			return json({ error: 'Note not found' }, { status: 404 });
 		}
 
-		const rendered = await marked(note.content);
+		const noteDir = note.path.substring(0, note.path.lastIndexOf('/')) || '';
+		const rendered = await renderMarkdown(note.content, {
+			vaultDir: engine.vaultDir,
+			noteDir,
+		});
+		const contentIsRtl = isRtl(note.content);
+		const titleIsRtl = isRtl(note.title);
 
 		return json({
 			path: note.path,
@@ -36,6 +42,8 @@ export const GET: RequestHandler = async ({ params }) => {
 			meta: note.meta,
 			content: note.content,
 			rendered,
+			contentIsRtl,
+			titleIsRtl,
 			links: note.links,
 			backlinks: engine.getBacklinks(path).map(n => n.path),
 			zone: note.path.split('/')[0] || 'inbox',

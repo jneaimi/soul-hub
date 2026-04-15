@@ -155,13 +155,16 @@ export class SystemHealth {
 		const unresolved = vault.getUnresolved();
 		const stats = vault.getStats();
 
+		const VALID_ZONES = new Set(['inbox', 'projects', 'knowledge', 'content', 'operations', 'archive']);
+		const EXEMPT_ZONES = new Set(['inbox', 'archive']);
+
 		// ── Orphan Notes ──
 		if (orphans.length > 0) {
-			// Group by zone for classification
+			// Group by zone for classification — only recognized vault zones
 			const byZone = new Map<string, string[]>();
 			for (const note of orphans) {
 				const zone = note.path.split('/')[0];
-				if (zone === 'inbox' || zone === 'archive') continue; // exempt
+				if (!VALID_ZONES.has(zone) || EXEMPT_ZONES.has(zone)) continue;
 				if (!byZone.has(zone)) byZone.set(zone, []);
 				byZone.get(zone)!.push(note.path);
 			}

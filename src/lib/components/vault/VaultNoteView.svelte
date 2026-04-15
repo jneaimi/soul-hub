@@ -1,10 +1,9 @@
 <script lang="ts">
-	import { marked } from 'marked';
 	import type { VaultNote } from '$lib/vault/types';
 	import { TYPE_COLORS } from '$lib/vault/types';
 
 	interface Props {
-		note: VaultNote;
+		note: VaultNote & { rendered?: string; contentIsRtl?: boolean; titleIsRtl?: boolean };
 		vaultDir?: string;
 		onNavigate: (path: string) => void;
 		onEdit: () => void;
@@ -20,155 +19,9 @@
 	);
 
 	let confirmingArchive = $state(false);
-	let contentEl = $state<HTMLDivElement | null>(null);
-
-	// Note directory for resolving relative paths
-	const noteDir = $derived(note.path.substring(0, note.path.lastIndexOf('/')) || '');
-
-	/**
-	 * Resolve a relative image/media path to a vault file API URL.
-	 * Handles: relative paths, vault-root paths, and already-absolute URLs.
-	 */
-	function resolveMediaSrc(src: string): string {
-		if (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('/api/')) return src;
-		if (!vaultDir) return src;
-		// Resolve relative to note's directory
-		const fullDir = noteDir ? `${vaultDir}/${noteDir}` : vaultDir;
-		return `/api/files?path=${encodeURIComponent(fullDir)}&action=raw&file=${encodeURIComponent(src)}`;
-	}
-
-	const IMAGE_EXTS = /\.(png|jpg|jpeg|gif|webp|svg|bmp|ico)$/i;
-	const VIDEO_EXTS = /\.(mp4|webm|mov|avi|mkv)$/i;
-	const AUDIO_EXTS = /\.(mp3|wav|ogg|m4a|flac|aac)$/i;
-
-	/**
-	 * Custom marked renderer for enhanced media support.
-	 */
-	function createRenderer() {
-		const renderer = new marked.Renderer();
-
-		// Images — resolve vault-relative paths
-		renderer.image = function ({ href, title, text }: { href: string; title: string | null; text: string }) {
-			const src = resolveMediaSrc(href);
-			const titleAttr = title ? ` title="${title}"` : '';
-
-			if (VIDEO_EXTS.test(href)) {
-				return `<div class="vault-media"><video src="${src}" controls class="vault-video"${titleAttr}></video>${text ? `<p class="vault-caption">${text}</p>` : ''}</div>`;
-			}
-			if (AUDIO_EXTS.test(href)) {
-				return `<div class="vault-media"><audio src="${src}" controls class="vault-audio"></audio>${text ? `<p class="vault-caption">${text}</p>` : ''}</div>`;
-			}
-			return `<div class="vault-media"><img src="${src}" alt="${text || ''}" loading="lazy" class="vault-image"${titleAttr} />${text ? `<p class="vault-caption">${text}</p>` : ''}</div>`;
-		};
-
-		// Code blocks — add language label + copy button placeholder
-		renderer.code = function ({ text, lang }: { text: string; lang?: string }) {
-			const langLabel = lang || '';
-			const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-			return `<div class="vault-code-block" data-lang="${langLabel}"><div class="vault-code-header"><span class="vault-code-lang">${langLabel}</span><button class="vault-code-copy" onclick="navigator.clipboard.writeText(this.closest('.vault-code-block').querySelector('code').textContent).then(()=>{this.textContent='Copied!';setTimeout(()=>{this.textContent='Copy'},1500)})">Copy</button></div><pre><code class="language-${langLabel}">${escaped}</code></pre></div>`;
-		};
-
-		// Links — detect media file links and render inline
-		const originalLink = marked.Renderer.prototype.link;
-		renderer.link = function ({ href, title, text }: { href: string; title: string | null; text: string }) {
-			if (IMAGE_EXTS.test(href)) {
-				const src = resolveMediaSrc(href);
-				return `<div class="vault-media"><img src="${src}" alt="${text || ''}" loading="lazy" class="vault-image" /></div>`;
-			}
-			if (VIDEO_EXTS.test(href)) {
-				const src = resolveMediaSrc(href);
-				return `<div class="vault-media"><video src="${src}" controls class="vault-video"></video></div>`;
-			}
-			if (AUDIO_EXTS.test(href)) {
-				const src = resolveMediaSrc(href);
-				return `<div class="vault-media"><audio src="${src}" controls class="vault-audio"></audio></div>`;
-			}
-			return originalLink.call(this, { href, title, text });
-		};
-
-		return renderer;
-	}
-
-	function renderContent(content: string): string {
-		const renderer = createRenderer();
-		const html = marked.parse(content, { renderer }) as string;
-		return processWikilinks(html);
-	}
-
-	const renderedHtml = $derived(renderContent(note.content));
 
 	const zone = $derived(note.path.split('/')[0] || '');
 	const typeColor = $derived(TYPE_COLORS[note.meta.type ?? ''] || '#6b7280');
-
-	function processWikilinks(html: string): string {
-		return html.replace(/\[\[([^\]|]+?)(?:\|([^\]]+?))?\]\]/g, (_, target, alias) => {
-			const display = alias || target;
-			return `<a class="vault-wikilink" data-target="${target}">${display}</a>`;
-		});
-	}
-
-	// Syntax highlighting — applied after render, non-blocking
-	async function highlightCodeBlocks() {
-		if (!contentEl) return;
-		const blocks = contentEl.querySelectorAll('.vault-code-block pre code');
-		if (blocks.length === 0) return;
-
-		try {
-			const { codeToHtml } = await import('shiki');
-			for (const block of blocks) {
-				const code = block.textContent || '';
-				const lang = (block as HTMLElement).className.replace('language-', '') || 'text';
-				try {
-					const highlighted = await codeToHtml(code, {
-						lang: lang === 'text' || lang === '' ? 'plaintext' : lang,
-						theme: 'github-dark-default',
-					});
-					const wrapper = block.closest('.vault-code-block');
-					if (wrapper) {
-						const pre = wrapper.querySelector('pre');
-						if (pre) {
-							// Replace pre content with highlighted version
-							const temp = document.createElement('div');
-							temp.innerHTML = highlighted;
-							const newPre = temp.querySelector('pre');
-							if (newPre) {
-								newPre.style.margin = '0';
-								newPre.style.borderRadius = '0 0 0.5rem 0.5rem';
-								pre.replaceWith(newPre);
-							}
-						}
-					}
-				} catch {
-					// If shiki doesn't know the language, try plaintext
-					try {
-						const highlighted = await codeToHtml(code, { lang: 'plaintext', theme: 'github-dark-default' });
-						const wrapper = block.closest('.vault-code-block');
-						const pre = wrapper?.querySelector('pre');
-						if (pre) {
-							const temp = document.createElement('div');
-							temp.innerHTML = highlighted;
-							const newPre = temp.querySelector('pre');
-							if (newPre) {
-								newPre.style.margin = '0';
-								newPre.style.borderRadius = '0 0 0.5rem 0.5rem';
-								pre.replaceWith(newPre);
-							}
-						}
-					} catch { /* keep unhighlighted */ }
-				}
-			}
-		} catch {
-			// shiki not available — keep plain code blocks
-		}
-	}
-
-	// Re-highlight when note changes
-	$effect(() => {
-		// Track note.path to re-run when note changes
-		void note.path;
-		// Wait for DOM update
-		requestAnimationFrame(() => highlightCodeBlocks());
-	});
 
 	function timeAgo(mtime: number): string {
 		const seconds = Math.floor((Date.now() - mtime) / 1000);
@@ -198,21 +51,6 @@
 			setTimeout(() => { confirmingArchive = false; }, 3000);
 		}
 	}
-
-	/**
-	 * Detect if text is predominantly RTL (Arabic, Hebrew, etc.)
-	 * Returns true if >30% of alphabetic characters are RTL script.
-	 */
-	function isRtl(text: string): boolean {
-		const rtlChars = text.match(/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u0590-\u05FF]/g);
-		if (!rtlChars) return false;
-		const latinChars = text.match(/[a-zA-Z]/g);
-		const totalAlpha = (rtlChars?.length || 0) + (latinChars?.length || 0);
-		return totalAlpha > 0 && (rtlChars.length / totalAlpha) > 0.3;
-	}
-
-	const contentIsRtl = $derived(isRtl(note.content));
-	const titleIsRtl = $derived(isRtl(note.title));
 
 	const resolvedLinks = $derived(note.links.filter(l => l.resolved));
 	const unresolvedLinks = $derived(note.links.filter(l => !l.resolved));
@@ -271,7 +109,7 @@
 
 	<!-- Metadata -->
 	<div class="bg-hub-surface rounded-lg p-4 border border-hub-border">
-		<h1 class="text-xl font-semibold text-hub-text mb-3" dir={titleIsRtl ? 'rtl' : undefined}>{note.title}</h1>
+		<h1 class="text-xl font-semibold text-hub-text mb-3" dir={note.titleIsRtl ? 'rtl' : undefined}>{note.title}</h1>
 
 		{#if note.meta.tags && note.meta.tags.length > 0}
 			<div class="flex items-center gap-2 flex-wrap mb-2">
@@ -300,14 +138,13 @@
 
 	<!-- Rendered content -->
 	<div
-		bind:this={contentEl}
 		class="vault-prose bg-hub-surface rounded-lg p-6 border border-hub-border"
-		dir={contentIsRtl ? 'rtl' : undefined}
-		lang={contentIsRtl ? 'ar' : undefined}
+		dir={note.contentIsRtl ? 'rtl' : undefined}
+		lang={note.contentIsRtl ? 'ar' : undefined}
 		onclick={handleContentClick}
 		role="presentation"
 	>
-		{@html renderedHtml}
+		{@html note.rendered ?? ''}
 	</div>
 
 	<!-- Outgoing links -->

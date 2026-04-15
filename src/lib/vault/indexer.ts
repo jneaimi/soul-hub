@@ -151,9 +151,15 @@ export class VaultIndexer {
 		const notesByZone: Record<string, number> = {};
 		let totalLinks = 0;
 		let unresolvedLinks = 0;
-		const orphanNotes = allNotes.filter(
-			(n) => n.links.length === 0 && n.backlinks.length === 0
-		).length;
+		const ORPHAN_EXEMPT = new Set(['inbox', 'archive']);
+		const orphanNotes = allNotes.filter((n) => {
+			if (n.links.length > 0 || n.backlinks.length > 0) return false;
+			const zone = n.path.split('/')[0];
+			if (ORPHAN_EXEMPT.has(zone)) return false;
+			if (n.path.endsWith('/index.md') || n.path === 'index.md') return false;
+			if (n.meta.type === 'session-log') return false;
+			return true;
+		}).length;
 
 		for (const note of allNotes) {
 			const type = note.meta.type || 'unknown';
@@ -179,8 +185,16 @@ export class VaultIndexer {
 
 	health(): VaultHealth {
 		const allNotes = this.all();
+		const ORPHAN_EXEMPT = new Set(['inbox', 'archive']);
 		const orphanNotes = allNotes
-			.filter((n) => n.links.length === 0 && n.backlinks.length === 0)
+			.filter((n) => {
+				if (n.links.length > 0 || n.backlinks.length > 0) return false;
+				const zone = n.path.split('/')[0];
+				if (ORPHAN_EXEMPT.has(zone)) return false;
+				if (n.path.endsWith('/index.md') || n.path === 'index.md') return false;
+				if (n.meta.type === 'session-log') return false;
+				return true;
+			})
 			.map((n) => n.path);
 
 		const unresolvedLinks: { source: string; raw: string }[] = [];

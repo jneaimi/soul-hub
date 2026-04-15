@@ -1,7 +1,8 @@
 import matter from 'gray-matter';
 import type { ParsedNote, VaultMeta, VaultLink } from './types.js';
 
-const WIKILINK_RE = /(!?)\[\[([^\]|#^]+?)(?:#([^\]|]+?))?(?:\^([^\]|]+?))?(?:\|([^\]]+?))?\]\]/g;
+// Wikilink content must not contain newlines (prevents false matches on escape sequences like ^[[...)
+const WIKILINK_RE = /(!?)\[\[([^\]\n|#^]+?)(?:#([^\]\n|]+?))?(?:\^([^\]\n|]+?))?(?:\|([^\]\n]+?))?\]\]/g;
 
 export function parseNote(filePath: string, raw: string): ParsedNote {
 	const { data, content } = matter(raw);
@@ -24,7 +25,12 @@ function extractLinks(content: string): VaultLink[] {
 	let match: RegExpExecArray | null;
 	const re = new RegExp(WIKILINK_RE.source, WIKILINK_RE.flags);
 
-	while ((match = re.exec(content)) !== null) {
+	// Strip fenced code blocks and inline code so we don't parse example wikilinks
+	const stripped = content
+		.replace(/```[\s\S]*?```/g, '')
+		.replace(/`[^`]+`/g, '');
+
+	while ((match = re.exec(stripped)) !== null) {
 		links.push({
 			raw: match[2].trim(),
 			resolved: null,

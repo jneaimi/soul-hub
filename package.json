@@ -42,6 +42,7 @@
 		"@azure/identity": "^4.13.1",
 		"@azure/msal-node": "^5.1.2",
 		"@microsoft/microsoft-graph-client": "^3.0.7",
+		"@portaljs/remark-wiki-link": "^1.2.0",
 		"@xterm/addon-canvas": "^0.7.0",
 		"@xterm/addon-fit": "^0.11.0",
 		"@xterm/addon-unicode11": "^0.9.0",
@@ -61,8 +62,16 @@
 		"node-cron": "^4.2.1",
 		"node-pty": "^1.1.0",
 		"pm2": "^6.0.14",
+		"rehype-pretty-code": "^0.14.3",
+		"rehype-stringify": "^10.0.1",
+		"remark-frontmatter": "^5.0.0",
+		"remark-gfm": "^4.0.1",
+		"remark-parse": "^11.0.0",
+		"remark-rehype": "^11.1.2",
 		"shiki": "^4.0.2",
 		"sigma": "^3.0.2",
+		"unified": "^11.0.5",
+		"unist-util-visit": "^5.1.0",
 		"yaml": "^2.8.3"
 	}
 }
