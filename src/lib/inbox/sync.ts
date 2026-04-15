@@ -24,6 +24,10 @@ import {
 	upsertSyncState, getMessageCount, getInboxDb,
 } from './db.js';
 import { getValidToken, type OAuthTokens } from './oauth.js';
+import {
+	getValidOutlookToken, fetchMessagesDelta, DeltaExpiredError,
+	type OutlookTokens, type GraphMessage,
+} from './outlook.js';
 import { encrypt } from './crypto.js';
 import type { InboxAccount, InboxMessage, SyncState } from './types.js';
 
@@ -119,6 +123,12 @@ export function stopAccountSync(accountId: string): void {
 
 async function connectWorker(worker: AccountWorker, account: InboxAccount): Promise<void> {
 	if (worker.stopping) return;
+
+	// Outlook uses Graph API, not IMAP
+	if (account.provider === 'outlook') {
+		await connectOutlookWorker(worker, account);
+		return;
+	}
 
 	const credential = getAccountCredential(account.id);
 	if (!credential) {
@@ -384,6 +394,143 @@ async function syncInbox(
 	} finally {
 		lock.release();
 	}
+}
+
+// ── Outlook Graph API sync ──
+
+const OUTLOOK_POLL_INTERVAL = 5 * 60 * 1000; // 5 min
+
+async function connectOutlookWorker(worker: AccountWorker, account: InboxAccount): Promise<void> {
+	const credential = getAccountCredential(account.id);
+	if (!credential) {
+		updateAccountStatus(account.id, 'error', 'No credential found');
+		return;
+	}
+
+	let parsedCred: { type?: string; accessToken?: string; refreshToken?: string; expiresAt?: number } | null = null;
+	try { parsedCred = JSON.parse(credential); } catch {}
+
+	if (parsedCred?.type !== 'outlook-oauth2' || !parsedCred.refreshToken) {
+		updateAccountStatus(account.id, 'error', 'Invalid Outlook credential format');
+		return;
+	}
+
+	updateAccountStatus(account.id, 'syncing');
+
+	try {
+		// Refresh token if needed
+		let tokens: OutlookTokens = {
+			accessToken: parsedCred.accessToken || '',
+			refreshToken: parsedCred.refreshToken,
+			expiresAt: parsedCred.expiresAt || 0,
+		};
+		tokens = await getValidOutlookToken(tokens);
+
+		// Persist refreshed tokens
+		const updatedCred = JSON.stringify({
+			type: 'outlook-oauth2',
+			accessToken: tokens.accessToken,
+			refreshToken: tokens.refreshToken,
+			expiresAt: tokens.expiresAt,
+		});
+		const db = getInboxDb();
+		db.prepare('UPDATE accounts SET encrypted_credential = ? WHERE id = ?')
+			.run(encrypt(updatedCred), account.id);
+
+		// Get stored delta link for incremental sync
+		const syncState = getSyncState(account.id, 'INBOX');
+		let deltaLink: string | undefined;
+
+		// Store delta link in sync_state.last_uid as a hack (repurpose the field)
+		// Better: add a delta_link column. For now, use a separate key.
+		const deltaRow = db.prepare('SELECT folder FROM sync_state WHERE account_id = ? AND folder LIKE ?')
+			.get(account.id, 'delta:%') as { folder: string } | undefined;
+		if (deltaRow) {
+			deltaLink = deltaRow.folder.slice(6); // strip 'delta:' prefix
+		}
+
+		let result;
+		try {
+			result = await fetchMessagesDelta(tokens.accessToken, deltaLink);
+		} catch (err) {
+			if (err instanceof DeltaExpiredError) {
+				console.log(`[inbox-sync:${account.id}] Delta token expired, full re-sync`);
+				result = await fetchMessagesDelta(tokens.accessToken); // no delta = full sync
+			} else {
+				throw err;
+			}
+		}
+
+		// Convert Graph messages to our format and upsert
+		if (result.messages.length > 0) {
+			const batch: Omit<InboxMessage, 'id'>[] = result.messages.map((msg) => graphToInboxMessage(account.id, msg));
+			upsertMessages(batch);
+		}
+
+		// Store new delta link
+		if (result.deltaLink) {
+			db.prepare(`
+				INSERT INTO sync_state (account_id, folder, last_uid, uid_validity, last_sync)
+				VALUES (?, ?, 0, 0, ?)
+				ON CONFLICT(account_id, folder) DO UPDATE SET last_sync = excluded.last_sync
+			`).run(account.id, `delta:${result.deltaLink}`, Date.now());
+		}
+
+		updateAccountLastSync(account.id);
+		getSyncEmitter().emit('synced', account.id);
+
+		const totalCount = getMessageCount(account.id);
+		console.log(`[inbox-sync:${account.id}] Outlook sync: ${result.messages.length} messages, ${totalCount} total`);
+
+		// Schedule next poll
+		if (!worker.stopping) {
+			worker.reconnectTimer = setTimeout(() => {
+				if (!worker.stopping) connectOutlookWorker(worker, account);
+			}, OUTLOOK_POLL_INTERVAL);
+		}
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		console.error(`[inbox-sync:${account.id}] Outlook sync failed:`, msg);
+		updateAccountStatus(account.id, 'error', msg);
+
+		if (!worker.stopping) {
+			scheduleReconnect(worker, account);
+		}
+	}
+}
+
+function graphToInboxMessage(accountId: string, msg: GraphMessage): Omit<InboxMessage, 'id'> {
+	return {
+		accountId,
+		uid: hashStringToInt(msg.id), // Graph uses string IDs, we need int UIDs
+		uidValidity: 1, // Not applicable for Graph
+		folder: 'INBOX',
+		messageId: msg.internetMessageId?.replace(/[<>]/g, '') || null,
+		threadId: msg.conversationId || null,
+		inReplyTo: null,
+		subject: msg.subject || '',
+		fromAddress: msg.from?.emailAddress?.address || '',
+		fromName: msg.from?.emailAddress?.name || null,
+		toAddress: msg.toRecipients?.[0]?.emailAddress?.address || '',
+		dateSent: msg.sentDateTime ? new Date(msg.sentDateTime).getTime() : null,
+		dateReceived: new Date(msg.receivedDateTime).getTime(),
+		flags: msg.isRead ? ['\\Seen'] : [],
+		hasAttachments: msg.hasAttachments || false,
+		bodyPreview: (msg.bodyPreview || '').slice(0, 500),
+		rawSize: 0,
+		syncedAt: Date.now(),
+	};
+}
+
+/** Hash a string ID to a stable integer for the UID column */
+function hashStringToInt(str: string): number {
+	let hash = 0;
+	for (let i = 0; i < str.length; i++) {
+		const char = str.charCodeAt(i);
+		hash = ((hash << 5) - hash) + char;
+		hash = hash & 0x7FFFFFFF; // Keep positive 31-bit int
+	}
+	return hash || 1;
 }
 
 /** Check bodyStructure for attachments */

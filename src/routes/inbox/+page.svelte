@@ -241,7 +241,7 @@
 							<select bind:value={addProvider} class="w-full mt-1 px-2 py-1.5 rounded bg-hub-surface border border-hub-border text-sm text-hub-text focus:outline-none">
 								<option value="icloud">iCloud</option>
 								<option value="gmail">Gmail (OAuth2)</option>
-								<option value="outlook">Outlook</option>
+								<option value="outlook">Outlook (OAuth2)</option>
 								<option value="imap">Custom IMAP</option>
 							</select>
 						</div>
@@ -256,6 +256,18 @@
 								>
 									<svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12.545 10.239v3.821h5.445c-.712 2.315-2.647 3.972-5.445 3.972a6.033 6.033 0 110-12.064c1.498 0 2.866.549 3.921 1.453l2.814-2.814A9.969 9.969 0 0012.545 2C7.021 2 2.543 6.477 2.543 12s4.478 10 10.002 10c8.396 0 10.249-7.85 9.426-11.748l-9.426-.013z"/></svg>
 									Sign in with Google
+								</a>
+							</div>
+						{:else if addProvider === 'outlook'}
+							<!-- Outlook uses OAuth2 -->
+							<div class="col-span-2">
+								<p class="text-xs text-hub-muted mb-3">Outlook uses secure OAuth2 authentication. Click below to sign in with Microsoft.</p>
+								<a
+									href="/api/inbox/outlook"
+									class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-sky-500/15 text-sky-400 text-sm font-medium hover:bg-sky-500/25 transition-colors"
+								>
+									<svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M11.4 24H0V12.6L11.4 24zM24 24H12.6V12.6L24 24zM11.4 11.4H0V0l11.4 11.4zM24 11.4H12.6V0L24 11.4z"/></svg>
+									Sign in with Microsoft
 								</a>
 							</div>
 						{:else}
@@ -283,7 +295,7 @@
 						<p class="text-xs text-hub-danger mt-2">{addError}</p>
 					{/if}
 					<div class="flex gap-2 mt-3">
-						{#if addProvider !== 'gmail'}
+						{#if addProvider !== 'gmail' && addProvider !== 'outlook'}
 							<button
 								onclick={addAccount}
 								disabled={adding}

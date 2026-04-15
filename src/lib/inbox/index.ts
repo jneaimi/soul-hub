@@ -18,6 +18,9 @@ export { encrypt, decrypt } from './crypto.js';
 export { getAuthUrl, exchangeCode, refreshAccessToken, getValidToken, isTokenExpired } from './oauth.js';
 export type { OAuthTokens } from './oauth.js';
 
+export { getOutlookAuthUrl, exchangeOutlookCode, getValidOutlookToken, getOutlookUserEmail } from './outlook.js';
+export type { OutlookTokens } from './outlook.js';
+
 export {
 	startSync, stopSync, startAccountSync, stopAccountSync,
 	getSyncEmitter, getSyncStatus,
