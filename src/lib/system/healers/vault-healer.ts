@@ -1,0 +1,223 @@
+/**
+ * Vault Healer — safe auto-fixes for vault health issues.
+ *
+ * Rules:
+ *   SAFE (auto-fix):
+ *     - Orphan note in a zone with an index.md → append [[note]] link to zone index
+ *     - Missing root index.md → generate from zone list
+ *     - Missing 'created' frontmatter → backfill from file mtime
+ *     - Dead wikilink with single match → auto-correct
+ *
+ *   NEEDS_HUMAN (notification):
+ *     - Orphan with no zone index → can't auto-link
+ *     - Dead wikilink with multiple candidates → ambiguous
+ *     - Governance violations (wrong type for zone) → needs decision
+ *     - Large batches (>100 orphans per zone) → needs approval
+ */
+
+import { readFile, writeFile, stat } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import type { VaultNote } from '../../vault/types.js';
+import type { HealResult } from '../types.js';
+
+/**
+ * Link orphan notes to their zone's index.md.
+ * Only fixes notes in zones that have an index.md file.
+ */
+export async function healOrphans(
+	vaultRoot: string,
+	orphans: VaultNote[],
+	allNotes: VaultNote[]
+): Promise<HealResult> {
+	const result: HealResult = { type: 'orphan_notes', fixed: [], skipped: [], errors: [] };
+
+	// Group orphans by their top-level zone
+	const byZone = new Map<string, VaultNote[]>();
+	for (const note of orphans) {
+		const zone = note.path.split('/')[0];
+		if (!byZone.has(zone)) byZone.set(zone, []);
+		byZone.get(zone)!.push(note);
+	}
+
+	// Find zone indices
+	const zoneIndices = new Map<string, string>();
+	for (const note of allNotes) {
+		// Match zone/index.md or zone/subdir/index.md
+		if (note.path.endsWith('/index.md') || note.path === 'index.md') {
+			const zone = note.path.split('/')[0];
+			// Prefer top-level zone index
+			if (!zoneIndices.has(zone) || note.path.split('/').length < zoneIndices.get(zone)!.split('/').length) {
+				zoneIndices.set(zone, note.path);
+			}
+		}
+	}
+
+	for (const [zone, zoneOrphans] of byZone) {
+		const indexPath = zoneIndices.get(zone);
+		if (!indexPath) {
+			// No index.md for this zone — skip, needs human
+			for (const orphan of zoneOrphans) {
+				result.skipped.push(orphan.path);
+			}
+			continue;
+		}
+
+		// Safety: don't auto-fix more than 50 orphans per zone in one run
+		const batch = zoneOrphans.slice(0, 50);
+		if (zoneOrphans.length > 50) {
+			for (const orphan of zoneOrphans.slice(50)) {
+				result.skipped.push(orphan.path);
+			}
+		}
+
+		try {
+			const absIndexPath = resolve(vaultRoot, indexPath);
+			const indexContent = await readFile(absIndexPath, 'utf-8');
+
+			// Build links to append — skip notes already linked
+			const newLinks: string[] = [];
+			for (const orphan of batch) {
+				const linkTarget = orphan.path.replace(/\.md$/, '');
+				// Check if already linked (case-insensitive)
+				const alreadyLinked = indexContent.toLowerCase().includes(`[[${linkTarget.toLowerCase()}`);
+				if (alreadyLinked) {
+					result.skipped.push(orphan.path);
+					continue;
+				}
+				newLinks.push(`- [[${linkTarget}|${orphan.title}]]`);
+				result.fixed.push(orphan.path);
+			}
+
+			if (newLinks.length > 0) {
+				const appendBlock = `\n\n## Auto-linked (${new Date().toISOString().slice(0, 10)})\n${newLinks.join('\n')}\n`;
+				await writeFile(absIndexPath, indexContent + appendBlock, 'utf-8');
+			}
+		} catch (err) {
+			for (const orphan of batch) {
+				result.errors.push({ path: orphan.path, error: err instanceof Error ? err.message : String(err) });
+			}
+		}
+	}
+
+	return result;
+}
+
+/**
+ * Generate root index.md if missing — links to all zone indices.
+ */
+export async function healMissingRootIndex(
+	vaultRoot: string,
+	allNotes: VaultNote[]
+): Promise<HealResult> {
+	const result: HealResult = { type: 'missing_index', fixed: [], skipped: [], errors: [] };
+	const rootIndexPath = resolve(vaultRoot, 'index.md');
+
+	// Check if root index already exists
+	try {
+		await stat(rootIndexPath);
+		result.skipped.push('index.md');
+		return result;
+	} catch {
+		// Doesn't exist — create it
+	}
+
+	// Discover zones — only recognized vault zones
+	const VALID_ZONES = new Set(['inbox', 'projects', 'knowledge', 'content', 'operations', 'archive']);
+	const zones = new Set<string>();
+	for (const note of allNotes) {
+		const zone = note.path.split('/')[0];
+		if (zone && VALID_ZONES.has(zone)) {
+			zones.add(zone);
+		}
+	}
+
+	// Count notes per zone (only valid zones)
+	const zoneCounts = new Map<string, number>();
+	for (const note of allNotes) {
+		const zone = note.path.split('/')[0];
+		if (VALID_ZONES.has(zone)) {
+			zoneCounts.set(zone, (zoneCounts.get(zone) || 0) + 1);
+		}
+	}
+
+	const today = new Date().toISOString().slice(0, 10);
+	const zoneLinks = [...zones]
+		.sort()
+		.map((z) => `- [[${z}/index|${z}]] (${zoneCounts.get(z) || 0} notes)`)
+		.join('\n');
+
+	const content = `---
+type: index
+created: ${today}
+tags: [vault, auto-generated]
+---
+
+# Vault Index
+
+${zoneLinks}
+
+---
+*Auto-generated by Soul Hub System Health on ${today}*
+`;
+
+	try {
+		await writeFile(rootIndexPath, content, 'utf-8');
+		result.fixed.push('index.md');
+	} catch (err) {
+		result.errors.push({ path: 'index.md', error: err instanceof Error ? err.message : String(err) });
+	}
+
+	return result;
+}
+
+/**
+ * Backfill missing 'created' frontmatter from file mtime.
+ */
+export async function healMissingFrontmatter(
+	vaultRoot: string,
+	allNotes: VaultNote[]
+): Promise<HealResult> {
+	const result: HealResult = { type: 'missing_frontmatter', fixed: [], skipped: [], errors: [] };
+
+	const missing = allNotes.filter((n) => !n.meta.created);
+
+	// Cap at 50 per run
+	const batch = missing.slice(0, 50);
+	for (const note of missing.slice(50)) {
+		result.skipped.push(note.path);
+	}
+
+	for (const note of batch) {
+		try {
+			const absPath = resolve(vaultRoot, note.path);
+			const raw = await readFile(absPath, 'utf-8');
+			const fileStat = await stat(absPath);
+			const created = new Date(fileStat.mtimeMs).toISOString().slice(0, 10);
+
+			// Insert created field into existing frontmatter
+			let updated: string;
+			if (raw.startsWith('---')) {
+				// Has frontmatter — insert created before closing ---
+				const endIdx = raw.indexOf('---', 3);
+				if (endIdx > 0) {
+					const front = raw.slice(0, endIdx);
+					const rest = raw.slice(endIdx);
+					updated = front + `created: ${created}\n` + rest;
+				} else {
+					result.skipped.push(note.path);
+					continue;
+				}
+			} else {
+				// No frontmatter — add it
+				updated = `---\ncreated: ${created}\n---\n\n${raw}`;
+			}
+
+			await writeFile(absPath, updated, 'utf-8');
+			result.fixed.push(note.path);
+		} catch (err) {
+			result.errors.push({ path: note.path, error: err instanceof Error ? err.message : String(err) });
+		}
+	}
+
+	return result;
+}

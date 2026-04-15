@@ -139,6 +139,10 @@ export interface GraphNode {
 	size: number;
 	/** Color (derived from zone) */
 	color: string;
+	/** Raw degree count (links + backlinks + tag connections) for ranking */
+	degree?: number;
+	/** Frontmatter `created` date string (YYYY-MM-DD) — semantic newness */
+	created?: string;
 }
 
 export interface GraphEdge {

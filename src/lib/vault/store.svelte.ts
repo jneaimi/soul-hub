@@ -88,6 +88,16 @@ async function fetchGraph(opts?: { zone?: string; type?: string | string[]; tags
         );
         nodes = nodes.filter(n => matchIds.has(n.id));
         edges = edges.filter(e => matchIds.has(e.source) && matchIds.has(e.target));
+
+        // Re-normalize node sizes for the filtered set so small nodes become visible
+        if (nodes.length > 0) {
+          const MIN_SIZE = 6;
+          const MAX_SIZE = 18;
+          const maxDegree = Math.max(1, ...nodes.map(n => n.degree ?? 0));
+          for (const node of nodes) {
+            node.size = MIN_SIZE + ((node.degree ?? 0) / maxDegree) * (MAX_SIZE - MIN_SIZE);
+          }
+        }
       }
       graphNodes = nodes;
       graphEdges = edges;

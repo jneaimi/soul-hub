@@ -3,6 +3,7 @@ import { resolve, dirname } from 'node:path';
 import { config } from '$lib/config.js';
 import { initScheduler } from '$lib/pipeline/index.js';
 import { initVault, getVaultEngine } from '$lib/vault/index.js';
+import { initSystemHealth, getSystemHealth } from '$lib/system/index.js';
 import { listSessions, killSession } from '$lib/pty/manager.js';
 import { extractProxyPort, proxyRequest } from '$lib/proxy.js';
 import '$lib/secrets.js'; // Load platform secrets into process.env at startup
@@ -20,6 +21,13 @@ try {
 	console.error('[vault] Failed to initialize:', err);
 }
 
+// Initialize system health (detect → heal → notify loop)
+try {
+	await initSystemHealth(DATA_DIR, config.resolved.vaultDir);
+} catch (err) {
+	console.error('[system-health] Failed to initialize:', err);
+}
+
 // Graceful shutdown handler for PM2 reload/restart
 function gracefulShutdown(signal: string) {
 	console.log(`[soul-hub] ${signal} received — draining connections...`);
@@ -29,6 +37,10 @@ function gracefulShutdown(signal: string) {
 		killSession(id);
 	}
 	console.log(`[soul-hub] Cleaned up ${activeIds.length} PTY sessions`);
+
+	// Shutdown system health (stop health loop)
+	const systemHealth = getSystemHealth();
+	if (systemHealth) systemHealth.shutdown();
 
 	// Shutdown vault engine (stop file watcher)
 	const vault = getVaultEngine();

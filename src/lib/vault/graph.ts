@@ -89,11 +89,13 @@ export class VaultGraph {
 			const linkCount = (wikilinks?.links.length || 0) + (wikilinks?.backlinks.length || 0);
 			const tagCount = tagConnections.get(node.id) || 0;
 			const degree = linkCount + tagCount;
+			node.degree = degree;
+			node.created = (wikilinks?.meta.created as string) || undefined;
 			node.size = degree;
 			if (degree > maxDegree) maxDegree = degree;
 		}
 		for (const node of nodes) {
-			node.size = MIN_SIZE + (node.size / maxDegree) * (MAX_SIZE - MIN_SIZE);
+			node.size = MIN_SIZE + ((node.degree ?? 0) / maxDegree) * (MAX_SIZE - MIN_SIZE);
 		}
 
 		return { nodes, edges };

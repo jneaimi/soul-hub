@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { type Project, type Suggestion, type GitBranchInfo, fetchProjects, fetchGitBranches, addProjectApi, removeProjectApi, timeAgo } from '$lib/data/projects.js';
+	import SystemNotifications from '$lib/components/SystemNotifications.svelte';
 
 	interface DashboardData {
 		pipelineSummary: { total: number; names: string[]; items?: { name: string; type: 'pipeline' | 'chain' }[] };
@@ -264,6 +265,9 @@
 						<button onclick={() => { error = ''; loadProjects(); }} class="text-xs underline cursor-pointer">Retry</button>
 					</div>
 				{/if}
+
+				<!-- System Notifications -->
+				<SystemNotifications />
 
 				<!-- First-time: no projects -->
 				{#if projects.length === 0 && suggestions.length > 0}

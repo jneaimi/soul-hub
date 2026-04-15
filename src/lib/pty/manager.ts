@@ -168,7 +168,8 @@ export function spawnSession(opts: PtySessionOptions): PtySession {
 	let outputBuffer = '';
 	let promptCharCount = 0;
 	let seenStatusBar = false;
-	const startTime = Date.now();
+	let trustPromptHandled = false;
+	let readyTimestamp = Date.now();
 
 	pty.onData((data: string) => {
 		emitter.emit('output', data);
@@ -179,7 +180,27 @@ export function spawnSession(opts: PtySessionOptions): PtySession {
 		// Auto-prompt injection: detect when Claude is ready for input
 		if (opts.prompt && !session.promptSent) {
 			outputBuffer += data;
-			const elapsed = (Date.now() - startTime) / 1000;
+
+			// Handle workspace trust prompt before prompt injection
+			if (!trustPromptHandled) {
+				// Strip ANSI escape codes before matching — PTY output has cursor/color codes between words
+				const stripped = outputBuffer.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').toLowerCase();
+				if ((stripped.includes('trust') && stripped.includes('safety')) || stripped.includes('yes, i trust')) {
+					trustPromptHandled = true;
+					setTimeout(() => {
+						pty.write('1');
+						setTimeout(() => pty.write('\r'), 200);
+					}, 500);
+					// Reset readiness detection — prompt injection starts after trust is accepted
+					outputBuffer = '';
+					promptCharCount = 0;
+					seenStatusBar = false;
+					readyTimestamp = Date.now();
+					return;
+				}
+			}
+
+			const elapsed = (Date.now() - readyTimestamp) / 1000;
 
 			promptCharCount += (data.match(/\u276f/g) || []).length;
 
