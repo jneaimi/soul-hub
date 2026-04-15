@@ -1,7 +1,7 @@
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { randomUUID } from 'node:crypto';
-import { addAccount, listAccounts, removeAccount, getAccount } from '$lib/inbox/index.js';
+import { addAccount, listAccounts, removeAccount, getAccount, startAccountSync, stopAccountSync } from '$lib/inbox/index.js';
 import type { InboxProvider } from '$lib/inbox/index.js';
 
 const VALID_PROVIDERS: InboxProvider[] = ['icloud', 'gmail', 'outlook', 'imap'];
@@ -62,6 +62,10 @@ export const POST: RequestHandler = async ({ request }) => {
 			{ id, label, provider: provider as InboxProvider, email, host, port },
 			credential,
 		);
+
+		// Start sync worker for the new account
+		startAccountSync(account);
+
 		return json({ ok: true, account }, { status: 201 });
 	} catch (err) {
 		return json(
@@ -93,6 +97,7 @@ export const DELETE: RequestHandler = async ({ request }) => {
 		return json({ error: `Account "${id}" not found` }, { status: 404 });
 	}
 
+	stopAccountSync(id);
 	removeAccount(id);
 	return json({ ok: true, removed: id });
 };

@@ -14,3 +14,8 @@ export type {
 } from './types.js';
 
 export { encrypt, decrypt } from './crypto.js';
+
+export {
+	startSync, stopSync, startAccountSync, stopAccountSync,
+	getSyncEmitter, getSyncStatus,
+} from './sync.js';
