@@ -6,6 +6,7 @@ import { initVault, getVaultEngine } from '$lib/vault/index.js';
 import { initSystemHealth, getSystemHealth } from '$lib/system/index.js';
 import { listSessions, killSession } from '$lib/pty/manager.js';
 import { extractProxyPort, proxyRequest } from '$lib/proxy.js';
+import { getInboxDb, closeInboxDb } from '$lib/inbox/index.js';
 import '$lib/secrets.js'; // Load platform secrets into process.env at startup
 
 const PIPELINES_DIR = resolve(dirname(config.resolved.catalogDir), 'pipelines');
@@ -28,6 +29,14 @@ try {
 	console.error('[system-health] Failed to initialize:', err);
 }
 
+// Initialize inbox database (lazy — opens on first query, but ensure schema is ready)
+try {
+	getInboxDb();
+	console.log('[inbox] Database initialized');
+} catch (err) {
+	console.error('[inbox] Failed to initialize:', err);
+}
+
 // Graceful shutdown handler for PM2 reload/restart
 function gracefulShutdown(signal: string) {
 	console.log(`[soul-hub] ${signal} received — draining connections...`);
@@ -41,6 +50,9 @@ function gracefulShutdown(signal: string) {
 	// Shutdown system health (stop health loop)
 	const systemHealth = getSystemHealth();
 	if (systemHealth) systemHealth.shutdown();
+
+	// Shutdown inbox database
+	closeInboxDb();
 
 	// Shutdown vault engine (stop file watcher)
 	const vault = getVaultEngine();

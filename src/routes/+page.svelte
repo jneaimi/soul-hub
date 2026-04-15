@@ -210,6 +210,12 @@
 			</div>
 			<div class="flex items-center gap-2">
 				<a
+					href="/inbox"
+					class="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-hub-muted text-sm hover:text-hub-text hover:bg-hub-card transition-colors"
+				>
+					Inbox
+				</a>
+				<a
 					href="/vault"
 					class="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-hub-muted text-sm hover:text-hub-text hover:bg-hub-card transition-colors"
 				>
