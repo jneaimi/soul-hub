@@ -339,10 +339,20 @@ async function syncInbox(
 				}
 			}
 
-			// Extract Message-ID from headers
-			const headers = msg.headers as Map<string, string> | undefined;
-			const messageId = headers?.get('message-id')?.toString().trim().replace(/[<>]/g, '') || null;
-			const inReplyTo = headers?.get('in-reply-to')?.toString().trim().replace(/[<>]/g, '') || null;
+			// Extract Message-ID from headers (may be Map or Buffer depending on ImapFlow version)
+			let messageId: string | null = null;
+			let inReplyTo: string | null = null;
+			const rawHeaders = msg.headers;
+			if (rawHeaders instanceof Map) {
+				messageId = rawHeaders.get('message-id')?.toString().trim().replace(/[<>]/g, '') || null;
+				inReplyTo = rawHeaders.get('in-reply-to')?.toString().trim().replace(/[<>]/g, '') || null;
+			} else if (Buffer.isBuffer(rawHeaders)) {
+				const headerStr = rawHeaders.toString('utf-8');
+				const midMatch = headerStr.match(/message-id:\s*<?([^>\r\n]+)>?/i);
+				if (midMatch) messageId = midMatch[1].trim();
+				const replyMatch = headerStr.match(/in-reply-to:\s*<?([^>\r\n]+)>?/i);
+				if (replyMatch) inReplyTo = replyMatch[1].trim();
+			}
 
 			const hasAttachments = checkAttachments(msg.bodyStructure);
 

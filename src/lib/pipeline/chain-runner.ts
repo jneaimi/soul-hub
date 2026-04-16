@@ -6,6 +6,7 @@ import { parseCondition, evaluateConditionOp } from './condition-evaluator.js';
 import type { ChainSpec, ChainRun, ChainNodeRun, ChainNodeStatus } from './chain-types.js';
 import type { StepStatus } from './types.js';
 import { getVaultEngine } from '../vault/index.js';
+import { deriveNoteType } from '../vault/type-mapper.js';
 
 /** Track active chain runs for kill support: chainRunId → set of inner pipeline runIds */
 const activeChainRuns = new Map<string, Set<string>>();
@@ -328,7 +329,7 @@ export async function runChain(
 				zone,
 				filename,
 				meta: {
-					type: 'output',
+					type: deriveNoteType(zone),
 					created: date,
 					tags,
 					project: chainRun.chainName,

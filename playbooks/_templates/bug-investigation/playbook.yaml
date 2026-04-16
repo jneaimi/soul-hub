@@ -64,7 +64,7 @@ output:
   items:
     - type: knowledge
       file: diagnosis.md
-      vault_zone: debugging
+      vault_zone: knowledge/debugging
     - type: artifact
       file: fix-summary.md
   on_complete:

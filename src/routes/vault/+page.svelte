@@ -340,11 +340,13 @@
 
   <VaultSmartViews
     activeFilters={store.filters}
+    {allTags}
     onApply={(f) => {
       store.setFilters({
         zone: f.zone,
         type: f.type && f.type.length > 0 ? f.type : undefined,
         tags: f.tags && f.tags.length > 0 ? f.tags : undefined,
+        since: f.since || undefined,
       });
       replaceUrl();
     }}

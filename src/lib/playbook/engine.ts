@@ -16,6 +16,24 @@ import { savePlaybookRunSummary } from '../vault/playbook-bridge.js';
 
 // ─── Helpers ───
 
+/**
+ * Evaluate a skip_if condition against resolved inputs.
+ * Supports: "$inputs.X == false", "$inputs.X == true", "$inputs.X == 'value'"
+ */
+function evaluateSkipIf(condition: string, inputs: Record<string, string | number>): boolean {
+	// Pattern: $inputs.X == value
+	const match = condition.match(/\$inputs\.(\w+)\s*(==|!=)\s*(.+)/);
+	if (!match) return false;
+
+	const [, inputId, operator, rawValue] = match;
+	const actual = String(inputs[inputId] ?? '').toLowerCase().trim();
+	const expected = rawValue.replace(/^['"]|['"]$/g, '').toLowerCase().trim();
+
+	if (operator === '==') return actual === expected;
+	if (operator === '!=') return actual !== expected;
+	return false;
+}
+
 /** Parse a timeout string like '30m', '2h', '72h' into milliseconds */
 function parseTimeout(timeout: string): number {
 	const match = timeout.match(/^(\d+)(s|m|h|d)$/);
@@ -259,6 +277,13 @@ export async function runPlaybook(
 
 			const phase = phaseMap.get(phaseId)!;
 			const phaseResult = run.phases.find(p => p.id === phaseId)!;
+
+			// Evaluate skip_if condition
+			if (phase.skip_if && evaluateSkipIf(phase.skip_if, resolvedInputs)) {
+				phaseResult.status = 'skipped';
+				emit('phase_complete', { phaseId, data: `Skipped: ${phase.skip_if}` });
+				continue;
+			}
 
 			// Consensus is Phase 4+ — skip with warning
 			if (phase.type === 'consensus') {
@@ -533,7 +558,7 @@ export async function runPlaybook(
 								const containsMatch = condition.match(/(\w+)\s+contains\s+['"](.+?)['"]/);
 								if (containsMatch) {
 									const searchTerm = containsMatch[2];
-									if (reviewContent.includes(searchTerm)) {
+									if (reviewContent.toLowerCase().includes(searchTerm.toLowerCase())) {
 										approved = true;
 									}
 								}
@@ -642,9 +667,17 @@ export async function runPlaybook(
 						}
 					}
 
+					// Collect assignment outputs for the human reviewer
+					const reviewFiles: Record<string, string> = {};
+					for (const [key, filePath] of Object.entries(phaseOutputs[phaseId] || {})) {
+						try {
+							reviewFiles[key] = await readFile(filePath, 'utf-8');
+						} catch { /* skip unreadable */ }
+					}
+
 					// Now wait for human input
 					const humanPrompt = phase.prompt || 'Human input required';
-					emit('human_required', { phaseId, data: humanPrompt });
+					emit('human_required', { phaseId, data: JSON.stringify({ prompt: humanPrompt, reviewFiles }) });
 					run.status = 'paused';
 
 					// Parse timeout (default 30m)
@@ -797,7 +830,14 @@ export async function runPlaybook(
 
 					// Gate phase: suspend until user approves/rejects
 					if (phase.type === 'gate') {
-						emit('gate_required', { phaseId, data: phase.prompt || 'Approve to continue?' });
+						const gateFiles: Record<string, string> = {};
+						for (const [key, filePath] of Object.entries(phaseOutputs[phaseId] || {})) {
+							try {
+								gateFiles[key] = await readFile(filePath, 'utf-8');
+							} catch { /* skip */ }
+						}
+
+						emit('gate_required', { phaseId, data: JSON.stringify({ prompt: phase.prompt || 'Approve to continue?', reviewFiles: gateFiles }) });
 						run.status = 'paused';
 
 						const gateResult = await new Promise<{ action: string; value?: string }>((resolve, reject) => {

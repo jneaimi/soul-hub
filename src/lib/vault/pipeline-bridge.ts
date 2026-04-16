@@ -1,5 +1,6 @@
 import { getVaultEngine } from './index.js';
 import { readFile } from 'node:fs/promises';
+import { deriveNoteType } from './type-mapper.js';
 
 interface PipelineRunContext {
 	pipelineName: string;
@@ -24,6 +25,7 @@ interface PipelineOutputContext {
 	stepType: string;
 	outputPath: string;
 	outputType?: string;
+	vaultZone?: string;
 }
 
 /**
@@ -33,14 +35,66 @@ interface PipelineOutputContext {
 export async function savePipelineOutput(ctx: PipelineOutputContext): Promise<string | undefined> {
 	const engine = getVaultEngine();
 	if (!engine) {
-		console.warn('[vault/pipeline] Engine not initialized — skipping output save');
-		return;
+		console.warn('[vault/pipeline] Engine not initialized — falling back to direct write');
+		const { mkdir, writeFile } = await import('node:fs/promises');
+		const { resolve, join } = await import('node:path');
+		const { homedir } = await import('node:os');
+
+		try {
+			const isBinary = /\.(png|jpg|jpeg|gif|svg|webp|mp4|webm|mov|mp3|wav|m4a|pdf)$/i.test(ctx.outputPath);
+			if (isBinary) return undefined; // Can't write binary to vault as markdown
+
+			const rawContent = await readFile(ctx.outputPath, 'utf-8');
+			const zone = ctx.vaultZone || `projects/${ctx.pipelineName}/outputs`;
+			const today = new Date().toISOString().slice(0, 10);
+			const shortRunId = ctx.runId.slice(0, 8);
+			const filename = `${today}-${ctx.stepId}-${shortRunId}.md`;
+			const noteType = deriveNoteType(zone);
+
+			const vaultDir = resolve(homedir(), 'vault');
+			const targetDir = join(vaultDir, zone);
+			await mkdir(targetDir, { recursive: true });
+			const targetPath = join(targetDir, filename);
+
+			const isMarkdown = ctx.outputPath.endsWith('.md');
+			let content = isMarkdown ? rawContent : `## Output\n\n\`\`\`\n${rawContent}\n\`\`\``;
+
+			if (!content.startsWith('---')) {
+				const frontmatter = [
+					'---',
+					`type: ${noteType}`,
+					`created: ${today}`,
+					`tags: [pipeline, ${ctx.pipelineName}, ${ctx.stepId}]`,
+					`project: ${ctx.pipelineName}`,
+					`run_id: ${ctx.runId}`,
+					`step: ${ctx.stepId}`,
+					`source_agent: pipeline-engine`,
+					'---',
+					'',
+				].join('\n');
+				content = frontmatter + content;
+			}
+
+			await writeFile(targetPath, content, 'utf-8');
+			console.log(`[vault/pipeline] Saved output (direct): ${targetPath}`);
+			return targetPath;
+		} catch (err) {
+			console.error(`[vault/pipeline] Fallback write failed:`, err instanceof Error ? err.message : err);
+		}
+		return undefined;
 	}
 
 	try {
-		const rawContent = await readFile(ctx.outputPath, 'utf-8');
+		const isBinary = /\.(png|jpg|jpeg|gif|svg|webp|mp4|webm|mov|mp3|wav|m4a|pdf)$/i.test(ctx.outputPath);
 
-		const zone = `projects/${ctx.pipelineName}/outputs`;
+		let rawContent: string;
+		if (isBinary) {
+			rawContent = `Binary file: ${ctx.outputPath.split('/').pop()}\nPath: ${ctx.outputPath}`;
+		} else {
+			rawContent = await readFile(ctx.outputPath, 'utf-8');
+		}
+
+		const zone = ctx.vaultZone || `projects/${ctx.pipelineName}/outputs`;
 
 		const today = new Date().toISOString().slice(0, 10);
 		const shortRunId = ctx.runId.slice(0, 8);
@@ -66,13 +120,14 @@ export async function savePipelineOutput(ctx: PipelineOutputContext): Promise<st
 			zone,
 			filename,
 			meta: {
-				type: 'output',
+				type: deriveNoteType(zone),
 				created: today,
 				tags: ['pipeline', ctx.pipelineName, ctx.stepId],
 				project: ctx.pipelineName,
 				pipeline: ctx.pipelineName,
 				run_id: ctx.runId,
 				step: ctx.stepId,
+				output_type: ctx.outputType || 'file',
 			},
 			content,
 		});
@@ -164,7 +219,7 @@ export async function savePipelineRunSummary(ctx: PipelineRunContext): Promise<v
 			zone,
 			filename,
 			meta: {
-				type: 'output',
+				type: deriveNoteType(zone),
 				created: date,
 				tags,
 				project: ctx.pipelineName,

@@ -36,6 +36,8 @@ export interface PlaybookPhase {
 	type: PhaseType;
 	depends_on?: string[];
 	assignments: PlaybookAssignment[];
+	// Conditional — skip phase based on input value
+	skip_if?: string; // e.g. "$inputs.enable_critic == false"
 	// Handoff-specific
 	loop_until?: string;
 	max_iterations?: number;

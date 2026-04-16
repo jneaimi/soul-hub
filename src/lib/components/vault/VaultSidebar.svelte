@@ -31,6 +31,10 @@
     if (f.tags && f.tags.length > 0) {
       notes = notes.filter(n => n.meta?.tags && f.tags!.every(t => n.meta.tags!.includes(t)));
     }
+    if (f.since) {
+      const cutoff = Date.now() - f.since * 24 * 60 * 60 * 1000;
+      notes = notes.filter(n => n.mtime >= cutoff);
+    }
     return notes;
   });
 
@@ -234,7 +238,7 @@
     >Files</button>
   </div>
 
-  <div class="flex-1 overflow-y-auto">
+  <div class="flex-1 overflow-y-auto overflow-x-hidden">
   {#if sidebarTab === 'files'}
     <!-- File browser -->
     <div class="p-3">
@@ -356,7 +360,7 @@
                 onclick={() => onSelect(note.path)}
               >
                 <div class="flex items-center gap-1.5">
-                  <span class="truncate flex-1" style="unicode-bidi: plaintext;">{note.title}</span>
+                  <span class="flex-1 break-words" style="unicode-bidi: plaintext;">{note.title}</span>
                 </div>
                 <div class="flex items-center gap-1.5 mt-0.5">
                   {#if note.meta?.type}

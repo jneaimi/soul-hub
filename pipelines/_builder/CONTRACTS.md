@@ -213,27 +213,61 @@ steps:
 ### Automatic Capture (zero-config)
 The pipeline runner automatically saves outputs to the vault — **no block code needed:**
 
-| What | When | Vault Zone | Tags |
-|------|------|-----------|------|
+| What | When | Default Zone | Tags |
+|------|------|-------------|------|
 | Step output | Each step completes | `projects/{pipelineName}/outputs` | `['pipeline', pipelineName, stepId]` |
 | Run summary | Pipeline completes (success or failure) | `projects/{pipelineName}/outputs` | `['pipeline', 'run-summary', pipelineName]` |
 
 **How it works:**
 - Runner reads each step's output file from `output/`
-- Wraps it in a markdown vault note with frontmatter (type, tags, run_id, step)
-- JSON → ```json code block, Markdown → as-is, Other → ``` code block
+- Wraps it in a markdown vault note with frontmatter
+- JSON → ```json code block, Markdown → as-is, Binary → file reference, Other → ``` code block
 - Failures are non-blocking — vault errors never break a pipeline
 
 **Auto-applied metadata:**
 ```yaml
-type: output
+type: <derived from zone>   # See zone-to-type table below
 created: YYYY-MM-DD
 tags: [pipeline, <pipeline-name>, <step-id>]
 project: <pipeline-name>
 pipeline: <pipeline-name>
 run_id: <full-run-id>
 step: <step-id>
+output_type: <file|media|action|response|webhook>
 ```
+
+### Vault Zone Routing (optional)
+Steps can declare `vault_zone` to route outputs to semantic vault zones instead of the default `projects/{name}/outputs`:
+
+```yaml
+steps:
+  - id: research
+    type: agent
+    block: researcher
+    output: output/research.md
+    vault_zone: knowledge/research    # Lands as type: research
+
+  - id: analysis
+    type: agent
+    block: analyst
+    output: output/analysis.md
+    vault_zone: knowledge/decisions   # Lands as type: decision
+```
+
+### Zone-to-Type Mapping
+The note `type` is automatically derived from the vault zone:
+
+| vault_zone | Note type | Purpose |
+|-----------|-----------|---------|
+| `content` | `draft` | Published content, articles, posts |
+| `knowledge/research` | `research` | Research briefs, analysis |
+| `knowledge/decisions` | `decision` | Architecture decisions, design choices |
+| `knowledge/learnings` | `learning` | Insights and retrospectives |
+| `knowledge/debugging` | `debugging` | Bug investigations |
+| `knowledge/patterns` | `pattern` | Patterns and best practices |
+| `projects/*/outputs` | `output` | Default — pipeline run outputs |
+
+**Valid top-level vault zones**: `inbox`, `projects`, `knowledge`, `content`, `operations`, `archive`. Never create new top-level zones.
 
 ### Raw Output Files
 Raw files stay in `output/` inside the pipeline directory — browsable through the vault's "Pipeline Outputs" tab. The vault note is a processed copy; both exist.

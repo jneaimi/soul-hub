@@ -81,6 +81,15 @@ output:
 
 ### Phase-Specific Fields
 
+**skip_if (any phase type):**
+```yaml
+- id: critic-review
+  type: sequential
+  depends_on: [edit]
+  skip_if: "$inputs.enable_critic == false"   # skip when input toggle is off
+```
+Supports `==` and `!=` operators against `$inputs.X` values. When skipped, downstream phases that depend on it still run (the skipped phase's outputs just won't be available).
+
 **handoff:**
 ```yaml
 - id: refine
@@ -204,11 +213,11 @@ output:
   type: composite
   vault_capture: true
   items:
-    - type: knowledge
-      file: architecture.md
-      vault_zone: decisions
     - type: artifact
       file: summary.md
+    - type: knowledge
+      file: architecture.md
+      vault_zone: knowledge/decisions
 ```
 
 ## 6. Input Variable References
@@ -316,14 +325,18 @@ Every completed run automatically saves a summary to the vault at `projects/<pla
 - Output landing results
 
 ### Manual Vault Zones
-Use the `vault_zone` field in output items to route specific outputs:
+Use the `vault_zone` field in output items to route specific outputs. **Always use the full zone path** — bare names like `decisions` create top-level folders outside the vault structure.
 
-| vault_zone | Purpose |
-|-----------|---------|
-| `decisions` | Architecture decisions, design choices |
-| `learnings` | Insights discovered during the run |
-| `debugging` | Bug investigation results |
-| `outputs` | General run outputs (default) |
+| vault_zone | Note type (auto) | Purpose |
+|-----------|-------------------|---------|
+| `content` | `draft` | Published content, articles, posts |
+| `knowledge/research` | `research` | Research briefs, analysis |
+| `knowledge/decisions` | `decision` | Architecture decisions, design choices |
+| `knowledge/learnings` | `learning` | Insights discovered during the run |
+| `knowledge/debugging` | `debugging` | Bug investigation results |
+| `knowledge/patterns` | `pattern` | Patterns and best practices |
+
+**Valid top-level vault zones**: `inbox`, `projects`, `knowledge`, `content`, `operations`, `archive`. Never create new top-level zones — use subfolders under these.
 
 ## 12. Templates
 

@@ -500,6 +500,7 @@ export async function runPipeline(
 						stepType: step.type,
 						outputPath,
 						outputType: step.output_type,
+						vaultZone: step.vault_zone,
 					}).then((notePath) => {
 						if (notePath) {
 							const sr = run.steps.find(s => s.id === stepId);

@@ -1,7 +1,16 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
+	import { marked } from 'marked';
 	import PlaybookPhases from './PlaybookPhases.svelte';
 	import PlaybookResult from './PlaybookResult.svelte';
+
+	function renderMarkdown(md: string): string {
+		try {
+			return marked.parse(md, { async: false }) as string;
+		} catch {
+			return `<pre>${md}</pre>`;
+		}
+	}
 
 	let {
 		playbookName,
@@ -68,6 +77,10 @@
 	let humanResponse = $state('');
 	let rejectReason = $state('');
 	let showRejectInput = $state(false);
+	let humanReviewFiles = $state<Record<string, string>>({});
+	let gateReviewFiles = $state<Record<string, string>>({});
+	let humanSubmitting = $state(false);
+	let handledEventKeys = $state(new Set<string>());
 
 	// Timers
 	let pollInterval: ReturnType<typeof setInterval> | null = null;
@@ -184,15 +197,41 @@
 			if (data.taskOutput) taskOutput = data.taskOutput;
 			if (data.status) status = data.status;
 
-			// Detect gate/human from events
+			// Detect gate/human from events (deduplicate by phaseId+status)
 			for (const ev of data.events || []) {
+				const evKey = `${ev.phaseId}:${ev.status}`;
+				if (handledEventKeys.has(evKey)) continue;
+
 				if (ev.status === 'gate_required' && !waitingForGate) {
+					handledEventKeys.add(evKey);
 					waitingForGate = ev.phaseId;
-					gatePrompt = ev.detail || 'Approve this phase?';
+					try {
+						const parsed = JSON.parse(ev.detail || '');
+						gatePrompt = parsed.prompt || 'Approve this phase?';
+						gateReviewFiles = parsed.reviewFiles || {};
+					} catch {
+						gatePrompt = ev.detail || 'Approve this phase?';
+						gateReviewFiles = {};
+					}
 				}
 				if (ev.status === 'human_required' && !waitingForHuman) {
+					handledEventKeys.add(evKey);
 					waitingForHuman = ev.phaseId;
-					humanPrompt = ev.detail || 'Input required';
+					try {
+						const parsed = JSON.parse(ev.detail || '');
+						humanPrompt = parsed.prompt || 'Input required';
+						humanReviewFiles = parsed.reviewFiles || {};
+					} catch {
+						humanPrompt = ev.detail || 'Input required';
+						humanReviewFiles = {};
+					}
+					// Fetch phase files as fallback if event data had none
+					if (Object.keys(humanReviewFiles).length === 0) {
+						fetch(`/api/playbooks/run?id=${runId}&phase=${ev.phaseId}`)
+							.then(r => r.json())
+							.then(d => { if (d.phaseFiles) humanReviewFiles = d.phaseFiles; })
+							.catch(() => {});
+					}
 				}
 			}
 
@@ -247,7 +286,8 @@
 	}
 
 	async function submitHuman() {
-		if (!humanResponse.trim()) return;
+		if (!humanResponse.trim() || humanSubmitting) return;
+		humanSubmitting = true;
 		await fetch('/api/playbooks/run', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
@@ -261,6 +301,8 @@
 		waitingForHuman = '';
 		humanPrompt = '';
 		humanResponse = '';
+		humanReviewFiles = {};
+		humanSubmitting = false;
 	}
 
 	async function kill() {
@@ -286,6 +328,10 @@
 		waitingForGate = '';
 		waitingForHuman = '';
 		showRejectInput = false;
+		humanReviewFiles = {};
+		gateReviewFiles = {};
+		humanSubmitting = false;
+		handledEventKeys = new Set();
 		vaultNotes = [];
 	}
 
@@ -320,10 +366,28 @@
 
 <!-- Gate Required -->
 {#if waitingForGate}
-	<div class="border-2 border-hub-warning/40 bg-hub-warning/5 rounded-lg p-4">
-		<p class="text-sm text-hub-warning font-medium mb-3">Gate: {gatePrompt}</p>
+	<div class="border-2 border-hub-warning/40 bg-hub-warning/5 rounded-lg p-4 space-y-4">
+		<p class="text-sm text-hub-warning font-medium">Gate: {gatePrompt}</p>
+
+		{#if Object.keys(gateReviewFiles).length > 0}
+			<div class="border border-hub-border rounded-lg overflow-hidden">
+				<div class="px-3 py-1.5 bg-hub-panel/30 border-b border-hub-border">
+					<span class="text-[10px] text-hub-dim uppercase tracking-wider font-medium">Review Content</span>
+				</div>
+				<div class="p-4 max-h-[400px] overflow-y-auto prose prose-sm prose-invert max-w-none
+					prose-headings:text-hub-text prose-p:text-hub-muted prose-strong:text-hub-text
+					prose-a:text-hub-cta prose-code:text-hub-muted prose-code:bg-hub-bg/50
+					prose-pre:bg-hub-bg prose-pre:border prose-pre:border-hub-border
+					prose-li:text-hub-muted prose-blockquote:text-hub-dim prose-blockquote:border-hub-border">
+					{#each Object.entries(gateReviewFiles) as [filename, content]}
+						{@html renderMarkdown(content)}
+					{/each}
+				</div>
+			</div>
+		{/if}
+
 		{#if showRejectInput}
-			<div class="mb-3">
+			<div>
 				<input
 					type="text"
 					bind:value={rejectReason}
@@ -351,23 +415,45 @@
 
 <!-- Human Input Required -->
 {#if waitingForHuman}
-	<div class="border-2 border-hub-info/40 bg-hub-info/5 rounded-lg p-4">
-		<p class="text-sm text-hub-info font-medium mb-3">{humanPrompt}</p>
-		<textarea
-			bind:value={humanResponse}
-			rows="4"
-			class="w-full bg-hub-bg border border-hub-border rounded-lg px-3 py-2 text-sm text-hub-text placeholder-hub-dim focus:outline-none focus:border-hub-info/50 resize-y"
-			placeholder="Your response..."
-		></textarea>
+	<div class="border-2 border-hub-info/40 bg-hub-info/5 rounded-lg p-4 space-y-4">
+		<p class="text-sm text-hub-info font-medium">{humanPrompt}</p>
+
+		{#if Object.keys(humanReviewFiles).length > 0}
+			<div class="border border-hub-border rounded-lg overflow-hidden">
+				<div class="px-3 py-1.5 bg-hub-panel/30 border-b border-hub-border">
+					<span class="text-[10px] text-hub-dim uppercase tracking-wider font-medium">Draft for Review</span>
+				</div>
+				<div class="p-4 max-h-[400px] overflow-y-auto prose prose-sm prose-invert max-w-none
+					prose-headings:text-hub-text prose-p:text-hub-muted prose-strong:text-hub-text
+					prose-a:text-hub-cta prose-code:text-hub-muted prose-code:bg-hub-bg/50
+					prose-pre:bg-hub-bg prose-pre:border prose-pre:border-hub-border
+					prose-li:text-hub-muted prose-blockquote:text-hub-dim prose-blockquote:border-hub-border">
+					{#each Object.entries(humanReviewFiles) as [filename, content]}
+						{@html renderMarkdown(content)}
+					{/each}
+				</div>
+			</div>
+		{/if}
+
+		<div>
+			<label class="text-xs text-hub-dim mb-1 block">Your feedback</label>
+			<textarea
+				bind:value={humanResponse}
+				rows="4"
+				class="w-full bg-hub-bg border border-hub-border rounded-lg px-3 py-2 text-sm text-hub-text placeholder-hub-dim focus:outline-none focus:border-hub-info/50 resize-y"
+				placeholder="Type your feedback or 'approved' if ready to publish..."
+				disabled={humanSubmitting}
+			></textarea>
+		</div>
 		<button
 			onclick={submitHuman}
-			disabled={!humanResponse.trim()}
-			class="mt-2 px-4 py-1.5 rounded-lg text-sm font-medium transition-colors duration-200
-				{humanResponse.trim()
+			disabled={!humanResponse.trim() || humanSubmitting}
+			class="px-4 py-1.5 rounded-lg text-sm font-medium transition-colors duration-200
+				{humanResponse.trim() && !humanSubmitting
 					? 'bg-hub-cta text-black hover:bg-hub-cta-hover cursor-pointer'
 					: 'bg-hub-border text-hub-dim cursor-not-allowed'}"
 		>
-			Submit
+			{humanSubmitting ? 'Submitting...' : 'Submit'}
 		</button>
 	</div>
 {/if}
@@ -406,7 +492,15 @@
 				<div class="p-4 max-h-[500px] overflow-y-auto">
 					{#each fileEntries as [path, content]}
 						{#if activeReportTab === path}
-							<pre class="text-xs text-hub-muted whitespace-pre-wrap font-mono leading-relaxed">{content}</pre>
+							<div class="prose prose-sm prose-invert max-w-none
+							prose-headings:text-hub-text prose-p:text-hub-muted prose-strong:text-hub-text
+							prose-a:text-hub-cta prose-code:text-hub-muted prose-code:bg-hub-bg/50
+							prose-pre:bg-hub-bg prose-pre:border prose-pre:border-hub-border
+							prose-li:text-hub-muted prose-blockquote:text-hub-dim prose-blockquote:border-hub-border
+							prose-table:text-hub-muted prose-th:text-hub-text prose-td:text-hub-muted
+							prose-hr:border-hub-border">
+							{@html renderMarkdown(content)}
+						</div>
 						{/if}
 					{/each}
 				</div>

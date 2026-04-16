@@ -1,6 +1,6 @@
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
@@ -295,12 +295,20 @@ export const GET: RequestHandler = async ({ url }) => {
 		outputFiles = await readOutputFiles(completedRun);
 	}
 
+	// Serve mid-run phase outputs (for human review / gate review)
+	const phaseId = url.searchParams.get('phase');
+	let phaseFiles: Record<string, string> | undefined;
+	if (phaseId && run?.outputDir) {
+		const phaseDir = join(run.outputDir, phaseId);
+		phaseFiles = await readPhaseFiles(phaseDir);
+	}
+
 	if (chain) {
-		return json({ ...chain, events, taskOutput, outputFiles });
+		return json({ ...chain, events, taskOutput, outputFiles, phaseFiles });
 	}
 
 	if (run) {
-		return json({ ...run, events, taskOutput, outputFiles });
+		return json({ ...run, events, taskOutput, outputFiles, phaseFiles });
 	}
 
 	if (events.length > 0) {
@@ -339,6 +347,22 @@ async function readOutputFiles(run: PlaybookRun | PlaybookChainRun): Promise<Rec
 	}
 
 	await scanDir(outputDir, '');
+	return files;
+}
+
+async function readPhaseFiles(phaseDir: string): Promise<Record<string, string>> {
+	const files: Record<string, string> = {};
+	const { readdir, readFile } = await import('node:fs/promises');
+	try {
+		const entries = await readdir(phaseDir, { withFileTypes: true });
+		for (const entry of entries) {
+			if (entry.isFile() && entry.name.endsWith('.md')) {
+				try {
+					files[entry.name] = await readFile(join(phaseDir, entry.name), 'utf-8');
+				} catch { /* skip */ }
+			}
+		}
+	} catch { /* dir doesn't exist yet */ }
 	return files;
 }
 

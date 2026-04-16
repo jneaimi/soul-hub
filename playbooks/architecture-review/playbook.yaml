@@ -53,7 +53,7 @@ output:
   items:
     - type: knowledge
       file: summary.md
-      vault_zone: decisions
+      vault_zone: knowledge/decisions
     - type: artifact
       file: architecture.md
   on_complete:

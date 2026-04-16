@@ -141,6 +141,8 @@ export interface GraphNode {
 	color: string;
 	/** Raw degree count (links + backlinks + tag connections) for ranking */
 	degree?: number;
+	/** File modification time (ms since epoch) — for date range filtering */
+	mtime?: number;
 	/** Frontmatter `created` date string (YYYY-MM-DD) — semantic newness */
 	created?: string;
 }

@@ -1,4 +1,7 @@
 import { getVaultEngine } from './index.js';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { resolve, join } from 'node:path';
+import { homedir } from 'node:os';
 import type { PhaseResult } from '$lib/playbook/types.js';
 
 interface PlaybookRunSummaryContext {
@@ -19,12 +22,6 @@ interface PlaybookRunSummaryContext {
  * Non-blocking — failures are logged but don't affect the playbook.
  */
 export async function savePlaybookRunSummary(ctx: PlaybookRunSummaryContext): Promise<void> {
-	const engine = getVaultEngine();
-	if (!engine) {
-		console.warn('[vault/playbook] Engine not initialized — skipping run summary save');
-		return;
-	}
-
 	try {
 		const zone = `projects/${ctx.playbookName}/outputs`;
 		const date = ctx.startedAt.slice(0, 10);
@@ -128,26 +125,51 @@ export async function savePlaybookRunSummary(ctx: PlaybookRunSummaryContext): Pr
 		const tags = ['playbook', 'run-summary', ctx.playbookName];
 		if (ctx.status === 'failed') tags.push('failed');
 
-		const result = await engine.createNote({
-			zone,
-			filename,
-			meta: {
-				type: 'output',
-				created: date,
-				tags,
-				project: ctx.playbookName,
-				playbook: ctx.playbookName,
-				run_id: ctx.runId,
-				status: ctx.status,
-				duration_sec: durationSec,
-			},
-			content,
-		});
+		const engine = getVaultEngine();
+		if (engine) {
+			const result = await engine.createNote({
+				zone,
+				filename,
+				meta: {
+					type: 'output',
+					created: date,
+					tags,
+					project: ctx.playbookName,
+					playbook: ctx.playbookName,
+					run_id: ctx.runId,
+					status: ctx.status,
+					duration_sec: durationSec,
+				},
+				content,
+			});
 
-		if (result.success) {
-			console.log(`[vault/playbook] Run summary saved: ${result.path}`);
+			if (result.success) {
+				console.log(`[vault/playbook] Run summary saved: ${result.path}`);
+			} else {
+				console.log(`[vault/playbook] Run summary skipped: ${result.error}`);
+			}
 		} else {
-			console.log(`[vault/playbook] Run summary skipped: ${result.error}`);
+			console.warn('[vault/playbook] Engine not initialized — falling back to direct write');
+			const vaultDir = resolve(homedir(), 'vault');
+			const targetDir = join(vaultDir, zone);
+			await mkdir(targetDir, { recursive: true });
+			const targetPath = join(targetDir, filename);
+
+			const frontmatter = [
+				'---',
+				'type: output',
+				`created: ${date}`,
+				`tags: [${tags.join(', ')}]`,
+				`project: ${ctx.playbookName}`,
+				`run_id: ${ctx.runId}`,
+				`status: ${ctx.status}`,
+				`source_agent: playbook-engine`,
+				'---',
+				'',
+			].join('\n');
+
+			await writeFile(targetPath, frontmatter + content, 'utf-8');
+			console.log(`[vault/playbook] Run summary saved (direct): ${targetPath}`);
 		}
 	} catch (err) {
 		console.error(`[vault/playbook] Run summary failed:`, err instanceof Error ? err.message : err);

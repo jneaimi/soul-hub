@@ -30,6 +30,7 @@ export class VaultGraph {
 				type,
 				zone,
 				tags: note.meta.tags,
+				mtime: note.mtime,
 				size: 1, // updated below after edges are computed
 				color: (type && TYPE_COLORS[type]) || ZONE_COLORS[zone] || '#6b7280',
 			});

@@ -36,6 +36,8 @@ export interface PipelineStep {
 	output?: string;
 	/** Output type — determines how the output is tracked and displayed */
 	output_type?: 'file' | 'media' | 'action' | 'response' | 'webhook';
+	/** Vault zone for output landing (e.g., 'knowledge/research', 'content'). Defaults to 'projects/{name}/outputs' */
+	vault_zone?: string;
 	/** Steps that must complete before this one */
 	depends_on?: string[];
 	/** Timeout in seconds (default: 300) */

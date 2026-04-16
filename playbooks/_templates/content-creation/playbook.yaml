@@ -53,6 +53,12 @@ inputs:
     description: Optional reference URLs for the researcher to check (comma-separated)
     required: false
     default: ""
+  - id: enable_critic
+    type: select
+    description: Enable audience critic review (adds an AI reader who evaluates from the audience perspective)
+    required: false
+    options: ["true", "false"]
+    default: "true"
 
 roles:
   - id: researcher
@@ -67,6 +73,10 @@ roles:
     provider: claude
     model: sonnet
     agent: roles/editor.md
+  - id: critic
+    provider: claude
+    model: sonnet
+    agent: roles/critic.md
 
 phases:
   - id: research
@@ -106,16 +116,29 @@ phases:
         input: hooks/output/brand-context.md
         output: editorial-review.md
 
+  - id: critic-review
+    type: sequential
+    depends_on: [edit]
+    skip_if: "$inputs.enable_critic == false"
+    assignments:
+      - role: critic
+        task: "Read this draft as if you're the target audience ($inputs.audience). Answer the 5 audience questions in your role instructions. Be honest — would you keep reading, share this, or scroll past?"
+        input:
+          - $phases.edit.revised-draft
+          - $phases.research.research-brief
+        output: audience-review.md
+
   - id: human-review
     type: human
-    depends_on: [edit]
+    depends_on: [edit, critic-review]
     prompt: "Review the draft below. Type your feedback (e.g. 'Make the intro shorter, add a real-world example in section 2') or type 'approved' if ready to publish."
     assignments:
       - role: editor
-        task: "Prepare the current draft for human review. Present: the final draft, a brief editor summary of what was changed, and any remaining concerns."
+        task: "Prepare the current draft for human review. Present: the final draft, a brief editor summary of what was changed, any remaining concerns, and the audience critic's review if available."
         input:
           - $phases.edit.revised-draft
           - $phases.edit.editorial-review
+          - $phases.critic-review.audience-review
         output: review-package.md
 
   - id: final-revision
@@ -147,8 +170,13 @@ output:
     - type: artifact
       file: final-content.md
     - type: knowledge
+      file: final-content.md
+      vault_zone: content
+      description: Final published content
+    - type: knowledge
       file: research-brief.md
-      vault_zone: outputs
+      vault_zone: knowledge/research
+      description: Research brief for content creation
     - type: artifact
       file: publish-summary.md
   on_complete:

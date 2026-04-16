@@ -123,6 +123,33 @@ Headless agents use `--strict-mcp-config` — they can't access user MCP servers
 - Happy path: all agents complete, outputs land correctly
 - Sad path: agent timeout, 0 findings, missing prerequisites, human rejects at gate
 
+### 14. Vault Zone Alignment (CRITICAL)
+Every `vault_zone` in output items MUST use a full path under a valid top-level zone. The engine auto-derives the note `type` from the zone.
+
+| vault_zone | Auto type | Use for |
+|------------|-----------|---------|
+| `content` | `draft` | Articles, blog posts, social drafts |
+| `knowledge/research` | `research` | Research briefs, analysis |
+| `knowledge/decisions` | `decision` | Architecture decisions, ADRs |
+| `knowledge/learnings` | `learning` | Insights, retrospectives |
+| `knowledge/debugging` | `debugging` | Bug investigations |
+| `knowledge/patterns` | `pattern` | Patterns and best practices |
+
+**Never use bare names** like `decisions`, `outputs`, `debugging` — these create rogue top-level zones outside the vault structure.
+
+**Valid top-level zones**: `inbox`, `projects`, `knowledge`, `content`, `operations`, `archive`.
+
+**Common mistake**: Using `type: artifact` for the main deliverable. Artifacts only copy locally — add a second `type: knowledge` item with the right `vault_zone` if you want it in the vault:
+
+```yaml
+items:
+  - type: artifact        # local copy
+    file: final-output.md
+  - type: knowledge       # vault copy
+    file: final-output.md
+    vault_zone: content   # or knowledge/research, etc.
+```
+
 ## Pattern Reference
 
 ### Code Review (parallel + hooks)

@@ -4,6 +4,7 @@ import { join, basename, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import type { PlaybookOutput, PlaybookOutputItem, PlaybookRun } from './types.js';
 import { getVaultEngine } from '../vault/index.js';
+import { deriveNoteType } from '../vault/type-mapper.js';
 
 export interface LandingResult {
 	type: string;
@@ -114,13 +115,16 @@ async function landKnowledge(
 	const zone = output.vault_zone || 'inbox';
 	const filename = `${date}-${basename(output.file).replace(/\.[^.]+$/, '')}-${shortRunId}.md`;
 
+	const noteType = deriveNoteType(zone);
+
 	const engine = getVaultEngine();
+	console.log(`[vault/knowledge] Engine available: ${!!engine}, file: ${output.file}, zone: ${zone}`);
 	if (engine) {
 		const result = await engine.createNote({
 			zone,
 			filename,
 			meta: {
-				type: 'output',
+				type: noteType,
 				created: date,
 				tags: ['playbook', run.playbookName],
 				project: run.playbookName,
@@ -149,11 +153,12 @@ async function landKnowledge(
 	if (!content.startsWith('---')) {
 		const frontmatter = [
 			'---',
-			'type: playbook-output',
+			`type: ${noteType}`,
 			`created: ${date}`,
 			`tags: [playbook, ${run.playbookName}]`,
-			`playbook: ${run.playbookName}`,
+			`project: ${run.playbookName}`,
 			`run_id: ${run.runId}`,
+			`source_agent: playbook-engine`,
 			'---',
 			'',
 		].join('\n');

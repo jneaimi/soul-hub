@@ -128,7 +128,29 @@ The vault is the AI's long-term memory. Every build session should leave the vau
 **Vault auto-capture reminder:**
 All pipeline step outputs and run summaries are automatically saved to `projects/{pipeline}/outputs/` with proper tags. You do NOT need to write code for this. Only use the vault API directly when saving knowledge (patterns, learnings, decisions) that goes beyond the raw pipeline output.
 
-### 5. GUIDE FIRST — Think before building
+### 5. VAULT ZONE ALIGNMENT
+Every pipeline step that produces knowledge (research, decisions, debugging) should declare `vault_zone`:
+
+```yaml
+steps:
+  - id: research-step
+    type: agent
+    output: output/research.md
+    vault_zone: knowledge/research    # → type: research in vault
+
+  - id: fix-analysis
+    type: agent
+    output: output/diagnosis.md
+    vault_zone: knowledge/debugging   # → type: debugging in vault
+```
+
+**Default behavior** (no vault_zone): outputs go to `projects/{name}/outputs` with `type: output`.
+
+**Never use bare zone names** like `decisions` or `outputs` — always use full paths under valid top-level zones.
+
+**Valid zones**: `content`, `knowledge/research`, `knowledge/decisions`, `knowledge/learnings`, `knowledge/debugging`, `knowledge/patterns`.
+
+### 6. GUIDE FIRST — Think before building
 When a user describes what they want, DO NOT immediately create files. Use the Evaluate → Analyze → Apply framework:
 
 **Step 1: Evaluate (ask one question at a time using AskUserQuestion)**
@@ -149,10 +171,10 @@ When a user describes what they want, DO NOT immediately create files. Use the E
 
 IMPORTANT: Use the AskUserQuestion tool for each discovery question so the user gets a proper interactive prompt. Ask ONE question at a time, not all at once.
 
-### 5. SELF-CONTAINED — Everything lives inside the project folder
+### 7. SELF-CONTAINED — Everything lives inside the project folder
 Every pipeline/block must be fully self-contained. No symlinks. No references to external databases or files.
 
-### 6. PYTHON: USE UV
+### 8. PYTHON: USE UV
 All Python scripts run via `uv run python3` (auto-configured by the runner). This ensures:
 - Correct Python version (3.14, not the system 3.9)
 - Automatic dependency resolution
@@ -165,14 +187,14 @@ All Python scripts run via `uv run python3` (auto-configured by the runner). Thi
 ```
 `uv run` reads this header and installs dependencies automatically in an isolated environment. No need for requirements.txt or venv setup.
 
-### 7. I/O CONTRACT
+### 9. I/O CONTRACT
 Every block follows: `PIPELINE_INPUT` -> processing -> `PIPELINE_OUTPUT`
 - Read input from `PIPELINE_INPUT` env var
 - Write output to `PIPELINE_OUTPUT` env var
 - All outputs go in `output/` folder inside the pipeline
 - DB always inside `PIPELINE_DIR/db/`
 
-### 7. OUTPUT DECLARATIONS
+### 10. OUTPUT DECLARATIONS
 Every block MUST declare its outputs in BLOCK.md with `type` and `format` fields.
 
 **File outputs** — use `type: file` with a `format` field:
@@ -183,10 +205,10 @@ Every block MUST declare its outputs in BLOCK.md with `type` and `format` fields
 - Supported actions: `log`, `channel`, `db-write`, `api-push`, `webhook`
 - Declare action outputs so the UI shows execution status
 
-### 8. STEP TYPES WHITELIST
+### 11. STEP TYPES WHITELIST
 Only these step types are valid: `script`, `agent`, `approval`, `prompt`, `channel`, `chunk`, `loop`
 
-### 9. CONDITIONAL EXECUTION — `when:` and `skip_if:`
+### 12. CONDITIONAL EXECUTION — `when:` and `skip_if:`
 The runner natively supports conditional step execution. **Do NOT suggest workarounds like "mode switch" or separate pipelines** — use conditions directly.
 
 **`when:`** — step only runs if condition is true

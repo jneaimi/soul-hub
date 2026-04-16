@@ -13,7 +13,7 @@ let selectedNote = $state<VaultNote | null>(null);
 let selectedPath = $state<string | null>(null);
 let loading = $state(true);
 let error = $state<string | null>(null);
-let filters = $state<{ zone?: string; type?: string | string[]; tags?: string[] }>({});
+let filters = $state<{ zone?: string; type?: string | string[]; tags?: string[]; since?: number }>({});
 
 // ── AbortController pool ──
 const controllers = new Map<string, AbortController>();
@@ -59,7 +59,7 @@ async function fetchRecent(): Promise<void> {
   }
 }
 
-async function fetchGraph(opts?: { zone?: string; type?: string | string[]; tags?: string[]; project?: string }): Promise<void> {
+async function fetchGraph(opts?: { zone?: string; type?: string | string[]; tags?: string[]; since?: number; project?: string }): Promise<void> {
   const params = new URLSearchParams();
   if (opts?.zone) params.set('zone', opts.zone);
   if (opts?.type) {
@@ -78,11 +78,13 @@ async function fetchGraph(opts?: { zone?: string; type?: string | string[]; tags
       let edges: GraphEdge[] = data.edges;
       const filterTypes = opts?.type ? (Array.isArray(opts.type) ? opts.type : [opts.type]) : null;
       const filterTags = opts?.tags && opts.tags.length > 0 ? opts.tags : null;
-      if (filterTypes || filterTags) {
+      const sinceCutoff = opts?.since ? Date.now() - opts.since * 24 * 60 * 60 * 1000 : null;
+      if (filterTypes || filterTags || sinceCutoff) {
         const matchIds = new Set(
           nodes.filter(n => {
             if (filterTypes && !(n.type && filterTypes.includes(n.type))) return false;
             if (filterTags && !(n.tags && filterTags.every(t => n.tags!.includes(t)))) return false;
+            if (sinceCutoff && (n.mtime ?? 0) < sinceCutoff) return false;
             return true;
           }).map(n => n.id)
         );
@@ -160,7 +162,7 @@ function clearSelection(): void {
   selectedPath = null;
 }
 
-function setFilters(f: { zone?: string; type?: string | string[]; tags?: string[] }): void {
+function setFilters(f: { zone?: string; type?: string | string[]; tags?: string[]; since?: number }): void {
   filters = f;
   fetchGraph(f);
 }
