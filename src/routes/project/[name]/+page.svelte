@@ -238,6 +238,16 @@
 				</span>
 			{/if}
 
+			<!-- Orchestration link -->
+			<a
+				href="/project/{projectName}/orchestration"
+				class="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border border-purple-500/30 text-purple-400 hover:text-purple-300 hover:bg-purple-500/10 hover:border-purple-500/50"
+				title="Multi-agent orchestration"
+			>
+				<svg class="w-3.5 h-3.5 inline-block mr-1.5 -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83"/></svg>
+				Orchestration
+			</a>
+
 			<!-- Desktop panel toggles -->
 			<div class="hidden md:flex items-center gap-1 ml-auto">
 				{#if data.devPath}

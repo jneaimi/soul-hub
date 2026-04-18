@@ -39,6 +39,21 @@ try {
 	console.error('[inbox] Failed to initialize:', err);
 }
 
+// Recover interrupted orchestration runs on startup
+(async () => {
+	try {
+		const { recoverRuns } = await import('$lib/orchestration/conductor.js');
+		const result = await recoverRuns();
+		if (result.recovered > 0) {
+			console.log(
+				`[orchestration] Startup recovery: ${result.recovered} runs, ${result.interrupted} workers interrupted`,
+			);
+		}
+	} catch (err) {
+		console.error('[orchestration] Startup recovery failed:', err);
+	}
+})();
+
 // Graceful shutdown handler for PM2 reload/restart
 function gracefulShutdown(signal: string) {
 	console.log(`[soul-hub] ${signal} received — draining connections...`);
@@ -60,6 +75,28 @@ function gracefulShutdown(signal: string) {
 	// Shutdown vault engine (stop file watcher)
 	const vault = getVaultEngine();
 	if (vault) vault.shutdown();
+
+	// Cleanup orchestration workers (async, best-effort)
+	(async () => {
+		try {
+			const { listRuns } = await import('$lib/orchestration/board.js');
+			const { killWorkerAsync } = await import('$lib/orchestration/conductor.js');
+			const runs = await listRuns(100);
+			let orchCount = 0;
+			for (const run of runs) {
+				if (run.status !== 'running' && run.status !== 'approved') continue;
+				for (const [taskId, worker] of Object.entries(run.workers)) {
+					if (worker.status === 'running') {
+						await killWorkerAsync(run.runId, taskId).catch(() => {});
+						orchCount++;
+					}
+				}
+			}
+			if (orchCount > 0) console.log(`[soul-hub] Cleaned up ${orchCount} orchestration workers`);
+		} catch {
+			// Orchestration module may not be ready — skip
+		}
+	})();
 
 	// Give SSE clients time to receive disconnect
 	setTimeout(() => {

@@ -31,6 +31,12 @@ export interface SoulHubConfig {
 		allowedPortRange: [number, number];
 		blockedPorts: number[];
 	};
+	orchestration: {
+		maxWorkers: number;
+		maxIterationsPerWorker: number;
+		worktreeDir: string;
+		depInstaller: 'pnpm' | 'npm' | 'auto';
+	};
 }
 
 const DEFAULTS: SoulHubConfig = {
@@ -64,6 +70,12 @@ const DEFAULTS: SoulHubConfig = {
 		enabled: true,
 		allowedPortRange: [1024, 9999],
 		blockedPorts: [2400],
+	},
+	orchestration: {
+		maxWorkers: 4,
+		maxIterationsPerWorker: 8,
+		worktreeDir: '.worktrees',
+		depInstaller: 'auto',
 	},
 };
 
