@@ -38,9 +38,17 @@ async function getProxy() {
 				proxy(req, res, targetPort) {
 					const fwdHeaders = { ...req.headers };
 					const originalHost = fwdHeaders.host || '';
-					delete fwdHeaders.origin;
-					delete fwdHeaders.referer;
+					const originalReferer = fwdHeaders.referer;
 					fwdHeaders.host = `localhost:${targetPort}`;
+					// Rewrite (don't strip) origin/referer — SvelteKit CSRF compares origin
+					// to url.origin; stripping origin causes `undefined !== 'http://localhost:PORT'`.
+					fwdHeaders.origin = `http://localhost:${targetPort}`;
+					if (originalReferer) {
+						try {
+							const refUrl = new URL(originalReferer);
+							fwdHeaders.referer = `http://localhost:${targetPort}${refUrl.pathname}${refUrl.search}`;
+						} catch { delete fwdHeaders.referer; }
+					}
 					fwdHeaders['x-forwarded-host'] = originalHost;
 					fwdHeaders['x-forwarded-proto'] = 'https';
 

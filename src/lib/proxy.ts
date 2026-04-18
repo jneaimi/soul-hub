@@ -40,17 +40,29 @@ export async function proxyRequest(request: Request, targetPort: number): Promis
 	const url = new URL(request.url);
 	const originalHost = request.headers.get('host') || '';
 
-	// Build forwarded headers — strip/rewrite headers that confuse dev servers
+	// Build forwarded headers. Strip hop-by-hop + platform-injected headers that
+	// confuse dev servers, but keep auth (cookie/authorization) so the proxied
+	// app's own sessions survive, and REWRITE origin/referer to the target so
+	// SvelteKit/Next/etc CSRF checks pass (they compare origin to url.origin —
+	// stripping origin makes `undefined !== 'http://localhost:PORT'` fail).
 	const fwdHeaders: Record<string, string> = {};
 	const skipHeaders = new Set([
 		'host', 'origin', 'referer',
-		'authorization', 'cookie', 'x-api-key',
 		'proxy-authorization', 'x-real-ip', 'x-forwarded-for',
 	]);
 	request.headers.forEach((value, key) => {
 		if (!skipHeaders.has(key)) fwdHeaders[key] = value;
 	});
 	fwdHeaders['host'] = `localhost:${targetPort}`;
+	fwdHeaders['origin'] = `http://localhost:${targetPort}`;
+	const originalReferer = request.headers.get('referer');
+	if (originalReferer) {
+		// Rewrite referer path onto localhost so SvelteKit accepts same-origin form posts.
+		try {
+			const refUrl = new URL(originalReferer);
+			fwdHeaders['referer'] = `http://localhost:${targetPort}${refUrl.pathname}${refUrl.search}`;
+		} catch { /* malformed referer, drop it */ }
+	}
 	fwdHeaders['x-forwarded-host'] = originalHost;
 	fwdHeaders['x-forwarded-proto'] = 'https';
 
