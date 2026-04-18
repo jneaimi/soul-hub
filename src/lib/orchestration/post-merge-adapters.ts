@@ -14,8 +14,9 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { readFile, rm } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { StepContext, StepDefinition, StepRunResult } from './post-merge-pipeline.js';
 
@@ -161,13 +162,113 @@ async function nodeInstall(projectPath: string, pm: NodePkgManager): Promise<Ste
 	await rm(join(projectPath, 'node_modules'), { recursive: true, force: true }).catch(() => {});
 	const lockfile = pm === 'pnpm' ? 'pnpm-lock.yaml' : pm === 'yarn' ? 'yarn.lock' : 'package-lock.json';
 	await rm(join(projectPath, lockfile), { force: true }).catch(() => {});
+
+	// Resolve the target project's intended Node — native modules (better-sqlite3,
+	// sharp) get compiled against whichever Node runs `npm install`. If soul-hub's
+	// runtime Node differs from the project's, the user hits ABI mismatch errors
+	// at `npm run dev`. Respect .nvmrc / engines.node / volta.node when present.
+	const targetNode = await resolveProjectNodeBin(projectPath);
+	const envOverride: NodeJS.ProcessEnv = { NODE_ENV: 'development' };
+	let resolveNote = '';
+	if (targetNode && targetNode.path !== process.execPath) {
+		envOverride.PATH = `${targetNode.binDir}:${process.env.PATH ?? ''}`;
+		resolveNote = `[using project-pinned Node ${targetNode.version} from ${targetNode.binDir}]\n`;
+	}
+
 	// Force NODE_ENV=development so devDependencies install — when soul-hub runs
 	// under pm2 (NODE_ENV=production), that leaks into child `npm install` and
 	// silently drops devDeps like @sveltejs/adapter-node, breaking typecheck/build.
-	const r = await execStep(projectPath, pm, ['install'], { NODE_ENV: 'development' });
+	const r = await execStep(projectPath, pm, ['install'], envOverride);
 	return r.ok
-		? { ok: true, output: `[clean install from merged package.json]\n${r.output}` }
+		? { ok: true, output: `[clean install from merged package.json]\n${resolveNote}${r.output}` }
 		: r;
+}
+
+interface ProjectNodeBin {
+	path: string;
+	binDir: string;
+	version: string;
+}
+
+/**
+ * Find the Node binary matching the project's pinned version. Checks, in order:
+ *   1. .nvmrc
+ *   2. package.json#volta.node
+ *   3. package.json#engines.node (exact or major-only — fuzzy matches any installed
+ *      nvm version satisfying the major)
+ *
+ * Returns null if no pin is specified or no matching installed Node is found —
+ * caller falls back to the current process's Node.
+ */
+async function resolveProjectNodeBin(projectPath: string): Promise<ProjectNodeBin | null> {
+	const pinned = await readProjectNodePin(projectPath);
+	if (!pinned) return null;
+
+	const nvmRoot = join(homedir(), '.nvm', 'versions', 'node');
+	if (!existsSync(nvmRoot)) return null;
+
+	let installed: string[];
+	try {
+		installed = readdirSync(nvmRoot).filter((v) => v.startsWith('v'));
+	} catch {
+		return null;
+	}
+
+	const match = pickBestVersion(pinned, installed);
+	if (!match) return null;
+
+	const binDir = join(nvmRoot, match, 'bin');
+	const nodePath = join(binDir, 'node');
+	if (!existsSync(nodePath)) return null;
+
+	return { path: nodePath, binDir, version: match };
+}
+
+async function readProjectNodePin(projectPath: string): Promise<string | null> {
+	const nvmrc = (await readText(join(projectPath, '.nvmrc'))).trim();
+	if (nvmrc) return nvmrc;
+
+	const pkg = (await readJson(join(projectPath, 'package.json'))) as {
+		volta?: { node?: string };
+		engines?: { node?: string };
+	};
+	if (pkg.volta?.node) return pkg.volta.node;
+	if (pkg.engines?.node) return pkg.engines.node;
+	return null;
+}
+
+/**
+ * Pick the best installed version for a pin. Pins can be:
+ *   - exact: "24.14.0", "v24.14.0"
+ *   - major: "24", "v24"
+ *   - range: ">=22", "^22.0.0" (only the leading major is honored — we don't
+ *     bundle a semver parser)
+ *
+ * Prefers exact match, then highest minor/patch within major.
+ */
+function pickBestVersion(pin: string, installed: string[]): string | null {
+	const cleaned = pin.replace(/^[v^~>=<\s]+/, '').trim();
+	if (!cleaned) return null;
+
+	const exact = installed.find((v) => v === `v${cleaned}` || v === cleaned);
+	if (exact) return exact;
+
+	const major = cleaned.split('.')[0];
+	if (!/^\d+$/.test(major)) return null;
+	const withinMajor = installed
+		.filter((v) => v.startsWith(`v${major}.`) || v === `v${major}`)
+		.sort(compareNvmVersions);
+	return withinMajor.pop() ?? null;
+}
+
+function compareNvmVersions(a: string, b: string): number {
+	const pa = a.replace(/^v/, '').split('.').map(Number);
+	const pb = b.replace(/^v/, '').split('.').map(Number);
+	for (let i = 0; i < 3; i++) {
+		const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+		if (diff !== 0) return diff;
+	}
+	return 0;
 }
 
 // ─── Python adapter ────────────────────────────────────────────────────────
