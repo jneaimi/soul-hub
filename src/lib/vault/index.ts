@@ -14,6 +14,7 @@ import { VaultGraph } from './graph.js';
 import { VaultWatcher } from './watcher.js';
 import { GovernanceResolver } from './governance.js';
 import { TemplateLoader } from './templates.js';
+import { emitReindex } from './events.js';
 
 let engine: VaultEngine | null = null;
 
@@ -57,6 +58,7 @@ export class VaultEngine {
 				this.indexer.remove(event.path);
 				this.searcher.remove(event.path);
 			}
+			emitReindex({ reason: 'watcher', path: event.path });
 		});
 
 		// Prune ephemeral zones on startup, then every 24 hours
@@ -571,6 +573,7 @@ export class VaultEngine {
 	async reindex(): Promise<VaultStats> {
 		await this.indexer.scan();
 		this.searcher.rebuild(this.indexer.all());
+		emitReindex({ reason: 'manual' });
 		return this.indexer.stats();
 	}
 

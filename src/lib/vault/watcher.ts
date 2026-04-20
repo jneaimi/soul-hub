@@ -20,13 +20,19 @@ export class VaultWatcher {
 	start(vaultRoot: string, onEvent: (event: WatcherEvent) => void): void {
 		this.handler = onEvent;
 
-		const ignored = [
-			...IGNORED_FOLDERS.map((f) => `**/${f}/**`),
-			'**/CLAUDE.md',
-		];
-
-		this.watcher = watch(resolve(vaultRoot, '**/*.md'), {
-			ignored,
+		// chokidar v5 removed glob support — watch the root dir and filter in `ignored`.
+		const ignoredFoldersSet = new Set(IGNORED_FOLDERS);
+		this.watcher = watch(vaultRoot, {
+			ignored: (path, stats) => {
+				if (!stats) return false; // allow descent into unknown entries
+				if (stats.isDirectory()) {
+					const name = path.split('/').pop() ?? '';
+					return ignoredFoldersSet.has(name);
+				}
+				if (!path.endsWith('.md')) return true;
+				if (path.endsWith('/CLAUDE.md') || path.endsWith('CLAUDE.md')) return true;
+				return false;
+			},
 			persistent: true,
 			awaitWriteFinish: { stabilityThreshold: 500, pollInterval: 100 },
 			ignoreInitial: true,
