@@ -77,19 +77,34 @@
 				});
 				const data = await res.json();
 				if (res.ok) {
-					const resultMsg = `Fixed ${data.result?.fixed?.length ?? 0} items`;
+					const fixed = data.result?.fixed?.length ?? 0;
+					const skipped = data.result?.skipped?.length ?? 0;
+					const errors = data.result?.errors?.length ?? 0;
+					const parts: string[] = [];
+					if (fixed > 0) parts.push(`Fixed ${fixed}`);
+					if (skipped > 0) parts.push(`${skipped} need manual review`);
+					if (errors > 0) parts.push(`${errors} errors`);
+					const resultMsg = parts.length > 0 ? parts.join(' · ') : 'No changes needed';
 					actionResults.set(notificationId, resultMsg);
 					actionResults = new Map(actionResults);
-					await fetch('/api/system/notifications', {
-						method: 'PATCH',
-						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({
-							id: notificationId,
-							action: 'resolve',
-							actionId: action.id,
-							result: resultMsg,
-						}),
-					});
+
+					// Tell the home page (and any other listener) to refresh its vault stats.
+					window.dispatchEvent(new CustomEvent('vault:refresh'));
+
+					// Only mark the notification resolved if everything was fixed;
+					// if some were skipped, leave it open so the user can try the fallback.
+					if (fixed > 0 && skipped === 0 && errors === 0) {
+						await fetch('/api/system/notifications', {
+							method: 'PATCH',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({
+								id: notificationId,
+								action: 'resolve',
+								actionId: action.id,
+								result: resultMsg,
+							}),
+						});
+					}
 					setTimeout(() => loadNotifications(), 500);
 				} else {
 					actionResults.set(notificationId, `Error: ${data.error}`);

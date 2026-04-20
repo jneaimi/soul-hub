@@ -244,6 +244,31 @@
     window.addEventListener('resize', checkMobile);
     window.addEventListener('popstate', handlePopState);
 
+    if (new URLSearchParams(window.location.search).get('new') === '1') {
+      showNewNote = true;
+    }
+
+    // Refresh vault state on tab focus + SSE reindex events
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        store.invalidate('overview', 'recent');
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
+    let es: EventSource | null = null;
+    let sseDebounce: ReturnType<typeof setTimeout> | null = null;
+    try {
+      es = new EventSource('/api/vault/events');
+      es.addEventListener('reindexed', () => {
+        if (sseDebounce) clearTimeout(sseDebounce);
+        sseDebounce = setTimeout(() => {
+          store.invalidate('overview', 'recent');
+        }, 300);
+      });
+      es.onerror = () => { /* browser auto-reconnects */ };
+    } catch { /* SSE unsupported — visibility fallback covers it */ }
+
     store.init().then(async () => {
       if (data.initialZone || data.initialTypes || data.initialTags) {
         store.setFilters({ zone: data.initialZone || undefined, type: data.initialTypes, tags: data.initialTags });
@@ -267,6 +292,9 @@
     return () => {
       window.removeEventListener('resize', checkMobile);
       window.removeEventListener('popstate', handlePopState);
+      document.removeEventListener('visibilitychange', onVisible);
+      if (sseDebounce) clearTimeout(sseDebounce);
+      es?.close();
       store.destroy();
     };
   });

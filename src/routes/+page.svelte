@@ -151,11 +151,42 @@
 		} catch { /* silent */ }
 	}
 
-	onMount(() => {
-		loadProjects();
+	let vaultEventSource = $state<EventSource | null>(null);
+
+	function refreshVolatile() {
+		// Fires on tab focus, SSE reindex, or explicit user action.
+		loadVault();
 		loadDashboard();
 		loadPlaybooks();
-		loadVault();
+	}
+
+	onMount(() => {
+		loadProjects();
+		refreshVolatile();
+
+		const onVisible = () => { if (document.visibilityState === 'visible') refreshVolatile(); };
+		document.addEventListener('visibilitychange', onVisible);
+
+		const onVaultRefresh = () => { refreshVolatile(); };
+		window.addEventListener('vault:refresh', onVaultRefresh);
+
+		// SSE stream — live-updates when files change or healers run.
+		try {
+			const es = new EventSource('/api/vault/events');
+			vaultEventSource = es;
+			let debounce: ReturnType<typeof setTimeout> | null = null;
+			es.addEventListener('reindexed', () => {
+				if (debounce) clearTimeout(debounce);
+				debounce = setTimeout(() => { loadVault(); }, 300);
+			});
+			es.onerror = () => { /* browser auto-reconnects */ };
+		} catch { /* SSE not supported — visibility fallback covers most cases */ }
+
+		return () => {
+			document.removeEventListener('visibilitychange', onVisible);
+			window.removeEventListener('vault:refresh', onVaultRefresh);
+			vaultEventSource?.close();
+		};
 	});
 
 	async function addProject(path: string) {
@@ -244,14 +275,16 @@
 						onclick={() => { showAddModal = true; }}
 						class="hidden sm:inline-flex px-3 py-1.5 rounded-lg border border-hub-border text-hub-muted text-sm hover:text-hub-text hover:border-hub-dim transition-colors cursor-pointer"
 					>
-						Add Existing
+						Link project
 					</button>
 				{/if}
 				<a
 					href="/new"
-					class="px-3 py-1.5 rounded-lg bg-hub-cta text-black font-medium text-sm hover:bg-hub-cta-hover transition-colors cursor-pointer"
+					class="px-3 py-1.5 rounded-lg bg-hub-cta text-black font-medium text-sm hover:bg-hub-cta-hover transition-colors cursor-pointer inline-flex items-center gap-1"
+					aria-label="Create new project"
 				>
-					+ New
+					<span class="sm:hidden" aria-hidden="true">+</span>
+					<span class="hidden sm:inline">+ New project</span>
 				</a>
 			</div>
 		</div>
@@ -457,7 +490,17 @@
 										<span class="text-hub-dim font-normal ml-1">({dashboard.pipelineSummary.total})</span>
 									{/if}
 								</h3>
-								<a href="/pipelines" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">View all</a>
+								<div class="flex items-center gap-2">
+									<a
+										href="/pipelines/builder?type=pipeline"
+										class="w-7 h-7 grid place-items-center rounded-md text-hub-dim hover:text-hub-cta hover:bg-hub-surface transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50"
+										aria-label="New pipeline"
+										title="New pipeline"
+									>
+										<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+									</a>
+									<a href="/pipelines" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">View all</a>
+								</div>
 							</div>
 							{#if dashboard?.pipelineSummary && dashboard.pipelineSummary.names.length > 0}
 								<div class="space-y-1.5">
@@ -485,7 +528,17 @@
 										<span class="text-[11px] text-hub-dim bg-hub-bg px-1.5 py-0.5 rounded">{playbookCount}</span>
 									{/if}
 								</div>
-								<a href="/playbooks" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">View all</a>
+								<div class="flex items-center gap-2">
+									<a
+										href="/playbooks/builder"
+										class="w-7 h-7 grid place-items-center rounded-md text-hub-dim hover:text-hub-cta hover:bg-hub-surface transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50"
+										aria-label="New playbook"
+										title="New playbook"
+									>
+										<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+									</a>
+									<a href="/playbooks" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">View all</a>
+								</div>
 							</div>
 							{#if playbookItems.length === 0}
 								<p class="text-xs text-hub-dim py-3 text-center">No playbooks yet</p>
@@ -528,7 +581,17 @@
 									</h3>
 									<span class="w-2 h-2 rounded-full {vaultUnresolved > 0 ? 'bg-amber-400' : 'bg-emerald-400'}"></span>
 								</div>
-								<a href="/vault" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">Open vault</a>
+								<div class="flex items-center gap-2">
+									<a
+										href="/vault?new=1"
+										class="w-7 h-7 grid place-items-center rounded-md text-hub-dim hover:text-hub-cta hover:bg-hub-surface transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50"
+										aria-label="New note"
+										title="New note"
+									>
+										<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+									</a>
+									<a href="/vault" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">Open vault</a>
+								</div>
 							</div>
 
 							<!-- Zone distribution -->
