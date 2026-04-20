@@ -30,7 +30,7 @@ import {
 	type OutlookTokens, type GraphMessage,
 } from './outlook.js';
 import { encrypt } from './crypto.js';
-import type { InboxAccount, InboxMessage, SyncState } from './types.js';
+import type { InboxAccount, InboxMessage, SyncState, AttachmentMeta } from './types.js';
 
 const MAX_RECONNECT_DELAY = 5 * 60 * 1000; // 5 min cap
 const INITIAL_RECONNECT_DELAY = 3_000; // 3 sec
@@ -565,14 +565,6 @@ function hashStringToInt(str: string): number {
 		hash = hash & 0x7FFFFFFF; // Keep positive 31-bit int
 	}
 	return hash || 1;
-}
-
-interface AttachmentMeta {
-	filename: string;
-	size: number;
-	mimeType: string;
-	part?: string;
-	isInline: boolean;
 }
 
 function extractAttachmentMetadata(structure: unknown): AttachmentMeta[] {
