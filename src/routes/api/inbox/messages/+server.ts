@@ -14,6 +14,7 @@ export const GET: RequestHandler = async ({ url }) => {
 	const accountId = url.searchParams.get('account') || undefined;
 	const folder = url.searchParams.get('folder') || undefined;
 	const search = url.searchParams.get('search') || undefined;
+	const status = url.searchParams.get('status') || undefined;
 	const limit = parseInt(url.searchParams.get('limit') || '50', 10);
 	const offset = parseInt(url.searchParams.get('offset') || '0', 10);
 
@@ -24,7 +25,7 @@ export const GET: RequestHandler = async ({ url }) => {
 		return json({ error: 'offset must be >= 0' }, { status: 400 });
 	}
 
-	const { messages, total } = listMessages({ accountId, folder, search, limit, offset });
+	const { messages, total } = listMessages({ accountId, folder, search, status, limit, offset });
 	const stats = getInboxStats();
 
 	return json({ messages, total, stats });

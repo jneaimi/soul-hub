@@ -18,7 +18,7 @@ import { encrypt, decrypt } from './crypto.js';
 
 let db: Database.Database | null = null;
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 function getDbPath(): string {
 	const dataDir = resolve(process.cwd(), '.data');
@@ -132,7 +132,22 @@ function migrate(db: Database.Database): void {
 				VALUES (new.id, new.subject, new.body_preview, new.from_address);
 			END;
 		`);
-		db.pragma(`user_version = ${SCHEMA_VERSION}`);
+		db.pragma(`user_version = 1`);
+	}
+
+	if (version < 2) {
+		db.exec(`
+			ALTER TABLE accounts ADD COLUMN retention_days INTEGER NOT NULL DEFAULT 30;
+
+			ALTER TABLE messages ADD COLUMN process_status TEXT NOT NULL DEFAULT 'new';
+			ALTER TABLE messages ADD COLUMN attachments_meta TEXT NOT NULL DEFAULT '[]';
+			ALTER TABLE messages ADD COLUMN attachment_count INTEGER NOT NULL DEFAULT 0;
+			ALTER TABLE messages ADD COLUMN is_flagged INTEGER NOT NULL DEFAULT 0;
+
+			CREATE INDEX IF NOT EXISTS idx_messages_status_date ON messages(process_status, date_received DESC);
+			CREATE INDEX IF NOT EXISTS idx_messages_flagged ON messages(is_flagged) WHERE is_flagged = 1;
+		`);
+		db.pragma(`user_version = 2`);
 	}
 }
 
@@ -159,6 +174,7 @@ export function addAccount(
 		lastSync: null,
 		lastError: null,
 		createdAt: now,
+		retentionDays: 30,
 	};
 }
 
@@ -214,6 +230,7 @@ function rowToAccount(row: Record<string, unknown>): InboxAccount {
 		lastSync: row.last_sync as number | null,
 		lastError: row.last_error as string | null,
 		createdAt: row.created_at as number,
+		retentionDays: (row.retention_days as number) ?? 30,
 	};
 }
 
@@ -224,10 +241,12 @@ export function upsertMessage(msg: Omit<InboxMessage, 'id'>): number {
 	const result = db.prepare(`
 		INSERT INTO messages (account_id, uid, uid_validity, folder, message_id, thread_id, in_reply_to,
 			subject, from_address, from_name, to_address, date_sent, date_received, flags,
-			has_attachments, body_preview, raw_size, content_hash, synced_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			has_attachments, body_preview, raw_size, content_hash, synced_at,
+			process_status, attachments_meta, attachment_count, is_flagged)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(account_id, uid, folder, uid_validity) DO UPDATE SET
 			flags = excluded.flags,
+			is_flagged = excluded.is_flagged,
 			synced_at = excluded.synced_at
 	`).run(
 		msg.accountId, msg.uid, msg.uidValidity, msg.folder,
@@ -237,6 +256,10 @@ export function upsertMessage(msg: Omit<InboxMessage, 'id'>): number {
 		msg.hasAttachments ? 1 : 0, msg.bodyPreview, msg.rawSize,
 		null, // content_hash computed later if needed
 		msg.syncedAt,
+		msg.processStatus || 'new',
+		JSON.stringify(msg.attachmentsMeta || []),
+		msg.attachmentCount || 0,
+		msg.isFlagged ? 1 : 0,
 	);
 	return Number(result.lastInsertRowid);
 }
@@ -246,10 +269,12 @@ export function upsertMessages(messages: Omit<InboxMessage, 'id'>[]): void {
 	const insert = db.prepare(`
 		INSERT INTO messages (account_id, uid, uid_validity, folder, message_id, thread_id, in_reply_to,
 			subject, from_address, from_name, to_address, date_sent, date_received, flags,
-			has_attachments, body_preview, raw_size, content_hash, synced_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			has_attachments, body_preview, raw_size, content_hash, synced_at,
+			process_status, attachments_meta, attachment_count, is_flagged)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(account_id, uid, folder, uid_validity) DO UPDATE SET
 			flags = excluded.flags,
+			is_flagged = excluded.is_flagged,
 			synced_at = excluded.synced_at
 	`);
 
@@ -262,6 +287,10 @@ export function upsertMessages(messages: Omit<InboxMessage, 'id'>[]): void {
 				msg.dateSent, msg.dateReceived, JSON.stringify(msg.flags),
 				msg.hasAttachments ? 1 : 0, msg.bodyPreview, msg.rawSize,
 				null, msg.syncedAt,
+				msg.processStatus || 'new',
+				JSON.stringify(msg.attachmentsMeta || []),
+				msg.attachmentCount || 0,
+				msg.isFlagged ? 1 : 0,
 			);
 		}
 	});
@@ -275,6 +304,7 @@ export interface MessageListOptions {
 	limit?: number;
 	offset?: number;
 	search?: string;
+	status?: string;
 }
 
 export function listMessages(opts: MessageListOptions = {}): { messages: InboxMessage[]; total: number } {
@@ -292,6 +322,10 @@ export function listMessages(opts: MessageListOptions = {}): { messages: InboxMe
 	if (opts.folder) {
 		conditions.push('m.folder = ?');
 		params.push(opts.folder);
+	}
+	if (opts.status) {
+		conditions.push('m.process_status = ?');
+		params.push(opts.status);
 	}
 
 	let query: string;
@@ -371,6 +405,10 @@ function rowToMessage(row: Record<string, unknown>): InboxMessage {
 		bodyPreview: row.body_preview as string,
 		rawSize: row.raw_size as number,
 		syncedAt: row.synced_at as number,
+		processStatus: (row.process_status as string) || 'new',
+		attachmentsMeta: JSON.parse((row.attachments_meta as string) || '[]'),
+		attachmentCount: (row.attachment_count as number) || 0,
+		isFlagged: (row.is_flagged as number) === 1,
 	};
 }
 
@@ -403,6 +441,45 @@ export function upsertSyncState(state: SyncState): void {
 }
 
 // ── Stats ──
+
+export function pruneOldMessages(accountId: string, retentionDays: number): number {
+	const db = getInboxDb();
+	if (retentionDays <= 0) return 0;
+
+	const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+	const result = db.prepare(`
+		DELETE FROM messages
+		WHERE account_id = ?
+		  AND date_received < ?
+		  AND process_status IN ('new', 'skipped')
+		  AND is_flagged = 0
+	`).run(accountId, cutoffMs);
+
+	if (result.changes > 0) {
+		console.log(`[inbox-prune:${accountId}] Pruned ${result.changes} messages older than ${retentionDays} days`);
+	}
+	return result.changes;
+}
+
+export function updateAccountSettings(id: string, settings: { label?: string; retentionDays?: number }): boolean {
+	const db = getInboxDb();
+	const sets: string[] = [];
+	const params: unknown[] = [];
+
+	if (settings.label !== undefined) {
+		sets.push('label = ?');
+		params.push(settings.label);
+	}
+	if (settings.retentionDays !== undefined && settings.retentionDays > 0) {
+		sets.push('retention_days = ?');
+		params.push(settings.retentionDays);
+	}
+	if (sets.length === 0) return false;
+
+	params.push(id);
+	const result = db.prepare(`UPDATE accounts SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+	return result.changes > 0;
+}
 
 export function getInboxStats(): { accounts: number; messages: number; lastSync: number | null } {
 	const db = getInboxDb();

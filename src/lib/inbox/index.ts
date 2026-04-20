@@ -5,12 +5,14 @@ export {
 	updateAccountStatus, updateAccountLastSync, getAccountCredential,
 	upsertMessage, upsertMessages, listMessages, getMessage, getMessageCount,
 	getSyncState, upsertSyncState, getInboxStats,
+	pruneOldMessages, updateAccountSettings,
 	type MessageListOptions,
 } from './db.js';
 
 export type {
 	InboxAccount, InboxMessage, SyncState,
 	InboxProvider, AccountStatus, StoredCredential,
+	AttachmentMeta,
 } from './types.js';
 
 export { encrypt, decrypt } from './crypto.js';

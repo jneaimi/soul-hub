@@ -22,6 +22,8 @@
 		dateReceived: number;
 		flags: string[];
 		hasAttachments: boolean;
+		attachmentCount: number;
+		processStatus: string;
 		bodyPreview: string;
 	}
 
@@ -37,6 +39,29 @@
 	let offset = $state(0);
 	const PAGE_SIZE = 50;
 	let stats = $state<{ accounts: number; messages: number; lastSync: number | null }>({ accounts: 0, messages: 0, lastSync: null });
+
+	// Account settings modal
+	let settingsAccount = $state<Account | null>(null);
+	let settingsLabel = $state('');
+	let settingsRetention = $state(90);
+	let settingsSaving = $state(false);
+
+	// Status filter
+	let statusFilter = $state('');
+	const processStatusFilters = [
+		{ value: '', label: 'All' },
+		{ value: 'new', label: 'New' },
+		{ value: 'queued', label: 'Queued' },
+		{ value: 'processed', label: 'Processed' },
+		{ value: 'skipped', label: 'Skipped' },
+	];
+
+	const processStatusColors: Record<string, string> = {
+		new: 'bg-blue-400',
+		queued: 'bg-amber-400',
+		processed: 'bg-emerald-400',
+		skipped: 'bg-hub-dim/50',
+	};
 
 	// Add account form
 	let showAddForm = $state(false);
@@ -80,6 +105,7 @@
 			const params = new URLSearchParams();
 			if (selectedAccount) params.set('account', selectedAccount);
 			if (search) params.set('search', search);
+			if (statusFilter) params.set('status', statusFilter);
 			params.set('limit', String(PAGE_SIZE));
 			params.set('offset', String(append ? offset : 0));
 
@@ -146,6 +172,34 @@
 			await loadAccounts();
 			await loadMessages();
 		} catch { /* silent */ }
+	}
+
+	function openAccountSettings(acc: Account, e: MouseEvent) {
+		e.stopPropagation();
+		settingsAccount = acc;
+		settingsLabel = acc.label;
+		settingsRetention = 90; // default, will be overridden by API if available
+	}
+
+	async function saveAccountSettings() {
+		if (!settingsAccount) return;
+		settingsSaving = true;
+		try {
+			const res = await fetch('/api/inbox/accounts', {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					id: settingsAccount.id,
+					label: settingsLabel,
+					retentionDays: settingsRetention,
+				}),
+			});
+			if (res.ok) {
+				await loadAccounts();
+				settingsAccount = null;
+			}
+		} catch { /* silent */ }
+		settingsSaving = false;
 	}
 
 	function timeAgo(ts: number): string {
@@ -305,6 +359,13 @@
 						<span class="text-[10px] px-1.5 py-0.5 rounded {providerColors[acc.provider] || providerColors.imap}">{acc.provider}</span>
 						<span class="text-xs truncate flex-1" title={acc.email}>{acc.label}</span>
 						<button
+							onclick={(e) => { openAccountSettings(acc, e); }}
+							class="hidden group-hover:block text-hub-dim hover:text-hub-muted cursor-pointer"
+							aria-label="Account settings"
+						>
+							<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+						</button>
+						<button
 							onclick={(e) => { e.stopPropagation(); removeAccount(acc.id); }}
 							class="hidden group-hover:block text-hub-dim hover:text-hub-danger text-xs cursor-pointer"
 							aria-label="Remove account"
@@ -318,6 +379,24 @@
 				{#if accounts.length === 0}
 					<p class="text-xs text-hub-dim px-2 py-4">No accounts yet. Click "Add Account" to connect.</p>
 				{/if}
+			</div>
+
+			<!-- Status filter -->
+			<div>
+				<p class="text-[10px] text-hub-dim uppercase tracking-wider mb-2 px-1">Status</p>
+				{#each processStatusFilters as filter (filter.value)}
+					<!-- svelte-ignore a11y_click_events_have_key_events -->
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<div
+						onclick={() => { statusFilter = filter.value; loadMessages(); }}
+						class="flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-colors {statusFilter === filter.value ? 'bg-hub-surface text-hub-text' : 'text-hub-muted hover:bg-hub-surface/50'}"
+					>
+						{#if filter.value}
+							<span class="w-1.5 h-1.5 rounded-full flex-shrink-0 {processStatusColors[filter.value] || 'bg-hub-dim/50'}"></span>
+						{/if}
+						<span class="text-xs">{filter.label}</span>
+					</div>
+				{/each}
 			</div>
 		</aside>
 
@@ -456,8 +535,16 @@
 									{#if !selectedAccount && accounts.length > 1}
 										<span class="text-[9px] px-1 py-0.5 rounded {providerColors[getAccountLabel(msg.accountId)] || 'bg-hub-surface text-hub-dim'}">{getAccountLabel(msg.accountId)}</span>
 									{/if}
-									{#if msg.hasAttachments}
+									{#if msg.attachmentCount > 0}
+										<span class="flex items-center gap-0.5 text-[10px] text-hub-dim flex-shrink-0" title="{msg.attachmentCount} attachment{msg.attachmentCount === 1 ? '' : 's'}">
+											<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+											{msg.attachmentCount}
+										</span>
+									{:else if msg.hasAttachments}
 										<svg class="w-3.5 h-3.5 text-hub-dim flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+									{/if}
+									{#if msg.processStatus && processStatusColors[msg.processStatus]}
+										<span class="w-1.5 h-1.5 rounded-full flex-shrink-0 {processStatusColors[msg.processStatus]}" title="Status: {msg.processStatus}"></span>
 									{/if}
 									<span class="ml-auto text-[10px] text-hub-dim flex-shrink-0">
 										{timeAgo(msg.dateSent ?? msg.dateReceived)}
@@ -504,4 +591,81 @@
 			{/if}
 		</main>
 	</div>
+
+	<!-- Account Settings Modal -->
+	{#if settingsAccount}
+		<!-- svelte-ignore a11y_click_events_have_key_events -->
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div onclick={() => { settingsAccount = null; }} class="fixed inset-0 bg-black/40 z-30 flex items-center justify-center p-4">
+			<!-- svelte-ignore a11y_click_events_have_key_events -->
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<div onclick={(e) => e.stopPropagation()} class="bg-hub-card border border-hub-border rounded-xl w-full max-w-sm p-5 shadow-xl">
+				<div class="flex items-center justify-between mb-4">
+					<h2 class="text-sm font-medium text-hub-text">Account Settings</h2>
+					<button onclick={() => { settingsAccount = null; }} class="text-hub-dim hover:text-hub-muted cursor-pointer">
+						<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+					</button>
+				</div>
+
+				<!-- Provider & Email (read-only) -->
+				<div class="mb-4 flex items-center gap-2">
+					<span class="w-2 h-2 rounded-full flex-shrink-0 {statusColors[settingsAccount.status] || statusColors.disconnected}"></span>
+					<span class="text-[10px] px-1.5 py-0.5 rounded {providerColors[settingsAccount.provider] || providerColors.imap}">{settingsAccount.provider}</span>
+					<span class="text-xs text-hub-muted truncate">{settingsAccount.email}</span>
+				</div>
+
+				{#if settingsAccount.lastSync}
+					<p class="text-[10px] text-hub-dim mb-4">Last synced {timeAgo(settingsAccount.lastSync)} ago</p>
+				{/if}
+
+				<!-- Label -->
+				<div class="mb-4">
+					<label class="text-[10px] text-hub-dim uppercase tracking-wider">Label</label>
+					<input
+						type="text"
+						bind:value={settingsLabel}
+						class="w-full mt-1 px-2 py-1.5 rounded bg-hub-surface border border-hub-border text-sm text-hub-text focus:outline-none focus:border-hub-cta/50"
+					/>
+				</div>
+
+				<!-- Retention -->
+				<div class="mb-5">
+					<label class="text-[10px] text-hub-dim uppercase tracking-wider">Retention</label>
+					<div class="flex items-center gap-3 mt-1">
+						<input
+							type="range"
+							min="1"
+							max="365"
+							bind:value={settingsRetention}
+							class="flex-1 accent-hub-cta"
+						/>
+						<div class="flex items-center gap-1">
+							<input
+								type="number"
+								min="1"
+								max="365"
+								bind:value={settingsRetention}
+								class="w-14 px-1.5 py-1 rounded bg-hub-surface border border-hub-border text-xs text-hub-text text-center focus:outline-none focus:border-hub-cta/50"
+							/>
+							<span class="text-[10px] text-hub-dim">days</span>
+						</div>
+					</div>
+				</div>
+
+				<!-- Actions -->
+				<div class="flex gap-2">
+					<button
+						onclick={saveAccountSettings}
+						disabled={settingsSaving}
+						class="px-4 py-1.5 rounded-lg bg-hub-cta/15 text-hub-cta text-sm hover:bg-hub-cta/25 transition-colors cursor-pointer disabled:opacity-50"
+					>
+						{settingsSaving ? 'Saving...' : 'Save'}
+					</button>
+					<button onclick={() => { settingsAccount = null; }} class="px-3 py-1.5 rounded-lg text-hub-dim text-sm hover:text-hub-muted transition-colors cursor-pointer">
+						Cancel
+					</button>
+				</div>
+			</div>
+		</div>
+	{/if}
 </div>

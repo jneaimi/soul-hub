@@ -22,6 +22,7 @@ import {
 	getAccountCredential, listAccounts, updateAccountStatus,
 	updateAccountLastSync, upsertMessages, getSyncState,
 	upsertSyncState, getMessageCount, getInboxDb,
+	getAccount, pruneOldMessages,
 } from './db.js';
 import { getValidToken, type OAuthTokens } from './oauth.js';
 import {
@@ -354,7 +355,8 @@ async function syncInbox(
 				if (replyMatch) inReplyTo = replyMatch[1].trim();
 			}
 
-			const hasAttachments = checkAttachments(msg.bodyStructure);
+			const attachmentsMeta = extractAttachmentMetadata(msg.bodyStructure);
+			const hasAttachments = attachmentsMeta.length > 0;
 
 			batch.push({
 				accountId: account.id,
@@ -375,6 +377,12 @@ async function syncInbox(
 				bodyPreview,
 				rawSize: msg.size || 0,
 				syncedAt: Date.now(),
+				attachmentsMeta,
+				attachmentCount: attachmentsMeta.length,
+				isFlagged: Array.from(msg.flags || []).some(f =>
+					f === '\\Flagged' || f === 'Flagged' || f === '$Flagged'
+				),
+				processStatus: 'new',
 			});
 
 			if (Number(msg.uid) > maxUid) maxUid = Number(msg.uid);
@@ -398,6 +406,12 @@ async function syncInbox(
 			uidValidity: Number(uidValidity),
 			lastSync: Date.now(),
 		});
+
+		// Prune old messages based on retention policy
+		const accountData = getAccount(account.id);
+		if (accountData?.retentionDays && accountData.retentionDays > 0) {
+			pruneOldMessages(account.id, accountData.retentionDays);
+		}
 
 		const totalCount = getMessageCount(account.id);
 		console.log(`[inbox-sync:${account.id}] Sync complete: ${uids.length} fetched, ${totalCount} total cached`);
@@ -489,6 +503,12 @@ async function connectOutlookWorker(worker: AccountWorker, account: InboxAccount
 		updateAccountLastSync(account.id);
 		getSyncEmitter().emit('synced', account.id);
 
+		// Prune old messages based on retention policy
+		const accountData = getAccount(account.id);
+		if (accountData?.retentionDays && accountData.retentionDays > 0) {
+			pruneOldMessages(account.id, accountData.retentionDays);
+		}
+
 		const totalCount = getMessageCount(account.id);
 		console.log(`[inbox-sync:${account.id}] Outlook sync: ${result.messages.length} messages, ${totalCount} total`);
 
@@ -529,6 +549,10 @@ function graphToInboxMessage(accountId: string, msg: GraphMessage): Omit<InboxMe
 		bodyPreview: (msg.bodyPreview || '').slice(0, 500),
 		rawSize: 0,
 		syncedAt: Date.now(),
+		attachmentsMeta: [],
+		attachmentCount: 0,
+		isFlagged: false,
+		processStatus: 'new',
 	};
 }
 
@@ -543,15 +567,63 @@ function hashStringToInt(str: string): number {
 	return hash || 1;
 }
 
-/** Check bodyStructure for attachments */
-function checkAttachments(structure: unknown): boolean {
-	if (!structure) return false;
-	const s = structure as Record<string, unknown>;
-	if (s.disposition === 'attachment') return true;
-	if (Array.isArray(s.childNodes)) {
-		return s.childNodes.some((child: unknown) => checkAttachments(child));
+interface AttachmentMeta {
+	filename: string;
+	size: number;
+	mimeType: string;
+	part?: string;
+	isInline: boolean;
+}
+
+function extractAttachmentMetadata(structure: unknown): AttachmentMeta[] {
+	const attachments: AttachmentMeta[] = [];
+
+	function traverse(node: unknown) {
+		if (!node) return;
+		const s = node as Record<string, unknown>;
+
+		const disposition = s.disposition as string | undefined;
+		const type = s.type as string || '';
+
+		if (disposition === 'attachment' || disposition === 'inline') {
+			const params = s.dispositionParameters as Record<string, string> | undefined;
+			const typeParams = s.parameters as Record<string, string> | undefined;
+			const filename = params?.filename || typeParams?.name || 'unnamed';
+			const size = (s.size as number) || 0;
+
+			if (size > 0 || disposition === 'attachment') {
+				attachments.push({
+					filename,
+					size,
+					mimeType: type,
+					part: s.part as string | undefined,
+					isInline: disposition === 'inline',
+				});
+			}
+		} else if (!disposition && type && !type.startsWith('text/') && !type.startsWith('multipart/')) {
+			const typeParams = s.parameters as Record<string, string> | undefined;
+			const filename = typeParams?.name || 'unnamed';
+			const size = (s.size as number) || 0;
+			if (size > 0) {
+				attachments.push({
+					filename,
+					size,
+					mimeType: type,
+					part: s.part as string | undefined,
+					isInline: false,
+				});
+			}
+		}
+
+		if (Array.isArray(s.childNodes)) {
+			for (const child of s.childNodes) {
+				traverse(child);
+			}
+		}
 	}
-	return false;
+
+	traverse(structure);
+	return attachments;
 }
 
 /** Get sync status for all accounts */

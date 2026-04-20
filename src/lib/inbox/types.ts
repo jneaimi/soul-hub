@@ -15,6 +15,7 @@ export interface InboxAccount {
 	lastSync: number | null;
 	lastError: string | null;
 	createdAt: number;
+	retentionDays: number;
 }
 
 export interface InboxMessage {
@@ -37,6 +38,18 @@ export interface InboxMessage {
 	bodyPreview: string;
 	rawSize: number;
 	syncedAt: number;
+	processStatus: string;
+	attachmentsMeta: AttachmentMeta[];
+	attachmentCount: number;
+	isFlagged: boolean;
+}
+
+export interface AttachmentMeta {
+	filename: string;
+	size: number;
+	mimeType: string;
+	part?: string;
+	isInline: boolean;
 }
 
 export interface SyncState {

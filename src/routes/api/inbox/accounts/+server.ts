@@ -1,7 +1,7 @@
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { randomUUID } from 'node:crypto';
-import { addAccount, listAccounts, removeAccount, getAccount, startAccountSync, stopAccountSync } from '$lib/inbox/index.js';
+import { addAccount, listAccounts, removeAccount, getAccount, updateAccountSettings, startAccountSync, stopAccountSync } from '$lib/inbox/index.js';
 import type { InboxProvider } from '$lib/inbox/index.js';
 
 const VALID_PROVIDERS: InboxProvider[] = ['icloud', 'gmail', 'outlook', 'imap'];
@@ -100,4 +100,33 @@ export const DELETE: RequestHandler = async ({ request }) => {
 	stopAccountSync(id);
 	removeAccount(id);
 	return json({ ok: true, removed: id });
+};
+
+/**
+ * PATCH /api/inbox/accounts — update account settings
+ *   { id, label?, retentionDays? }
+ */
+export const PATCH: RequestHandler = async ({ request }) => {
+	let body: Record<string, unknown>;
+	try {
+		body = await request.json();
+	} catch {
+		return json({ error: 'Invalid JSON' }, { status: 400 });
+	}
+
+	const id = body.id as string;
+	if (!id) return json({ error: 'id is required' }, { status: 400 });
+
+	const account = getAccount(id);
+	if (!account) return json({ error: `Account "${id}" not found` }, { status: 404 });
+
+	const updated = updateAccountSettings(id, {
+		label: body.label as string | undefined,
+		retentionDays: typeof body.retentionDays === 'number' ? body.retentionDays : undefined,
+	});
+
+	if (!updated) return json({ error: 'No valid fields to update' }, { status: 400 });
+
+	const refreshed = getAccount(id);
+	return json({ ok: true, account: refreshed });
 };
