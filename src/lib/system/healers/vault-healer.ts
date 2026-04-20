@@ -171,6 +171,166 @@ ${zoneLinks}
 }
 
 /**
+ * Auto-fix broken wikilinks via fuzzy-match against the vault index.
+ *
+ * For each unresolved link, find the best-matching note by comparing the raw
+ * link text against every note's path, basename, and title. When a single
+ * candidate clears the confidence threshold it rewrites the link in-place;
+ * otherwise the link is left for human review.
+ */
+export async function healBrokenLinks(
+	vaultRoot: string,
+	unresolved: { source: string; raw: string }[],
+	allNotes: VaultNote[],
+	options: { confidenceThreshold?: number; maxFixesPerRun?: number } = {}
+): Promise<HealResult> {
+	const threshold = options.confidenceThreshold ?? 0.88;
+	const maxFixes = options.maxFixesPerRun ?? 50;
+	const result: HealResult = { type: 'dead_links', fixed: [], skipped: [], errors: [] };
+
+	// Build candidate index — every note contributes its full path, basename, and title.
+	// Each key carries a `kind` flag so we can compare like-for-like.
+	type CandidateKey = { kind: 'path' | 'basename' | 'title'; value: string };
+	type Candidate = { path: string; keys: CandidateKey[] };
+	const candidates: Candidate[] = allNotes.map((n) => {
+		const pathNoExt = n.path.replace(/\.md$/, '');
+		const basename = pathNoExt.split('/').pop()!;
+		const keys: CandidateKey[] = [
+			{ kind: 'path', value: normalize(pathNoExt) },
+			{ kind: 'basename', value: normalize(basename) },
+		];
+		if (n.title) keys.push({ kind: 'title', value: normalize(n.title) });
+		return { path: pathNoExt, keys };
+	});
+
+	// Group unresolved by source file so we rewrite each file once
+	const bySource = new Map<string, { raw: string; replacement: string }[]>();
+	const seen = new Set<string>(); // dedupe source+raw — parser may emit duplicates
+
+	let fixedCount = 0;
+	for (const link of unresolved) {
+		const dedupeKey = `${link.source}\x00${link.raw}`;
+		if (seen.has(dedupeKey)) continue;
+		seen.add(dedupeKey);
+
+		if (fixedCount >= maxFixes) {
+			result.skipped.push(`${link.source}: [[${link.raw}]]`);
+			continue;
+		}
+
+		// Ignore heading-only anchors, URLs, and folder references (trailing /)
+		const base = link.raw.split('#')[0].split('|')[0].trim();
+		if (!base || base.startsWith('http') || base.endsWith('/')) {
+			result.skipped.push(`${link.source}: [[${link.raw}]]`);
+			continue;
+		}
+
+		// Decide what to match against: full-path raw ≠ bare title raw
+		const rawHasPath = base.includes('/');
+		const needlePath = normalize(base);
+		const needleBase = normalize(base.split('/').pop()!);
+		const sourcePathNoExt = link.source.replace(/\.md$/, '');
+
+		let bestScore = 0;
+		let bestPath: string | null = null;
+		let ambiguous = false;
+
+		for (const cand of candidates) {
+			if (cand.path === sourcePathNoExt) continue; // never self-link
+			for (const key of cand.keys) {
+				// Match full path against path keys only; match bare name against basename/title
+				const score = key.kind === 'path'
+					? rawSimilarity(needlePath, key.value)
+					: rawHasPath ? 0 : rawSimilarity(needleBase, key.value);
+				if (score > bestScore + 1e-9) {
+					bestScore = score;
+					bestPath = cand.path;
+					ambiguous = false;
+				} else if (Math.abs(score - bestScore) < 1e-9 && cand.path !== bestPath) {
+					ambiguous = true;
+				}
+			}
+		}
+
+		if (!bestPath || bestScore < threshold || ambiguous) {
+			result.skipped.push(`${link.source}: [[${link.raw}]]`);
+			continue;
+		}
+
+		const list = bySource.get(link.source) ?? [];
+		list.push({ raw: link.raw, replacement: bestPath });
+		bySource.set(link.source, list);
+		fixedCount++;
+	}
+
+	// Apply rewrites — one read/write per source file
+	for (const [source, rewrites] of bySource) {
+		try {
+			const absPath = resolve(vaultRoot, source);
+			let content = await readFile(absPath, 'utf-8');
+			for (const { raw, replacement } of rewrites) {
+				// Preserve alias (text after |) and heading anchor (text after #) if present
+				const pattern = new RegExp(`!?\\[\\[${escapeRegex(raw)}(#[^\\]|]*)?(\\|[^\\]]*)?\\]\\]`, 'g');
+				content = content.replace(pattern, (match) => {
+					const isEmbed = match.startsWith('!');
+					const anchor = match.match(/#[^\]|]*/)?.[0] ?? '';
+					const alias = match.match(/\|[^\]]*/)?.[0] ?? '';
+					return `${isEmbed ? '!' : ''}[[${replacement}${anchor}${alias}]]`;
+				});
+				result.fixed.push(`${source}: [[${raw}]] → [[${replacement}]]`);
+			}
+			await writeFile(absPath, content, 'utf-8');
+		} catch (err) {
+			for (const { raw } of rewrites) {
+				result.errors.push({
+					path: `${source}: [[${raw}]]`,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+	}
+
+	return result;
+}
+
+function normalize(s: string): string {
+	return s.toLowerCase().replace(/[_\-\s]+/g, ' ').trim();
+}
+
+function escapeRegex(s: string): string {
+	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Similarity score in [0, 1]. Pure Levenshtein-based — no substring bonus,
+ * which was too permissive (a short key embedded in a long raw would score
+ * near 1.0 even when semantically unrelated).
+ */
+function rawSimilarity(a: string, b: string): number {
+	if (!a || !b) return 0;
+	if (a === b) return 1;
+	const dist = levenshtein(a, b);
+	return 1 - dist / Math.max(a.length, b.length);
+}
+
+function levenshtein(a: string, b: string): number {
+	if (a.length === 0) return b.length;
+	if (b.length === 0) return a.length;
+	const prev = new Array<number>(b.length + 1);
+	const curr = new Array<number>(b.length + 1);
+	for (let j = 0; j <= b.length; j++) prev[j] = j;
+	for (let i = 1; i <= a.length; i++) {
+		curr[0] = i;
+		for (let j = 1; j <= b.length; j++) {
+			const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+			curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+		}
+		for (let j = 0; j <= b.length; j++) prev[j] = curr[j];
+	}
+	return prev[b.length];
+}
+
+/**
  * Backfill missing 'created' frontmatter from file mtime.
  */
 export async function healMissingFrontmatter(

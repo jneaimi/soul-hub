@@ -223,11 +223,27 @@ export class SystemHealth {
 				paths: unresolved.map((u) => u.source),
 				actions: [
 					{
-						id: 'fix-dead-links',
-						label: 'Launch Claude to fix links',
-						type: 'claude',
-						prompt: `Fix these broken wikilinks in ~/vault/:\n${unresolved.slice(0, 20).map((u) => `- ${u.source}: [[${u.raw}]]`).join('\n')}\n\nFor each, find the correct target or remove the link.`,
-						cwd: '~/vault',
+						id: 'auto-fix-dead-links',
+						label: 'Auto-fix links',
+						type: 'api',
+						endpoint: '/api/system/actions',
+						method: 'POST',
+						body: { action: 'heal-broken-links' },
+					},
+					{
+						id: 'fix-dead-links-claude',
+						label: 'Fix with Claude (headless)',
+						type: 'api',
+						endpoint: '/api/system/actions',
+						method: 'POST',
+						body: {
+							action: 'run-claude-headless',
+							cwd: '~/vault',
+							model: 'claude-haiku-4-5',
+							timeoutMs: 120_000,
+							allowedTools: ['Edit', 'Read', 'Glob', 'Grep'],
+							prompt: `Fix these broken wikilinks in ~/vault/:\n${unresolved.slice(0, 20).map((u) => `- ${u.source}: [[${u.raw}]]`).join('\n')}\n\nFor each, find the correct target file and rewrite the wikilink, or remove the link if no match exists. Make the edits directly — do not ask for confirmation.`,
+						},
 					},
 				],
 			});

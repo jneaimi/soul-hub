@@ -3,7 +3,10 @@ import { json } from '@sveltejs/kit';
 import { getSystemHealth } from '$lib/system/index.js';
 import { getVaultEngine } from '$lib/vault/index.js';
 import { spawnSession } from '$lib/pty/manager.js';
-import { healOrphans, healMissingRootIndex, healMissingFrontmatter } from '$lib/system/healers/vault-healer.js';
+import { runClaudeHeadless } from '$lib/pty/headless-claude.js';
+import {
+	healOrphans, healMissingRootIndex, healMissingFrontmatter, healBrokenLinks,
+} from '$lib/system/healers/vault-healer.js';
 import { config } from '$lib/config.js';
 
 /**
@@ -54,6 +57,16 @@ export const POST: RequestHandler = async ({ request }) => {
 			return json({ ok: true, result });
 		}
 
+		case 'heal-broken-links': {
+			const allNotes = vault!.getRecent(99999);
+			const unresolved = vault!.getUnresolved();
+			const result = await healBrokenLinks(config.resolved.vaultDir, unresolved, allNotes);
+			if (result.fixed.length > 0) {
+				await vault!.reindex();
+			}
+			return json({ ok: true, result });
+		}
+
 		case 'heal-frontmatter': {
 			const allNotes = vault!.getRecent(99999);
 			const result = await healMissingFrontmatter(config.resolved.vaultDir, allNotes);
@@ -94,6 +107,30 @@ export const POST: RequestHandler = async ({ request }) => {
 			} catch (err) {
 				return json(
 					{ error: `Failed to launch Claude session: ${err instanceof Error ? err.message : String(err)}` },
+					{ status: 500 }
+				);
+			}
+		}
+
+		case 'run-claude-headless': {
+			const prompt = body.prompt as string;
+			if (!prompt) {
+				return json({ error: 'prompt is required for run-claude-headless' }, { status: 400 });
+			}
+			const cwd = (body.cwd as string)?.replace('~', process.env.HOME || '') || config.resolved.vaultDir;
+			const model = typeof body.model === 'string' ? body.model : undefined;
+			const timeoutMs = typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined;
+			const allowedTools = Array.isArray(body.allowedTools) ? body.allowedTools as string[] : undefined;
+
+			try {
+				const result = await runClaudeHeadless({ prompt, cwd, model, timeoutMs, allowedTools });
+				if (result.ok && vault) {
+					await vault.reindex();
+				}
+				return json({ ok: result.ok, result });
+			} catch (err) {
+				return json(
+					{ error: `Failed to run headless Claude: ${err instanceof Error ? err.message : String(err)}` },
 					{ status: 500 }
 				);
 			}
