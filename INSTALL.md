@@ -236,3 +236,17 @@ Install uv for Python dependency management:
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
+
+### GitNexus analyze crashes on install
+
+On Node 24 + npm 11, the stable `gitnexus@1.6.2` may fail during install with:
+
+```
+npm error Cannot destructure property 'package' of 'node.target' as it is null.
+```
+
+This is an npm arborist bug triggered by GitNexus's `tree-sitter-dart` git dependency. Use the 1.6.3 prerelease until it lands stable:
+
+```bash
+npx gitnexus@1.6.3-rc.28 analyze
+```
