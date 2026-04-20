@@ -37,9 +37,13 @@ git clone https://github.com/jneaimi/soul-hub.git
 cd soul-hub
 npm install
 
-# Configure (optional — works with defaults)
+# Configure env (required for the Unified Inbox, optional otherwise)
 cp .env.example .env
-# Edit .env with your API keys
+echo "SOUL_HUB_SECRET=$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')" >> .env
+# Add any API keys you need to .env
+
+# Configure paths (copy the template and edit if your claude binary isn't at ~/.local/bin/claude)
+cp settings.example.json settings.json
 
 # Initialize the vault
 mkdir -p ~/vault
