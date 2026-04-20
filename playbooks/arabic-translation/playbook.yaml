@@ -1,0 +1,171 @@
+name: Arabic Translation (Domain-Aware)
+type: playbook
+description: English → Modern Standard Arabic translation with domain detection, parallel specialist review, and human gate. Produces publication-ready Arabic tuned to the source document's domain (legal, medical, technical, academic, financial, marketing, social, blog, news).
+
+prerequisites:
+  - name: claude
+    check: "which claude"
+    install: "Install Claude Code CLI: https://docs.anthropic.com/en/docs/claude-code"
+    required: true
+  - name: python3
+    check: "which python3"
+    install: "brew install python3 (macOS) or apt install python3 (Linux)"
+    required: true
+
+hooks:
+  pre_run:
+    - id: brand-context
+      run: "python3 hooks/load-brand-context.py $inputs.domain_hint"
+      output: brand-context.json
+      timeout: 30
+
+timeout_strategy: static
+
+inputs:
+  - id: english_document
+    type: text
+    description: Source English document to translate (paste the full text — soft cap ~8,000 words; split longer documents)
+    required: true
+  - id: source_title
+    type: text
+    description: Short title for the document (used in file naming, e.g. "Q2 Product Launch")
+    required: false
+    default: ""
+  - id: domain_hint
+    type: select
+    description: Domain of the source document — pick "auto" to let the detector decide
+    required: false
+    default: auto
+    options:
+      - auto
+      - legal
+      - medical
+      - technical
+      - academic
+      - financial
+      - marketing
+      - social-media
+      - blog
+      - news
+
+roles:
+  - id: domain-detector
+    provider: claude
+    model: haiku
+    agent: roles/domain-detector.md
+
+  - id: translator
+    provider: claude
+    model: sonnet
+    agent: roles/translator.md
+
+  - id: linguistic-editor
+    provider: claude
+    model: sonnet
+    agent: roles/linguistic-editor.md
+
+  - id: domain-specialist
+    provider: claude
+    model: sonnet
+    agent: roles/domain-specialist.md
+
+  - id: cultural-reviewer
+    provider: claude
+    model: sonnet
+    agent: roles/cultural-reviewer.md
+
+  - id: consolidator
+    provider: claude
+    model: sonnet
+    agent: roles/consolidator.md
+
+phases:
+  - id: detect-domain
+    type: sequential
+    assignments:
+      - role: domain-detector
+        task: "Classify the domain of this English source document. User hint: $inputs.domain_hint (if not 'auto', weight it heavily but still verify). Source title: $inputs.source_title. Classify into one of: legal, medical, technical, academic, financial, marketing, social-media, blog, news. Emit a short report with: detected domain, confidence (high/medium/low), 2-sentence rationale, suggested MSA register (formal / business / conversational), and any domain-specific watchouts for the translator.\n\nSource document:\n$inputs.english_document"
+        output: detected-domain.md
+
+  - id: confirm-domain
+    type: human
+    depends_on: [detect-domain]
+    prompt: "Review the detected domain and suggested register. Type 'approved' to proceed, or type a correction (e.g. 'actually legal, not marketing' or 'switch register to formal'). Your response is passed to the translator."
+    assignments:
+      - role: domain-detector
+        task: "Prepare a concise one-page summary of the detection for human review: detected domain, confidence, rationale, register, and the key translation implications. Do not re-run detection — just summarise."
+        input: $phases.detect-domain.detected-domain
+        output: detection-summary.md
+
+  - id: translate-draft
+    type: sequential
+    depends_on: [confirm-domain]
+    assignments:
+      - role: translator
+        task: "Translate the English source into Modern Standard Arabic (فصحى). Read hooks/output/brand-context.md and apply Section 1 (brand voice) if the confirmed domain is marketing/social-media/blog/news, otherwise apply Section 2 (domain conventions). Always apply Section 3 (anti-slop) and Section 4 (formatting). Preserve Markdown structure. Do not translate code, URLs, or numeric values. Treat the human reply 'approved' as 'use detected domain'; otherwise follow the human correction exactly.\n\nEnglish source:\n$inputs.english_document"
+        input:
+          - $phases.detect-domain.detected-domain
+          - hooks/output/brand-context.md
+        output: draft-ar.md
+
+  - id: specialist-review
+    type: parallel
+    depends_on: [translate-draft]
+    assignments:
+      - role: linguistic-editor
+        task: "Review the Arabic draft for linguistic quality: MSA correctness, grammar, idiom, sentence flow, punctuation, diacritics, and anti-slop compliance (Section 3 of brand-context.md). Compare against the English source for fidelity. Produce a findings report — issues only, with before/after suggestions. If no issues, return a 3-line 'no issues found' summary.\n\nEnglish source for fidelity check:\n$inputs.english_document"
+        input:
+          - $phases.translate-draft.draft-ar
+          - hooks/output/brand-context.md
+        output: linguistic-review.md
+
+      - role: domain-specialist
+        task: "Review the Arabic draft for domain terminology and register. Check: terminology accuracy, register appropriateness, preservation of domain-specific meaning (legal clauses, medical dosing, technical precision, financial figures). Flag any mistranslation that would matter to a domain expert reader. If no issues, return a 3-line 'no issues found' summary.\n\nEnglish source for terminology cross-check:\n$inputs.english_document"
+        input:
+          - $phases.detect-domain.detected-domain
+          - $phases.translate-draft.draft-ar
+          - hooks/output/brand-context.md
+        output: domain-review.md
+
+      - role: cultural-reviewer
+        task: "Review the Arabic draft for cultural fit and sensitivity for a pan-Arab MSA readership. Check: idioms that don't transfer, references that need localisation, tone appropriateness, anything that would feel foreign or tone-deaf. Do not rewrite — flag issues with suggested adjustments. If no issues, return a 3-line 'no issues found' summary."
+        input:
+          - $phases.translate-draft.draft-ar
+        output: cultural-review.md
+
+  - id: consolidate
+    type: sequential
+    depends_on: [specialist-review]
+    assignments:
+      - role: consolidator
+        task: "Merge the three specialist reviews into the final Arabic translation. Read the draft and all three review files. For each finding: accept strong recommendations, reconcile conflicts (fidelity beats style for legal/medical/technical/academic/financial; naturalness beats literal for marketing/social/blog/news), and produce the final polished Arabic. Output two files: (1) final-ar.md — the publication-ready Arabic only, no commentary; (2) consolidated-review-notes.md — a short log of what changed from the draft and why."
+        input:
+          - $phases.translate-draft.draft-ar
+          - $phases.specialist-review.linguistic-review
+          - $phases.specialist-review.domain-review
+          - $phases.specialist-review.cultural-review
+        output: final-ar.md
+
+  - id: approve
+    type: gate
+    depends_on: [consolidate]
+    assignments:
+      - role: consolidator
+        task: "Prepare a final-approval summary: the Arabic translation, a brief list of notable choices (terminology, register, cultural adaptations), and anything the human should verify before publishing."
+        input:
+          - $phases.consolidate.final-ar
+        output: approval-summary.md
+
+output:
+  type: composite
+  vault_capture: true
+  items:
+    - type: artifact
+      file: final-ar.md
+    - type: knowledge
+      file: final-ar.md
+      vault_zone: content
+    - type: artifact
+      file: approval-summary.md
+  on_complete:
+    notify: true
