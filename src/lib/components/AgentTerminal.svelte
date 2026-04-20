@@ -10,9 +10,13 @@
 		continueSession?: boolean;
 		/** Spawn a plain shell instead of Claude Code */
 		shell?: boolean;
+		/** Connect to an already-running PTY session instead of spawning a new one */
+		reconnectSessionId?: string;
+		/** If true, do NOT kill the PTY session when this component unmounts (e.g. when collapsed) */
+		keepAlive?: boolean;
 	}
 
-	let { prompt = '', cwd = '', autoSpawn = false, projectName = '', continueSession = false, shell = false }: Props = $props();
+	let { prompt = '', cwd = '', autoSpawn = false, projectName = '', continueSession = false, shell = false, reconnectSessionId = '', keepAlive = false }: Props = $props();
 
 	let fileInput: HTMLInputElement;
 	let uploading = $state(false);
@@ -359,14 +363,24 @@
 		terminal.writeln('\x1b[38;5;245m  PTY Terminal\x1b[0m');
 		terminal.writeln('');
 
-		if (autoSpawn && prompt) spawn();
+		if (reconnectSessionId) {
+			// Connect to an existing session instead of spawning
+			sessionId = reconnectSessionId;
+			running = true;
+			terminal.writeln(`\x1b[38;5;245m  Connecting to session ${reconnectSessionId}...\x1b[0m`);
+			attemptReconnect(5);
+		} else if (autoSpawn && prompt) {
+			spawn();
+		}
 	}
 
 	onDestroy(() => {
 		if (writeRafId !== null) cancelAnimationFrame(writeRafId);
 		if (inputRafId !== null) cancelAnimationFrame(inputRafId);
 		if (abortController) abortController.abort();
-		if (sessionId) killSession();
+		// Only kill the session if keepAlive is false (default behavior for interactive terminals).
+		// PM and worker terminals use keepAlive=true so collapsing doesn't kill the session.
+		if (sessionId && !keepAlive) killSession();
 		if (terminal) terminal.dispose();
 	});
 
@@ -544,6 +558,17 @@
 				}
 
 				terminal?.writeln('\x1b[38;5;82m  Reconnected\x1b[0m');
+
+				// Replay session log so terminal shows history after reconnect
+				try {
+					const logRes = await fetch(`/api/sessions/${sessionId}`);
+					if (logRes.ok) {
+						const logData = await logRes.json();
+						if (logData.log) {
+							terminal?.write(logData.log);
+						}
+					}
+				} catch { /* best effort — proceed without history */ }
 
 				const reader = res.body.getReader();
 				const decoder = new TextDecoder();
