@@ -45,14 +45,15 @@
 		const desc = data.projectConfig?.description || '';
 		const pType = data.projectConfig?.type || 'web-app';
 
+		const soulHubRoot = data.soulHubRoot;
 		const prompt = [
 			`New project "${pName}" (type: ${pType}): "${desc}".`,
 			'',
 			'SETUP INSTRUCTIONS:',
 			'1. Read CLAUDE.md in the project root for the full Evaluate → Analyze → Apply framework.',
-			`2. Read /Users/jneaimi/dev/soul-hub/src/lib/project/schema.ts for TEMPLATE_FOR_FRAMEWORK mapping and SoulHubConfig interface.`,
-			`3. Read /Users/jneaimi/dev/soul-hub/src/lib/project/claude-md-generator.ts for CLAUDE.md generation patterns.`,
-			`4. Read /Users/jneaimi/dev/soul-hub/src/lib/project/hook-generator.ts for guard.sh generation patterns.`,
+			`2. Read ${soulHubRoot}/src/lib/project/schema.ts for TEMPLATE_FOR_FRAMEWORK mapping and SoulHubConfig interface.`,
+			`3. Read ${soulHubRoot}/src/lib/project/claude-md-generator.ts for CLAUDE.md generation patterns.`,
+			`4. Read ${soulHubRoot}/src/lib/project/hook-generator.ts for guard.sh generation patterns.`,
 			'',
 			'WORKFLOW:',
 			'- Ask ONE question at a time using AskUserQuestion tool (7 total: type, framework, database, focus, avoid, tooling, pipelines).',

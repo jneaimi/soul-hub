@@ -3,8 +3,7 @@ import { json } from '@sveltejs/kit';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
-const HOME = process.env.HOME || '';
-const SETTINGS_PATH = resolve(HOME, 'dev', 'soul-hub', 'settings.json');
+const SETTINGS_PATH = resolve(process.cwd(), 'settings.json');
 
 /** GET /api/settings — read current settings */
 export const GET: RequestHandler = async () => {

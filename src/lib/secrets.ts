@@ -11,8 +11,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 
-const HOME = process.env.HOME || '';
-const SECRETS_PATH = resolve(HOME, 'dev', 'soul-hub', '.data', 'secrets.env');
+const SECRETS_PATH = resolve(process.cwd(), '.data', 'secrets.env');
 
 /** Parse a .env file into key-value pairs */
 function parseEnv(content: string): Record<string, string> {

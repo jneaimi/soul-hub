@@ -11,6 +11,7 @@ import { generateGuardHook } from '$lib/project/hook-generator.js';
 import { getVaultEngine } from '$lib/vault/index.js';
 
 const DEV_DIR = config.resolved.devDir;
+const SOUL_HUB_ROOT = process.cwd();
 
 function buildGovernanceClaudeMd(name: string, description: string): string {
 	return `# ${name}
@@ -29,15 +30,15 @@ Use the AskUserQuestion tool for EVERY discovery question. This gives the user c
 
 ### 3. USE GENERATORS -- Don't write from scratch
 After collecting all answers, read the generators to understand the patterns and produce files:
-- CLAUDE.md generator: \`/Users/jneaimi/dev/soul-hub/src/lib/project/claude-md-generator.ts\`
-- Hook generator: \`/Users/jneaimi/dev/soul-hub/src/lib/project/hook-generator.ts\`
-- Pipeline info: \`/Users/jneaimi/dev/soul-hub/src/lib/project/pipeline-info.ts\`
-- Schema + mappings: \`/Users/jneaimi/dev/soul-hub/src/lib/project/schema.ts\`
+- CLAUDE.md generator: \`${SOUL_HUB_ROOT}/src/lib/project/claude-md-generator.ts\`
+- Hook generator: \`${SOUL_HUB_ROOT}/src/lib/project/hook-generator.ts\`
+- Pipeline info: \`${SOUL_HUB_ROOT}/src/lib/project/pipeline-info.ts\`
+- Schema + mappings: \`${SOUL_HUB_ROOT}/src/lib/project/schema.ts\`
 
 Read these files to understand what rules, anti-patterns, and hook logic to generate for each framework/type. Follow their patterns.
 
 ### 4. USE TEMPLATES -- Copy starter scaffolds
-Copy from \`/Users/jneaimi/dev/soul-hub/pipelines/_builder/project-templates/\`. Never write boilerplate from scratch.
+Copy from \`${SOUL_HUB_ROOT}/pipelines/_builder/project-templates/\`. Never write boilerplate from scratch.
 
 ### 5. GUARD HOOK IS PRE-GENERATED
 \`.claude/hooks/guard.sh\` already exists with basic protections for this project type. During the Apply phase, regenerate it with the full governance config (including focus/avoid rules) by reading hook-generator.ts.
@@ -128,7 +129,7 @@ AskUserQuestion (1 question):
 Question 7: "Link any pipelines to this project?"
   Header: "Pipelines"
   multiSelect: true
-  Options: (list from /Users/jneaimi/dev/soul-hub/pipelines/ — skip _builder, _archive)
+  Options: (list from ${SOUL_HUB_ROOT}/pipelines/ — skip _builder, _archive)
   → maps to: pipelines[]
 \`\`\`
 
@@ -147,9 +148,9 @@ Wait for user approval before proceeding.
 
 After approval, execute in this order:
 1. Update \`.soul-hub.json\` with the complete config
-2. Read \`/Users/jneaimi/dev/soul-hub/src/lib/project/claude-md-generator.ts\` and generate the full CLAUDE.md following its patterns. Write it here, replacing this file.
-3. Read \`/Users/jneaimi/dev/soul-hub/src/lib/project/hook-generator.ts\` and generate \`.claude/hooks/guard.sh\` following its patterns. Make it executable.
-4. Read \`TEMPLATE_FOR_FRAMEWORK\` from \`/Users/jneaimi/dev/soul-hub/src/lib/project/schema.ts\` to find which template matches the chosen framework. Copy ALL files from \`/Users/jneaimi/dev/soul-hub/pipelines/_builder/project-templates/{template-name}/\` to this project directory. Use Bash \`cp -r\` for efficiency.
+2. Read \`${SOUL_HUB_ROOT}/src/lib/project/claude-md-generator.ts\` and generate the full CLAUDE.md following its patterns. Write it here, replacing this file.
+3. Read \`${SOUL_HUB_ROOT}/src/lib/project/hook-generator.ts\` and generate \`.claude/hooks/guard.sh\` following its patterns. Make it executable.
+4. Read \`TEMPLATE_FOR_FRAMEWORK\` from \`${SOUL_HUB_ROOT}/src/lib/project/schema.ts\` to find which template matches the chosen framework. Copy ALL files from \`${SOUL_HUB_ROOT}/pipelines/_builder/project-templates/{template-name}/\` to this project directory. Use Bash \`cp -r\` for efficiency.
 5. Run \`npm install\` (Node) or \`uv init && uv add <deps>\` (Python) if the template has a package manager file. ALWAYS use uv for Python — never pip or venv.
 
 ### Step 4: Understand
@@ -195,17 +196,17 @@ After generating all files, explain what was created:
 | py-package | Python package | project-templates/py-package/ |
 | python-script | Python script | project-templates/python-script/ |
 
-All templates are at: \`/Users/jneaimi/dev/soul-hub/pipelines/_builder/project-templates/\`
+All templates are at: \`${SOUL_HUB_ROOT}/pipelines/_builder/project-templates/\`
 
-Framework → Template mapping is defined in \`/Users/jneaimi/dev/soul-hub/src/lib/project/schema.ts\` as \`TEMPLATE_FOR_FRAMEWORK\`. Read it to know which template to copy for the chosen framework.
+Framework → Template mapping is defined in \`${SOUL_HUB_ROOT}/src/lib/project/schema.ts\` as \`TEMPLATE_FOR_FRAMEWORK\`. Read it to know which template to copy for the chosen framework.
 
 ---
 
 ## Available Pipelines
 
-Check \`/Users/jneaimi/dev/soul-hub/pipelines/\` for current pipelines (run \`ls\` to discover). Each pipeline has a \`pipeline.yaml\` with inputs, steps, and outputs.
+Check \`${SOUL_HUB_ROOT}/pipelines/\` for current pipelines (run \`ls\` to discover). Each pipeline has a \`pipeline.yaml\` with inputs, steps, and outputs.
 
-To get pipeline details, read \`/Users/jneaimi/dev/soul-hub/src/lib/project/pipeline-info.ts\` for the fetcher pattern.
+To get pipeline details, read \`${SOUL_HUB_ROOT}/src/lib/project/pipeline-info.ts\` for the fetcher pattern.
 `;
 }
 

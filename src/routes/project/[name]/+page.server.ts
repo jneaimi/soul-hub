@@ -48,5 +48,6 @@ export const load: PageServerLoad = async ({ params }) => {
 		hasVaultZone,
 		vaultDir: config.resolved.vaultDir,
 		vaultProjectName: name,
+		soulHubRoot: process.cwd(),
 	};
 };
