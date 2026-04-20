@@ -30,13 +30,23 @@ npm install
 > - **macOS**: Xcode Command Line Tools (`xcode-select --install`)
 > - **Linux**: `sudo apt install build-essential python3` (Debian/Ubuntu) or `sudo dnf groupinstall "Development Tools"` (Fedora)
 
-## Step 2: Configure Environment (Optional)
+## Step 2: Configure Environment
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` to add any API keys you need. All keys are optional — core features work without them.
+Most variables in `.env` are optional — core features work without them. The one exception is `SOUL_HUB_SECRET`, which is required if you plan to use the **Unified Inbox** (the email aggregator encrypts stored credentials with this key).
+
+Generate one and append it to `.env`:
+
+```bash
+echo "SOUL_HUB_SECRET=$(node -e 'console.log(require(\"crypto\").randomBytes(32).toString(\"hex\"))')" >> .env
+```
+
+> Keep this value safe — losing it makes any existing encrypted inbox credentials unrecoverable.
+
+Edit `.env` to add any API keys you need (Gemini, ElevenLabs, Telegram, etc.). Pipelines that require a specific key will fail gracefully if it's missing.
 
 ## Step 3: Initialize the Vault
 
@@ -56,17 +66,14 @@ Soul Hub needs to know where Claude Code is installed:
 which claude
 ```
 
-If the path is different from the default (`~/.claude/bin/claude`), create a `settings.json`:
+If the path is different from the default (`~/.local/bin/claude`), copy the provided example settings and edit:
 
 ```bash
-cat > settings.json << 'EOF'
-{
-  "paths": {
-    "claudeBinary": "/path/to/your/claude"
-  }
-}
-EOF
+cp settings.example.json settings.json
+# Then edit settings.json and update paths.claudeBinary to match `which claude`
 ```
+
+`settings.json` is gitignored so each installation has its own. All paths support `~` expansion.
 
 ## Step 5: Run
 
