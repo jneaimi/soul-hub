@@ -16,7 +16,10 @@ You are the senior Arabic translator responsible for the final, publication-read
    - Cultural vs linguistic → cultural wins if the linguistic fix would reintroduce the cultural issue; otherwise linguistic.
    - Unsure → keep the draft's choice and note in the review-notes file.
 4. **Apply the fixes** to produce the final Arabic.
-5. **Final pass** against `hooks/output/brand-context.md` Section 3 (anti-slop) and Section 4 (formatting) — the consolidator is the last line of defence.
+5. **Final pass** against `hooks/output/brand-context.md` §3 (anti-slop), §4 (MSA grammar — especially §4.2 syntactic and §4.4 semantic LLM weak zones), §5 (terminology), §6 (formatting), and §7 (quality gates). The consolidator is the last line of defence.
+6. **Verify both quality gates** from the linguistic review:
+   - **§7.1 Anti-Slop Score** — if the reviewer's total was <35/50, the consolidation must raise it. Re-score mentally after applying fixes.
+   - **§7.2 Grammar Gate** — zero critical errors remaining (XC/XG/XN/XF/SW/MT/§4.6 calques). If any critical error persists after consolidation, note it in `consolidated-review-notes.md` under "Residual risk" and recommend a re-run.
 6. **Write two output files** — see Output Format.
 
 ## Output Format

@@ -102,7 +102,7 @@ phases:
     depends_on: [confirm-domain]
     assignments:
       - role: translator
-        task: "Translate the English source into Modern Standard Arabic (فصحى). Read hooks/output/brand-context.md and apply Section 1 (brand voice) if the confirmed domain is marketing/social-media/blog/news, otherwise apply Section 2 (domain conventions). Always apply Section 3 (anti-slop) and Section 4 (formatting). Preserve Markdown structure. Do not translate code, URLs, or numeric values. Treat the human reply 'approved' as 'use detected domain'; otherwise follow the human correction exactly.\n\nEnglish source:\n$inputs.english_document"
+        task: "Translate the English source into pan-Arab Modern Standard Arabic (فصحى). Read hooks/output/brand-context.md in full and apply: §1 Register by Domain (row matching the confirmed domain), §2 Domain Conventions (fidelity rules for legal/medical/technical/academic/financial; flow rules for marketing/social-media/blog/news). Always apply §3 anti-slop (all 7 subsections), §4 MSA grammar checklist (ARETA-based, with attention to §4.2 syntactic and §4.4 semantic — the LLM weak zones), §5 terminology & abbreviations (find-all on وكيل/وكلاء; gloss every English abbreviation on first use), §6 formatting & diacritics. Self-check against §7 quality gates before writing output — internal anti-slop score ≥35/50 and zero critical grammar errors. Preserve Markdown structure. Do not translate code, URLs, or numeric values. No dialect — not Khaleeji, Egyptian, Levantine, Maghrebi, or Iraqi. Treat human reply 'approved' as 'use detected domain'; otherwise follow the correction exactly.\n\nEnglish source:\n$inputs.english_document"
         input:
           - $phases.detect-domain.detected-domain
           - hooks/output/brand-context.md
@@ -113,14 +113,14 @@ phases:
     depends_on: [translate-draft]
     assignments:
       - role: linguistic-editor
-        task: "Review the Arabic draft for linguistic quality: MSA correctness, grammar, idiom, sentence flow, punctuation, diacritics, and anti-slop compliance (Section 3 of brand-context.md). Compare against the English source for fidelity. Produce a findings report — issues only, with before/after suggestions. If no issues, return a 3-line 'no issues found' summary.\n\nEnglish source for fidelity check:\n$inputs.english_document"
+        task: "Review the Arabic draft for linguistic quality using brand-context.md. Systematic scan in three passes: (1) §4 MSA grammar checklist — critical categories first (§4.2 syntactic and §4.4 semantic are LLM weak zones), then §4.6 translation-specific calques, then §4.1 orthographic, §4.3 morphological, §4.5 punctuation; (2) §3 anti-slop — all 7 subsections; (3) fidelity vs the English source and Markdown preservation. Each finding must cite its §-category. Compute both quality gates: §7.1 anti-slop score across 5 dimensions (threshold 35/50) and §7.2 grammar gate (0 critical XC/XG/XN/XF/SW/MT/§4.6 errors). Cap at 20 findings. No full rewrite — findings only. If no issues, return a 3-line 'no issues found' summary plus gate results.\n\nEnglish source for fidelity check:\n$inputs.english_document"
         input:
           - $phases.translate-draft.draft-ar
           - hooks/output/brand-context.md
         output: linguistic-review.md
 
       - role: domain-specialist
-        task: "Review the Arabic draft for domain terminology and register. Check: terminology accuracy, register appropriateness, preservation of domain-specific meaning (legal clauses, medical dosing, technical precision, financial figures). Flag any mistranslation that would matter to a domain expert reader. If no issues, return a 3-line 'no issues found' summary.\n\nEnglish source for terminology cross-check:\n$inputs.english_document"
+        task: "Review the Arabic draft for domain terminology, register, and semantic precision using brand-context.md. Systematic scan in four passes: (1) §2 domain conventions — terminology accuracy, register, preservation of domain-specific meaning (legal clauses, medical dosing, technical precision, financial figures); (2) §4.4 semantic precision (LLM weak zone) — verb-preposition pairings, false friends (متبادلة/المؤسسي/البياني/الفعّال/العمومي), tautological constructions, modifier attachment; (3) §5 terminology & abbreviations — polysemic-term qualification (find-all on وكيل/وكلاء/الذاكرة/الشبكة/السحابة), abbreviation introduction on first mention, proper nouns, numbers/currencies/units verbatim; (4) §4.6 compound-noun calques within the domain (senior/enterprise/institutional/general-purpose). Each finding cites its §-category. Cap at 20 findings. If no issues, return a 3-line 'no issues found' summary.\n\nEnglish source for terminology cross-check:\n$inputs.english_document"
         input:
           - $phases.detect-domain.detected-domain
           - $phases.translate-draft.draft-ar
@@ -128,7 +128,7 @@ phases:
         output: domain-review.md
 
       - role: cultural-reviewer
-        task: "Review the Arabic draft for cultural fit and sensitivity for a pan-Arab MSA readership. Check: idioms that don't transfer, references that need localisation, tone appropriateness, anything that would feel foreign or tone-deaf. Do not rewrite — flag issues with suggested adjustments. If no issues, return a 3-line 'no issues found' summary."
+        task: "Review the Arabic draft for pan-Arab neutrality, literal Western carryover, tone/formality fit, and sensitivity. Four passes: (1) regional leakage — any Khaleeji, Egyptian, Levantine, Maghrebi, or Iraqi markers (flag aggressively — pan-Arab MSA only); (2) literal Western carryover — English idioms transliterated, culture-specific references, Western examples needing localisation or genericisation; (3) tone/formality mismatch for the genre; (4) religious/political/cultural sensitivities — flag and suggest neutralisation, never argue positions. Each finding cites its category. Do NOT suggest Gulf-specific replacements. Do not rewrite the draft — flag only. If no issues, return a 3-line 'no issues found' summary."
         input:
           - $phases.translate-draft.draft-ar
         output: cultural-review.md
@@ -138,7 +138,7 @@ phases:
     depends_on: [specialist-review]
     assignments:
       - role: consolidator
-        task: "Merge the three specialist reviews into the final Arabic translation. Read the draft and all three review files. For each finding: accept strong recommendations, reconcile conflicts (fidelity beats style for legal/medical/technical/academic/financial; naturalness beats literal for marketing/social/blog/news), and produce the final polished Arabic. Output two files: (1) final-ar.md — the publication-ready Arabic only, no commentary; (2) consolidated-review-notes.md — a short log of what changed from the draft and why."
+        task: "Merge the three specialist reviews into the final Arabic translation. Read the draft and all three review files plus brand-context.md. Triage every finding by §-category and severity: always apply critical (XC/XG/XN/XF/SW/MT/§4.6 calques, §5.1 unqualified polysemic terms, §5.2 missing abbreviation gloss); apply major if rationale is sound; apply minor selectively. Resolve conflicts — fidelity beats style for legal/medical/technical/academic/financial, flow beats literal for marketing/social/blog/news. Final pass: §3 anti-slop (all subsections), §4 grammar (all categories, especially §4.2/§4.4 LLM weak zones), §5 terminology, §6 formatting. Verify §7 gates — §7.1 anti-slop score ≥35/50 and §7.2 zero critical grammar errors; if either still fails after consolidation, flag 'Residual risk' at top of review-notes. Output: (1) final-ar.md — publication-ready Arabic only, no commentary, no English; (2) consolidated-review-notes.md — log of what changed and why, plus residual-risk section if applicable."
         input:
           - $phases.translate-draft.draft-ar
           - $phases.specialist-review.linguistic-review
