@@ -1,60 +1,80 @@
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { readdir, readFile, stat } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import { resolve, join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { isPathAllowed, findRootForPath } from '$lib/explorer-roots.js';
+import { recordAccess } from '$lib/file-audit.js';
 
-const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp']);
 const MIME_TYPES: Record<string, string> = {
 	png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
 	gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml',
 	ico: 'image/x-icon', bmp: 'image/bmp', pdf: 'application/pdf',
 };
 
-import { config } from '$lib/config.js';
-
-// Only allow reading within these roots
-const ALLOWED_ROOTS = [
-	config.resolved.devDir,
-	config.resolved.vaultDir,
-	join(tmpdir(), 'pipeline-runs'),
-];
-
-// Skip these directories when listing
+// Skip these directories when listing — universally noisy / never useful in a file browser
 const EXCLUDED_DIRS = new Set([
 	'node_modules', '.git', '.svelte-kit', '.next', '__pycache__',
 	'.venv', 'venv', '.cache', '.turbo', 'dist', 'build', '.output',
 	'.nuxt', '.vercel', 'coverage', '.pids', 'logs',
 ]);
 
-function isPathAllowed(targetPath: string): boolean {
-	const resolved = resolve(targetPath);
-	return ALLOWED_ROOTS.some((root) => resolved.startsWith(root + '/') || resolved === root);
+/**
+ * Resolve a path through the filesystem (following symlinks) so the final
+ * allow-check operates on the canonical path. Returns null if the path
+ * doesn't exist — callers should treat that as a 404.
+ */
+function safeRealpath(path: string): string | null {
+	try {
+		return realpathSync(path);
+	} catch {
+		return null;
+	}
 }
 
-export const GET: RequestHandler = async ({ url }) => {
+function getClientIp(headers: Headers): string {
+	return (
+		headers.get('cf-connecting-ip') ||
+		headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+		headers.get('x-real-ip') ||
+		'unknown'
+	);
+}
+
+export const GET: RequestHandler = async ({ url, request }) => {
 	const targetPath = url.searchParams.get('path');
 	const action = url.searchParams.get('action') || 'list';
 	const file = url.searchParams.get('file');
+	const ip = getClientIp(request.headers);
 
 	if (!targetPath) {
 		return json({ error: 'Missing path parameter' }, { status: 400 });
 	}
 
 	const resolved = resolve(targetPath);
+	const realDir = safeRealpath(resolved);
+	if (!realDir) {
+		return json({ error: 'Directory not found' }, { status: 404 });
+	}
 
-	if (!isPathAllowed(resolved)) {
-		return json({ error: 'Access denied' }, { status: 403 });
+	const dirCheck = isPathAllowed(realDir);
+	if (!dirCheck.allowed) {
+		return json({ error: 'Access denied', reason: dirCheck.reason }, { status: 403 });
 	}
 
 	// Lightweight existence check — returns {exists, size} without reading content
 	if (action === 'stat' && file) {
-		const filePath = resolve(resolved, file);
-		if (!isPathAllowed(filePath)) {
+		const filePath = resolve(realDir, file);
+		const realFile = safeRealpath(filePath);
+		if (!realFile) {
+			return json({ exists: false, error: 'File not found' }, { status: 404 });
+		}
+		const fileCheck = isPathAllowed(realFile);
+		if (!fileCheck.allowed) {
 			return json({ error: 'Access denied' }, { status: 403 });
 		}
 		try {
-			const s = await stat(filePath);
+			const s = await stat(realFile);
 			return json({ exists: true, size: s.size });
 		} catch {
 			return json({ exists: false, error: 'File not found' }, { status: 404 });
@@ -62,28 +82,35 @@ export const GET: RequestHandler = async ({ url }) => {
 	}
 
 	// Serve binary files (images, PDFs) with correct content-type.
-	// Supports ?disposition=attachment to force a download; default is inline
-	// (lets browsers render PDFs and images directly, while still letting the
-	// HTML5 `<a download>` attribute override for save).
+	// Supports ?disposition=attachment to force a download; default is inline.
 	if (action === 'raw' && file) {
-		const filePath = resolve(resolved, file);
-		if (!isPathAllowed(filePath)) {
+		const filePath = resolve(realDir, file);
+		const realFile = safeRealpath(filePath);
+		if (!realFile) {
+			void recordAccess({ ts: new Date().toISOString(), ip, action: 'raw', path: filePath, status: 'not_found' });
+			return json({ error: 'File not found' }, { status: 404 });
+		}
+		const fileCheck = isPathAllowed(realFile);
+		if (!fileCheck.allowed) {
+			void recordAccess({ ts: new Date().toISOString(), ip, action: 'raw', path: realFile, status: 'denied' });
 			return json({ error: 'Access denied' }, { status: 403 });
 		}
 
 		try {
-			const s = await stat(filePath);
+			const s = await stat(realFile);
 			if (s.size > 10_485_760) {
+				void recordAccess({ ts: new Date().toISOString(), ip, action: 'raw', path: realFile, status: 'too_large', bytes: s.size });
 				return json({ error: 'File too large (>10MB)', size: s.size }, { status: 413 });
 			}
 			const ext = file.split('.').pop()?.toLowerCase() || '';
 			const mime = MIME_TYPES[ext] || 'application/octet-stream';
-			const buffer = await readFile(filePath);
+			const buffer = await readFile(realFile);
 			// RFC 5987 encoding so non-ASCII filenames round-trip correctly
 			const dispositionType = url.searchParams.get('disposition') === 'attachment' ? 'attachment' : 'inline';
 			const asciiFallback = file.replace(/[^\x20-\x7E]/g, '_');
 			const encodedName = encodeURIComponent(file);
 			const contentDisposition = `${dispositionType}; filename="${asciiFallback}"; filename*=UTF-8''${encodedName}`;
+			void recordAccess({ ts: new Date().toISOString(), ip, action: 'raw', path: realFile, status: 'ok', bytes: s.size });
 			return new Response(buffer, {
 				headers: {
 					'Content-Type': mime,
@@ -98,35 +125,48 @@ export const GET: RequestHandler = async ({ url }) => {
 	}
 
 	if (action === 'read' && file) {
-		const filePath = resolve(resolved, file);
-		if (!isPathAllowed(filePath)) {
+		const filePath = resolve(realDir, file);
+		const realFile = safeRealpath(filePath);
+		if (!realFile) {
+			void recordAccess({ ts: new Date().toISOString(), ip, action: 'read', path: filePath, status: 'not_found' });
+			return json({ error: 'File not found' }, { status: 404 });
+		}
+		const fileCheck = isPathAllowed(realFile);
+		if (!fileCheck.allowed) {
+			void recordAccess({ ts: new Date().toISOString(), ip, action: 'read', path: realFile, status: 'denied' });
 			return json({ error: 'Access denied' }, { status: 403 });
 		}
 
 		try {
-			const s = await stat(filePath);
+			const s = await stat(realFile);
 			// Limit file reads to 1MB
 			if (s.size > 1_048_576) {
+				void recordAccess({ ts: new Date().toISOString(), ip, action: 'read', path: realFile, status: 'too_large', bytes: s.size });
 				return json({ error: 'File too large (>1MB)', size: s.size }, { status: 413 });
 			}
-			const content = await readFile(filePath, 'utf-8');
-			return json({ content, size: s.size, path: filePath });
+			const content = await readFile(realFile, 'utf-8');
+			void recordAccess({ ts: new Date().toISOString(), ip, action: 'read', path: realFile, status: 'ok', bytes: s.size });
+			return json({ content, size: s.size, path: realFile });
 		} catch {
 			return json({ error: 'File not found' }, { status: 404 });
 		}
 	}
 
-	// Default: list directory
+	// Default: list directory.
+	// Hidden files (`.dotfiles`) are filtered out unless the containing root opts in
+	// via showHidden. `.claude/` stays visible regardless because the agent system
+	// stores user-relevant config there.
 	try {
-		const entries = await readdir(resolved, { withFileTypes: true });
+		const entries = await readdir(realDir, { withFileTypes: true });
 		const result = [];
+		const root = findRootForPath(realDir);
+		const showHidden = root?.showHidden ?? false;
 
 		for (const entry of entries) {
-			// Skip hidden files (except .claude) and excluded dirs
-			if (entry.name.startsWith('.') && entry.name !== '.claude') continue;
+			if (entry.name.startsWith('.') && entry.name !== '.claude' && !showHidden) continue;
 			if (entry.isDirectory() && EXCLUDED_DIRS.has(entry.name)) continue;
 
-			const entryPath = join(resolved, entry.name);
+			const entryPath = join(realDir, entry.name);
 			try {
 				const s = await stat(entryPath);
 				result.push({
@@ -146,7 +186,7 @@ export const GET: RequestHandler = async ({ url }) => {
 			return a.name.localeCompare(b.name);
 		});
 
-		return json({ entries: result, path: resolved });
+		return json({ entries: result, path: realDir });
 	} catch {
 		return json({ error: 'Directory not found' }, { status: 404 });
 	}

@@ -7,6 +7,7 @@ import { initSystemHealth, getSystemHealth } from '$lib/system/index.js';
 import { listSessions, killSession } from '$lib/pty/manager.js';
 import { extractProxyPort, proxyRequest } from '$lib/proxy.js';
 import { getInboxDb, closeInboxDb, startSync, stopSync } from '$lib/inbox/index.js';
+import { seedDefaultsIfEmpty } from '$lib/explorer-roots.js';
 import '$lib/secrets.js'; // Load platform secrets into process.env at startup
 
 const PIPELINES_DIR = resolve(dirname(config.resolved.catalogDir), 'pipelines');
@@ -14,6 +15,18 @@ const DATA_DIR = resolve(dirname(config.resolved.catalogDir), '.data');
 
 // Initialize scheduler on server startup
 initScheduler(PIPELINES_DIR, DATA_DIR);
+
+// Seed file-explorer roots on first run with the previously-hardcoded paths
+// so existing flows (vault attachments, project file browsers) keep working
+// without manual setup.
+try {
+	seedDefaultsIfEmpty([
+		{ name: 'Dev', path: config.paths.devDir },
+		{ name: 'Vault', path: config.paths.vaultDir },
+	]);
+} catch (err) {
+	console.error('[explorer-roots] Failed to seed defaults:', err);
+}
 
 // Initialize vault engine (block server until vault is ready)
 try {
@@ -108,6 +121,31 @@ function gracefulShutdown(signal: string) {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
+/**
+ * Defense-in-depth gate for /api/files/*. Blocks cross-site reads (the
+ * realistic CSRF / exfiltration threat) while leaving legit same-origin
+ * fetches from the SvelteKit frontend untouched. API clients (curl,
+ * scripts) authenticate explicitly via Authorization: Bearer ${SOUL_HUB_SECRET}.
+ *
+ * Why this works without a session: Sec-Fetch-Site is set by the browser
+ * and can't be forged from JS, so a malicious page embedding
+ * <img src="https://soul-hub../api/files?action=raw..."> sends
+ * `Sec-Fetch-Site: cross-site` and gets rejected.
+ */
+function checkFileApiAccess(request: Request): { ok: true } | { ok: false; reason: string } {
+	const auth = request.headers.get('authorization') || '';
+	const secret = process.env.SOUL_HUB_SECRET;
+	if (secret && auth === `Bearer ${secret}`) return { ok: true };
+
+	const fetchSite = request.headers.get('sec-fetch-site');
+	// Allowed: same-origin (page fetch), same-site (subdomain), none (direct navigation / SSR fetch).
+	// Rejected: cross-site (third-party origin).
+	if (fetchSite === 'cross-site') {
+		return { ok: false, reason: 'cross-site requests must use Authorization: Bearer header' };
+	}
+	return { ok: true };
+}
+
 // Dev port proxy — intercept pXXXX.soul-hub.jneaimi.com before SvelteKit router
 export const handle: Handle = async ({ event, resolve: svelteResolve }) => {
 	const hostname = event.request.headers.get('host') || '';
@@ -120,6 +158,17 @@ export const handle: Handle = async ({ event, resolve: svelteResolve }) => {
 	if (proxyPort !== null) {
 		console.log(`[proxy] ${hostname} → localhost:${proxyPort} ${event.request.method} ${new URL(event.request.url).pathname}`);
 		return proxyRequest(event.request, proxyPort);
+	}
+
+	const pathname = event.url.pathname;
+	if (pathname.startsWith('/api/files') || pathname.startsWith('/api/settings/explorer-roots')) {
+		const check = checkFileApiAccess(event.request);
+		if (!check.ok) {
+			return new Response(JSON.stringify({ error: 'Unauthorized', reason: check.reason }), {
+				status: 401,
+				headers: { 'Content-Type': 'application/json' },
+			});
+		}
 	}
 
 	return svelteResolve(event);
