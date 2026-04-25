@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import ChannelCard from '$lib/components/ChannelCard.svelte';
 	import PlatformEnv from '$lib/components/PlatformEnv.svelte';
+	import ExplorerRootsSection from '$lib/components/settings/ExplorerRootsSection.svelte';
 
 	type ChannelAction = 'send' | 'prompt' | 'listen';
 
@@ -375,6 +376,9 @@
 				</div>
 			</div>
 		</section>
+
+		<!-- File Explorer Roots — runtime mutable, no save/restart needed -->
+		<ExplorerRootsSection />
 
 		<!-- Server section (read-only) -->
 		<section class="mb-6">

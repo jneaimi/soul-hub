@@ -42,6 +42,15 @@
 	let vaultZones = $state<Record<string, number>>({});
 	let vaultThisWeek = $state(0);
 
+	// Files Explorer roots
+	interface ExplorerRoot {
+		id: string;
+		name: string;
+		path: string;
+		resolvedPath: string;
+	}
+	let explorerRoots = $state<ExplorerRoot[]>([]);
+
 	// Add project modal
 	let showAddModal = $state(false);
 	let addingPaths = $state<Set<string>>(new Set());
@@ -151,6 +160,16 @@
 		} catch { /* silent */ }
 	}
 
+	async function loadExplorerRoots() {
+		try {
+			const res = await fetch('/api/settings/explorer-roots');
+			if (res.ok) {
+				const data = await res.json();
+				explorerRoots = data.roots ?? [];
+			}
+		} catch { /* silent */ }
+	}
+
 	let vaultEventSource = $state<EventSource | null>(null);
 
 	function refreshVolatile() {
@@ -158,6 +177,7 @@
 		loadVault();
 		loadDashboard();
 		loadPlaybooks();
+		loadExplorerRoots();
 	}
 
 	onMount(() => {
@@ -479,8 +499,8 @@
 					</div>
 				{/if}
 
-					<!-- Pipelines + Vault — side by side on desktop, stacked on mobile -->
-					<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+					<!-- Pipelines / Playbooks / Vault / Files — side by side on desktop, stacked on mobile -->
+					<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-4 gap-4">
 						<!-- Pipelines -->
 						<div class="bg-hub-card rounded-xl p-4 border border-hub-border">
 							<div class="flex items-center justify-between mb-3">
@@ -650,6 +670,56 @@
 									<span class="text-emerald-400">Healthy</span>
 								{/if}
 							</div>
+						</div>
+
+						<!-- Files Explorer -->
+						<div class="bg-hub-card rounded-xl p-4 border border-hub-border">
+							<div class="flex items-center justify-between mb-3">
+								<h3 class="text-sm font-semibold text-hub-text">
+									Files
+									{#if explorerRoots.length > 0}
+										<span class="text-hub-dim font-normal ml-1">({explorerRoots.length})</span>
+									{/if}
+								</h3>
+								<div class="flex items-center gap-2">
+									<a
+										href="/settings#explorer-roots"
+										class="w-7 h-7 grid place-items-center rounded-md text-hub-dim hover:text-hub-cta hover:bg-hub-surface transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50"
+										aria-label="Add root"
+										title="Add root in Settings"
+									>
+										<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+									</a>
+									<a href="/files" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">Open</a>
+								</div>
+							</div>
+							{#if explorerRoots.length === 0}
+								<p class="text-xs text-hub-dim py-3 text-center">
+									No folders yet.
+									<a href="/settings" class="text-hub-cta hover:underline cursor-pointer">Add one</a>
+									to start browsing.
+								</p>
+							{:else}
+								<div class="space-y-1.5">
+									{#each explorerRoots.slice(0, 5) as root}
+										<a
+											href="/files"
+											class="flex items-center gap-2 py-1.5 px-2 rounded-lg hover:bg-hub-surface transition-colors cursor-pointer group"
+										>
+											<svg class="w-3.5 h-3.5 text-hub-cta/70 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+												<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+											</svg>
+											<span class="text-xs text-hub-muted group-hover:text-hub-text transition-colors truncate">{root.name}</span>
+											<span class="text-[10px] text-hub-dim/70 ml-auto truncate font-mono">{root.path}</span>
+										</a>
+									{/each}
+								</div>
+								{#if explorerRoots.length > 5}
+									<div class="mt-2 text-[10px] text-hub-dim text-center">
+										+{explorerRoots.length - 5} more
+									</div>
+								{/if}
+							{/if}
 						</div>
 					</div>
 
