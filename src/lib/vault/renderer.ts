@@ -33,6 +33,9 @@ function rehypeMediaResolver(options: { vaultDir: string; noteDir: string }) {
 			if (node.tagName === 'source' && node.properties?.src) {
 				node.properties.src = resolveMediaSrc(node.properties.src, options);
 			}
+			if (node.tagName === 'a' && node.properties?.href) {
+				rewriteAttachmentLink(node, options);
+			}
 		});
 	};
 }
@@ -42,6 +45,46 @@ function resolveMediaSrc(src: string, opts: { vaultDir: string; noteDir: string 
 	if (!opts.vaultDir) return src;
 	const fullDir = opts.noteDir ? `${opts.vaultDir}/${opts.noteDir}` : opts.vaultDir;
 	return `/api/files?path=${encodeURIComponent(fullDir)}&action=raw&file=${encodeURIComponent(src)}`;
+}
+
+/**
+ * Rewrite relative `<a href>` targets that point to sibling non-markdown files
+ * so they resolve through /api/files and carry metadata for click interception.
+ * Markdown-to-markdown links, external URLs, anchors, and wikilinks are left alone.
+ */
+function rewriteAttachmentLink(node: any, opts: { vaultDir: string; noteDir: string }): void {
+	const href = node.properties.href;
+	if (typeof href !== 'string' || !href) return;
+	if (href.startsWith('http://') || href.startsWith('https://')) return;
+	if (href.startsWith('/')) return;
+	if (href.startsWith('#')) return;
+	if (href.startsWith('javascript:') || href.startsWith('mailto:')) return;
+
+	const [pathPart] = href.split('#');
+	const [cleanPath] = pathPart.split('?');
+	if (!cleanPath) return;
+	if (/\.(md|mdx)$/i.test(cleanPath)) return; // markdown targets handled by the note router
+
+	if (!opts.vaultDir) return;
+
+	const normalized = cleanPath.startsWith('./') ? cleanPath.slice(2) : cleanPath;
+	const filename = normalized.split('/').pop();
+	if (!filename) return;
+	const subDir = normalized.includes('/') ? normalized.slice(0, normalized.lastIndexOf('/')) : '';
+	const noteAbsDir = opts.noteDir ? `${opts.vaultDir}/${opts.noteDir}` : opts.vaultDir;
+	const absDir = subDir ? `${noteAbsDir}/${subDir}` : noteAbsDir;
+	const absPath = `${absDir}/${filename}`;
+
+	node.properties.href = `/api/files?path=${encodeURIComponent(absDir)}&action=raw&file=${encodeURIComponent(filename)}`;
+	node.properties['data-vault-attachment'] = 'true';
+	node.properties['data-vault-attachment-path'] = absPath;
+	node.properties['data-vault-attachment-name'] = filename;
+	const existingClasses = Array.isArray(node.properties.className)
+		? node.properties.className
+		: node.properties.className
+			? [node.properties.className]
+			: [];
+	node.properties.className = [...existingClasses, 'vault-attachment-link'];
 }
 
 function rehypeCodeCopyButton() {

@@ -47,7 +47,24 @@ export const GET: RequestHandler = async ({ url }) => {
 		return json({ error: 'Access denied' }, { status: 403 });
 	}
 
-	// Serve binary files (images, PDFs) with correct content-type
+	// Lightweight existence check — returns {exists, size} without reading content
+	if (action === 'stat' && file) {
+		const filePath = resolve(resolved, file);
+		if (!isPathAllowed(filePath)) {
+			return json({ error: 'Access denied' }, { status: 403 });
+		}
+		try {
+			const s = await stat(filePath);
+			return json({ exists: true, size: s.size });
+		} catch {
+			return json({ exists: false, error: 'File not found' }, { status: 404 });
+		}
+	}
+
+	// Serve binary files (images, PDFs) with correct content-type.
+	// Supports ?disposition=attachment to force a download; default is inline
+	// (lets browsers render PDFs and images directly, while still letting the
+	// HTML5 `<a download>` attribute override for save).
 	if (action === 'raw' && file) {
 		const filePath = resolve(resolved, file);
 		if (!isPathAllowed(filePath)) {
@@ -62,11 +79,17 @@ export const GET: RequestHandler = async ({ url }) => {
 			const ext = file.split('.').pop()?.toLowerCase() || '';
 			const mime = MIME_TYPES[ext] || 'application/octet-stream';
 			const buffer = await readFile(filePath);
+			// RFC 5987 encoding so non-ASCII filenames round-trip correctly
+			const dispositionType = url.searchParams.get('disposition') === 'attachment' ? 'attachment' : 'inline';
+			const asciiFallback = file.replace(/[^\x20-\x7E]/g, '_');
+			const encodedName = encodeURIComponent(file);
+			const contentDisposition = `${dispositionType}; filename="${asciiFallback}"; filename*=UTF-8''${encodedName}`;
 			return new Response(buffer, {
 				headers: {
 					'Content-Type': mime,
 					'Content-Length': String(s.size),
 					'Cache-Control': 'private, max-age=60',
+					'Content-Disposition': contentDisposition,
 				},
 			});
 		} catch {

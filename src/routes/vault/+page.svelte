@@ -147,6 +147,11 @@
 
   function handleNavigate(path: string) {
     if (!path) { view = 'graph'; store.clearSelection(); currentNote = null; return; }
+    if (path.startsWith('__file__:')) {
+      const absPath = path.slice(9);
+      previewFile = { path: absPath, name: absPath.split('/').pop() || absPath };
+      return;
+    }
     noteError = null;
     store.selectNote(path);
     view = 'note';

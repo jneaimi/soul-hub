@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { VaultNote } from '$lib/vault/types';
 	import { TYPE_COLORS } from '$lib/vault/types';
+	import VaultAttachments from './VaultAttachments.svelte';
 
 	interface Props {
 		note: VaultNote & { rendered?: string; contentIsRtl?: boolean; titleIsRtl?: boolean };
@@ -11,6 +12,11 @@
 	}
 
 	let { note, vaultDir = '', onNavigate, onEdit, onArchive }: Props = $props();
+
+	const noteFolder = $derived(
+		note.path.includes('/') ? note.path.substring(0, note.path.lastIndexOf('/')) : ''
+	);
+	const noteFilename = $derived(note.path.split('/').pop() || note.path);
 
 	const downloadUrl = $derived(
 		vaultDir
@@ -39,6 +45,13 @@
 			e.preventDefault();
 			const linkTarget = wikilink.dataset.target;
 			if (linkTarget) onNavigate(linkTarget);
+			return;
+		}
+		const attachment = target.closest('[data-vault-attachment]') as HTMLElement | null;
+		if (attachment) {
+			e.preventDefault();
+			const absPath = attachment.dataset.vaultAttachmentPath;
+			if (absPath) onNavigate(`__file__:${absPath}`);
 		}
 	}
 
@@ -146,6 +159,16 @@
 	>
 		{@html note.rendered ?? ''}
 	</div>
+
+	<!-- Attachments (non-md siblings in the same folder) -->
+	{#if vaultDir}
+		<VaultAttachments
+			vaultDir={vaultDir}
+			noteFolder={noteFolder}
+			currentNote={noteFilename}
+			onOpen={(absPath) => onNavigate(`__file__:${absPath}`)}
+		/>
+	{/if}
 
 	<!-- Outgoing links -->
 	{#if note.links.length > 0}
@@ -328,6 +351,21 @@
 	:global(.vault-wikilink:hover) {
 		color: #c4b5fd;
 		border-bottom-style: solid;
+	}
+	:global(.vault-attachment-link) {
+		color: #34D399;
+		text-decoration: none;
+		border-bottom: 1px dashed #34D399;
+		cursor: pointer;
+	}
+	:global(.vault-attachment-link:hover) {
+		color: #6EE7B7;
+		border-bottom-style: solid;
+	}
+	:global(.vault-attachment-link::before) {
+		content: '📎 ';
+		font-size: 0.85em;
+		margin-inline-end: 2px;
 	}
 
 	/* Horizontal rules */

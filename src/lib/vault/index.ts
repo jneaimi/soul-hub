@@ -43,6 +43,11 @@ export class VaultEngine {
 		this.templates = new TemplateLoader();
 	}
 
+	/** Absolute path to the vault root directory — exposed for renderer/media link resolution. */
+	get vaultDir(): string {
+		return this.config.rootDir;
+	}
+
 	async init(): Promise<void> {
 		await this.governance.scan(this.config.rootDir);
 		await this.templates.load(this.config.templateDir);
@@ -192,6 +197,14 @@ export class VaultEngine {
 
 	getZones(): VaultZone[] {
 		return this.governance.getZones();
+	}
+
+	/** Resolve governance for a single zone path — walks parent hierarchy, falls back
+	 * to the empty default if nothing matches. Exposed so callers can validate a
+	 * proposed write *before* constructing it (used by Katib's --strict-governance).
+	 */
+	resolveZone(zonePath: string): VaultZone {
+		return this.governance.resolve(zonePath);
 	}
 
 	getTemplates(): VaultTemplate[] {

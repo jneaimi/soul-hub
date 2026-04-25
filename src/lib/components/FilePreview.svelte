@@ -72,9 +72,25 @@
 		content = '';
 		highlightedHtml = '';
 
-		// Media files are loaded directly via native elements
+		// Media files & PDFs render via native elements, but we still stat first
+		// so missing files show a friendly error instead of a broken embed.
 		if (isMedia || isPdf) {
-			loading = false;
+			fetch(`/api/files?path=${encodeURIComponent(dir)}&action=stat&file=${encodeURIComponent(file)}`)
+				.then(async (res) => {
+					if (!res.ok) {
+						const data = await res.json().catch(() => ({}));
+						throw new Error(data.error || `HTTP ${res.status}`);
+					}
+					return res.json();
+				})
+				.then((data) => {
+					fileSize = data.size || 0;
+					loading = false;
+				})
+				.catch((e) => {
+					error = e.message;
+					loading = false;
+				});
 			return;
 		}
 
@@ -127,6 +143,7 @@
 	const isMedia = $derived(isImage || isVideo || isAudio);
 	const renderedMarkdown = $derived(isMarkdown && content ? marked.parse(content, { async: false }) as string : '');
 	const rawUrl = $derived(`/api/files?path=${encodeURIComponent(dir)}&action=raw&file=${encodeURIComponent(file)}`);
+	const downloadUrl = $derived(`${rawUrl}&disposition=attachment`);
 
 	function parseCsv(raw: string): string[][] {
 		const lines = raw.trim().split('\n');
@@ -157,7 +174,7 @@
 					<span class="text-[10px] text-hub-dim mr-1">{formatBytes(fileSize)}{#if lineCount && !isMedia && !isPdf} · {lineCount} lines{/if}</span>
 				{/if}
 				<a
-					href={rawUrl}
+					href={downloadUrl}
 					download={fileName}
 					class="p-1 rounded hover:bg-hub-card transition-colors text-hub-dim hover:text-hub-text"
 					title="Download"
@@ -207,12 +224,22 @@
 					<span class="text-sm text-hub-dim">Loading...</span>
 				</div>
 			{:else if error}
-				<div class="flex items-center justify-center h-full">
-					<div class="text-center">
-						<svg class="w-8 h-8 text-hub-danger mx-auto mb-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-							<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
-						</svg>
-						<p class="text-sm text-hub-danger">{error}</p>
+				{@const notFound = /not found/i.test(error)}
+				<div class="flex items-center justify-center h-full p-6">
+					<div class="text-center max-w-sm">
+						{#if notFound}
+							<svg class="w-10 h-10 text-hub-dim mx-auto mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+								<path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><polyline points="13 2 13 9 20 9"/><line x1="8" y1="15" x2="16" y2="15"/>
+							</svg>
+							<p class="text-sm font-medium text-hub-text mb-1">File not found</p>
+							<p class="text-xs text-hub-dim mb-3">This attachment is referenced but doesn't exist on disk yet.</p>
+							<p class="text-[11px] text-hub-dim font-mono break-all bg-hub-card px-2 py-1.5 rounded">{fileName}</p>
+						{:else}
+							<svg class="w-8 h-8 text-hub-danger mx-auto mb-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+								<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
+							</svg>
+							<p class="text-sm text-hub-danger">{error}</p>
+						{/if}
 					</div>
 				</div>
 			{:else if isImage}
@@ -241,14 +268,12 @@
 					</div>
 				</div>
 			{:else if isPdf}
-				<div class="flex items-center justify-center h-full p-6 bg-[#0a0a0f]">
-					<div class="text-center">
-						<svg class="w-12 h-12 text-hub-dim mx-auto mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-							<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/>
-						</svg>
-						<p class="text-sm text-hub-muted mb-3">{fileName}</p>
-						<a href={rawUrl} download={fileName} class="px-4 py-2 rounded bg-hub-cta text-white text-sm hover:brightness-110 transition-all">Download PDF</a>
-					</div>
+				<div class="h-full bg-[#0a0a0f]">
+					<iframe
+						src={rawUrl}
+						title={fileName}
+						class="w-full h-full border-0"
+					></iframe>
 				</div>
 			{:else if isCsv && content}
 				{@const rows = parseCsv(content)}
