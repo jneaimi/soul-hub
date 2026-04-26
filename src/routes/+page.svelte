@@ -4,7 +4,7 @@
 	import SystemNotifications from '$lib/components/SystemNotifications.svelte';
 
 	interface DashboardData {
-		pipelineSummary: { total: number; names: string[]; items?: { name: string; type: 'pipeline' | 'chain' }[] };
+		pipelineSummary: { total: number; items: { name: string; type: 'pipeline' | 'chain' }[] };
 	}
 
 	interface VaultRecent {
@@ -38,7 +38,6 @@
 	let vaultRecent = $state<VaultRecent[]>([]);
 	let vaultOrphans = $state(0);
 	let vaultUnresolved = $state(0);
-	let vaultLastIndexed = $state('');
 	let vaultZones = $state<Record<string, number>>({});
 	let vaultThisWeek = $state(0);
 
@@ -140,7 +139,6 @@
 				vaultNoteCount = data.stats?.totalNotes ?? 0;
 				vaultOrphans = data.stats?.orphanNotes ?? 0;
 				vaultUnresolved = data.stats?.unresolvedLinks ?? 0;
-				vaultLastIndexed = data.stats?.lastIndexed ?? '';
 				vaultZones = data.stats?.notesByZone ?? {};
 				// Count notes modified in last 7 days
 				const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
@@ -170,7 +168,7 @@
 		} catch { /* silent */ }
 	}
 
-	let vaultEventSource = $state<EventSource | null>(null);
+	let vaultEventSource: EventSource | null = null;
 
 	function refreshVolatile() {
 		// Fires on tab focus, SSE reindex, or explicit user action.
@@ -499,10 +497,10 @@
 					</div>
 				{/if}
 
-					<!-- Pipelines / Playbooks / Vault / Files — side by side on desktop, stacked on mobile -->
-					<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-4 gap-4">
+					<!-- Bento layout — Vault is the hero (4 cols), Pipelines + Playbooks/Files balance the rows -->
+					<div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-4">
 						<!-- Pipelines -->
-						<div class="bg-hub-card rounded-xl p-4 border border-hub-border">
+						<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
 							<div class="flex items-center justify-between mb-3">
 								<h3 class="text-sm font-semibold text-hub-text">
 									Pipelines
@@ -522,9 +520,9 @@
 									<a href="/pipelines" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">View all</a>
 								</div>
 							</div>
-							{#if dashboard?.pipelineSummary && dashboard.pipelineSummary.names.length > 0}
+							{#if dashboard?.pipelineSummary && dashboard.pipelineSummary.items.length > 0}
 								<div class="space-y-1.5">
-									{#each (dashboard.pipelineSummary.items || dashboard.pipelineSummary.names.map(n => ({ name: n, type: 'pipeline' as const }))).slice(0, 5) as item}
+									{#each dashboard.pipelineSummary.items.slice(0, 5) as item}
 										<a
 											href="/pipelines?name={encodeURIComponent(item.name)}"
 											class="flex items-center justify-between py-1.5 px-2 rounded-lg hover:bg-hub-surface transition-colors cursor-pointer group"
@@ -539,58 +537,8 @@
 							{/if}
 						</div>
 
-						<!-- Playbooks -->
-						<div class="bg-hub-card rounded-xl p-4 border border-hub-border">
-							<div class="flex items-center justify-between mb-3">
-								<div class="flex items-center gap-2">
-									<h3 class="text-sm font-semibold text-hub-text">Playbooks</h3>
-									{#if playbookCount > 0}
-										<span class="text-[11px] text-hub-dim bg-hub-bg px-1.5 py-0.5 rounded">{playbookCount}</span>
-									{/if}
-								</div>
-								<div class="flex items-center gap-2">
-									<a
-										href="/playbooks/builder"
-										class="w-7 h-7 grid place-items-center rounded-md text-hub-dim hover:text-hub-cta hover:bg-hub-surface transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50"
-										aria-label="New playbook"
-										title="New playbook"
-									>
-										<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-									</a>
-									<a href="/playbooks" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">View all</a>
-								</div>
-							</div>
-							{#if playbookItems.length === 0}
-								<p class="text-xs text-hub-dim py-3 text-center">No playbooks yet</p>
-							{:else}
-								<div class="space-y-1.5">
-									{#each playbookItems.slice(0, 3) as pb}
-										<a
-											href="/playbooks/{encodeURIComponent(pb.name)}"
-											class="block py-1.5 px-2 rounded-lg hover:bg-hub-surface transition-colors cursor-pointer group"
-										>
-											<div class="text-xs text-hub-muted group-hover:text-hub-text transition-colors">{pb.name}</div>
-											<div class="text-[11px] text-hub-dim mt-0.5">
-												{pb.roles.length} role{pb.roles.length === 1 ? '' : 's'}, {pb.phases.length} phase{pb.phases.length === 1 ? '' : 's'}
-											</div>
-										</a>
-									{/each}
-								</div>
-							{/if}
-							{#if Object.keys(playbookProviders).length > 0}
-								<div class="mt-3 pt-2 border-t border-hub-border/50 flex gap-3 text-[10px] text-hub-dim">
-									{#each Object.entries(playbookProviders) as [name, available]}
-										<span class="flex items-center gap-1">
-											<span class="w-1.5 h-1.5 rounded-full {available ? 'bg-hub-cta' : 'bg-hub-border'}"></span>
-											{name}
-										</span>
-									{/each}
-								</div>
-							{/if}
-						</div>
-
-						<!-- Vault -->
-						<div class="bg-hub-card rounded-xl p-4 border border-hub-border">
+						<!-- Vault (hero) -->
+						<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-4">
 							<div class="flex items-center justify-between mb-3">
 								<div class="flex items-center gap-1.5">
 									<h3 class="text-sm font-semibold text-hub-text">
@@ -672,8 +620,58 @@
 							</div>
 						</div>
 
+						<!-- Playbooks -->
+						<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-3">
+							<div class="flex items-center justify-between mb-3">
+								<div class="flex items-center gap-2">
+									<h3 class="text-sm font-semibold text-hub-text">Playbooks</h3>
+									{#if playbookCount > 0}
+										<span class="text-[11px] text-hub-dim bg-hub-bg px-1.5 py-0.5 rounded">{playbookCount}</span>
+									{/if}
+								</div>
+								<div class="flex items-center gap-2">
+									<a
+										href="/playbooks/builder"
+										class="w-7 h-7 grid place-items-center rounded-md text-hub-dim hover:text-hub-cta hover:bg-hub-surface transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50"
+										aria-label="New playbook"
+										title="New playbook"
+									>
+										<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+									</a>
+									<a href="/playbooks" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">View all</a>
+								</div>
+							</div>
+							{#if playbookItems.length === 0}
+								<p class="text-xs text-hub-dim py-3 text-center">No playbooks yet</p>
+							{:else}
+								<div class="space-y-1.5">
+									{#each playbookItems.slice(0, 3) as pb}
+										<a
+											href="/playbooks/{encodeURIComponent(pb.name)}"
+											class="block py-1.5 px-2 rounded-lg hover:bg-hub-surface transition-colors cursor-pointer group"
+										>
+											<div class="text-xs text-hub-muted group-hover:text-hub-text transition-colors">{pb.name}</div>
+											<div class="text-[11px] text-hub-dim mt-0.5">
+												{pb.roles.length} role{pb.roles.length === 1 ? '' : 's'}, {pb.phases.length} phase{pb.phases.length === 1 ? '' : 's'}
+											</div>
+										</a>
+									{/each}
+								</div>
+							{/if}
+							{#if Object.keys(playbookProviders).length > 0}
+								<div class="mt-3 pt-2 border-t border-hub-border/50 flex gap-3 text-[10px] text-hub-dim">
+									{#each Object.entries(playbookProviders) as [name, available]}
+										<span class="flex items-center gap-1">
+											<span class="w-1.5 h-1.5 rounded-full {available ? 'bg-hub-cta' : 'bg-hub-border'}"></span>
+											{name}
+										</span>
+									{/each}
+								</div>
+							{/if}
+						</div>
+
 						<!-- Files Explorer -->
-						<div class="bg-hub-card rounded-xl p-4 border border-hub-border">
+						<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-3">
 							<div class="flex items-center justify-between mb-3">
 								<h3 class="text-sm font-semibold text-hub-text">
 									Files
