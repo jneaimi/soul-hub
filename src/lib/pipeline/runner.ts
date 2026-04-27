@@ -10,6 +10,7 @@ import { parseChain } from './chain-parser.js';
 import type { PipelineStep, PipelineMcp, PipelineRun, StepStatus } from './types.js';
 import { sendViaChannel } from '$lib/channels/registry.js';
 import { savePipelineOutput, savePipelineRunSummary } from '../vault/pipeline-bridge.js';
+import { RunEventEmitter } from '$lib/sessions/emitter.js';
 
 /**
  * Compute the run-scoped output directory name.
@@ -257,6 +258,7 @@ export async function runPipeline(
 	externalRunId?: string,
 	resumeFrom?: string,
 	preSpec?: Awaited<ReturnType<typeof parsePipeline>>,
+	externalEmitter?: RunEventEmitter,
 ): Promise<PipelineRun> {
 	const spec = preSpec || await parsePipeline(yamlPath);
 	const pipelineDir = dirname(yamlPath);
@@ -307,6 +309,19 @@ export async function runPipeline(
 		resolvedInputs,
 	};
 
+	// SoulHubEvent JSONL emitter — externalEmitter is passed by the chain runner
+	// so child pipelines write under the parent run's subruns/ dir.
+	const emitter = externalEmitter ?? new RunEventEmitter(runId);
+	const ownsEmitter = !externalEmitter;
+	void emitter.emit({
+		type: 'run_start',
+		surface: 'pipeline',
+		name: spec.name,
+		cwd: pipelineDir,
+		inputs: { ...resolvedInputs },
+		timestamp: run.startedAt,
+	});
+
 	const emit = (stepId: string, status: StepStatus, detail?: string) => {
 		const sr = run.steps.find((s) => s.id === stepId);
 		if (sr) {
@@ -319,6 +334,27 @@ export async function runPipeline(
 			if (detail && status === 'failed') sr.error = detail;
 		}
 		onStepEvent?.(stepId, status, detail);
+
+		const step = stepMap.get(stepId);
+		if (status === 'running') {
+			void emitter.emit({
+				type: 'step_start',
+				stepId,
+				stepType: step?.type ?? 'unknown',
+				timestamp: sr?.startedAt,
+			});
+		} else if (status === 'done' || status === 'failed' || status === 'skipped') {
+			const mappedStatus = status === 'done' ? 'ok' : status === 'failed' ? 'error' : 'skipped';
+			void emitter.emit({
+				type: 'step_end',
+				stepId,
+				status: mappedStatus,
+				durationMs: sr?.durationMs ?? 0,
+				error: status === 'failed' ? detail : undefined,
+				outputPath: sr?.outputPath,
+				timestamp: sr?.finishedAt,
+			});
+		}
 	};
 
 	// Resume mode: find the index to resume from
@@ -456,7 +492,7 @@ export async function runPipeline(
 							.join('\n');
 						resolvedStep.prompt = `## Block Config\n${configLines}\n\n${resolvedStep.prompt || ''}`;
 					}
-					await runAgentStep(resolvedStep, pipelineDir, primaryInput, outputPath, step.timeout ?? 300, outputCb, runId, stepEnv);
+					await runAgentStep(resolvedStep, pipelineDir, primaryInput, outputPath, step.timeout ?? 300, outputCb, runId, stepEnv, emitter);
 				} else if (step.type === 'approval' || step.type === 'prompt') {
 					const gateResult = await runGateStep(resolvedStep, runId, step.timeout ?? 86400, emit, onStepOutput);
 					// For prompt steps, store the answer as the step output reference
@@ -501,10 +537,19 @@ export async function runPipeline(
 						outputPath,
 						outputType: step.output_type,
 						vaultZone: step.vault_zone,
-					}).then((notePath) => {
+					}).then(async (notePath) => {
 						if (notePath) {
 							const sr = run.steps.find(s => s.id === stepId);
 							if (sr) sr.vaultNotePath = notePath;
+							let bytes = 0;
+							try { bytes = (await stat(notePath)).size; } catch { /* missing or unreadable */ }
+							void emitter.emit({
+								type: 'output_landed',
+								stepId,
+								surface: 'vault',
+								path: notePath,
+								bytes,
+							});
 						}
 					}).catch((err) => console.warn(`[vault] Failed to save output for ${stepId}:`, err?.message ?? err));
 				}
@@ -539,6 +584,17 @@ export async function runPipeline(
 		run.status = 'done';
 	}
 	run.finishedAt = new Date().toISOString();
+
+	const runDurationMs = new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime();
+	void emitter.emit({
+		type: 'run_end',
+		status: run.status === 'done' ? 'ok' : 'error',
+		durationMs: runDurationMs,
+		timestamp: run.finishedAt,
+	});
+	if (ownsEmitter) {
+		void emitter.close();
+	}
 
 	// Update output/latest symlink (non-blocking, best-effort)
 	updateLatestSymlink(pipelineDir, runId).catch(() => {});
@@ -728,6 +784,7 @@ async function runAgentStep(
 	onOutput?: (data: string) => void,
 	runId?: string,
 	env?: Record<string, string>,
+	emitter?: RunEventEmitter,
 ): Promise<void> {
 	// Build the prompt for Claude — injected into the PTY after status bar appears
 	let prompt = step.prompt || '';
@@ -763,6 +820,15 @@ async function runAgentStep(
 		if (!runSessions.has(runId)) runSessions.set(runId, new Set());
 		runSessions.get(runId)!.add(step.id);
 	}
+
+	// Emit agent_spawn so the Phase 1 reader can join the Claude JSONL via ptySessionId
+	void emitter?.emit({
+		type: 'agent_spawn',
+		stepId: step.id,
+		provider: 'claude-code',
+		model: model || undefined,
+		ptySessionId: session.id,
+	});
 
 	return new Promise((resolvePromise, reject) => {
 		let resolved = false;

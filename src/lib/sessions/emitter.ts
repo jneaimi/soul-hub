@@ -14,7 +14,7 @@ import { mkdirSync, promises as fsp } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { makeEnvelope, type SoulHubEvent, type SoulHubEventInput } from './events.js';
+import { makeEnvelope, type EmitterInput, type SoulHubEvent } from './events.js';
 
 const RUNS_DIR = join(homedir(), '.soul-hub', 'runs');
 const OVERFLOW_THRESHOLD_BYTES = 2048;
@@ -39,7 +39,6 @@ export class RunEventEmitter {
 	readonly parentRunId?: string;
 	readonly jsonlPath: string;
 	private queue: Promise<void> = Promise.resolve();
-	private closed = false;
 
 	constructor(runId: string, parentRunId?: string) {
 		this.runId = runId;
@@ -49,17 +48,18 @@ export class RunEventEmitter {
 	}
 
 	/**
-	 * Append one event. Caller passes the body + runId; envelope is generated.
-	 * Returns a promise that resolves once this event's bytes are flushed.
-	 * Fire-and-forget callers can ignore the return value.
+	 * Append one event. Caller passes the body + optional envelope overrides;
+	 * runId/parentRunId come from the emitter instance. Late events (e.g.
+	 * a fire-and-forget output_landed that resolves after the run-end event)
+	 * are still accepted — the JSONL file is append-only and Node closes
+	 * the fd between writes, so there's nothing to "close" against.
 	 */
-	emit(input: Omit<SoulHubEventInput, 'runId' | 'parentRunId'>): Promise<void> {
-		if (this.closed) return Promise.reject(new Error(`emitter for runId=${this.runId} is closed`));
+	emit(input: EmitterInput): Promise<void> {
 		const event = makeEnvelope({
+			...input,
 			runId: this.runId,
 			parentRunId: this.parentRunId,
-			...input,
-		} as SoulHubEventInput);
+		});
 		this.queue = this.queue.then(() => this.appendOne(event));
 		return this.queue;
 	}
@@ -91,8 +91,13 @@ export class RunEventEmitter {
 		}
 	}
 
-	async close(): Promise<void> {
-		this.closed = true;
+	/** Wait for all queued appends to complete. Safe to call multiple times. */
+	async flush(): Promise<void> {
 		await this.queue;
+	}
+
+	/** @deprecated alias for flush() — emitter does not hold file descriptors */
+	async close(): Promise<void> {
+		await this.flush();
 	}
 }

@@ -7,6 +7,7 @@ import type { ChainSpec, ChainRun, ChainNodeRun, ChainNodeStatus } from './chain
 import type { StepStatus } from './types.js';
 import { getVaultEngine } from '../vault/index.js';
 import { deriveNoteType } from '../vault/type-mapper.js';
+import { RunEventEmitter } from '$lib/sessions/emitter.js';
 
 /** Track active chain runs for kill support: chainRunId → set of inner pipeline runIds */
 const activeChainRuns = new Map<string, Set<string>>();
@@ -128,6 +129,19 @@ export async function runChain(
 		resolvedInputs,
 	};
 
+	// SoulHubEvent JSONL emitter — chain owns its own JSONL, sub-pipeline runs
+	// land at the deterministic {chainRunId}/subruns/run-{innerRunId}.jsonl path
+	// via per-child emitters constructed below.
+	const chainEmitter = new RunEventEmitter(runId);
+	void chainEmitter.emit({
+		type: 'run_start',
+		surface: 'chain',
+		name: spec.name,
+		cwd: pipelinesDir,
+		inputs: { ...resolvedInputs },
+		timestamp: chainRun.startedAt,
+	});
+
 	const strategy = spec.on_failure?.strategy ?? 'halt-branch';
 	const skippedNodes = new Set<string>();
 	let halted = false;
@@ -154,6 +168,13 @@ export async function runChain(
 					nr.error = condition.reason;
 					nodeOutputs[nodeId] = '';
 					onNodeEvent?.(nodeId, 'skipped', condition.reason);
+					void chainEmitter.emit({
+						type: 'step_end',
+						stepId: nodeId,
+						status: 'skipped',
+						durationMs: 0,
+						error: condition.reason,
+					});
 					return;
 				}
 
@@ -181,6 +202,17 @@ export async function runChain(
 					const innerRunId = `${runId}-${nodeId}`;
 					innerRunIds.add(innerRunId);
 
+					// Treat each node's pipeline run as a chain "step" in the JSONL
+					void chainEmitter.emit({
+						type: 'step_start',
+						stepId: nodeId,
+						stepType: 'pipeline',
+						timestamp: nr.startedAt,
+					});
+
+					// Per-node emitter writes the child JSONL under the chain's subruns dir
+					const childEmitter = new RunEventEmitter(innerRunId, runId);
+
 					try {
 						const pipelineYaml = resolve(pipelinesDir, node.pipeline, 'pipeline.yaml');
 						const result = await runPipeline(
@@ -189,10 +221,14 @@ export async function runChain(
 							onStepEvent ? (stepId, status, detail) => onStepEvent(nodeId, stepId, status, detail) : undefined,
 							onStepOutput ? (stepId, data) => onStepOutput(nodeId, stepId, data) : undefined,
 							innerRunId,
+							undefined,
+							undefined,
+							childEmitter,
 						);
 
 						nr.pipelineRun = result;
 						innerRunIds.delete(innerRunId);
+						void childEmitter.close();
 
 						if (result.status === 'done') {
 							nr.status = 'done';
@@ -207,6 +243,14 @@ export async function runChain(
 								}
 							}
 							onNodeEvent?.(nodeId, 'done');
+							void chainEmitter.emit({
+								type: 'step_end',
+								stepId: nodeId,
+								status: 'ok',
+								durationMs: nr.durationMs ?? 0,
+								outputPath: nr.outputPath,
+								timestamp: nr.finishedAt,
+							});
 							return;
 						} else {
 							lastError = result.steps.find((s) => s.error)?.error || 'Pipeline failed';
@@ -216,11 +260,20 @@ export async function runChain(
 								nr.durationMs = new Date(nr.finishedAt).getTime() - new Date(nr.startedAt!).getTime();
 								nr.error = lastError;
 								onNodeEvent?.(nodeId, 'failed', lastError);
+								void chainEmitter.emit({
+									type: 'step_end',
+									stepId: nodeId,
+									status: 'error',
+									durationMs: nr.durationMs ?? 0,
+									error: lastError,
+									timestamp: nr.finishedAt,
+								});
 								throw new Error(lastError);
 							}
 						}
 					} catch (err) {
 						innerRunIds.delete(innerRunId);
+						void childEmitter.close();
 						lastError = err instanceof Error ? err.message : String(err);
 						if (attempt === maxAttempts) {
 							nr.status = 'failed';
@@ -228,6 +281,14 @@ export async function runChain(
 							nr.durationMs = new Date(nr.finishedAt).getTime() - new Date(nr.startedAt!).getTime();
 							nr.error = lastError;
 							onNodeEvent?.(nodeId, 'failed', lastError);
+							void chainEmitter.emit({
+								type: 'step_end',
+								stepId: nodeId,
+								status: 'error',
+								durationMs: nr.durationMs ?? 0,
+								error: lastError,
+								timestamp: nr.finishedAt,
+							});
 							throw err;
 						}
 					}
@@ -281,6 +342,15 @@ export async function runChain(
 	const anyFailed = chainRun.nodes.some((n) => n.status === 'failed');
 	chainRun.status = anyFailed ? 'failed' : 'done';
 	chainRun.finishedAt = new Date().toISOString();
+
+	const chainDurationMs = new Date(chainRun.finishedAt).getTime() - new Date(chainRun.startedAt).getTime();
+	void chainEmitter.emit({
+		type: 'run_end',
+		status: chainRun.status === 'done' ? 'ok' : 'error',
+		durationMs: chainDurationMs,
+		timestamp: chainRun.finishedAt,
+	});
+	void chainEmitter.close();
 
 	activeChainRuns.delete(runId);
 

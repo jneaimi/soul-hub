@@ -13,6 +13,7 @@ import { PlaybookContext } from './context.js';
 import { runHooks, checkPrerequisites, extractTimeout, extractScanSummary } from './hooks.js';
 import type { HookResult } from './hooks.js';
 import { savePlaybookRunSummary } from '../vault/playbook-bridge.js';
+import { RunEventEmitter } from '$lib/sessions/emitter.js';
 
 // ─── Helpers ───
 
@@ -73,6 +74,85 @@ export interface PlaybookEvent {
 
 export type PlaybookEventCallback = (event: PlaybookEvent) => void;
 export type PlaybookOutputCallback = (taskId: string, data: string) => void;
+
+/**
+ * Translate the playbook-internal event vocabulary into SoulHubEvent JSONL.
+ * Phase boundaries map to step_start/step_end with stepId = phaseId.
+ * Assignment events nest as parentEventId-less step events keyed by `${phaseId}:${role}`.
+ * The terminal run_complete/run_failed events are handled by the engine
+ * directly (which emits a `run_end` event after this translator returns).
+ */
+function translatePlaybookEventToSoulHub(event: PlaybookEvent, emitter: RunEventEmitter): void {
+	switch (event.type) {
+		case 'phase_start':
+			if (event.phaseId) {
+				void emitter.emit({
+					type: 'step_start',
+					stepId: event.phaseId,
+					stepType: 'phase',
+					timestamp: event.timestamp,
+				});
+			}
+			return;
+		case 'phase_complete':
+			if (event.phaseId) {
+				void emitter.emit({
+					type: 'step_end',
+					stepId: event.phaseId,
+					status: 'ok',
+					durationMs: 0,
+					timestamp: event.timestamp,
+				});
+			}
+			return;
+		case 'phase_failed':
+			if (event.phaseId) {
+				void emitter.emit({
+					type: 'step_end',
+					stepId: event.phaseId,
+					status: 'error',
+					durationMs: 0,
+					error: event.error,
+					timestamp: event.timestamp,
+				});
+			}
+			return;
+		case 'assignment_start':
+			if (event.phaseId && event.role) {
+				void emitter.emit({
+					type: 'agent_spawn',
+					stepId: event.phaseId,
+					provider: event.role,
+					timestamp: event.timestamp,
+				});
+			}
+			return;
+		case 'output_landed':
+			if (event.data) {
+				try {
+					const parsed = JSON.parse(event.data) as { target?: string; type?: string; bytes?: number };
+					if (parsed.target) {
+						void emitter.emit({
+							type: 'output_landed',
+							stepId: event.phaseId ?? 'output',
+							surface: 'vault',
+							path: parsed.target,
+							bytes: parsed.bytes ?? 0,
+							timestamp: event.timestamp,
+						});
+					}
+				} catch {
+					/* malformed event.data — skip */
+				}
+			}
+			return;
+		default:
+			// run_start, run_complete, run_failed, gate/human, hook events:
+			// engine handles run start/end directly; the rest aren't part of the
+			// minimum vocabulary today. Tolerate silently.
+			return;
+	}
+}
 
 // ─── Active Runs ───
 
@@ -248,8 +328,26 @@ export async function runPlaybook(
 	activeRuns.set(runId, run);
 	runAbortFlags.set(runId, false);
 
+	// SoulHubEvent JSONL emitter — wrap the user-supplied onEvent so playbook
+	// events translate to the shared event vocabulary. The engine's internal
+	// event API is untouched; this is a single boundary at the run-start point.
+	const sessionEmitter = new RunEventEmitter(runId);
+	void sessionEmitter.emit({
+		type: 'run_start',
+		surface: 'playbook',
+		name: spec.name,
+		cwd: playbookDir,
+		inputs: { ...resolvedInputs },
+		timestamp: run.startedAt,
+	});
+	const userOnEvent = onEvent;
+	const onEventWrapped: PlaybookEventCallback = (event) => {
+		userOnEvent?.(event);
+		translatePlaybookEventToSoulHub(event, sessionEmitter);
+	};
+
 	const emit = (type: PlaybookEventType, extra: Partial<PlaybookEvent> = {}) => {
-		onEvent?.({
+		onEventWrapped({
 			type,
 			runId,
 			timestamp: new Date().toISOString(),
@@ -939,6 +1037,18 @@ export async function runPlaybook(
 		outputDir: run.outputDir,
 		landingResults,
 	}).catch(err => console.error('[playbook] Vault save error:', err));
+
+	// Close the SoulHubEvent JSONL after the final run_complete/run_failed has flushed
+	const runDurationMs = run.completedAt
+		? new Date(run.completedAt).getTime() - new Date(run.startedAt).getTime()
+		: 0;
+	void sessionEmitter.emit({
+		type: 'run_end',
+		status: run.status === 'completed' ? 'ok' : 'error',
+		durationMs: runDurationMs,
+		timestamp: run.completedAt,
+	});
+	void sessionEmitter.close();
 
 	// Clean up abort flag
 	runAbortFlags.delete(runId);

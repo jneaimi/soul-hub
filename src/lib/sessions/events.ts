@@ -89,8 +89,18 @@ export type SoulHubEventBody =
 
 export type SoulHubEvent = SoulHubEnvelope & SoulHubEventBody;
 
-export type SoulHubEventInput = Omit<SoulHubEvent, 'version' | 'eventId' | 'timestamp'> &
-	Partial<Pick<SoulHubEvent, 'eventId' | 'timestamp'>>;
+/** Optional envelope overrides callers may supply when emitting. */
+export interface EnvelopeOverrides {
+	eventId?: string;
+	parentEventId?: string;
+	timestamp?: string;
+}
+
+/** Caller-facing input: body + optional envelope overrides + runId/parentRunId. */
+export type SoulHubEventInput = SoulHubEventBody & EnvelopeOverrides & { runId: string; parentRunId?: string };
+
+/** What the runtime caller passes to emitter.emit() — body fields plus optional envelope overrides. */
+export type EmitterInput = SoulHubEventBody & EnvelopeOverrides;
 
 function randomEventId(): string {
 	if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -104,11 +114,12 @@ function randomEventId(): string {
  * body fields plus runId; envelope (version, eventId, timestamp) is generated.
  */
 export function makeEnvelope(input: SoulHubEventInput): SoulHubEvent {
+	const { eventId, timestamp, ...rest } = input;
 	return {
 		version: 1,
-		eventId: input.eventId ?? randomEventId(),
-		timestamp: input.timestamp ?? new Date().toISOString(),
-		...input,
+		eventId: eventId ?? randomEventId(),
+		timestamp: timestamp ?? new Date().toISOString(),
+		...rest,
 	} as SoulHubEvent;
 }
 
