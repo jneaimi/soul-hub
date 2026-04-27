@@ -271,6 +271,13 @@
 					Vault
 				</a>
 				<a
+					href="/sessions"
+					class="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-hub-muted text-sm hover:text-hub-text hover:bg-hub-card transition-colors"
+					title="Unified session timeline"
+				>
+					Sessions
+				</a>
+				<a
 					href="/terminal"
 					class="p-2 rounded-lg text-hub-dim hover:text-hub-muted hover:bg-hub-card transition-colors cursor-pointer"
 					aria-label="Terminal"
