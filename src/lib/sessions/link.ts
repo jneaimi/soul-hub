@@ -9,7 +9,7 @@
  *   4. Skip pure shell sessions (PTY at $HOME with no project context) — too noisy.
  */
 
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import type { SessionMeta } from '$lib/pty/store.js';
@@ -83,6 +83,14 @@ export async function findClaudeSessionsForPty(
 	for (const dir of candidateDirs) {
 		for (const name of listJsonlIn(dir)) {
 			const jsonlPath = join(dir, name);
+			// Cheap mtime pre-filter: a JSONL whose last-write is well outside the
+			// PTY window can't possibly contain in-window events. Saves ~759
+			// peekEvents() opens for typical project corpora.
+			try {
+				const st = statSync(jsonlPath);
+				if (st.mtimeMs < windowStart - 60_000 || st.birthtimeMs > windowEnd + 60_000) continue;
+			} catch { continue; }
+
 			let firstTimestamp: string | undefined;
 			let firstCwd: string | undefined;
 			try {
