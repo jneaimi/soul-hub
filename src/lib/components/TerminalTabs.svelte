@@ -1,6 +1,7 @@
 <script lang="ts">
 	import AgentTerminal from './AgentTerminal.svelte';
 	import LogTerminal from './LogTerminal.svelte';
+	import ClaudeSessionPanel from './session/ClaudeSessionPanel.svelte';
 
 	interface Props {
 		cwd: string;
@@ -27,6 +28,10 @@
 		continueSession?: boolean;
 		/** Plain shell tab (zsh/bash instead of Claude Code) */
 		shell?: boolean;
+		/** PTY session id for dead-session tabs — used by ClaudeSessionPanel to query /api/sessions/[id]/claude */
+		ptyId?: string;
+		/** Sub-view inside a dead-session tab: terminal log or Claude metadata */
+		logView?: 'terminal' | 'claude';
 	}
 
 	interface HistorySession {
@@ -99,7 +104,7 @@
 				const data = await res.json();
 				const id = crypto.randomUUID().slice(0, 8);
 				const label = `${sessionTitle(session)} (log)`;
-				const tab: Tab = { id, label, prompt: session.prompt, started: false, logData: data.log || '(no output recorded)' };
+				const tab: Tab = { id, label, prompt: session.prompt, started: false, logData: data.log || '(no output recorded)', ptyId: session.id, logView: 'terminal' };
 				tabs = [...tabs, tab];
 				activeTabId = id;
 			} catch (e) {
@@ -405,21 +410,36 @@
 					<!-- Read-only log viewer for dead sessions -->
 					<div class="flex flex-col h-full">
 						<div class="flex items-center justify-between px-3 py-2 bg-[#0a0a0f] border-b border-hub-border/50 text-xs">
-							<div class="flex items-center gap-2">
-								<span class="text-hub-dim">Session log</span>
+							<div class="flex items-center gap-2 min-w-0">
+								<div class="flex items-center gap-0.5 bg-hub-bg/60 rounded p-0.5 flex-shrink-0">
+									<button
+										onclick={() => { tabs = tabs.map((t) => t.id === tab.id ? { ...t, logView: 'terminal' } : t); }}
+										class="px-2 py-0.5 rounded text-[11px] transition-colors cursor-pointer {(tab.logView ?? 'terminal') === 'terminal' ? 'bg-hub-surface text-hub-text' : 'text-hub-dim hover:text-hub-muted'}"
+									>Terminal</button>
+									{#if tab.ptyId}
+										<button
+											onclick={() => { tabs = tabs.map((t) => t.id === tab.id ? { ...t, logView: 'claude' } : t); }}
+											class="px-2 py-0.5 rounded text-[11px] transition-colors cursor-pointer {tab.logView === 'claude' ? 'bg-hub-surface text-hub-text' : 'text-hub-dim hover:text-hub-muted'}"
+										>Claude</button>
+									{/if}
+								</div>
 								{#if tab.prompt}
 									<span class="text-hub-muted truncate max-w-md">{tab.prompt.slice(0, 80)}</span>
 								{/if}
 							</div>
 							<button
 								onclick={() => restartFromLog(tab)}
-								class="px-3 py-1 rounded text-xs bg-hub-purple/15 text-hub-purple hover:bg-hub-purple/25 transition-colors cursor-pointer"
+								class="px-3 py-1 rounded text-xs bg-hub-purple/15 text-hub-purple hover:bg-hub-purple/25 transition-colors cursor-pointer flex-shrink-0"
 							>
 								Resume Session
 							</button>
 						</div>
 						<div class="flex-1 min-h-0">
-							<LogTerminal bind:this={tab.logRef} data={tab.logData} maxHeight="100%" />
+							{#if tab.logView === 'claude' && tab.ptyId}
+								<ClaudeSessionPanel ptySessionId={tab.ptyId} />
+							{:else}
+								<LogTerminal bind:this={tab.logRef} data={tab.logData} maxHeight="100%" />
+							{/if}
 						</div>
 					</div>
 				{:else}

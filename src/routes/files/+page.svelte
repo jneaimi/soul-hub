@@ -36,6 +36,20 @@
 				expandedRoots = { [roots[0].id]: true };
 				selectedRootId = roots[0].id;
 			}
+			// Apply ?path=<abs> deep link if present (e.g. from a Claude session
+			// File-changes list). Find the matching root and pre-select the file.
+			const params = new URLSearchParams(window.location.search);
+			const deepPath = params.get('path');
+			if (deepPath) {
+				const matchedRoot = roots.find((r) => deepPath.startsWith(r.resolvedPath));
+				if (matchedRoot) {
+					selectedRootId = matchedRoot.id;
+					expandedRoots = { ...expandedRoots, [matchedRoot.id]: true };
+					const fileName = deepPath.substring(deepPath.lastIndexOf('/') + 1);
+					selectedFile = { path: deepPath, name: fileName };
+					mobileTab = 'main';
+				}
+			}
 		} catch (e) {
 			loadError = (e as Error).message;
 		} finally {
