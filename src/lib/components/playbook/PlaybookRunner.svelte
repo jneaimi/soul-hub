@@ -3,6 +3,7 @@
 	import { marked } from 'marked';
 	import PlaybookPhases from './PlaybookPhases.svelte';
 	import PlaybookResult from './PlaybookResult.svelte';
+	import SoulHubRunPanel from '../session/SoulHubRunPanel.svelte';
 
 	function renderMarkdown(md: string): string {
 		try {
@@ -529,6 +530,19 @@
 				{/each}
 			</div>
 		</div>
+	{/if}
+
+	<!-- Event timeline (Phase 2 SoulHubEvent JSONL) -->
+	{#if runId && (runResult?.status === 'completed' || runResult?.status === 'failed')}
+		<details class="mt-4 border border-hub-border/40 rounded-lg overflow-hidden">
+			<summary class="px-3 py-2 text-xs text-hub-muted hover:text-hub-text cursor-pointer bg-hub-card/40 flex items-center justify-between">
+				<span class="font-medium">Events</span>
+				<span class="text-[10px] text-hub-dim font-mono">runId: {runId}</span>
+			</summary>
+			<div class="h-96">
+				<SoulHubRunPanel {runId} />
+			</div>
+		</details>
 	{/if}
 
 	<!-- Actions -->

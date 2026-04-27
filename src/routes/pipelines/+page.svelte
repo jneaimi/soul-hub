@@ -8,6 +8,7 @@
 	import StepConfigCard from '$lib/components/StepConfigCard.svelte';
 	import SharedConfigEditor from '$lib/components/SharedConfigEditor.svelte';
 	import ChainNodeFlow from '$lib/components/ChainNodeFlow.svelte';
+	import SoulHubRunPanel from '$lib/components/session/SoulHubRunPanel.svelte';
 	import type { ConfigFieldType } from '$lib/pipeline/block';
 
 	interface Pipeline {
@@ -2307,6 +2308,19 @@
 				<!-- Structured output viewer -->
 				{#if (activeRun?.status === 'done' || activeRun?.status === 'failed') && runOutputs.length > 0}
 					<OutputViewer outputs={runOutputs} onPreview={(path, name) => { previewFile = { path, name }; }} />
+				{/if}
+
+				<!-- Event timeline (Phase 2 SoulHubEvent JSONL) -->
+				{#if (activeRun?.status === 'done' || activeRun?.status === 'failed') && activeRun.runId}
+					<details class="mt-4 border border-hub-border/40 rounded-lg overflow-hidden">
+						<summary class="px-3 py-2 text-xs text-hub-muted hover:text-hub-text cursor-pointer bg-hub-card/40 flex items-center justify-between">
+							<span class="font-medium">Events</span>
+							<span class="text-[10px] text-hub-dim font-mono">runId: {activeRun.runId}</span>
+						</summary>
+						<div class="h-96">
+							<SoulHubRunPanel runId={activeRun.runId} />
+						</div>
+					</details>
 				{/if}
 
 				<!-- Vault Notes -->
