@@ -249,6 +249,16 @@
 				Orchestration
 			</a>
 
+			<!-- Sessions link -->
+			<a
+				href="/project/{projectName}/sessions"
+				class="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border border-hub-cta/30 text-hub-cta hover:text-hub-cta/80 hover:bg-hub-cta/10 hover:border-hub-cta/50"
+				title="Unified session timeline (terminal · pipelines · playbooks · claude)"
+			>
+				<svg class="w-3.5 h-3.5 inline-block mr-1.5 -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+				Sessions
+			</a>
+
 			<!-- Desktop panel toggles -->
 			<div class="hidden md:flex items-center gap-1 ml-auto">
 				{#if data.devPath}
