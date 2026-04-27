@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import ClaudeSessionPanel from './ClaudeSessionPanel.svelte';
 	import SoulHubRunPanel from './SoulHubRunPanel.svelte';
+	import PtyLogPanel from './PtyLogPanel.svelte';
 	import type { TimelineEntry, TimelineTotals } from '$lib/sessions/joiner.js';
 
 	interface Props {
@@ -224,8 +225,10 @@
 										<div class="border-t border-hub-border/40 h-96">
 											{#if entry.run}
 												<SoulHubRunPanel runId={entry.run.runId} />
-											{:else if entry.pty}
+											{:else if entry.pty && entry.claude && entry.claude.sessionIds.length > 0}
 												<ClaudeSessionPanel ptySessionId={entry.pty.id} />
+											{:else if entry.pty}
+												<PtyLogPanel ptyId={entry.pty.id} />
 											{:else}
 												<div class="p-4 text-xs text-hub-dim">No detail panel available.</div>
 											{/if}
