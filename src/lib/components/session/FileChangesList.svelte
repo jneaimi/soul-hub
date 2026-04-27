@@ -38,7 +38,7 @@
 		{#each filesTouched as path}
 			{@const count = snapshotCounts.get(path) ?? 0}
 			<a
-				href="/files"
+				href="/files?path={encodeURIComponent(path)}"
 				class="flex items-center gap-2 py-1.5 px-2 rounded-lg hover:bg-hub-surface transition-colors cursor-pointer group"
 				title={path}
 			>
