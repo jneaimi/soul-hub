@@ -1,8 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { getVaultStore } from '$lib/vault/store.svelte.js';
+  import type { GraphNode, GraphEdge } from '$lib/vault/types';
   import VaultSidebar from '$lib/components/vault/VaultSidebar.svelte';
   import VaultGraph from '$lib/components/vault/VaultGraph.svelte';
+  import VaultList from '$lib/components/vault/VaultList.svelte';
   import VaultNoteView from '$lib/components/vault/VaultNoteView.svelte';
   import VaultNoteEditor from '$lib/components/vault/VaultNoteEditor.svelte';
   import VaultSearch from '$lib/components/vault/VaultSearch.svelte';
@@ -10,18 +12,25 @@
   import VaultCommandBar from '$lib/components/vault/VaultCommandBar.svelte';
   import VaultSmartViews from '$lib/components/vault/VaultSmartViews.svelte';
   import VaultBulkBar from '$lib/components/vault/VaultBulkBar.svelte';
+  import VaultBrokenLinksDrawer from '$lib/components/vault/VaultBrokenLinksDrawer.svelte';
   import FilePreview from '$lib/components/FilePreview.svelte';
 
   const store = getVaultStore();
   let { data } = $props();
 
   // Local UI state only
-  let view = $state<'graph' | 'note' | 'edit'>(data.initialView as 'graph' | 'note' | 'edit');
+  type View = 'list' | 'graph' | 'note' | 'edit';
+  let view = $state<View>(data.initialView as View);
   let sidebarWidth = $state(280);
   let resizing = $state(false);
   let showNewNote = $state(false);
   let showSearch = $state(false);
+  let showBrokenLinks = $state(false);
   let previewFile = $state<{ path: string; name: string } | null>(null);
+  // Local-graph mode: when set, the graph view renders an ego subgraph
+  // (depth 2) around this note instead of the full filtered graph.
+  let localGraphCenter = $state<string | null>(null);
+  const LOCAL_GRAPH_DEPTH = 2;
   let scaffoldingAll = $state(false);
   let scaffoldMessage = $state<string | null>(null);
   let allTags = $state<Record<string, number>>({});
@@ -59,14 +68,83 @@
 
   $effect(() => {
     const path = store.selectedPath;
-    if (path && view !== 'graph') {
+    if (path && (view === 'note' || view === 'edit')) {
       fetchNote(path);
     }
   });
 
+  // Local-graph mode uses the canonical server endpoint
+  // /api/vault/graph/local/[...path]?depth=N which BFS-walks the unfiltered
+  // index through links + backlinks and re-normalizes node sizes for the
+  // local subgraph. Filtering on the client would lose connections that pass
+  // through notes outside the user's active filter.
+  let localGraphData = $state<{ nodes: GraphNode[]; edges: GraphEdge[] } | null>(null);
+  let localGraphLoading = $state(false);
+  let localGraphError = $state<string | null>(null);
+  let localGraphController: AbortController | null = null;
+
+  async function fetchLocalGraph(path: string, depth: number) {
+    localGraphController?.abort();
+    localGraphController = new AbortController();
+    localGraphLoading = true;
+    localGraphError = null;
+    try {
+      const encoded = path.split('/').map(encodeURIComponent).join('/');
+      const res = await fetch(`/api/vault/graph/local/${encoded}?depth=${depth}`, { signal: localGraphController.signal });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        localGraphError = body.error ?? `Failed to load local graph (${res.status})`;
+        localGraphData = null;
+        return;
+      }
+      const data = await res.json();
+      localGraphData = { nodes: data.nodes ?? [], edges: data.edges ?? [] };
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') {
+        localGraphError = (e as Error).message || 'Network error';
+        localGraphData = null;
+      }
+    } finally {
+      localGraphLoading = false;
+    }
+  }
+
+  $effect(() => {
+    if (localGraphCenter && view === 'graph') {
+      fetchLocalGraph(localGraphCenter, LOCAL_GRAPH_DEPTH);
+    } else {
+      localGraphData = null;
+    }
+  });
+
+  let displayGraph = $derived.by(() => {
+    if (localGraphCenter && view === 'graph' && localGraphData) {
+      return localGraphData;
+    }
+    return { nodes: store.graphNodes, edges: store.graphEdges };
+  });
+
+  let localGraphTitle = $derived.by(() => {
+    if (!localGraphCenter) return '';
+    const node = store.graphNodes.find((n) => n.id === localGraphCenter);
+    return node?.label ?? localGraphCenter.split('/').pop() ?? localGraphCenter;
+  });
+
+  function showLocalGraph(path: string) {
+    localGraphCenter = path;
+    view = 'graph';
+    updateUrl();
+  }
+
+  function clearLocalGraph() {
+    localGraphCenter = null;
+    localGraphData = null;
+    localGraphError = null;
+  }
+
   function buildUrlParams(): string {
     const params = new URLSearchParams();
-    if (view !== 'graph') params.set('view', view);
+    if (view !== 'list') params.set('view', view);
     if (store.selectedPath) params.set('note', store.selectedPath);
     if (store.filters.zone) params.set('zone', store.filters.zone);
     if (store.filters.type) {
@@ -101,11 +179,20 @@
     updateUrl();
   }
 
-  function backToGraph() {
-    view = 'graph';
+  function backToHome() {
+    view = 'list';
     currentNote = null;
     noteError = null;
+    localGraphCenter = null;
     store.clearSelection();
+    updateUrl();
+  }
+
+  function toggleSurface() {
+    // Switching to graph manually means "show me the whole graph" — clear any
+    // local-graph framing so the full filtered set renders.
+    if (view === 'list') localGraphCenter = null;
+    view = view === 'graph' ? 'list' : 'graph';
     updateUrl();
   }
 
@@ -113,7 +200,7 @@
     if (!store.selectedPath) return;
     const res = await fetch(`/api/vault/notes/${encodeURIComponent(store.selectedPath)}`, { method: 'DELETE' });
     if (res.ok) {
-      view = 'graph';
+      view = 'list';
       store.clearSelection();
       await store.invalidate('overview', 'recent', 'graph');
       updateUrl();
@@ -146,7 +233,7 @@
   }
 
   function handleNavigate(path: string) {
-    if (!path) { view = 'graph'; store.clearSelection(); currentNote = null; return; }
+    if (!path) { view = 'list'; store.clearSelection(); currentNote = null; return; }
     if (path.startsWith('__file__:')) {
       const absPath = path.slice(9);
       previewFile = { path: absPath, name: absPath.split('/').pop() || absPath };
@@ -193,9 +280,10 @@
       showNewNote = true;
     }
     if (e.key === 'Escape') {
+      if (showBrokenLinks) { showBrokenLinks = false; return; }
       if (showSearch) showSearch = false;
       if (showNewNote) showNewNote = false;
-      if (view === 'note') backToGraph();
+      if (view === 'note') backToHome();
     }
   }
 
@@ -216,10 +304,10 @@
     window.addEventListener('mouseup', onUp);
   }
 
-  function handlePopState(e: PopStateEvent) {
+  function handlePopState(_e: PopStateEvent) {
     const params = new URLSearchParams(window.location.search);
     const notePath = params.get('note');
-    const urlView = params.get('view') as 'graph' | 'note' | 'edit' | null;
+    const urlView = params.get('view') as View | null;
     const urlZone = params.get('zone');
     const urlType = params.get('type');
 
@@ -229,7 +317,7 @@
       store.selectNote(decoded);
       view = urlView || 'note';
     } else {
-      view = 'graph';
+      view = urlView || 'list';
       store.clearSelection();
     }
 
@@ -347,11 +435,34 @@
       <span class="hidden sm:inline">New Note</span>
     </button>
 
-    <!-- Back to graph (when viewing note/editing) -->
-    {#if view === 'note' || view === 'edit'}
-      <button onclick={backToGraph} class="flex items-center gap-1.5 px-2 md:px-3 py-1.5 rounded-lg bg-hub-card border border-hub-border text-hub-muted text-sm hover:text-hub-text transition-colors" aria-label="Back to graph">
-        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6z"/></svg>
-        <span class="hidden sm:inline">Graph</span>
+    <!-- Surface toggle (list ↔ graph) when not viewing a note -->
+    {#if view === 'list' || view === 'graph'}
+      <div class="flex rounded-lg border border-hub-border overflow-hidden" role="tablist" aria-label="Vault surface">
+        <button
+          onclick={() => { if (view !== 'list') toggleSurface(); }}
+          class="flex items-center gap-1.5 px-2 md:px-3 py-1.5 text-sm transition-colors {view === 'list' ? 'bg-hub-cta/15 text-hub-cta' : 'bg-hub-card text-hub-muted hover:text-hub-text'}"
+          role="tab"
+          aria-selected={view === 'list'}
+          aria-label="List view"
+        >
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+          <span class="hidden sm:inline">List</span>
+        </button>
+        <button
+          onclick={() => { if (view !== 'graph') toggleSurface(); }}
+          class="flex items-center gap-1.5 px-2 md:px-3 py-1.5 text-sm transition-colors border-l border-hub-border {view === 'graph' ? 'bg-hub-cta/15 text-hub-cta' : 'bg-hub-card text-hub-muted hover:text-hub-text'}"
+          role="tab"
+          aria-selected={view === 'graph'}
+          aria-label="Graph view"
+        >
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><circle cx="6" cy="6" r="2" stroke-width="2"/><circle cx="18" cy="18" r="2" stroke-width="2"/><circle cx="6" cy="18" r="2" stroke-width="2"/><circle cx="18" cy="6" r="2" stroke-width="2"/><path stroke-linecap="round" stroke-width="2" d="M7.5 7.5l9 9M16.5 7.5l-9 9"/></svg>
+          <span class="hidden sm:inline">Graph</span>
+        </button>
+      </div>
+    {:else}
+      <button onclick={backToHome} class="flex items-center gap-1.5 px-2 md:px-3 py-1.5 rounded-lg bg-hub-card border border-hub-border text-hub-muted text-sm hover:text-hub-text transition-colors" aria-label="Back">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+        <span class="hidden sm:inline">Back</span>
       </button>
     {/if}
   </header>
@@ -395,7 +506,7 @@
         class="flex-1 py-2 text-sm text-center {mobileView === 'main' ? 'text-hub-cta border-b-2 border-hub-cta' : 'text-hub-muted'}"
         onclick={() => { mobileView = 'main'; }}
       >
-        {view === 'graph' ? 'Graph' : view === 'edit' ? 'Edit' : 'Note'}
+        {view === 'list' ? 'List' : view === 'graph' ? 'Graph' : view === 'edit' ? 'Edit' : 'Note'}
       </button>
     </div>
   {/if}
@@ -413,6 +524,7 @@
           onSelect={handleSelectNote}
           onFilterChange={handleFilterChange}
           onToggleBulk={toggleBulk}
+          onShowBrokenLinks={() => { showBrokenLinks = true; }}
         />
       </div>
 
@@ -437,13 +549,40 @@
               <button onclick={() => store.init()} class="text-sm text-hub-muted hover:text-hub-text">Retry</button>
             </div>
           </div>
+        {:else if view === 'list'}
+          <div class="flex-1 min-h-0">
+            <VaultList onSelect={handleSelectNote} />
+          </div>
         {:else if view === 'graph'}
-          <div class="flex-1 min-h-0 relative bg-hub-bg">
-            <VaultGraph
-              nodes={store.graphNodes}
-              edges={store.graphEdges}
-              onNodeClick={handleSelectNote}
-            />
+          <div class="flex-1 min-h-0 relative bg-hub-bg flex flex-col">
+            {#if localGraphCenter}
+              <div class="flex-shrink-0 flex items-center gap-3 px-4 py-2 border-b border-hub-border bg-hub-cta/5 text-xs">
+                <span class="text-hub-cta font-medium">Local graph</span>
+                <span class="text-hub-muted truncate" style="unicode-bidi: plaintext;" title={localGraphTitle}>{localGraphTitle}</span>
+                <span class="text-hub-dim">
+                  · depth {LOCAL_GRAPH_DEPTH}
+                  {#if localGraphLoading}
+                    · <span class="animate-pulse">loading…</span>
+                  {:else if localGraphError}
+                    · <span class="text-hub-danger">{localGraphError}</span>
+                  {:else}
+                    · {displayGraph.nodes.length} nodes
+                  {/if}
+                </span>
+                <div class="flex-1"></div>
+                <button
+                  onclick={clearLocalGraph}
+                  class="text-hub-muted hover:text-hub-text underline decoration-dotted underline-offset-2 cursor-pointer"
+                >× Show all notes</button>
+              </div>
+            {/if}
+            <div class="flex-1 min-h-0 relative">
+              <VaultGraph
+                nodes={displayGraph.nodes}
+                edges={displayGraph.edges}
+                onNodeClick={handleSelectNote}
+              />
+            </div>
           </div>
         {:else if view === 'note' && currentNote}
           <div class="flex-1 min-h-0 overflow-y-auto p-4 md:p-6">
@@ -454,6 +593,7 @@
                 onNavigate={handleNavigate}
                 onEdit={() => { view = 'edit'; }}
                 onArchive={handleArchive}
+                onLocalGraph={() => { if (store.selectedPath) showLocalGraph(store.selectedPath); }}
               />
             </div>
           </div>
@@ -502,7 +642,6 @@
 
 {#if showNewNote}
   <VaultNewNote
-    zones={store.zones}
     onCreated={handleNoteCreated}
     onClose={() => { showNewNote = false; }}
   />
@@ -513,5 +652,12 @@
     filePath={previewFile.path}
     fileName={previewFile.name}
     onClose={() => { previewFile = null; }}
+  />
+{/if}
+
+{#if showBrokenLinks}
+  <VaultBrokenLinksDrawer
+    onSelect={(path) => { showBrokenLinks = false; handleSelectNote(path); }}
+    onClose={() => { showBrokenLinks = false; }}
   />
 {/if}

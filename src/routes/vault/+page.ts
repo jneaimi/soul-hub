@@ -4,7 +4,7 @@ export const ssr = false;
 
 export const load: PageLoad = async ({ url, fetch }) => {
 	const notePath = url.searchParams.get('note');
-	const view = url.searchParams.get('view') as 'graph' | 'note' | 'edit' | null;
+	const view = url.searchParams.get('view') as 'list' | 'graph' | 'note' | 'edit' | null;
 	const zone = url.searchParams.get('zone');
 	const type = url.searchParams.get('type');
 	const tags = url.searchParams.get('tags');
@@ -30,7 +30,7 @@ export const load: PageLoad = async ({ url, fetch }) => {
 	return {
 		initialNote,
 		initialNoteError,
-		initialView: view || (notePath ? 'note' : 'graph'),
+		initialView: view || (notePath ? 'note' : 'list'),
 		initialNotePath: notePath ? decodeURIComponent(notePath) : null,
 		initialZone: zone,
 		initialTypes: type ? type.split(',').filter(Boolean) : undefined,

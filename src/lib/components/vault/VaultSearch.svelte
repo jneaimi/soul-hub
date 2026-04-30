@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { TYPE_CHIP_CLASSES, DEFAULT_TYPE_CHIP_CLASS } from '$lib/vault/types';
   import type { SearchResult } from '$lib/vault/types';
 
   interface Props {
@@ -17,19 +18,6 @@
   let inputEl: HTMLInputElement | undefined = $state();
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
   let searchController: AbortController | null = null;
-
-  const typeColors: Record<string, string> = {
-    learning: 'bg-emerald-500/20 text-emerald-400',
-    decision: 'bg-amber-500/20 text-amber-400',
-    debugging: 'bg-red-500/20 text-red-400',
-    pattern: 'bg-violet-500/20 text-violet-400',
-    research: 'bg-cyan-500/20 text-cyan-400',
-    output: 'bg-blue-500/20 text-blue-400',
-    daily: 'bg-gray-500/20 text-gray-400',
-    snippet: 'bg-pink-500/20 text-pink-400',
-    report: 'bg-teal-500/20 text-teal-400',
-    index: 'bg-gray-500/20 text-gray-400',
-  };
 
   async function search(q: string) {
     if (!q.trim()) {
@@ -147,7 +135,7 @@
               <div class="flex items-center gap-2">
                 <span class="text-sm text-hub-text truncate">{result.title}</span>
                 {#if result.type}
-                  <span class="text-[10px] px-1 rounded flex-shrink-0 {typeColors[result.type] ?? 'bg-hub-card text-hub-dim'}">
+                  <span class="text-[10px] px-1 rounded flex-shrink-0 {TYPE_CHIP_CLASSES[result.type] ?? DEFAULT_TYPE_CHIP_CLASS}">
                     {result.type}
                   </span>
                 {/if}

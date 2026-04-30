@@ -116,7 +116,7 @@
     <div class="relative" use:clickOutside={() => { showTypePopover = false; typeSearch = ''; }}>
       <button
         class="flex items-center gap-2 px-3 py-2 min-h-[44px] rounded-lg bg-hub-card border border-hub-border text-sm cursor-pointer transition-colors duration-150 hover:border-hub-dim focus:ring-2 focus:ring-blue-500 focus:outline-none {activeTypes.length > 0 ? 'text-hub-text' : 'text-hub-muted'}"
-        onclick={() => { showTypePopover = !showTypePopover; showZoneDropdown = false; showTagPopover = false; }}
+        onclick={() => { showTypePopover = !showTypePopover; showTagPopover = false; }}
         onkeydown={(e) => handleKeydown(e, () => { showTypePopover = !showTypePopover; })}
         aria-expanded={showTypePopover}
         aria-haspopup="listbox"
@@ -167,7 +167,7 @@
     <div class="relative" use:clickOutside={() => { showTagPopover = false; tagSearch = ''; }}>
       <button
         class="flex items-center gap-2 px-3 py-2 min-h-[44px] rounded-lg bg-hub-card border border-hub-border text-sm cursor-pointer transition-colors duration-150 hover:border-hub-dim focus:ring-2 focus:ring-blue-500 focus:outline-none {activeTags.length > 0 ? 'text-hub-text' : 'text-hub-muted'}"
-        onclick={() => { showTagPopover = !showTagPopover; showZoneDropdown = false; showTypePopover = false; }}
+        onclick={() => { showTagPopover = !showTagPopover; showTypePopover = false; }}
         onkeydown={(e) => handleKeydown(e, () => { showTagPopover = !showTagPopover; })}
         aria-expanded={showTagPopover}
         aria-haspopup="listbox"

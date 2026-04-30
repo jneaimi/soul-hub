@@ -9,9 +9,10 @@
 		onNavigate: (path: string) => void;
 		onEdit: () => void;
 		onArchive: () => void;
+		onLocalGraph?: () => void;
 	}
 
-	let { note, vaultDir = '', onNavigate, onEdit, onArchive }: Props = $props();
+	let { note, vaultDir = '', onNavigate, onEdit, onArchive, onLocalGraph }: Props = $props();
 
 	const noteFolder = $derived(
 		note.path.includes('/') ? note.path.substring(0, note.path.lastIndexOf('/')) : ''
@@ -93,6 +94,22 @@
 		</span>
 
 		<div class="ml-auto flex items-center gap-2">
+			{#if onLocalGraph}
+				<button
+					onclick={onLocalGraph}
+					class="px-3 py-1 text-sm rounded bg-hub-card text-hub-muted hover:text-hub-text transition-colors flex items-center gap-1.5"
+					title="Show ego graph (depth 2) around this note"
+				>
+					<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<circle cx="6" cy="6" r="2" stroke-width="2"/>
+						<circle cx="18" cy="18" r="2" stroke-width="2"/>
+						<circle cx="6" cy="18" r="2" stroke-width="2"/>
+						<circle cx="18" cy="6" r="2" stroke-width="2"/>
+						<path stroke-linecap="round" stroke-width="2" d="M7.5 7.5l9 9M16.5 7.5l-9 9"/>
+					</svg>
+					Local graph
+				</button>
+			{/if}
 			{#if downloadUrl}
 				<a
 					href={downloadUrl}
@@ -351,6 +368,15 @@
 	:global(.vault-wikilink:hover) {
 		color: #c4b5fd;
 		border-bottom-style: solid;
+	}
+	:global(.vault-wikilink-broken) {
+		color: #f87171;
+		border-bottom-color: #f87171;
+		font-style: italic;
+	}
+	:global(.vault-wikilink-broken:hover) {
+		color: #fca5a5;
+		border-bottom-color: #fca5a5;
 	}
 	:global(.vault-attachment-link) {
 		color: #34D399;

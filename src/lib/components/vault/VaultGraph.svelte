@@ -21,15 +21,20 @@
   let hoveredNode = $state<string | null>(null);
   let tooltipX = $state(0);
   let tooltipY = $state(0);
+  let tooltipFlipX = $state(false);
+  let tooltipFlipY = $state(false);
+  let tooltipEl: HTMLDivElement | undefined = $state();
   let tooltipLabel = $state('');
   let tooltipType = $state('');
   let tooltipDegree = $state(0);
   let tooltipNew = $state(false);
   let showRanking = $state(true);
+  // Track whether the user has manually toggled the panel — once they have,
+  // we stop auto-adjusting based on node count and respect their choice.
+  let panelUserToggled = $state(false);
   let rankingTab = $state<'latest' | 'connected'>('latest');
 
   const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-  const NEW_ACCENT = '#22d3ee'; // cyan-400 — accent ring for new nodes
 
   /** Check if a note was CREATED (not just modified) within the last 7 days */
   function isNew(created: string | undefined): boolean {
@@ -82,9 +87,7 @@
       const nodeIsNew = isNew(node.created);
       graph.addNode(node.id, {
         label: node.label,
-        // New nodes get a size bump (+3) so they stand out
-        size: nodeIsNew ? node.size + 3 : node.size,
-        // KEEP the zone/type color — don't override
+        size: node.size,
         color: node.color,
         x: Math.random() * 100,
         y: Math.random() * 100,
@@ -112,7 +115,6 @@
       labelColor: { color: '#e2e8f0' },
       labelFont: 'IBM Plex Sans',
       labelSize: 11,
-      // New nodes always show their label regardless of density
       labelRenderedSizeThreshold: 8,
       labelDensity: 0.07,
       labelGridCellSize: 150,
@@ -155,6 +157,8 @@
 
     renderer.on('leaveNode', () => {
       hoveredNode = null;
+      tooltipFlipX = false;
+      tooltipFlipY = false;
       container.style.cursor = 'default';
       renderer!.setSetting('nodeReducer', null);
       renderer!.setSetting('edgeReducer', null);
@@ -165,10 +169,17 @@
     });
 
     renderer.getMouseCaptor().on('mousemove', (e: { x: number; y: number }) => {
-      if (hoveredNode) {
-        tooltipX = e.x;
-        tooltipY = e.y;
-      }
+      if (!hoveredNode) return;
+      tooltipX = e.x;
+      tooltipY = e.y;
+      // Flip tooltip to the left/top when it would overflow the graph canvas
+      // — keeps it on-screen for nodes near the right or bottom edge.
+      const w = tooltipEl?.offsetWidth ?? 200;
+      const h = tooltipEl?.offsetHeight ?? 60;
+      const cw = container.clientWidth;
+      const ch = container.clientHeight;
+      tooltipFlipX = e.x + 12 + w > cw;
+      tooltipFlipY = e.y - 10 + h > ch;
     });
 
     import('graphology-layout-forceatlas2').then(({ default: forceAtlas2 }) => {
@@ -202,6 +213,14 @@
     if (mounted) buildGraph();
   });
 
+  // Auto-collapse the ranking panel when the visible graph is small enough to
+  // be readable on its own. Stops auto-adjusting once the user clicks toggle.
+  $effect(() => {
+    if (panelUserToggled) return;
+    if (nodes.length === 0) return;
+    showRanking = nodes.length >= 50;
+  });
+
   onMount(async () => {
     const [graphMod, sigmaMod, renderMod] = await Promise.all([
       import('graphology'),
@@ -228,8 +247,12 @@
 
   {#if hoveredNode}
     <div
+      bind:this={tooltipEl}
       class="absolute pointer-events-none bg-hub-card border border-hub-border rounded-lg px-3 py-2 shadow-lg z-10"
-      style="left: {tooltipX + 12}px; top: {tooltipY - 10}px;"
+      style:left={tooltipFlipX ? 'auto' : `${tooltipX + 12}px`}
+      style:right={tooltipFlipX ? `${(container?.clientWidth ?? 0) - tooltipX + 12}px` : 'auto'}
+      style:top={tooltipFlipY ? 'auto' : `${tooltipY - 10}px`}
+      style:bottom={tooltipFlipY ? `${(container?.clientHeight ?? 0) - tooltipY - 10}px` : 'auto'}
     >
       <p class="text-sm text-hub-text font-medium">{tooltipLabel}</p>
       <div class="flex items-center gap-2 mt-0.5">
@@ -264,7 +287,7 @@
         <span class="text-[10px] text-cyan-400">{newCount} new</span>
       {/if}
       <button
-        onclick={() => { showRanking = !showRanking; }}
+        onclick={() => { panelUserToggled = true; showRanking = !showRanking; }}
         class="text-[10px] text-hub-dim hover:text-hub-muted transition-colors cursor-pointer"
       >
         {showRanking ? 'Hide' : 'Show'} panel
@@ -338,7 +361,7 @@
           <span class="w-2.5 h-2.5 rounded-full" style="background: #64748b"></span> operations
         </span>
       </div>
-      <p class="text-[10px] text-hub-dim/60 mt-1">Larger nodes = more connections. New notes (7d) are bigger in the graph.</p>
+      <p class="text-[10px] text-hub-dim/60 mt-1">Larger nodes = more connections. Cyan ring marks new notes (7d).</p>
     </div>
   {/if}
 </div>

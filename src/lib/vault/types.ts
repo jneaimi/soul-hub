@@ -298,6 +298,62 @@ export const TYPE_COLORS: Record<string, string> = {
 	analytics: '#06b6d4',
 };
 
+/**
+ * Tailwind chip classes per note type — used by sidebar/search/list chips.
+ * Format: `bg-{color}-500/20 text-{color}-400` for visual distinction
+ * (darker shade behind a lighter foreground). Single source of truth so
+ * Sidebar/Search/List don't drift out of sync.
+ *
+ * For inline-style chips (e.g. table cells in `VaultList`), use `TYPE_COLORS`
+ * directly with `style="background-color: {hex}26; color: {hex}"`.
+ */
+export const TYPE_CHIP_CLASSES: Record<string, string> = {
+	// Knowledge
+	learning: 'bg-emerald-500/20 text-emerald-400',
+	decision: 'bg-amber-500/20 text-amber-400',
+	debugging: 'bg-red-500/20 text-red-400',
+	pattern: 'bg-violet-500/20 text-violet-400',
+	research: 'bg-cyan-500/20 text-cyan-400',
+	snippet: 'bg-pink-500/20 text-pink-400',
+	report: 'bg-teal-500/20 text-teal-400',
+	analysis: 'bg-cyan-500/20 text-cyan-400',
+	review: 'bg-teal-500/20 text-teal-400',
+	recipe: 'bg-orange-500/20 text-orange-400',
+	reference: 'bg-gray-500/20 text-gray-400',
+	guide: 'bg-gray-500/20 text-gray-400',
+	wiki: 'bg-gray-500/20 text-gray-400',
+	// Content
+	draft: 'bg-violet-500/20 text-violet-300',
+	'social-draft': 'bg-violet-500/20 text-violet-300',
+	'social-post': 'bg-violet-500/20 text-violet-400',
+	'article-draft': 'bg-violet-500/20 text-violet-300',
+	'video-script': 'bg-purple-500/20 text-purple-400',
+	'content-menu': 'bg-violet-500/20 text-violet-400',
+	ideas: 'bg-fuchsia-500/20 text-fuchsia-400',
+	'daily-quote': 'bg-fuchsia-500/20 text-fuchsia-400',
+	'media-asset': 'bg-violet-500/20 text-violet-400',
+	'miner-report': 'bg-teal-500/20 text-teal-400',
+	'signal-report': 'bg-teal-500/20 text-teal-400',
+	// Project
+	project: 'bg-indigo-500/20 text-indigo-400',
+	output: 'bg-blue-500/20 text-blue-400',
+	index: 'bg-gray-500/20 text-gray-400',
+	task: 'bg-blue-500/20 text-blue-400',
+	design: 'bg-indigo-500/20 text-indigo-400',
+	// Operations
+	'agent-profile': 'bg-slate-500/20 text-slate-400',
+	config: 'bg-slate-500/20 text-slate-400',
+	'session-log': 'bg-slate-500/20 text-slate-400',
+	playbook: 'bg-slate-500/20 text-slate-400',
+	// Legacy / migration compat
+	daily: 'bg-gray-500/20 text-gray-400',
+	adr: 'bg-amber-500/20 text-amber-400',
+	analytics: 'bg-cyan-500/20 text-cyan-400',
+};
+
+/** Fallback chip class for an unrecognized note type. */
+export const DEFAULT_TYPE_CHIP_CLASS = 'bg-hub-card text-hub-dim';
+
 /** Default zone for notes without a recognized zone */
 export const DEFAULT_ZONE = 'inbox';
 

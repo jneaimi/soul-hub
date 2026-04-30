@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getVaultStore } from '$lib/vault/store.svelte.js';
+  import { TYPE_CHIP_CLASSES, DEFAULT_TYPE_CHIP_CLASS } from '$lib/vault/types';
 
   const store = getVaultStore();
 
@@ -9,9 +10,10 @@
     onSelect: (path: string) => void;
     onFilterChange: (filter: { zone?: string }) => void;
     onToggleBulk: (path: string) => void;
+    onShowBrokenLinks?: () => void;
   }
 
-  let { selectedPath, bulkSelected, onSelect, onFilterChange, onToggleBulk }: Props = $props();
+  let { selectedPath, bulkSelected, onSelect, onFilterChange, onToggleBulk, onShowBrokenLinks }: Props = $props();
 
   // Read zone from store so it syncs with smart views
   let activeZone = $derived(store.filters.zone ?? null);
@@ -98,8 +100,14 @@
         browseDir(currentDir ? `${currentDir}/${entry.name}` : entry.name);
       }
     } else if (fileRoot === 'vault') {
-      const fullPath = currentDir ? `${currentDir}/${entry.name}` : entry.name;
-      onSelect(fullPath);
+      const relPath = currentDir ? `${currentDir}/${entry.name}` : entry.name;
+      // Markdown opens as a vault note; everything else previews as a raw file
+      // so SVG/PNG/PDF/etc render in FilePreview instead of erroring at /api/vault/notes.
+      if (/\.(md|mdx)$/i.test(entry.name)) {
+        onSelect(relPath);
+      } else {
+        onSelect('__file__:' + getBasePath() + '/' + relPath);
+      }
     } else {
       const absPath = getBasePath() + '/' + (currentDir ? `${currentDir}/${entry.name}` : entry.name);
       onSelect('__file__:' + absPath);
@@ -153,50 +161,6 @@
       return a.localeCompare(b);
     }).map(z => ({ name: z, count: store.stats?.notesByZone[z] ?? 0 }));
   });
-
-  const typeColors: Record<string, string> = {
-    // Knowledge types
-    learning: 'bg-emerald-500/20 text-emerald-400',
-    decision: 'bg-amber-500/20 text-amber-400',
-    debugging: 'bg-red-500/20 text-red-400',
-    pattern: 'bg-violet-500/20 text-violet-400',
-    research: 'bg-cyan-500/20 text-cyan-400',
-    snippet: 'bg-pink-500/20 text-pink-400',
-    report: 'bg-teal-500/20 text-teal-400',
-    analysis: 'bg-cyan-500/20 text-cyan-400',
-    review: 'bg-teal-500/20 text-teal-400',
-    recipe: 'bg-orange-500/20 text-orange-400',
-    reference: 'bg-gray-500/20 text-gray-400',
-    guide: 'bg-gray-500/20 text-gray-400',
-    wiki: 'bg-gray-500/20 text-gray-400',
-    // Content types
-    draft: 'bg-violet-500/20 text-violet-300',
-    'social-draft': 'bg-violet-500/20 text-violet-300',
-    'social-post': 'bg-violet-500/20 text-violet-400',
-    'article-draft': 'bg-violet-500/20 text-violet-300',
-    'video-script': 'bg-purple-500/20 text-purple-400',
-    'content-menu': 'bg-violet-500/20 text-violet-400',
-    ideas: 'bg-fuchsia-500/20 text-fuchsia-400',
-    'daily-quote': 'bg-fuchsia-500/20 text-fuchsia-400',
-    'media-asset': 'bg-violet-500/20 text-violet-400',
-    'miner-report': 'bg-teal-500/20 text-teal-400',
-    'signal-report': 'bg-teal-500/20 text-teal-400',
-    // Project types
-    project: 'bg-indigo-500/20 text-indigo-400',
-    output: 'bg-blue-500/20 text-blue-400',
-    index: 'bg-gray-500/20 text-gray-400',
-    task: 'bg-blue-500/20 text-blue-400',
-    design: 'bg-indigo-500/20 text-indigo-400',
-    // Operations types
-    'agent-profile': 'bg-slate-500/20 text-slate-400',
-    config: 'bg-slate-500/20 text-slate-400',
-    'session-log': 'bg-slate-500/20 text-slate-400',
-    playbook: 'bg-slate-500/20 text-slate-400',
-    // Legacy
-    daily: 'bg-gray-500/20 text-gray-400',
-    adr: 'bg-amber-500/20 text-amber-400',
-    analytics: 'bg-cyan-500/20 text-cyan-400',
-  };
 
   function relativeTime(mtime: number): string {
     const diff = Date.now() - mtime;
@@ -364,7 +328,7 @@
                 </div>
                 <div class="flex items-center gap-1.5 mt-0.5">
                   {#if note.meta?.type}
-                    <span class="text-[10px] px-1 rounded {typeColors[note.meta.type] ?? 'bg-hub-card text-hub-dim'}">
+                    <span class="text-[10px] px-1 rounded {TYPE_CHIP_CLASSES[note.meta.type] ?? DEFAULT_TYPE_CHIP_CLASS}">
                       {note.meta.type}
                     </span>
                   {/if}
@@ -390,7 +354,15 @@
         <span>{store.stats.totalNotes} notes</span>
         <span>{store.stats.totalLinks} links</span>
         {#if store.stats.unresolvedLinks > 0}
-          <span class="text-amber-400">{store.stats.unresolvedLinks} broken</span>
+          {#if onShowBrokenLinks}
+            <button
+              onclick={onShowBrokenLinks}
+              class="text-amber-400 hover:text-amber-300 underline decoration-dotted underline-offset-2 cursor-pointer"
+              aria-label="View {store.stats.unresolvedLinks} broken links"
+            >{store.stats.unresolvedLinks} broken</button>
+          {:else}
+            <span class="text-amber-400">{store.stats.unresolvedLinks} broken</span>
+          {/if}
         {/if}
         {#if store.stats.orphanNotes > 0}
           <span class="text-amber-400">{store.stats.orphanNotes} orphans</span>
