@@ -6,15 +6,28 @@ import remarkRehype from 'remark-rehype';
 import rehypeStringify from 'rehype-stringify';
 import rehypePrettyCode from 'rehype-pretty-code';
 import { visit } from 'unist-util-visit';
+import type { VaultLink } from './types.js';
 
 /**
  * Post-process HTML string to convert [[wikilinks]] to clickable elements.
  * Runs AFTER rehype-stringify since wikilinks are not standard markdown.
+ *
+ * `data-target` carries the *resolved* vault path (e.g. `projects/x/y.md`) so
+ * the click handler can hit the notes API directly. Unresolved targets fall
+ * back to the raw text and get a `vault-wikilink-broken` class.
  */
-function processWikilinks(html: string): string {
+function processWikilinks(html: string, links: VaultLink[] = []): string {
+	const resolvedByRaw = new Map<string, string | null>();
+	for (const l of links) {
+		if (!resolvedByRaw.has(l.raw)) resolvedByRaw.set(l.raw, l.resolved);
+	}
 	return html.replace(/\[\[([^\]|]+?)(?:\|([^\]]+?))?\]\]/g, (_, target, alias) => {
 		const display = alias || target;
-		return `<a class="vault-wikilink" data-target="${target}" href="javascript:void(0)">${display}</a>`;
+		const raw = String(target).trim();
+		const resolved = resolvedByRaw.get(raw) ?? null;
+		const dataTarget = resolved ?? raw;
+		const cls = resolved ? 'vault-wikilink' : 'vault-wikilink vault-wikilink-broken';
+		return `<a class="${cls}" data-target="${dataTarget}" href="javascript:void(0)">${display}</a>`;
 	});
 }
 
@@ -138,11 +151,25 @@ function rehypeCodeCopyButton() {
 	};
 }
 
+/**
+ * Auto-escape the `|` separator inside wikilink brackets so the GFM table
+ * parser doesn't split `[[note|alias]]` across cells. Idempotent — pre-existing
+ * `\|` is normalised first so we never produce `\\|`.
+ */
+function escapeWikilinkPipesForTables(md: string): string {
+	return md.replace(/\[\[([^\]\n]+?)\]\]/g, (_, inner) => {
+		const normalised = inner.replace(/\\\|/g, '|').replace(/\|/g, '\\|');
+		return '[[' + normalised + ']]';
+	});
+}
+
 export async function renderMarkdown(
 	content: string,
-	options: { vaultDir: string; noteDir: string }
+	options: { vaultDir: string; noteDir: string; links?: VaultLink[] }
 ): Promise<string> {
 	if (!content || !content.trim()) return '';
+
+	const preprocessed = escapeWikilinkPipesForTables(content);
 
 	const result = await unified()
 		.use(remarkParse)
@@ -153,7 +180,7 @@ export async function renderMarkdown(
 		.use(rehypeCodeCopyButton)
 		.use(rehypeMediaResolver, options)
 		.use(rehypeStringify, { allowDangerousHtml: true })
-		.process(content);
+		.process(preprocessed);
 
 	let html = String(result);
 
@@ -162,7 +189,7 @@ export async function renderMarkdown(
 
 	// Wikilinks are processed as a post-pass on the HTML string
 	// since [[target|alias]] is not standard markdown syntax
-	return processWikilinks(html);
+	return processWikilinks(html, options.links);
 }
 
 export function isRtl(text: string): boolean {

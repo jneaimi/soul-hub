@@ -102,7 +102,7 @@ export class VaultIndexer {
 			// Re-resolve links for this note
 			const note = this.notes.get(relPath)!;
 			for (const link of note.links) {
-				link.resolved = this.resolver.resolve(link.raw);
+				link.resolved = this.resolver.resolve(link.raw, note.path);
 			}
 
 			this.computeBacklinks();
@@ -243,7 +243,7 @@ export class VaultIndexer {
 	private resolveAllLinks(): void {
 		for (const note of this.notes.values()) {
 			for (const link of note.links) {
-				link.resolved = this.resolver.resolve(link.raw);
+				link.resolved = this.resolver.resolve(link.raw, note.path);
 			}
 		}
 	}

@@ -8,7 +8,7 @@ export class WikilinkResolver {
 		}
 	}
 
-	resolve(raw: string): string | null {
+	resolve(raw: string, sourcePath?: string): string | null {
 		const normalized = raw.trim().replace(/\.md$/i, '').toLowerCase();
 		if (!normalized) return null;
 
@@ -26,7 +26,26 @@ export class WikilinkResolver {
 		const matches = this.filenameMap.get(normalized);
 		if (!matches || matches.length === 0) return null;
 		if (matches.length === 1) return matches[0];
-		return null; // ambiguous
+
+		// Ambiguous bare stem — pick the closest match relative to the source.
+		// "Closest" = longest shared directory prefix; ties broken by shallower path.
+		if (!sourcePath) return null;
+		const sourceDir = sourcePath.includes('/') ? sourcePath.slice(0, sourcePath.lastIndexOf('/')) : '';
+		const sourceParts = sourceDir.split('/').filter(Boolean);
+		let best: { path: string; shared: number; depth: number } | null = null;
+		for (const candidate of matches) {
+			const candDir = candidate.includes('/') ? candidate.slice(0, candidate.lastIndexOf('/')) : '';
+			const candParts = candDir.split('/').filter(Boolean);
+			let shared = 0;
+			while (shared < sourceParts.length && shared < candParts.length && sourceParts[shared] === candParts[shared]) {
+				shared++;
+			}
+			const depth = candParts.length;
+			if (!best || shared > best.shared || (shared === best.shared && depth < best.depth)) {
+				best = { path: candidate, shared, depth };
+			}
+		}
+		return best ? best.path : null;
 	}
 
 	add(path: string): void {

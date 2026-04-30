@@ -32,6 +32,7 @@ export const GET: RequestHandler = async ({ params }) => {
 		const rendered = await renderMarkdown(note.content, {
 			vaultDir: engine.vaultDir,
 			noteDir,
+			links: note.links,
 		});
 		const contentIsRtl = isRtl(note.content);
 		const titleIsRtl = isRtl(note.title);

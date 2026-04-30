@@ -26,9 +26,14 @@ function extractLinks(content: string): VaultLink[] {
 	const re = new RegExp(WIKILINK_RE.source, WIKILINK_RE.flags);
 
 	// Strip fenced code blocks and inline code so we don't parse example wikilinks
-	const stripped = content
+	let stripped = content
 		.replace(/```[\s\S]*?```/g, '')
 		.replace(/`[^`]+`/g, '');
+
+	// Normalise legacy `\|` table-escapes inside wikilinks so the regex can
+	// pick the alias separator correctly. Without this, `[[note\|alias]]`
+	// parses as target=`note\` and never resolves.
+	stripped = stripped.replace(/\[\[([^\]\n]+?)\]\]/g, (_, inner) => '[[' + inner.replace(/\\\|/g, '|') + ']]');
 
 	while ((match = re.exec(stripped)) !== null) {
 		links.push({
