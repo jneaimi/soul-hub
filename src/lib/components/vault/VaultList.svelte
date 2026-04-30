@@ -49,20 +49,21 @@
   let visibleRows = $derived(rows.slice(0, pageSize));
   let hasMore = $derived(rows.length > visibleRows.length);
 
-  // Active-filter readout — describes *why* the list is bounded.
+  // Type/tags chips now live in the smart-views row (universal across all
+  // views). The list header keeps only zone + since callouts because those
+  // are not represented as chips in that row.
   let filterDescription = $derived.by(() => {
     const f = store.filters;
     const parts: string[] = [];
     if (f.zone) parts.push(`zone: ${f.zone}`);
-    if (f.type) {
-      const types = Array.isArray(f.type) ? f.type : [f.type];
-      if (types.length > 0) parts.push(`type: ${types.join(', ')}`);
-    }
-    if (f.tags && f.tags.length > 0) parts.push(`tags: ${f.tags.map(t => '#' + t).join(', ')}`);
     if (f.since) parts.push(f.since === 1 ? 'last 24h' : `last ${f.since} days`);
     return parts;
   });
-  let hasActiveFilters = $derived(filterDescription.length > 0);
+  let hasActiveFilters = $derived.by(() => {
+    const f = store.filters;
+    const types = Array.isArray(f.type) ? f.type : f.type ? [f.type] : [];
+    return Boolean(f.zone) || types.length > 0 || (f.tags?.length ?? 0) > 0 || Boolean(f.since);
+  });
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) {

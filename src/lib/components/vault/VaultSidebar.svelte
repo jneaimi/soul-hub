@@ -7,13 +7,16 @@
   interface Props {
     selectedPath: string | null;
     bulkSelected: Set<string>;
+    /** Current main-pane view — Recent is hidden when the list view shows
+     *  the same data more comprehensively. */
+    view?: 'list' | 'graph' | 'note' | 'edit';
     onSelect: (path: string) => void;
     onFilterChange: (filter: { zone?: string }) => void;
     onToggleBulk: (path: string) => void;
     onShowBrokenLinks?: () => void;
   }
 
-  let { selectedPath, bulkSelected, onSelect, onFilterChange, onToggleBulk, onShowBrokenLinks }: Props = $props();
+  let { selectedPath, bulkSelected, view = 'list', onSelect, onFilterChange, onToggleBulk, onShowBrokenLinks }: Props = $props();
 
   // Read zone from store so it syncs with smart views
   let activeZone = $derived(store.filters.zone ?? null);
@@ -301,45 +304,50 @@
       {/each}
     </div>
 
-    <!-- Recent notes -->
-    <div class="p-3">
-      <h3 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-2">Recent</h3>
-      {#if filteredRecent.length === 0}
-        <div class="text-xs text-hub-dim py-2">{store.filters.zone || store.filters.type || (store.filters.tags && store.filters.tags.length > 0) ? 'No matching notes' : 'No notes yet'}</div>
-      {:else}
-        <div class="space-y-0.5">
-          {#each filteredRecent as note}
-            <div class="flex items-start gap-1 group">
-              <button
-                class="flex-shrink-0 mt-2 w-3.5 h-3.5 rounded border cursor-pointer transition-colors {bulkSelected.has(note.path) ? 'bg-hub-cta border-hub-cta' : 'border-hub-border hover:border-hub-dim'}"
-                onclick={(e) => { e.stopPropagation(); onToggleBulk(note.path); }}
-                aria-label="Select {note.title}"
-              >
-                {#if bulkSelected.has(note.path)}
-                  <svg class="w-3.5 h-3.5 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>
-                {/if}
-              </button>
-              <button
-                class="flex-1 text-left px-1.5 py-1.5 rounded text-sm transition-colors {selectedPath === note.path ? 'bg-hub-cta/10 text-hub-cta' : 'text-hub-muted hover:text-hub-text hover:bg-hub-card'}"
-                onclick={() => onSelect(note.path)}
-              >
-                <div class="flex items-center gap-1.5">
-                  <span class="flex-1 break-words" style="unicode-bidi: plaintext;">{note.title}</span>
-                </div>
-                <div class="flex items-center gap-1.5 mt-0.5">
-                  {#if note.meta?.type}
-                    <span class="text-[10px] px-1 rounded {TYPE_CHIP_CLASSES[note.meta.type] ?? DEFAULT_TYPE_CHIP_CLASS}">
-                      {note.meta.type}
-                    </span>
+    <!-- Recent notes — hidden when the list view already surfaces them in
+         the main pane (avoids showing the same data twice). Shown when
+         the user is on graph or a single note, where a quick-jump list
+         is genuinely useful. -->
+    {#if view !== 'list'}
+      <div class="p-3">
+        <h3 class="text-xs font-medium text-hub-dim uppercase tracking-wider mb-2">Recent</h3>
+        {#if filteredRecent.length === 0}
+          <div class="text-xs text-hub-dim py-2">{store.filters.zone || store.filters.type || (store.filters.tags && store.filters.tags.length > 0) ? 'No matching notes' : 'No notes yet'}</div>
+        {:else}
+          <div class="space-y-0.5">
+            {#each filteredRecent as note}
+              <div class="flex items-start gap-1 group">
+                <button
+                  class="flex-shrink-0 mt-2 w-3.5 h-3.5 rounded border cursor-pointer transition-colors {bulkSelected.has(note.path) ? 'bg-hub-cta border-hub-cta' : 'border-hub-border hover:border-hub-dim'}"
+                  onclick={(e) => { e.stopPropagation(); onToggleBulk(note.path); }}
+                  aria-label="Select {note.title}"
+                >
+                  {#if bulkSelected.has(note.path)}
+                    <svg class="w-3.5 h-3.5 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>
                   {/if}
-                  <span class="text-[10px] text-hub-dim ml-auto">{relativeTime(note.mtime)}</span>
-                </div>
-              </button>
-            </div>
-          {/each}
-        </div>
-      {/if}
-    </div>
+                </button>
+                <button
+                  class="flex-1 text-left px-1.5 py-1.5 rounded text-sm transition-colors {selectedPath === note.path ? 'bg-hub-cta/10 text-hub-cta' : 'text-hub-muted hover:text-hub-text hover:bg-hub-card'}"
+                  onclick={() => onSelect(note.path)}
+                >
+                  <div class="flex items-center gap-1.5">
+                    <span class="flex-1 break-words" style="unicode-bidi: plaintext;">{note.title}</span>
+                  </div>
+                  <div class="flex items-center gap-1.5 mt-0.5">
+                    {#if note.meta?.type}
+                      <span class="text-[10px] px-1 rounded {TYPE_CHIP_CLASSES[note.meta.type] ?? DEFAULT_TYPE_CHIP_CLASS}">
+                        {note.meta.type}
+                      </span>
+                    {/if}
+                    <span class="text-[10px] text-hub-dim ml-auto">{relativeTime(note.mtime)}</span>
+                  </div>
+                </button>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/if}
   {/if}
   </div>
 

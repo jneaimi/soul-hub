@@ -10,10 +10,23 @@
   interface Props {
     activeFilters: { zone?: string; type?: string | string[]; tags?: string[]; since?: number };
     allTags: Record<string, number>;
+    /** Note types known to exist in the vault (for the ad-hoc Type popover). */
+    allTypes?: string[];
+    /** Tag names known to exist in the vault (for the ad-hoc Tags popover). */
+    allTagsList?: string[];
     onApply: (filters: { zone?: string; type?: string[]; tags?: string[]; since?: number }) => void;
+    /** Ad-hoc filter changes — type/tags only; zone/since flow through onApply. */
+    onAdHocFilterChange?: (f: { type?: string[]; tags?: string[] }) => void;
   }
 
-  let { activeFilters, allTags = {}, onApply }: Props = $props();
+  let {
+    activeFilters,
+    allTags = {},
+    allTypes = [],
+    allTagsList = [],
+    onApply,
+    onAdHocFilterChange,
+  }: Props = $props();
 
   let views = $state<SmartView[]>([
     { name: 'All', icon: 'list', filters: {} },
@@ -160,6 +173,91 @@
       .slice(0, 20)
       .map(([name]) => name)
   );
+
+  // ── Ad-hoc filter state (lifted from the deleted VaultCommandBar) ──
+  // Type/Tags multi-select popovers that live in the smart-views row,
+  // alongside saved presets — single canonical filter region.
+  let showTypePopover = $state(false);
+  let showTagPopover = $state(false);
+  let typeSearch = $state('');
+  let tagSearch = $state('');
+
+  let activeAdHocTypes = $derived.by(() => {
+    const t = activeFilters.type;
+    if (!t) return [] as string[];
+    return Array.isArray(t) ? t : [t];
+  });
+  let activeAdHocTags = $derived(activeFilters.tags ?? []);
+
+  // Click-outside helper for the popovers.
+  function clickOutside(node: HTMLElement, callback: () => void) {
+    function handleClick(e: MouseEvent) {
+      if (!node.contains(e.target as Node)) callback();
+    }
+    document.addEventListener('click', handleClick, true);
+    return { destroy() { document.removeEventListener('click', handleClick, true); } };
+  }
+
+  // Type categories — same buckets the deleted CommandBar used so users see
+  // a familiar grouping when constructing ad-hoc filters.
+  const typeCategories: Record<string, string[]> = {
+    Knowledge: ['research', 'pattern', 'snippet', 'decision', 'review', 'recipe', 'report', 'analysis', 'evaluation', 'data-pack', 'reference', 'guide', 'wiki'],
+    Content: ['draft', 'social-draft', 'social-post', 'article-draft', 'video-script', 'video-script-draft', 'content-menu', 'content-prep', 'ideas', 'daily-quote', 'media-asset', 'insight-draft', 'miner-report', 'signal-report', 'strategist-prep'],
+    Project: ['project', 'learning', 'debugging', 'output', 'index', 'task', 'design', 'requirements'],
+    Operations: ['agent-profile', 'config', 'session-log', 'playbook', 'system-config', 'identity', 'boundaries'],
+  };
+
+  let filteredTypesBySearch = $derived.by(() => {
+    const q = typeSearch.toLowerCase();
+    return q ? allTypes.filter((t) => t.toLowerCase().includes(q)) : allTypes;
+  });
+
+  let filteredTagsBySearch = $derived.by(() => {
+    const q = tagSearch.toLowerCase();
+    return q ? allTagsList.filter((t) => t.toLowerCase().includes(q)) : allTagsList;
+  });
+
+  let groupedTypes = $derived.by(() => {
+    const available = new Set(filteredTypesBySearch);
+    const groups: { name: string; types: string[] }[] = [];
+    const categorized = new Set<string>();
+    for (const [cat, types] of Object.entries(typeCategories)) {
+      const matching = types.filter((t) => available.has(t));
+      if (matching.length > 0) {
+        groups.push({ name: cat, types: matching });
+        matching.forEach((t) => categorized.add(t));
+      }
+    }
+    const uncategorized = filteredTypesBySearch.filter((t) => !categorized.has(t));
+    if (uncategorized.length > 0) groups.push({ name: 'Other', types: uncategorized });
+    return groups;
+  });
+
+  function emitAdHoc(next: { type?: string[]; tags?: string[] }) {
+    onAdHocFilterChange?.({
+      type: next.type ?? activeAdHocTypes,
+      tags: next.tags ?? activeAdHocTags,
+    });
+  }
+
+  function toggleType(t: string) {
+    const next = activeAdHocTypes.includes(t)
+      ? activeAdHocTypes.filter((x) => x !== t)
+      : [...activeAdHocTypes, t];
+    emitAdHoc({ type: next });
+  }
+
+  function toggleTag(t: string) {
+    const next = activeAdHocTags.includes(t)
+      ? activeAdHocTags.filter((x) => x !== t)
+      : [...activeAdHocTags, t];
+    emitAdHoc({ tags: next });
+  }
+
+  function removeChip(kind: 'type' | 'tag', value: string) {
+    if (kind === 'type') emitAdHoc({ type: activeAdHocTypes.filter((x) => x !== value) });
+    else emitAdHoc({ tags: activeAdHocTags.filter((x) => x !== value) });
+  }
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -205,6 +303,140 @@
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
     </svg>
   </button>
+
+  <!-- Divider before ad-hoc filter section -->
+  {#if onAdHocFilterChange}
+    <span class="flex-shrink-0 w-px h-5 bg-hub-border mx-1" aria-hidden="true"></span>
+
+    <!-- Active ad-hoc filter chips (universal across views — graph, list, note all see them) -->
+    {#each activeAdHocTypes as t (t)}
+      <span class="flex-shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-violet-500/15 text-violet-400 text-[11px] font-medium">
+        type: {t}
+        <button
+          class="ml-0.5 hover:text-violet-200 cursor-pointer"
+          onclick={() => removeChip('type', t)}
+          aria-label="Remove type filter {t}"
+        >
+          <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </span>
+    {/each}
+    {#each activeAdHocTags as t (t)}
+      <span class="flex-shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-400 text-[11px] font-medium">
+        #{t}
+        <button
+          class="ml-0.5 hover:text-emerald-200 cursor-pointer"
+          onclick={() => removeChip('tag', t)}
+          aria-label="Remove tag filter {t}"
+        >
+          <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </span>
+    {/each}
+
+    <!-- Type multi-select trigger -->
+    <div class="flex-shrink-0 relative" use:clickOutside={() => { showTypePopover = false; typeSearch = ''; }}>
+      <button
+        class="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] cursor-pointer transition-colors duration-150 border
+          {activeAdHocTypes.length > 0 ? 'border-hub-border bg-hub-card text-hub-text' : 'border-transparent text-hub-dim hover:text-hub-muted hover:bg-hub-card'}"
+        onclick={() => { showTypePopover = !showTypePopover; showTagPopover = false; }}
+        aria-expanded={showTypePopover}
+        aria-haspopup="listbox"
+      >
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a4 4 0 014-4z" />
+        </svg>
+        Type{activeAdHocTypes.length > 0 ? ` · ${activeAdHocTypes.length}` : ''}
+        <svg class="w-3 h-3 text-hub-dim" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {#if showTypePopover}
+        <div class="absolute left-0 top-full mt-1 z-50 w-[260px] rounded-lg bg-hub-card border border-hub-border shadow-lg">
+          <div class="p-2 border-b border-hub-border">
+            <input
+              type="text"
+              bind:value={typeSearch}
+              placeholder="Filter types..."
+              class="w-full px-2 py-1.5 text-sm rounded bg-hub-bg border border-hub-border text-hub-text placeholder:text-hub-dim focus:ring-2 focus:ring-blue-500 focus:outline-none"
+            />
+          </div>
+          <div class="max-h-64 overflow-y-auto py-1">
+            {#each groupedTypes as group}
+              <div class="px-3 pt-2 pb-1 text-xs font-medium text-hub-dim uppercase tracking-wider">{group.name}</div>
+              {#each group.types as t}
+                <label class="flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer hover:bg-hub-surface/50">
+                  <input
+                    type="checkbox"
+                    checked={activeAdHocTypes.includes(t)}
+                    onchange={() => toggleType(t)}
+                    class="rounded border-hub-border text-hub-cta focus:ring-blue-500 cursor-pointer"
+                  />
+                  <span class={activeAdHocTypes.includes(t) ? 'text-hub-text' : 'text-hub-muted'}>{t}</span>
+                </label>
+              {/each}
+            {/each}
+            {#if groupedTypes.length === 0}
+              <div class="px-3 py-2 text-sm text-hub-dim">No types match</div>
+            {/if}
+          </div>
+        </div>
+      {/if}
+    </div>
+
+    <!-- Tags multi-select trigger -->
+    <div class="flex-shrink-0 relative" use:clickOutside={() => { showTagPopover = false; tagSearch = ''; }}>
+      <button
+        class="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] cursor-pointer transition-colors duration-150 border
+          {activeAdHocTags.length > 0 ? 'border-hub-border bg-hub-card text-hub-text' : 'border-transparent text-hub-dim hover:text-hub-muted hover:bg-hub-card'}"
+        onclick={() => { showTagPopover = !showTagPopover; showTypePopover = false; }}
+        aria-expanded={showTagPopover}
+        aria-haspopup="listbox"
+      >
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+        </svg>
+        Tags{activeAdHocTags.length > 0 ? ` · ${activeAdHocTags.length}` : ''}
+        <svg class="w-3 h-3 text-hub-dim" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {#if showTagPopover}
+        <div class="absolute right-0 top-full mt-1 z-50 w-[240px] rounded-lg bg-hub-card border border-hub-border shadow-lg">
+          <div class="p-2 border-b border-hub-border">
+            <input
+              type="text"
+              bind:value={tagSearch}
+              placeholder="Filter tags..."
+              class="w-full px-2 py-1.5 text-sm rounded bg-hub-bg border border-hub-border text-hub-text placeholder:text-hub-dim focus:ring-2 focus:ring-blue-500 focus:outline-none"
+            />
+          </div>
+          <div class="max-h-64 overflow-y-auto py-1">
+            {#each filteredTagsBySearch as t}
+              <label class="flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer hover:bg-hub-surface/50">
+                <input
+                  type="checkbox"
+                  checked={activeAdHocTags.includes(t)}
+                  onchange={() => toggleTag(t)}
+                  class="rounded border-hub-border text-hub-cta focus:ring-blue-500 cursor-pointer"
+                />
+                <span class={activeAdHocTags.includes(t) ? 'text-hub-text' : 'text-hub-muted'}>{t}</span>
+              </label>
+            {/each}
+            {#if filteredTagsBySearch.length === 0}
+              <div class="px-3 py-2 text-sm text-hub-dim">No tags match</div>
+            {/if}
+          </div>
+        </div>
+      {/if}
+    </div>
+  {/if}
 </div>
 
 <!-- Context menu -->

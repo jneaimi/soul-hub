@@ -9,7 +9,6 @@
   import VaultNoteEditor from '$lib/components/vault/VaultNoteEditor.svelte';
   import VaultSearch from '$lib/components/vault/VaultSearch.svelte';
   import VaultNewNote from '$lib/components/vault/VaultNewNote.svelte';
-  import VaultCommandBar from '$lib/components/vault/VaultCommandBar.svelte';
   import VaultSmartViews from '$lib/components/vault/VaultSmartViews.svelte';
   import VaultBulkBar from '$lib/components/vault/VaultBulkBar.svelte';
   import VaultBrokenLinksDrawer from '$lib/components/vault/VaultBrokenLinksDrawer.svelte';
@@ -467,30 +466,28 @@
     {/if}
   </header>
 
-  <VaultCommandBar
-    allTypes={Object.keys(store.stats?.notesByType ?? {})}
-    allTags={Object.keys(allTags)}
-    activeTypes={Array.isArray(store.filters.type) ? store.filters.type : store.filters.type ? [store.filters.type] : []}
-    activeTags={store.filters.tags ?? []}
-    onFilterChange={(f) => {
-      store.setFilters({
-        zone: store.filters.zone,
-        type: f.type && f.type.length > 0 ? f.type : undefined,
-        tags: f.tags && f.tags.length > 0 ? f.tags : undefined,
-      });
-      replaceUrl();
-    }}
-  />
-
   <VaultSmartViews
     activeFilters={store.filters}
     {allTags}
+    allTypes={Object.keys(store.stats?.notesByType ?? {})}
+    allTagsList={Object.keys(allTags)}
     onApply={(f) => {
       store.setFilters({
         zone: f.zone,
         type: f.type && f.type.length > 0 ? f.type : undefined,
         tags: f.tags && f.tags.length > 0 ? f.tags : undefined,
         since: f.since || undefined,
+      });
+      replaceUrl();
+    }}
+    onAdHocFilterChange={(f) => {
+      // Ad-hoc Type/Tags edits keep the active zone/since dimensions intact —
+      // those flow only through smart-view selection.
+      store.setFilters({
+        zone: store.filters.zone,
+        type: f.type && f.type.length > 0 ? f.type : undefined,
+        tags: f.tags && f.tags.length > 0 ? f.tags : undefined,
+        since: store.filters.since,
       });
       replaceUrl();
     }}
@@ -521,6 +518,7 @@
         <VaultSidebar
           selectedPath={store.selectedPath}
           {bulkSelected}
+          {view}
           onSelect={handleSelectNote}
           onFilterChange={handleFilterChange}
           onToggleBulk={toggleBulk}
