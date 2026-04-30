@@ -1,0 +1,222 @@
+name: gnomadme-box-motifs
+description: Generate 4 category-specific motifs (meat, fish & seafood, camel meat, general) sized to a delivery-bike-aware dieline, rendered across the three locked direction systems (A Heritage Route / B Mother's Kitchen / C Bold Nomad)
+version: 1.0.0
+
+env:
+  - name: GEMINI_API_KEY
+    description: Google Gemini API key for image generation (concepts + finals)
+    required: true
+
+inputs:
+  - name: box_target_dims
+    type: text
+    description: Outer box dimensions LxWxH in mm — free-form, e.g. 140x140x280
+    default: '140x140x280'
+    required: true
+  - name: optimize_box_dims
+    type: select
+    description: When yes, the fit calculator proposes a smaller box that maximizes boxes-per-trip while still holding the internal components
+    options: [yes, no]
+    default: 'yes'
+    required: true
+  - name: target_directions
+    type: select
+    description: Render motifs for direction A, B, C, or all three
+    options: [A, B, C, all]
+    default: 'all'
+    required: true
+  - name: variants_per_motif
+    type: number
+    description: Concept variants per (category × direction) at the cheap tier
+    default: 3
+    required: true
+  - name: concepts_model
+    type: select
+    description: Image tier for concepts — flash is cheap (~$0.04 each), pro is polished (~$0.12 each)
+    options: [flash, pro]
+    default: 'flash'
+    required: true
+  - name: finals_model
+    type: select
+    description: Image tier for finals — pro is recommended (these go to print)
+    options: [pro, flash]
+    default: 'pro'
+    required: true
+
+shared_config:
+  - name: Food Categories
+    file: config/categories.json
+    description: The 4 box types with motif keywords and hints. The designer cites these verbatim.
+    columns:
+      - name: name
+        type: text
+        label: Slug (machine name)
+        placeholder: 'meat'
+        required: true
+      - name: label
+        type: text
+        label: Display label
+        placeholder: 'Meat'
+        required: true
+      - name: keywords
+        type: text
+        label: Cuisine keywords
+        placeholder: 'lamb, kebab, mansaf'
+        required: true
+      - name: motif_hints
+        type: text
+        label: Visual motif elements
+        placeholder: 'butcher tools, herbs, charcoal'
+        required: true
+
+  - name: Direction System
+    file: config/directions.json
+    description: A/B/C direction style fingerprints. The analyzer enriches these with extracted hex codes.
+    columns:
+      - name: code
+        type: select
+        label: Direction code
+        options: [A, B, C]
+        required: true
+      - name: name
+        type: text
+        label: Direction name
+        placeholder: 'Heritage Route'
+        required: true
+      - name: palette
+        type: text
+        label: Palette (descriptive)
+        placeholder: 'aged parchment cream, ink navy'
+        required: true
+      - name: line_style
+        type: text
+        label: Line-style descriptor
+        placeholder: 'fine etched line-art'
+        required: true
+      - name: texture_notes
+        type: text
+        label: Texture / pattern notes
+        placeholder: 'aged map paper background, distressed edges'
+        required: true
+
+  - name: Delivery Containers
+    file: config/containers.json
+    description: Outer containers boxes are loaded into. Add bike, scooter, car, etc.
+    columns:
+      - name: name
+        type: text
+        label: Container name
+        placeholder: 'Delivery bike top box'
+        required: true
+      - name: length_mm
+        type: number
+        label: Length (mm)
+        required: true
+      - name: width_mm
+        type: number
+        label: Width (mm)
+        required: true
+      - name: height_mm
+        type: number
+        label: Height (mm)
+        required: true
+      - name: max_weight_kg
+        type: number
+        label: Max weight (kg)
+        required: true
+      - name: notes
+        type: text
+        label: Notes
+        placeholder: 'typical UAE Talabat / Careem courier bike'
+        required: false
+
+steps:
+  - id: fit-calculator
+    type: script
+    block: box-fit-calculator
+    config:
+      box_dims: '{{inputs.box_target_dims}}'
+      optimize: '{{inputs.optimize_box_dims}}'
+      containers_file: 'config/containers.json'
+    output: output/fit-report.md
+    timeout: 60
+
+  - id: analyze-directions
+    type: script
+    block: box-direction-analyzer
+    config:
+      samples_folder: 'samples'
+      directions_file: 'config/directions.json'
+      directions_image: '04-directions-abc.jpeg'
+    output: output/directions.md
+    timeout: 60
+
+  - id: design-brief
+    type: agent
+    block: box-motif-designer
+    depends_on: [fit-calculator, analyze-directions]
+    input: [$steps.fit-calculator.output, $steps.analyze-directions.output]
+    output: output/brief.md
+    vault_zone: knowledge/decisions
+    timeout: 900
+
+  - id: generate-concepts
+    type: agent
+    block: box-motif-generator
+    depends_on: [design-brief]
+    input: $steps.design-brief.output
+    config:
+      target_directions: '{{inputs.target_directions}}'
+      variants_per_motif: '{{inputs.variants_per_motif}}'
+      model: '{{inputs.concepts_model}}'
+    output: output/concepts-index.json
+    timeout: 1800
+
+  - id: review-gate
+    type: approval
+    depends_on: [generate-concepts]
+    show: output/brief.md
+    message: |
+      Concepts ready. Review the brief and the generated images, then pick winners before continuing.
+
+      1. Read the brief in the panel on the right.
+      2. Open `output/concepts/` in the file browser to view all variants.
+      3. Open `output/selections.json` and set `winning_variant` (1, 2, 3, …) for each (category × direction). Default is variant 1 for every cell.
+      4. Approve to render finals at the pro tier and export print-ready dielines.
+
+  - id: render-finals
+    type: agent
+    block: box-motif-finalizer
+    depends_on: [review-gate]
+    input: $steps.generate-concepts.output
+    config:
+      model: '{{inputs.finals_model}}'
+      aspect: '1:1'
+    output: output/finals-index.json
+    timeout: 1200
+
+  - id: mockup
+    type: script
+    block: box-mockup-compositor
+    depends_on: [render-finals]
+    input: $steps.render-finals.output
+    output: output/mockups-index.json
+    timeout: 120
+
+  - id: dieline
+    type: script
+    block: box-dieline-exporter
+    depends_on: [render-finals]
+    input: $steps.render-finals.output
+    output: output/dielines-index.json
+    timeout: 180
+
+  - id: packing
+    type: script
+    block: box-packing-spec
+    depends_on: [fit-calculator]
+    output: output/packing-spec.md
+    timeout: 60
+
+on_failure:
+  strategy: halt

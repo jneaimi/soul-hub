@@ -1,0 +1,26 @@
+[
+  {
+    "name": "meat",
+    "label": "Meat",
+    "keywords": "lamb, beef, butchery, grilled, kebab, mansaf, ouzi",
+    "motif_hints": "butcher tools, herbs, charcoal, skewers, marbling, no live animals"
+  },
+  {
+    "name": "fish-seafood",
+    "label": "Fish & Seafood",
+    "keywords": "hammour, sayadiyah, prawns, lobster, gulf catch, dhow",
+    "motif_hints": "fishing nets, dhow boats, coral, lemons, sea salt, gulf coast iconography"
+  },
+  {
+    "name": "camel-meat",
+    "label": "Camel Meat",
+    "keywords": "camel, hashi, bedouin, slow-roast, desert, traditional",
+    "motif_hints": "desert dunes, palm fronds, camel silhouette in heritage line-art (not cartoon), bedouin tent, dates"
+  },
+  {
+    "name": "general",
+    "label": "General",
+    "keywords": "mezze, mixed, family, sharing, daily, signature",
+    "motif_hints": "spice mosaic, abstract route lines, mortar & pestle, neutral pan-cuisine markers"
+  }
+]

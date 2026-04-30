@@ -1,0 +1,23 @@
+[
+  {
+    "code": "A",
+    "name": "Heritage Route",
+    "palette": "aged parchment cream, ink navy, faded sepia, deep oxblood accent",
+    "line_style": "fine etched line-art, vintage cartographic stippling, restrained shading",
+    "texture_notes": "aged map paper background, distressed edges, dhow ships and trade-route motifs in background"
+  },
+  {
+    "code": "B",
+    "name": "Mother's Kitchen",
+    "palette": "kraft brown base, warm terracotta, sage green, paprika red, mustard ochre",
+    "line_style": "hand-drawn organic line-art, soft watercolor fills, slightly imperfect strokes",
+    "texture_notes": "raw kraft cardboard texture, illustrated culinary objects (mortar, pot, spices) scattered as a pattern"
+  },
+  {
+    "code": "C",
+    "name": "Bold Nomad",
+    "palette": "matte black, vibrant signal orange, single-color icon",
+    "line_style": "flat geometric icon, single-weight line, repeating tessellated pattern",
+    "texture_notes": "high-contrast modern packaging, repeating motif as wallpaper pattern across the front panel"
+  }
+]

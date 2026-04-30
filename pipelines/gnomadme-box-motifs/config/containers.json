@@ -1,0 +1,26 @@
+[
+  {
+    "name": "Delivery bike top box",
+    "length_mm": 500,
+    "width_mm": 420,
+    "height_mm": 450,
+    "max_weight_kg": 8,
+    "notes": "typical UAE Talabat / Careem courier bike top box"
+  },
+  {
+    "name": "Scooter side bag",
+    "length_mm": 380,
+    "width_mm": 320,
+    "height_mm": 380,
+    "max_weight_kg": 5,
+    "notes": "smaller couriers / scooter operators"
+  },
+  {
+    "name": "Car trunk slot",
+    "length_mm": 700,
+    "width_mm": 500,
+    "height_mm": 400,
+    "max_weight_kg": 15,
+    "notes": "in-house delivery driver, sedan trunk"
+  }
+]
