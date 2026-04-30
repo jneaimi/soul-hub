@@ -1,10 +1,31 @@
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readdir, readFile, stat, mkdir, writeFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { resolve, join, basename } from 'node:path';
 import { isPathAllowed, findRootForPath } from '$lib/explorer-roots.js';
 import { recordAccess } from '$lib/file-audit.js';
+
+// Same character class used by the project-scoped /api/upload endpoint, kept
+// in sync so behavior is predictable across both surfaces. Path separators,
+// shell metacharacters, and most punctuation collapse to `_`.
+const SAFE_NAME_CHARS = /[^\w.\-]/g;
+
+/** Per-file upload cap for the files UI. Mirrors the 10 MB raw-read cap. */
+const MAX_UPLOAD_FILE_BYTES = 25_000_000;
+
+/**
+ * Strip a user-supplied filename or directory name to something safe to use
+ * inside an allowed root. Returns null for inputs that are empty, traversal
+ * attempts, or hidden (leading `.`) — callers should reject those with 400.
+ */
+function sanitizeName(raw: string): string | null {
+	const trimmed = basename(raw ?? '').trim();
+	if (!trimmed || trimmed === '.' || trimmed === '..') return null;
+	const safe = trimmed.replace(SAFE_NAME_CHARS, '_');
+	if (!safe || safe.startsWith('.') || safe.length > 255) return null;
+	return safe;
+}
 
 const MIME_TYPES: Record<string, string> = {
 	png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
@@ -190,4 +211,153 @@ export const GET: RequestHandler = async ({ url, request }) => {
 	} catch {
 		return json({ error: 'Directory not found' }, { status: 404 });
 	}
+};
+
+/**
+ * Resolve and allow-check a target *parent* directory for a write op.
+ * Returns the canonical (realpath'd) directory, or a Response that the
+ * caller should return verbatim. Discriminated by `kind` so TypeScript
+ * narrows cleanly inside callers.
+ */
+type WriteTarget = { kind: 'ok'; dir: string } | { kind: 'err'; response: Response };
+
+async function resolveWriteTarget(targetPath: string | null): Promise<WriteTarget> {
+	if (!targetPath) {
+		return { kind: 'err', response: json({ error: 'Missing path parameter' }, { status: 400 }) };
+	}
+	const resolved = resolve(targetPath);
+	let real: string;
+	try {
+		real = realpathSync(resolved);
+	} catch {
+		return { kind: 'err', response: json({ error: 'Directory not found' }, { status: 404 }) };
+	}
+	const check = isPathAllowed(real);
+	if (!check.allowed) {
+		return { kind: 'err', response: json({ error: 'Access denied', reason: check.reason }, { status: 403 }) };
+	}
+	try {
+		const s = await stat(real);
+		if (!s.isDirectory()) {
+			return { kind: 'err', response: json({ error: 'Target is not a directory' }, { status: 400 }) };
+		}
+	} catch {
+		return { kind: 'err', response: json({ error: 'Directory not found' }, { status: 404 }) };
+	}
+	return { kind: 'ok', dir: real };
+}
+
+/**
+ * POST /api/files?action=mkdir|upload — write operations against an allowed root.
+ *
+ *   ?action=mkdir   JSON body { path, name }       → create a single subdirectory
+ *   ?action=upload  multipart form (path, files[]) → write files into `path`
+ *
+ * Both flows resolve the target parent through `realpathSync` first so symlink
+ * escapes hit `isPathAllowed` before any write happens. Filenames are
+ * sanitized via `sanitizeName` (no traversal, no hidden files, no separators).
+ */
+export const POST: RequestHandler = async ({ url, request }) => {
+	const action = url.searchParams.get('action');
+	const ip = getClientIp(request.headers);
+
+	if (action === 'mkdir') {
+		let body: { path?: string; name?: string };
+		try {
+			body = await request.json();
+		} catch {
+			return json({ error: 'Invalid JSON body' }, { status: 400 });
+		}
+
+		const target = await resolveWriteTarget(body.path ?? null);
+		if (target.kind === 'err') return target.response;
+
+		const safeName = sanitizeName(body.name ?? '');
+		if (!safeName) {
+			void recordAccess({ ts: new Date().toISOString(), ip, action: 'mkdir', path: target.dir, status: 'invalid' });
+			return json({ error: 'Invalid folder name' }, { status: 400 });
+		}
+
+		const newDir = join(target.dir, safeName);
+		try {
+			await mkdir(newDir, { recursive: false });
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code;
+			if (code === 'EEXIST') {
+				void recordAccess({ ts: new Date().toISOString(), ip, action: 'mkdir', path: newDir, status: 'conflict' });
+				return json({ error: 'A file or folder with that name already exists' }, { status: 409 });
+			}
+			void recordAccess({ ts: new Date().toISOString(), ip, action: 'mkdir', path: newDir, status: 'denied' });
+			return json({ error: 'Failed to create folder', code }, { status: 500 });
+		}
+
+		void recordAccess({ ts: new Date().toISOString(), ip, action: 'mkdir', path: newDir, status: 'ok' });
+		return json({ ok: true, path: newDir, name: safeName }, { status: 201 });
+	}
+
+	if (action === 'upload') {
+		let formData: FormData;
+		try {
+			formData = await request.formData();
+		} catch (err) {
+			// Most common cause: request body exceeded BODY_SIZE_LIMIT (default 512KB)
+			// → adapter truncates the stream → multipart parser chokes. Surface the
+			// real error so this is diagnosable from the client banner.
+			const msg = (err as Error).message || 'unknown';
+			return json({
+				error: `Could not parse upload body: ${msg}. If the file is large, the server's BODY_SIZE_LIMIT may need to be raised.`,
+			}, { status: 400 });
+		}
+
+		const target = await resolveWriteTarget((formData.get('path') as string) ?? null);
+		if (target.kind === 'err') return target.response;
+
+		const files = formData.getAll('files').filter((f): f is File => f instanceof File);
+		if (files.length === 0) {
+			return json({ error: 'No files provided' }, { status: 400 });
+		}
+
+		const uploaded: { name: string; path: string; size: number }[] = [];
+		const skipped: { name: string; reason: string }[] = [];
+
+		for (const file of files) {
+			const safeName = sanitizeName(file.name);
+			if (!safeName) {
+				skipped.push({ name: file.name, reason: 'invalid name' });
+				void recordAccess({ ts: new Date().toISOString(), ip, action: 'upload', path: target.dir, status: 'invalid' });
+				continue;
+			}
+			if (file.size > MAX_UPLOAD_FILE_BYTES) {
+				skipped.push({ name: safeName, reason: `over ${MAX_UPLOAD_FILE_BYTES} bytes` });
+				void recordAccess({ ts: new Date().toISOString(), ip, action: 'upload', path: join(target.dir, safeName), status: 'too_large', bytes: file.size });
+				continue;
+			}
+
+			const filePath = join(target.dir, safeName);
+			// Block clobbering existing entries — caller must delete or rename first.
+			try {
+				await stat(filePath);
+				skipped.push({ name: safeName, reason: 'already exists' });
+				void recordAccess({ ts: new Date().toISOString(), ip, action: 'upload', path: filePath, status: 'conflict' });
+				continue;
+			} catch {
+				// ENOENT — proceed with write
+			}
+
+			try {
+				const buffer = Buffer.from(await file.arrayBuffer());
+				await writeFile(filePath, buffer);
+				uploaded.push({ name: safeName, path: filePath, size: buffer.length });
+				void recordAccess({ ts: new Date().toISOString(), ip, action: 'upload', path: filePath, status: 'ok', bytes: buffer.length });
+			} catch {
+				skipped.push({ name: safeName, reason: 'write failed' });
+				void recordAccess({ ts: new Date().toISOString(), ip, action: 'upload', path: filePath, status: 'denied' });
+			}
+		}
+
+		const status = uploaded.length === 0 ? 400 : 201;
+		return json({ uploaded, skipped }, { status });
+	}
+
+	return json({ error: 'Unknown action — expected mkdir or upload' }, { status: 400 });
 };

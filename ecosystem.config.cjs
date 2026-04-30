@@ -11,6 +11,10 @@ module.exports = {
       env: {
         PORT: 2400,
         NODE_ENV: 'production',
+        // SvelteKit Node adapter caps request bodies at 512KB by default.
+        // Lift to 30MB so our 25MB-per-file upload cap (in /api/files) works
+        // through the browser; multipart overhead needs the extra headroom.
+        BODY_SIZE_LIMIT: '30000000',
         // Pipeline env vars — inherited from shell so blocks can use them
         GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || '',
         GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',

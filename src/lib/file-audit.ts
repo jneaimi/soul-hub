@@ -17,10 +17,10 @@ const LOG_PATH = resolve(process.cwd(), '.data', 'file-access.log');
 export interface AuditEvent {
 	ts: string;
 	ip: string;
-	action: 'raw' | 'read';
+	action: 'raw' | 'read' | 'mkdir' | 'upload';
 	path: string;
 	bytes?: number;
-	status: 'ok' | 'denied' | 'too_large' | 'not_found';
+	status: 'ok' | 'denied' | 'too_large' | 'not_found' | 'conflict' | 'invalid';
 }
 
 let dirEnsured = false;

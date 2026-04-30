@@ -2,6 +2,14 @@
 	interface Props {
 		codePath: string | null;
 		onFileSelect: (path: string, fileName: string) => void;
+		/** Notified when a directory row is clicked — used by the parent to set the
+		 *  active upload/mkdir target. Optional so existing call-sites still work. */
+		onDirSelect?: (path: string) => void;
+		/** The currently active directory (highlighted) — provided by the parent. */
+		activeDir?: string | null;
+		/** Bumped by the parent to force a reload of `refreshPath`'s entries. */
+		refreshSignal?: number;
+		refreshPath?: string | null;
 	}
 
 	interface FileEntry {
@@ -16,7 +24,14 @@
 		expanded: boolean;
 	}
 
-	let { codePath, onFileSelect }: Props = $props();
+	let {
+		codePath,
+		onFileSelect,
+		onDirSelect,
+		activeDir = null,
+		refreshSignal = 0,
+		refreshPath = null,
+	}: Props = $props();
 
 	let dirCache = $state<Record<string, DirState>>({});
 
@@ -26,6 +41,16 @@
 	$effect(() => {
 		if (rootPath && !dirCache[rootPath]) {
 			loadDir(rootPath);
+		}
+	});
+
+	// Re-fetch a specific path when the parent bumps the refresh signal
+	// (after upload / mkdir success). Keeps expanded state intact.
+	$effect(() => {
+		// Track the signal so this effect re-runs on every bump
+		refreshSignal;
+		if (refreshPath && dirCache[refreshPath]) {
+			loadDir(refreshPath);
 		}
 	});
 
@@ -54,6 +79,7 @@
 		} else {
 			dirCache[path] = { ...state, expanded: !state.expanded };
 		}
+		onDirSelect?.(path);
 	}
 
 	function getFileIcon(name: string, type: 'dir' | 'file'): string {
@@ -101,7 +127,8 @@
 			{#if entry.type === 'dir'}
 				<button
 					onclick={() => toggleDir(entryPath)}
-					class="w-full flex items-center gap-1.5 px-2 py-1 hover:bg-hub-card/50 transition-colors text-left cursor-pointer"
+					class="w-full flex items-center gap-1.5 px-2 py-1 hover:bg-hub-card/50 transition-colors text-left cursor-pointer
+						{activeDir === entryPath ? 'bg-hub-cta/10 text-hub-cta' : ''}"
 					style="padding-left: {12 + depth * 16}px"
 				>
 					<svg class="w-3 h-3 text-hub-dim flex-shrink-0 transition-transform {dirCache[entryPath]?.expanded ? 'rotate-90' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

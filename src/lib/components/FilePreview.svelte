@@ -23,6 +23,10 @@
 	}
 	let fileSize = $state(0);
 
+	let pdfContainer: HTMLDivElement | undefined = $state();
+	let pdfLoading = $state(false);
+	let pdfError = $state('');
+
 	// Extract directory and file from full path
 	const dir = $derived(filePath.substring(0, filePath.lastIndexOf('/')));
 	const file = $derived(filePath.substring(filePath.lastIndexOf('/') + 1));
@@ -117,6 +121,67 @@
 				error = e.message;
 				loading = false;
 			});
+	});
+
+	// Render PDFs inline via PDF.js so mobile browsers (which refuse to render
+	// PDFs in iframes) get a real preview instead of an auto-download.
+	$effect(() => {
+		if (!isPdf || !pdfContainer || error) return;
+		const url = rawUrl;
+		const container = pdfContainer;
+		let cancelled = false;
+
+		pdfLoading = true;
+		pdfError = '';
+		container.innerHTML = '';
+
+		(async () => {
+			try {
+				const pdfjsLib = await import('pdfjs-dist');
+				const workerUrl = (await import('pdfjs-dist/build/pdf.worker.mjs?url')).default;
+				pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+
+				const pdf = await pdfjsLib.getDocument({ url, withCredentials: true }).promise;
+				if (cancelled) return;
+
+				const dpr = Math.min(window.devicePixelRatio || 1, 2);
+				const containerWidth = Math.max(container.clientWidth - 16, 280);
+				const maxPages = Math.min(pdf.numPages, 50);
+
+				for (let i = 1; i <= maxPages; i++) {
+					if (cancelled) return;
+					const page = await pdf.getPage(i);
+					const baseViewport = page.getViewport({ scale: 1 });
+					const scale = (containerWidth / baseViewport.width) * dpr;
+					const viewport = page.getViewport({ scale });
+
+					const canvas = document.createElement('canvas');
+					canvas.width = viewport.width;
+					canvas.height = viewport.height;
+					canvas.style.width = `${viewport.width / dpr}px`;
+					canvas.style.height = `${viewport.height / dpr}px`;
+					canvas.className = 'mx-auto mb-3 shadow-lg block max-w-full';
+					container.appendChild(canvas);
+
+					await page.render({ canvas, viewport }).promise;
+				}
+
+				if (!cancelled && pdf.numPages > maxPages) {
+					const note = document.createElement('div');
+					note.className = 'text-center text-hub-dim text-xs py-3';
+					note.textContent = `Showing first ${maxPages} of ${pdf.numPages} pages — download for the full file.`;
+					container.appendChild(note);
+				}
+
+				pdfLoading = false;
+			} catch (e: unknown) {
+				if (cancelled) return;
+				pdfError = e instanceof Error ? e.message : 'Failed to render PDF';
+				pdfLoading = false;
+			}
+		})();
+
+		return () => { cancelled = true; };
 	});
 
 	function formatBytes(bytes: number): string {
@@ -268,12 +333,19 @@
 					</div>
 				</div>
 			{:else if isPdf}
-				<div class="h-full bg-[#0a0a0f]">
-					<iframe
-						src={rawUrl}
-						title={fileName}
-						class="w-full h-full border-0"
-					></iframe>
+				<div class="relative h-full bg-[#0a0a0f] overflow-auto">
+					<div class="p-2" bind:this={pdfContainer}></div>
+					{#if pdfLoading}
+						<div class="absolute inset-0 flex items-center justify-center text-hub-dim text-sm pointer-events-none">
+							Rendering PDF…
+						</div>
+					{/if}
+					{#if pdfError}
+						<div class="absolute inset-0 flex flex-col items-center justify-center text-hub-dim text-sm gap-3 bg-[#0a0a0f]">
+							<div>Couldn't render PDF inline: {pdfError}</div>
+							<a href={downloadUrl} download={fileName} class="px-3 py-1.5 bg-hub-card hover:bg-hub-cta rounded text-xs">Download instead</a>
+						</div>
+					{/if}
 				</div>
 			{:else if isCsv && content}
 				{@const rows = parseCsv(content)}
