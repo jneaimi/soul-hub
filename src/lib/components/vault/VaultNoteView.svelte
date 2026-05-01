@@ -139,7 +139,7 @@
 
 	<!-- Metadata -->
 	<div class="bg-hub-surface rounded-lg p-4 border border-hub-border">
-		<h1 class="text-xl font-semibold text-hub-text mb-3" dir={note.titleIsRtl ? 'rtl' : undefined}>{note.title}</h1>
+		<h1 class="text-xl font-semibold text-hub-text mb-3" dir="auto">{note.title}</h1>
 
 		{#if note.meta.tags && note.meta.tags.length > 0}
 			<div class="flex items-center gap-2 flex-wrap mb-2">
@@ -169,7 +169,7 @@
 	<!-- Rendered content -->
 	<div
 		class="vault-prose bg-hub-surface rounded-lg p-6 border border-hub-border"
-		dir={note.contentIsRtl ? 'rtl' : undefined}
+		dir="auto"
 		lang={note.contentIsRtl ? 'ar' : undefined}
 		onclick={handleContentClick}
 		role="presentation"

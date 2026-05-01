@@ -100,6 +100,29 @@ function rewriteAttachmentLink(node: any, opts: { vaultDir: string; noteDir: str
 	node.properties.className = [...existingClasses, 'vault-attachment-link'];
 }
 
+/**
+ * Tag block elements with `dir="auto"` so the browser picks LTR/RTL per block
+ * based on the first strong character. This handles mixed-language notes
+ * (English headings + Arabic code blocks, etc.) without a percentage heuristic.
+ */
+const AUTO_DIR_TAGS = new Set([
+	'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+	'p', 'li', 'blockquote',
+	'td', 'th', 'caption',
+	'pre', 'figcaption',
+	'dt', 'dd',
+]);
+
+function rehypeAutoDir() {
+	return (tree: any) => {
+		visit(tree, 'element', (node: any) => {
+			if (!AUTO_DIR_TAGS.has(node.tagName)) return;
+			node.properties = node.properties || {};
+			if (node.properties.dir == null) node.properties.dir = 'auto';
+		});
+	};
+}
+
 function rehypeCodeCopyButton() {
 	return (tree: any) => {
 		visit(tree, 'element', (node: any, index: number | undefined, parent: any) => {
@@ -179,6 +202,7 @@ export async function renderMarkdown(
 		.use(rehypePrettyCode, { theme: 'github-dark-default', keepBackground: true })
 		.use(rehypeCodeCopyButton)
 		.use(rehypeMediaResolver, options)
+		.use(rehypeAutoDir)
 		.use(rehypeStringify, { allowDangerousHtml: true })
 		.process(preprocessed);
 
