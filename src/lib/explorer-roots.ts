@@ -17,9 +17,10 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, realpathS
 import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { soulHubDataFile } from './paths.js';
 
 const HOME = homedir();
-const ROOTS_PATH = resolve(process.cwd(), '.data', 'explorer-roots.json');
+const ROOTS_PATH = soulHubDataFile('explorer-roots.json');
 
 export interface ExplorerRoot {
 	id: string;

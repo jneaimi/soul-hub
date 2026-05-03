@@ -1,11 +1,24 @@
-import type { ChannelAdapter, ChannelConfig, ChannelMeta, ChannelsSettings, SendResult } from './types.js';
+import type {
+	ChannelAdapter,
+	ChannelConfig,
+	ChannelMeta,
+	ChannelsSettings,
+	SendResult,
+	TestResult,
+} from './types.js';
 import { adapter as telegramAdapter } from './telegram.js';
+import { adapter as whatsappAdapter, bootstrap as whatsappBootstrap } from './whatsapp/index.js';
 
 /** All registered channel adapters */
 const adapters = new Map<string, ChannelAdapter>();
 
 // Register built-in adapters
 adapters.set('telegram', telegramAdapter);
+adapters.set('whatsapp', whatsappAdapter);
+
+// Wire the WhatsApp inbound dispatcher and auto-start when settings has
+// `channels.whatsapp.enabled: true` + creds on disk. Safe no-op otherwise.
+whatsappBootstrap();
 
 /** Get all registered adapter metadata (for settings UI) */
 export function getAllChannelMeta(): ChannelMeta[] {
@@ -88,4 +101,74 @@ export function getDefaultChannelsConfig(): ChannelsSettings {
 		};
 	}
 	return defaults;
+}
+
+/** A secret declared by some adapter — used by the settings UI to show
+ *  what's needed even when nothing is configured yet. */
+export interface DeclaredSecret {
+	/** Env var name, e.g. `TELEGRAM_BOT_TOKEN` */
+	key: string;
+	/** Human label for the field, e.g. `Bot Token` */
+	label: string;
+	/** Source(s) that declared it — usually a single adapter id */
+	declaredBy: string[];
+	/** True if any declarer marks it as required */
+	required: boolean;
+	/** First link any declarer provides for obtaining the secret */
+	link?: string;
+}
+
+/** Test the credential associated with `envKey` by routing to the first
+ *  adapter that declares it and calling `adapter.test()`. Returns a
+ *  structured `TestResult`. Keys that no adapter declares — or that the
+ *  adapter chose not to support — get `unsupported`. */
+export async function testSecret(envKey: string): Promise<TestResult> {
+	for (const adapter of adapters.values()) {
+		const declares = adapter.meta.fields.some(
+			(f) => f.type === 'secret' && f.env === envKey,
+		);
+		if (!declares) continue;
+		if (typeof adapter.test !== 'function') {
+			return {
+				ok: false,
+				status: 'unsupported',
+				message: `Adapter '${adapter.meta.id}' does not implement a credential test.`,
+			};
+		}
+		return adapter.test();
+	}
+	return {
+		ok: false,
+		status: 'unsupported',
+		message: `No adapter declares ${envKey}; cannot test it from here.`,
+	};
+}
+
+/** Aggregate every secret declared by registered channel adapters.
+ *  Keys declared by multiple adapters are merged (union of declaredBy,
+ *  required = OR, first non-empty link wins). */
+export function getDeclaredSecrets(): DeclaredSecret[] {
+	const map = new Map<string, DeclaredSecret>();
+	for (const adapter of adapters.values()) {
+		for (const field of adapter.meta.fields) {
+			if (field.type !== 'secret') continue;
+			const existing = map.get(field.env);
+			if (existing) {
+				if (!existing.declaredBy.includes(adapter.meta.id)) {
+					existing.declaredBy.push(adapter.meta.id);
+				}
+				if (field.required) existing.required = true;
+				if (!existing.link && field.link) existing.link = field.link;
+			} else {
+				map.set(field.env, {
+					key: field.env,
+					label: field.label,
+					declaredBy: [adapter.meta.id],
+					required: !!field.required,
+					link: field.link,
+				});
+			}
+		}
+	}
+	return Array.from(map.values());
 }

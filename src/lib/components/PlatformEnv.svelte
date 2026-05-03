@@ -1,34 +1,53 @@
 <script lang="ts">
-	interface EnvEntry {
+	/** Shape returned by GET /api/secrets — produced by getMaskedSecrets(). */
+	interface ApiSecret {
 		key: string;
 		set: boolean;
 		source: 'platform' | 'shell';
+		declared: boolean;
+		required: boolean;
+		declaredBy: string[];
+		link?: string;
 	}
 
+	/** Local descriptions for env vars that aren't yet declared by an adapter
+	 *  (skills, pipelines, etc.). When/if these consumers register via the
+	 *  channel/provider registry, these rows can be removed. */
 	interface KnownVar {
 		key: string;
 		description: string;
 		usedBy: string[];
-		required: boolean;
 	}
 
-	// Known platform env vars — declared by skills, agents, and channels
-	// This is the single source of truth for what env vars Soul Hub needs
 	const KNOWN_VARS: KnownVar[] = [
-		{ key: 'TELEGRAM_BOT_TOKEN', description: 'Telegram Bot API token', usedBy: ['telegram channel'], required: false },
-		{ key: 'TELEGRAM_CHAT_ID', description: 'Telegram chat ID for notifications', usedBy: ['telegram channel'], required: false },
-		{ key: 'APIDIRECT_API_KEY', description: 'API key for Twitter, Reddit, TikTok, Instagram, LinkedIn', usedBy: ['collect skill', 'research skill', 'recipe skill'], required: false },
-		{ key: 'YOUTUBE_API_KEY', description: 'YouTube Data API key', usedBy: ['collect skill', 'research skill'], required: false },
-		{ key: 'GEMINI_API_KEY', description: 'Gemini API for image + Veo video generation', usedBy: ['generate skill', 'media-creator agent'], required: false },
-		{ key: 'ELEVENLABS_API_KEY', description: 'ElevenLabs text-to-speech', usedBy: ['generate skill', 'media-creator agent'], required: false },
-		{ key: 'RESEND_API_KEY', description: 'Resend email API for newsletters', usedBy: ['newsletter skill'], required: false },
-		{ key: 'LINEAR_API_KEY', description: 'Linear project management API', usedBy: ['claude-soul agents'], required: false },
-		{ key: 'GOOGLE_API_KEY', description: 'Google Cloud Platform (Geocoding, Places, Maps)', usedBy: ['cafe-deals pipeline'], required: false },
-		{ key: 'HF_API_TOKEN', description: 'Hugging Face Inference API (optional)', usedBy: ['research skill'], required: false },
-		{ key: 'EODHD_API_KEY', description: 'EODHD financial data API', usedBy: ['market skill'], required: false },
+		{ key: 'TELEGRAM_BOT_TOKEN', description: 'Telegram Bot API token', usedBy: ['telegram channel'] },
+		{ key: 'TELEGRAM_CHAT_ID', description: 'Telegram chat ID for notifications', usedBy: ['telegram channel'] },
+		{ key: 'APIDIRECT_API_KEY', description: 'API key for Twitter, Reddit, TikTok, Instagram, LinkedIn', usedBy: ['collect skill', 'research skill', 'recipe skill'] },
+		{ key: 'YOUTUBE_API_KEY', description: 'YouTube Data API key', usedBy: ['collect skill', 'research skill'] },
+		{ key: 'GEMINI_API_KEY', description: 'Gemini API for image + Veo video generation', usedBy: ['generate skill', 'media-creator agent'] },
+		{ key: 'ELEVENLABS_API_KEY', description: 'ElevenLabs text-to-speech', usedBy: ['generate skill', 'media-creator agent'] },
+		{ key: 'RESEND_API_KEY', description: 'Resend email API for newsletters', usedBy: ['newsletter skill'] },
+		{ key: 'LINEAR_API_KEY', description: 'Linear project management API', usedBy: ['claude-soul agents'] },
+		{ key: 'GOOGLE_API_KEY', description: 'Google Cloud Platform (Geocoding, Places, Maps)', usedBy: ['cafe-deals pipeline'] },
+		{ key: 'HF_API_TOKEN', description: 'Hugging Face Inference API (optional)', usedBy: ['research skill'] },
+		{ key: 'EODHD_API_KEY', description: 'EODHD financial data API', usedBy: ['market skill'] },
 	];
+	const knownByKey = new Map(KNOWN_VARS.map((v) => [v.key, v]));
 
-	let secrets = $state<EnvEntry[]>([]);
+	/** Final merged row consumed by the template. */
+	interface EnvRow {
+		key: string;
+		description: string;
+		usedBy: string[];
+		set: boolean;
+		source: 'platform' | 'shell';
+		required: boolean;
+		declared: boolean;
+		declaredBy: string[];
+		link?: string;
+	}
+
+	let secrets = $state<ApiSecret[]>([]);
 	let loading = $state(true);
 
 	// Edit state
@@ -36,6 +55,22 @@
 	let editValue = $state('');
 	let saving = $state(false);
 	let saveResult = $state<{ ok: boolean; key: string } | null>(null);
+
+	// Test state — keyed by env var so multiple tests can be in flight
+	type TestStatus =
+		| 'ok'
+		| 'unauthorized'
+		| 'invalid'
+		| 'ratelimit'
+		| 'network'
+		| 'unconfigured'
+		| 'unsupported';
+	interface TestState {
+		status: 'pending' | TestStatus;
+		message?: string;
+		ok?: boolean;
+	}
+	let testStates = $state<Record<string, TestState>>({});
 
 	// Sync from shell
 	let syncing = $state(false);
@@ -46,30 +81,41 @@
 	let newKey = $state('');
 	let newValue = $state('');
 
-	// Merge known vars with actual state
-	let envList = $derived.by(() => {
-		const setKeys = new Set(secrets.map((s) => s.key));
-		const result: (KnownVar & { set: boolean })[] = [];
+	/** Merge locally documented vars with the API's declared/on-disk view.
+	 *  Order: KNOWN_VARS first (stable display order), then any extras from
+	 *  the API that aren't in KNOWN_VARS (declared by an adapter we don't
+	 *  document locally, or already on disk as a custom key). */
+	let envList = $derived.by<EnvRow[]>(() => {
+		const apiByKey = new Map(secrets.map((s) => [s.key, s]));
+		const seen = new Set<string>();
+		const rows: EnvRow[] = [];
 
-		// Add known vars first (in defined order)
+		const buildRow = (key: string): EnvRow => {
+			const api = apiByKey.get(key);
+			const known = knownByKey.get(key);
+			return {
+				key,
+				description: known?.description ?? (api?.declared ? '' : 'Custom secret'),
+				usedBy: known?.usedBy ?? [],
+				set: api?.set ?? false,
+				source: api?.source ?? 'platform',
+				required: api?.required ?? false,
+				declared: api?.declared ?? false,
+				declaredBy: api?.declaredBy ?? [],
+				link: api?.link,
+			};
+		};
+
 		for (const known of KNOWN_VARS) {
-			result.push({ ...known, set: setKeys.has(known.key) || secrets.some((s) => s.key === known.key && s.set) });
+			rows.push(buildRow(known.key));
+			seen.add(known.key);
 		}
-
-		// Add any unknown vars from secrets.env that aren't in KNOWN_VARS
 		for (const s of secrets) {
-			if (!KNOWN_VARS.some((k) => k.key === s.key)) {
-				result.push({
-					key: s.key,
-					description: 'Custom secret',
-					usedBy: [],
-					required: false,
-					set: s.set,
-				});
-			}
+			if (seen.has(s.key)) continue;
+			rows.push(buildRow(s.key));
+			seen.add(s.key);
 		}
-
-		return result;
+		return rows;
 	});
 
 	async function loadSecrets() {
@@ -127,6 +173,62 @@
 		} catch { /* ignore */ }
 	}
 
+	async function testSecret(key: string) {
+		testStates = { ...testStates, [key]: { status: 'pending' } };
+		try {
+			const res = await fetch('/api/secrets/test', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ key }),
+			});
+			const data = await res.json();
+			testStates = {
+				...testStates,
+				[key]: {
+					status: (data.status as TestStatus) ?? 'invalid',
+					message: data.message,
+					ok: !!data.ok,
+				},
+			};
+		} catch (err) {
+			testStates = {
+				...testStates,
+				[key]: { status: 'network', ok: false, message: (err as Error).message },
+			};
+		}
+		// Auto-clear after a while so the row settles back to neutral
+		const captured = key;
+		setTimeout(() => {
+			if (testStates[captured]?.status !== 'pending') {
+				const next = { ...testStates };
+				delete next[captured];
+				testStates = next;
+			}
+		}, 8000);
+	}
+
+	function testLabel(state: TestState | undefined): string {
+		if (!state) return '';
+		switch (state.status) {
+			case 'pending':
+				return 'Testing…';
+			case 'ok':
+				return 'OK';
+			case 'unauthorized':
+				return 'Unauthorized';
+			case 'invalid':
+				return 'Invalid';
+			case 'ratelimit':
+				return 'Rate-limited';
+			case 'network':
+				return 'Network';
+			case 'unconfigured':
+				return 'Not set';
+			case 'unsupported':
+				return 'No test';
+		}
+	}
+
 	function startAddNew() {
 		addingNew = true;
 		newKey = '';
@@ -142,10 +244,13 @@
 	async function syncFromShell() {
 		syncing = true;
 		try {
+			// Sync every key the UI displays — both locally documented vars
+			// (KNOWN_VARS) and adapter-declared vars from the API.
+			const keys = Array.from(new Set(envList.map((r) => r.key)));
 			const res = await fetch('/api/secrets', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ action: 'sync-from-shell', keys: KNOWN_VARS.map(v => v.key) }),
+				body: JSON.stringify({ action: 'sync-from-shell', keys }),
 			});
 			const data = await res.json();
 			if (data.ok) {
@@ -211,17 +316,46 @@
 
 						<!-- Info -->
 						<div class="flex-1 min-w-0">
-							<div class="flex items-center gap-2">
+							<div class="flex items-center gap-2 flex-wrap">
 								<span class="text-sm font-mono text-hub-text">{entry.key}</span>
+								{#if entry.required}
+									<span
+										class="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded border border-hub-cta/40 text-hub-cta"
+										title={entry.declaredBy.length ? `Required by: ${entry.declaredBy.join(', ')}` : 'Required'}
+									>
+										Required
+									</span>
+								{/if}
+								{#if entry.set && entry.source === 'shell'}
+									<span class="text-[9px] uppercase tracking-wider text-hub-muted" title="Loaded from your shell — not yet stored in ~/.soul-hub/.env">
+										via shell
+									</span>
+								{/if}
 								{#if saveResult?.ok && saveResult.key === entry.key}
 									<span class="text-[10px] text-hub-cta">Saved</span>
 								{/if}
 							</div>
-							<div class="text-[11px] text-hub-dim mt-0.5">{entry.description}</div>
-							{#if entry.usedBy.length > 0}
+							{#if entry.description}
+								<div class="text-[11px] text-hub-dim mt-0.5">{entry.description}</div>
+							{/if}
+							{#if entry.declaredBy.length > 0}
+								<div class="text-[10px] text-hub-muted mt-0.5">
+									Required for: {entry.declaredBy.join(', ')}
+								</div>
+							{:else if entry.usedBy.length > 0}
 								<div class="text-[10px] text-hub-muted mt-0.5">
 									Used by: {entry.usedBy.join(', ')}
 								</div>
+							{/if}
+							{#if entry.link}
+								<a
+									href={entry.link}
+									target="_blank"
+									rel="noopener noreferrer"
+									class="text-[10px] text-hub-muted hover:text-hub-cta mt-0.5 inline-block"
+								>
+									Get key →
+								</a>
 							{/if}
 
 							<!-- Inline edit -->
@@ -254,6 +388,21 @@
 						<!-- Actions -->
 						{#if editingKey !== entry.key}
 							<div class="flex items-center gap-1 flex-shrink-0">
+								{#if entry.declared && entry.set}
+									{@const ts = testStates[entry.key]}
+									<button
+										onclick={() => testSecret(entry.key)}
+										disabled={ts?.status === 'pending'}
+										class="px-2 py-1 text-[11px] font-medium rounded border transition-colors cursor-pointer disabled:opacity-60 {ts?.ok
+											? 'border-hub-cta/60 text-hub-cta'
+											: ts && ts.status !== 'pending'
+												? 'border-hub-danger/60 text-hub-danger'
+												: 'border-hub-border text-hub-muted hover:text-hub-text hover:border-hub-cta'}"
+										title={ts?.message ?? 'Verify the credential against the upstream API.'}
+									>
+										{ts ? testLabel(ts) : 'Test'}
+									</button>
+								{/if}
 								<button
 									onclick={() => startEditing(entry.key)}
 									class="px-2 py-1 text-[11px] font-medium rounded border border-hub-border text-hub-muted hover:text-hub-text hover:border-hub-cta transition-colors cursor-pointer"

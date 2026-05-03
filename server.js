@@ -5,9 +5,28 @@
  */
 
 import http from 'node:http';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { handler } from './build/handler.js';
 
 const PORT = parseInt(process.env.PORT || '2400');
+
+// Resolve settings.json from ~/.soul-hub/ first, falling back to repo root
+// (legacy). Returns parsed JSON or null when no settings file exists.
+function resolveSettings() {
+	const home = process.env.SOUL_HUB_HOME || resolve(homedir(), '.soul-hub');
+	const candidates = [
+		process.env.SOUL_HUB_SETTINGS,
+		resolve(home, 'settings.json'),
+		new URL('./settings.json', import.meta.url).pathname,
+	].filter(Boolean);
+	for (const p of candidates) {
+		if (!existsSync(p)) continue;
+		try { return JSON.parse(readFileSync(p, 'utf-8')); } catch { /* try next */ }
+	}
+	return null;
+}
 
 // Lazy-load proxy module from the build output
 let proxyModule = null;
@@ -18,10 +37,8 @@ async function getProxy() {
 		if (!hooks) {
 			// Fallback: inline the proxy logic
 			const { request: httpRequest } = await import('node:http');
-			const settingsJson = await import('node:fs').then(fs =>
-				JSON.parse(fs.readFileSync(new URL('./settings.json', import.meta.url), 'utf-8'))
-			);
-			const proxyConfig = settingsJson.proxy || { enabled: true, allowedPortRange: [1024, 9999], blockedPorts: [2400] };
+			const settingsJson = resolveSettings();
+			const proxyConfig = settingsJson?.proxy || { enabled: true, allowedPortRange: [1024, 9999], blockedPorts: [2400] };
 			const PORT_RE = /^p(\d+)\./;
 
 			proxyModule = {

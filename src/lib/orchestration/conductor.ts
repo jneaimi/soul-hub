@@ -275,11 +275,10 @@ CROSS-RUN RULES:
 ${failureContext}
 ${existingTasks.length > 0 ? `CURRENT STATE: ${existingTasks.length} tasks exist. Review them, ask the user what to adjust, or validate the plan.` : `PLANNING PROTOCOL:
 1. Read the codebase: CLAUDE.md, package.json, src/ structure, existing files
-2. Search for relevant knowledge: python3 ~/dev/knowledge-db/context.py --query "${goal}" --top 3
-   (This searches the knowledge vault for patterns, learnings, and prior decisions relevant to this project)
+2. Search the vault for prior context: curl -s "http://localhost:2400/api/vault/notes?q=${encodeURIComponent(goal)}&limit=5"
 3. Check cross-run tasks for this project
 4. Run: find src -type f | sort (see all existing source files)
-4. Design a FOUNDATION-FIRST plan:
+5. Design a FOUNDATION-FIRST plan:
 
    TASK 0 (Foundation) — runs ALONE before all others:
    - Creates ALL shared types (src/lib/types.ts)
@@ -295,7 +294,7 @@ ${existingTasks.length > 0 ? `CURRENT STATE: ${existingTasks.length} tasks exist
    - They IMPORT from foundation files but NEVER modify them
    - They NEVER touch package.json, types.ts, db.ts, or any file owned by foundation
 
-5. Generate a FILE OWNERSHIP MATRIX before creating any tasks:
+6. Generate a FILE OWNERSHIP MATRIX before creating any tasks:
 
    | File/Directory | Owner Task | Other Tasks |
    |----------------|-----------|-------------|

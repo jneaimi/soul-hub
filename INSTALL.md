@@ -48,6 +48,69 @@ echo "SOUL_HUB_SECRET=$(node -e 'console.log(require(\"crypto\").randomBytes(32)
 
 Edit `.env` to add any API keys you need (Gemini, ElevenLabs, Telegram, etc.). Pipelines that require a specific key will fail gracefully if it's missing.
 
+### Optional — Mac-wide secret store (recommended)
+
+Soul Hub stores platform secrets in `~/.soul-hub/.env` (managed via the Settings UI). To make those same secrets visible to your shell and any tool you run from it, add this one line near the bottom of `~/.zshrc` (or `~/.bashrc`):
+
+```bash
+set -a; [ -f "$HOME/.soul-hub/.env" ] && . "$HOME/.soul-hub/.env"; set +a
+```
+
+`set -a` exports every variable defined in the file. The `[ -f ... ]` check makes the line a no-op for fresh installs that don't have the file yet. The PM2 config already reads the same file via `env_file`, so child processes spawned by Soul Hub inherit it without the zshrc line — this is just for shell sessions and other tools.
+
+#### launchd cron jobs (advanced)
+
+If you have personal launchd jobs (cron-style background tasks under `~/Library/LaunchAgents/com.*.plist`) that should also see your Soul Hub secrets, wrap their `ProgramArguments` with a `/bin/sh -c` preamble that sources the env file before `exec`-ing the original command:
+
+```xml
+<key>ProgramArguments</key>
+<array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>set -a; [ -f "$HOME/.soul-hub/.env" ] &amp;&amp; . "$HOME/.soul-hub/.env"; set +a; exec /opt/homebrew/bin/python3 /Users/you/path/to/script.py</string>
+</array>
+```
+
+Apply with `launchctl bootout gui/$(id -u)/<label> && launchctl bootstrap gui/$(id -u) <plist>`.
+
+#### Diagnose drift
+
+Run the doctor any time to verify all entry points see the same secrets:
+
+```bash
+./scripts/doctor-secrets.sh
+```
+
+It checks `~/.soul-hub/` modes, the secrets file, the zshrc source line, the PM2 `env_file` declaration, and any user-owned launchd plists. Read-only — never modifies anything. Exits non-zero on FAIL so it can be wired into CI later.
+
+#### Test individual credentials from the UI
+
+Settings → **Platform Environment** renders a **Test** button next to every declared + set credential. Clicking it pings the upstream API with a read-only request and colour-codes the row by outcome (`ok`, `unauthorized`, `invalid`, `ratelimit`, `network`, `unconfigured`, `unsupported`). Built-in coverage:
+
+| Key | What's tested |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | Bot token via `getMe`, chat reachability via `getChat` |
+| `GEMINI_API_KEY` | `GET /v1beta/models` |
+| `OPENROUTER_API_KEY` | `GET /api/v1/auth/key` |
+| `ANTHROPIC_API_KEY` | `GET /v1/models` |
+| `ELEVENLABS_API_KEY` | `GET /v1/user` |
+| `RESEND_API_KEY` | `GET /api-keys` |
+| `YOUTUBE_API_KEY` | `videos.list` (zero quota cost) |
+| `LINEAR_API_KEY` | GraphQL `viewer { id }` |
+| `HF_API_TOKEN` | `whoami-v2` |
+| `GOOGLE_API_KEY` | Geocoding API ping |
+| `EODHD_API_KEY` | `user` endpoint |
+
+Add a tester for a new provider by dropping a file in `src/lib/providers/` that exports `provider: ProviderTester` and registering it in `providers/registry.ts`.
+
+#### Test routes from the UI
+
+Settings → **Routes** lists every configured route (primary + failover chain + timeout + retries + live circuit-breaker state) and exposes a per-route **Test** button that runs a small ping through `dispatchRoute()` and reports which provider answered, the latency, and a short transcript snippet. Useful for verifying that a route's failover chain actually fails over — flipping a credential and re-testing instantly shows the next-in-chain taking over.
+
+#### WhatsApp pairing without leaving the browser
+
+Settings → **WhatsApp** carries the full lifecycle: a Link button that triggers `/login` and renders the QR inline (polling for refresh while pairing), allowlist editor, intent map editor (slash commands → routes), and the worker-mode toggle for the crash-isolated PM2 app. Status updates poll fast (1.5s) while pairing and slow (8s) while idle.
+
 ## Step 3: Initialize the Vault
 
 Create the vault directory where your knowledge will be stored:
@@ -66,14 +129,15 @@ Soul Hub needs to know where Claude Code is installed:
 which claude
 ```
 
-If the path is different from the default (`~/.local/bin/claude`), copy the provided example settings and edit:
+If the path is different from the default (`~/.local/bin/claude`), copy the provided example settings to your Soul Hub home directory and edit:
 
 ```bash
-cp settings.example.json settings.json
-# Then edit settings.json and update paths.claudeBinary to match `which claude`
+mkdir -p ~/.soul-hub
+cp settings.example.json ~/.soul-hub/settings.json
+# Then edit ~/.soul-hub/settings.json and update paths.claudeBinary to match `which claude`
 ```
 
-`settings.json` is gitignored so each installation has its own. All paths support `~` expansion.
+Soul Hub stores all user state outside the repo under `~/.soul-hub/` (settings, secrets, runtime data, logs). Override the location by exporting `SOUL_HUB_HOME` if you need to. All paths support `~` expansion.
 
 ## Step 5: Run
 
@@ -117,9 +181,61 @@ The PM2 config is in `ecosystem.config.cjs`. It runs two processes:
 
 Logs are written to `~/.soul-hub/logs/`. The app auto-restarts on crash with exponential backoff, and respects a 512MB memory limit.
 
+## Optional: Linking a WhatsApp Channel
+
+Soul Hub can connect to a personal WhatsApp number via Baileys (unofficial WhatsApp Web library — use a dedicated number to stay clear of Meta's ToS gray zone). Once linked, inbound DMs route through the configurable routes layer (text chat goes to Gemini/OpenRouter/Anthropic; voice notes auto-transcribe via Gemini).
+
+1. **Enable in `~/.soul-hub/settings.json`** — set `channels.whatsapp.enabled: true` and add your own number to the allowlist:
+
+   ```json
+   {
+     "channels": {
+       "whatsapp": {
+         "enabled": true,
+         "access": { "allowFrom": ["+9715xxxxxxxx"] }
+       }
+     }
+   }
+   ```
+
+2. **Trigger pairing** — `curl -X POST http://localhost:2400/api/channels/whatsapp/login`. The QR appears two ways:
+   - PNG data URL on `GET /api/channels/whatsapp/status` (rendered in the Settings UI when Phase 5 ships)
+   - ANSI block-art QR printed to PM2 stdout (`npm run prod:logs`) when `delivery.printTerminalQr: true` (default)
+
+3. **Scan with the WhatsApp app** → Settings → Linked Devices → Link a Device.
+
+4. **Use it.** Free-form DMs route to `vault-chat`. Voice notes are transcribed and routed the same way. Slash commands map via `intentMap` (`/translate` ships by default → `translate-arabic`). Send a one-off message from code with `sendViaChannel('whatsapp', text, attachPath?)`.
+
+Disconnect with `POST /api/channels/whatsapp/logout` (wipes the auth dir at `~/.soul-hub/data/whatsapp/<account>/` so the next login asks for a fresh QR).
+
+### Crash-isolated worker mode (recommended for prod)
+
+By default WhatsApp runs in-process inside the main `soul-hub` SvelteKit server — simple, but a Baileys WS error or decryption blowup takes the whole web UI with it. To isolate the channel, flip on the dedicated PM2 app `soul-hub-whatsapp`:
+
+```json
+{
+  "channels": {
+    "whatsapp": {
+      "enabled": true,
+      "worker": {
+        "enabled": true,
+        "url": "http://127.0.0.1:2401",
+        "mainAppUrl": "http://127.0.0.1:2400"
+      }
+    }
+  }
+}
+```
+
+Then `npm run prod:start` (or `npm run prod:restart`) — PM2 launches `soul-hub-whatsapp` alongside the main app. The main app's WhatsApp adapter switches to HTTP-proxy mode automatically; `/api/channels/whatsapp/{login,status,logout}` keep the same surface. Inbound messages flow back via a callback to `/api/channels/whatsapp/_inbound`. If the worker crashes, only the worker restarts — the SvelteKit server keeps serving.
+
+For non-loopback setups (workers on a different host, or anyone exposing port 2401), set `channels.whatsapp.worker.bearerToken` to a shared secret. Both ends will then require `Authorization: Bearer <token>` on every request.
+
+The worker is bundled into `build/whatsapp-worker.js` by `npm run build`. PM2's `whatsapp-out.log` / `whatsapp-error.log` (under `~/.soul-hub/logs/`) carry its output, including the ASCII pairing QR.
+
 ## Configuration Reference
 
-Soul Hub reads `settings.json` from the project root. All fields are optional — defaults are shown below:
+Soul Hub reads `~/.soul-hub/settings.json`. All fields are optional — defaults are shown below:
 
 ```json
 {

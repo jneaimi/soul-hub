@@ -1,7 +1,7 @@
 import { readFile, writeFile, stat, readdir, rename, mkdir } from 'node:fs/promises';
 import { resolve, join, relative, dirname } from 'node:path';
 import { parseNote } from './parser.js';
-import { WikilinkResolver } from './resolver.js';
+import { WikilinkResolver, type ResolverEntry } from './resolver.js';
 import type { VaultNote, ParsedNote, VaultStats, VaultHealth } from './types.js';
 import { IGNORED_FOLDERS, MAX_NOTE_SIZE, DEFAULT_ZONE } from './types.js';
 
@@ -67,7 +67,7 @@ export class VaultIndexer {
 			}
 		}
 
-		this.resolver.build(relPaths);
+		this.resolver.build(this.toResolverEntries());
 		this.resolveAllLinks();
 		this.computeBacklinks();
 		await this.saveCache(cachePath);
@@ -97,7 +97,7 @@ export class VaultIndexer {
 				size: fileStat.size,
 			});
 			this.mtimeCache.set(relPath, fileStat.mtimeMs);
-			this.resolver.add(relPath);
+			this.resolver.add(this.toResolverEntry(relPath));
 
 			// Re-resolve links for this note
 			const note = this.notes.get(relPath)!;
@@ -227,17 +227,34 @@ export class VaultIndexer {
 			note.backlinks = [];
 		}
 
-		// Recompute
+		// Recompute. `link.resolved` is either null (broken), 'external' (URL
+		// or non-md asset — see resolver), or a vault-relative note path.
+		// Only the last form contributes to backlinks.
 		for (const note of this.notes.values()) {
 			for (const link of note.links) {
-				if (link.resolved) {
-					const target = this.notes.get(link.resolved);
-					if (target && !target.backlinks.includes(note.path)) {
-						target.backlinks.push(note.path);
-					}
+				if (!link.resolved || WikilinkResolver.isExternalResult(link.resolved)) continue;
+				const target = this.notes.get(link.resolved);
+				if (target && !target.backlinks.includes(note.path)) {
+					target.backlinks.push(note.path);
 				}
 			}
 		}
+	}
+
+	private toResolverEntries(): ResolverEntry[] {
+		return Array.from(this.notes.values()).map((n) => this.noteToEntry(n));
+	}
+
+	private toResolverEntry(relPath: string): ResolverEntry {
+		const note = this.notes.get(relPath);
+		return note ? this.noteToEntry(note) : { path: relPath };
+	}
+
+	private noteToEntry(note: VaultNote): ResolverEntry {
+		const aliases = Array.isArray(note.meta.aliases)
+			? (note.meta.aliases.filter((a): a is string => typeof a === 'string'))
+			: undefined;
+		return { path: note.path, aliases };
 	}
 
 	private resolveAllLinks(): void {

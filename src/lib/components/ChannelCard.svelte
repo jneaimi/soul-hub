@@ -15,6 +15,9 @@
 		enabled: boolean;
 		label: string;
 		defaultFor: ChannelAction[];
+		// Per-adapter passthrough — e.g. WhatsApp carries `access`/`intentMap`/
+		// `worker` here and the parent merges them back at save time.
+		[extra: string]: unknown;
 	}
 
 	interface Props {

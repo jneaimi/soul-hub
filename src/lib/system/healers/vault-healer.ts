@@ -361,6 +361,17 @@ export async function healMissingFrontmatter(
 				const endIdx = raw.indexOf('---', 3);
 				if (endIdx > 0) {
 					const front = raw.slice(0, endIdx);
+					// Defensive guard: text-level scan for an existing `created:` line.
+					// `meta.created` may be undefined because the YAML parser threw
+					// (some other field is malformed) rather than because the field
+					// is genuinely missing — inserting another `created:` line in
+					// that case compounds the corruption (we've seen 69 dup lines
+					// per file from prior runs). Skip and let the human fix the
+					// underlying YAML.
+					if (/^created:\s/m.test(front)) {
+						result.skipped.push(note.path);
+						continue;
+					}
 					const rest = raw.slice(endIdx);
 					updated = front + `created: ${created}\n` + rest;
 				} else {

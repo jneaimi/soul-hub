@@ -6,6 +6,10 @@ export interface ChannelField {
 	label: string;
 	type: 'secret' | 'text';
 	env: string; // env var name to resolve from
+	/** When true (default), the channel cannot operate without this env var. */
+	required?: boolean;
+	/** Optional URL where the user can obtain this credential. */
+	link?: string;
 }
 
 /** Adapter metadata — used by settings UI to render channel cards */
@@ -31,6 +35,23 @@ export interface SendResult {
 	error?: string;
 }
 
+/** Outcome of a credential test — small enough for the UI to colour-code. */
+export type TestStatus =
+	| 'ok'
+	| 'unauthorized'
+	| 'invalid'
+	| 'ratelimit'
+	| 'network'
+	| 'unconfigured'
+	| 'unsupported';
+
+export interface TestResult {
+	ok: boolean;
+	status: TestStatus;
+	/** Optional human-readable detail; safe to render in the UI. */
+	message?: string;
+}
+
 /** Channel adapter interface — each adapter implements this */
 export interface ChannelAdapter {
 	meta: ChannelMeta;
@@ -38,6 +59,11 @@ export interface ChannelAdapter {
 	send(message: string, attachPath?: string): Promise<SendResult>;
 	/** Check if required env vars are set */
 	isConfigured(): boolean;
+	/** Optional credential test — pings the upstream API with a tiny request
+	 *  and returns a structured status. UIs render this beside each declared
+	 *  secret. Adapters that can't safely test (e.g. write-only APIs) may
+	 *  return `{ ok: false, status: 'unsupported' }` or omit the method. */
+	test?(): Promise<TestResult>;
 }
 
 /** Channels section in settings.json */

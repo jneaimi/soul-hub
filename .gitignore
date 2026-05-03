@@ -10,10 +10,13 @@ CLAUDE.local.md
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 
-# Runtime state
+# Runtime state — Soul Hub now stores user state under ~/.soul-hub/.
+# These entries are kept as a safety net against legacy paths.
 .pids/
 settings.json
+settings.json.pre-home.bak
 .data/
+.data.pre-home.bak/
 
 # Python
 __pycache__/

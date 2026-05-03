@@ -1,5 +1,5 @@
 /**
- * Global secrets layer — platform-level secrets stored in .data/secrets.env
+ * Global secrets layer — platform-level secrets stored in ~/.soul-hub/.env
  *
  * Secrets are loaded at startup and merged into process.env.
  * The API allows reading (masked) and writing secrets from the UI.
@@ -8,10 +8,81 @@
  * File format: standard .env (KEY=value, one per line, # comments)
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import {
+	readFileSync,
+	writeFileSync,
+	renameSync,
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	fsyncSync,
+	closeSync,
+	unlinkSync,
+} from 'node:fs';
+import { dirname } from 'node:path';
+import { soulHubSecretsPath } from './paths.js';
+import { getAllDeclaredSecrets } from './secret-testers.js';
 
-const SECRETS_PATH = resolve(process.cwd(), '.data', 'secrets.env');
+const SECRETS_PATH = soulHubSecretsPath();
+const FILE_MODE = 0o600;
+const DIR_MODE = 0o700;
+
+/** Ensure the parent directory exists with 0700 mode. */
+function ensureDir(): void {
+	const dir = dirname(SECRETS_PATH);
+	if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: DIR_MODE });
+	try {
+		chmodSync(dir, DIR_MODE);
+	} catch {
+		/* permission already correct or unavailable on platform */
+	}
+}
+
+/**
+ * Atomic, durable write of the secrets file.
+ *
+ * Steps: rotate `.env → .env.bak`, write `.env.tmp`, fsync, rename onto `.env`,
+ * chmod 0600. The rename is POSIX-atomic, so an interrupt at any point either
+ * leaves the previous file intact or atomically replaces it.
+ */
+function atomicWriteSecrets(content: string): void {
+	ensureDir();
+
+	if (existsSync(SECRETS_PATH)) {
+		const backup = `${SECRETS_PATH}.bak`;
+		try {
+			if (existsSync(backup)) unlinkSync(backup);
+			renameSync(SECRETS_PATH, backup);
+			try {
+				chmodSync(backup, FILE_MODE);
+			} catch {
+				/* ignore */
+			}
+		} catch {
+			/* best-effort backup */
+		}
+	}
+
+	const tmp = `${SECRETS_PATH}.tmp`;
+	writeFileSync(tmp, content, { encoding: 'utf-8', mode: FILE_MODE });
+	try {
+		const fd = openSync(tmp, 'r+');
+		try {
+			fsyncSync(fd);
+		} finally {
+			closeSync(fd);
+		}
+	} catch {
+		/* fsync best-effort — not all FS support it */
+	}
+	renameSync(tmp, SECRETS_PATH);
+	try {
+		chmodSync(SECRETS_PATH, FILE_MODE);
+	} catch {
+		/* ignore */
+	}
+}
 
 /** Parse a .env file into key-value pairs */
 function parseEnv(content: string): Record<string, string> {
@@ -65,20 +136,47 @@ export function loadSecrets(): Record<string, string> {
 	}
 }
 
-/** Get all secrets as masked entries (for UI display) */
-export function getMaskedSecrets(): { key: string; set: boolean; source: 'platform' | 'shell' }[] {
+/** A masked secret entry returned by the API.
+ *
+ *  - `set`: any source has supplied a value (platform file or shell env)
+ *  - `source`: `platform` if `~/.soul-hub/.env` carries the value, `shell`
+ *    if it only exists in process.env (inherited from the parent shell)
+ *  - `declared`: true if at least one channel/provider adapter declares it.
+ *    Declared-but-unset keys are surfaced so UIs can prompt the user.
+ *  - `required`: declared by an adapter that marks it as required. */
+export interface MaskedSecret {
+	key: string;
+	set: boolean;
+	source: 'platform' | 'shell';
+	declared: boolean;
+	required: boolean;
+	declaredBy: string[];
+	link?: string;
+}
+
+/** Get all secrets as masked entries — joins declared-by-adapter ∪ set-on-disk. */
+export function getMaskedSecrets(): MaskedSecret[] {
 	const platformSecrets = existsSync(SECRETS_PATH)
 		? parseEnv(readFileSync(SECRETS_PATH, 'utf-8'))
 		: {};
 
-	// Collect all known platform secret keys
-	const allKeys = new Set(Object.keys(platformSecrets));
+	const declared = getAllDeclaredSecrets();
+	const declaredByKey = new Map(declared.map((d) => [d.key, d]));
 
-	return Array.from(allKeys).map((key) => ({
-		key,
-		set: !!process.env[key],
-		source: key in platformSecrets ? 'platform' as const : 'shell' as const,
-	}));
+	const allKeys = new Set<string>([...Object.keys(platformSecrets), ...declaredByKey.keys()]);
+
+	return Array.from(allKeys).map((key): MaskedSecret => {
+		const d = declaredByKey.get(key);
+		return {
+			key,
+			set: !!process.env[key],
+			source: key in platformSecrets ? 'platform' : 'shell',
+			declared: !!d,
+			required: d?.required ?? false,
+			declaredBy: d?.declaredBy ?? [],
+			link: d?.link,
+		};
+	});
 }
 
 /** Check if a specific env var is set (from any source) */
@@ -86,33 +184,24 @@ export function isEnvSet(key: string): boolean {
 	return !!process.env[key];
 }
 
-/** Set a secret — writes to .data/secrets.env and updates process.env */
+/** Set a secret — writes to ~/.soul-hub/.env atomically and updates process.env */
 export function setSecret(key: string, value: string): void {
-	// Validate key format
 	if (!/^[A-Z][A-Z0-9_]*$/.test(key)) {
 		throw new Error(`Invalid secret key: "${key}". Use UPPER_SNAKE_CASE.`);
 	}
 
-	// Load existing secrets
 	const secrets = existsSync(SECRETS_PATH)
 		? parseEnv(readFileSync(SECRETS_PATH, 'utf-8'))
 		: {};
 
-	// Update
 	secrets[key] = value;
+	atomicWriteSecrets(serializeEnv(secrets));
 
-	// Ensure .data/ directory exists
-	const dir = dirname(SECRETS_PATH);
-	if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-
-	// Write back
-	writeFileSync(SECRETS_PATH, serializeEnv(secrets), 'utf-8');
-
-	// Update process.env immediately (no restart needed)
+	// Update process.env immediately so callers see the new value without restart
 	process.env[key] = value;
 }
 
-/** Remove a secret — deletes from .data/secrets.env and process.env */
+/** Remove a secret — atomically writes ~/.soul-hub/.env without the key */
 export function removeSecret(key: string): void {
 	const secrets = existsSync(SECRETS_PATH)
 		? parseEnv(readFileSync(SECRETS_PATH, 'utf-8'))
@@ -121,7 +210,7 @@ export function removeSecret(key: string): void {
 	delete secrets[key];
 	delete process.env[key];
 
-	writeFileSync(SECRETS_PATH, serializeEnv(secrets), 'utf-8');
+	atomicWriteSecrets(serializeEnv(secrets));
 }
 
 /** Get the raw value of a secret (server-side only — never expose to client) */
@@ -147,9 +236,7 @@ export function syncFromShell(keys: string[]): number {
 	}
 
 	if (synced > 0) {
-		const dir = dirname(SECRETS_PATH);
-		if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-		writeFileSync(SECRETS_PATH, serializeEnv(existing), 'utf-8');
+		atomicWriteSecrets(serializeEnv(existing));
 	}
 
 	return synced;

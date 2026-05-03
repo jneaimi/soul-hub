@@ -43,7 +43,8 @@ echo "SOUL_HUB_SECRET=$(node -e 'console.log(require("crypto").randomBytes(32).t
 # Add any API keys you need to .env
 
 # Configure paths (copy the template and edit if your claude binary isn't at ~/.local/bin/claude)
-cp settings.example.json settings.json
+mkdir -p ~/.soul-hub
+cp settings.example.json ~/.soul-hub/settings.json
 
 # Initialize the vault
 mkdir -p ~/vault
@@ -169,7 +170,7 @@ soul-hub/
 
 ## Configuration
 
-Soul Hub looks for `settings.json` in the project root. All settings have sensible defaults.
+Soul Hub stores user state under `~/.soul-hub/` (override with `SOUL_HUB_HOME`). It looks for `~/.soul-hub/settings.json`; all settings have sensible defaults.
 
 ```json
 {

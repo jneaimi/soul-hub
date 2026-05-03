@@ -10,9 +10,10 @@
 
 import { appendFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { dirname } from 'node:path';
+import { soulHubDataFile } from './paths.js';
 
-const LOG_PATH = resolve(process.cwd(), '.data', 'file-access.log');
+const LOG_PATH = soulHubDataFile('file-access.log');
 
 export interface AuditEvent {
 	ts: string;

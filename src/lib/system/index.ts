@@ -1,5 +1,5 @@
 /** System module — public API */
-export { SystemHealth, getSystemHealth, initSystemHealth } from './health.js';
+export { SystemHealth, getSystemHealth, initSystemHealth, buildDigestMessage } from './health.js';
 export { NotificationStore } from './notifications.js';
 export type {
 	SystemNotification, SystemAction, NotificationSource, NotificationSeverity,

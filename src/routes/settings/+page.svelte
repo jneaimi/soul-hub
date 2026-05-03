@@ -3,6 +3,8 @@
 	import ChannelCard from '$lib/components/ChannelCard.svelte';
 	import PlatformEnv from '$lib/components/PlatformEnv.svelte';
 	import ExplorerRootsSection from '$lib/components/settings/ExplorerRootsSection.svelte';
+	import RoutesSection from '$lib/components/settings/RoutesSection.svelte';
+	import WhatsAppSection from '$lib/components/settings/WhatsAppSection.svelte';
 
 	type ChannelAction = 'send' | 'prompt' | 'listen';
 
@@ -20,6 +22,10 @@
 		enabled: boolean;
 		label: string;
 		defaultFor: ChannelAction[];
+		// WhatsApp passthrough — generic channels don't carry these so the
+		// type stays optional. The save POST round-trips arbitrary fields
+		// because the server-side schema uses `passthrough()` per channel.
+		[extra: string]: unknown;
 	}
 
 	// Settings state
@@ -47,17 +53,32 @@
 		domain: string;
 	} | null>(null);
 
-	let knowledgeDb = $state<{
-		exists: boolean;
-		noteCount: number | null;
-		dbSizeBytes: number | null;
-		lastModified: string | null;
-	} | null>(null);
-
 	// UI state
 	let saving = $state(false);
 	let toast = $state<{ message: string; type: 'success' | 'error' } | null>(null);
 	let dirty = $state(false);
+
+	// Vault digest preview state
+	let digestPreview = $state<string | null>(null);
+	let digestLoading = $state<'preview' | 'check' | null>(null);
+	let digestLoaded = $state(false);
+	let digestError = $state<string | null>(null);
+
+	async function loadDigestPreview(forceCheck: boolean) {
+		digestLoading = forceCheck ? 'check' : 'preview';
+		digestError = null;
+		try {
+			const res = await fetch('/api/system/health', { method: forceCheck ? 'POST' : 'GET' });
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			const data = await res.json();
+			digestPreview = data.digestPreview ?? null;
+			digestLoaded = true;
+		} catch (err) {
+			digestError = (err as Error).message;
+		} finally {
+			digestLoading = null;
+		}
+	}
 
 	function markDirty() {
 		dirty = true;
@@ -126,7 +147,6 @@
 			if (res.ok) {
 				const data = await res.json();
 				serverHealth = data.server;
-				knowledgeDb = data.knowledgeDb;
 			}
 		} catch { /* ignore */ }
 	});
@@ -170,6 +190,33 @@
 		markDirty();
 	}
 
+	/** WhatsApp section emits patch objects (not full config replacements) so
+	 *  pairing controls can edit one slice at a time without clobbering the
+	 *  rest. We deep-merge the patch into the current `whatsapp` config. */
+	function handleWhatsAppPatch(patch: Record<string, unknown>) {
+		const current = (channelConfigs.whatsapp as Record<string, unknown>) ?? {
+			enabled: false,
+			label: 'WhatsApp',
+			defaultFor: [],
+		};
+		const next: Record<string, unknown> = { ...current };
+		for (const [key, value] of Object.entries(patch)) {
+			if (
+				value &&
+				typeof value === 'object' &&
+				!Array.isArray(value) &&
+				current[key] &&
+				typeof current[key] === 'object'
+			) {
+				next[key] = { ...(current[key] as Record<string, unknown>), ...(value as object) };
+			} else {
+				next[key] = value;
+			}
+		}
+		channelConfigs = { ...channelConfigs, whatsapp: next as ChannelConfigItem };
+		markDirty();
+	}
+
 	function resetToDefaults() {
 		fontSize = 13;
 		cols = 120;
@@ -183,19 +230,6 @@
 		dirty = true;
 	}
 
-	function formatBytes(bytes: number): string {
-		if (bytes < 1024) return `${bytes} B`;
-		if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
-		return `${(bytes / 1048576).toFixed(1)} MB`;
-	}
-
-	function formatDate(iso: string): string {
-		const d = new Date(iso);
-		return d.toLocaleDateString('en-US', {
-			year: 'numeric', month: 'short', day: 'numeric',
-			hour: '2-digit', minute: '2-digit',
-		});
-	}
 </script>
 
 <svelte:head>
@@ -414,34 +448,38 @@
 			</div>
 		</section>
 
-		<!-- Knowledge DB section (read-only) -->
+		<!-- Vault Health Digest section -->
 		<section class="mb-6">
 			<div class="bg-hub-surface border border-hub-border rounded-lg p-4">
 				<div class="flex items-center justify-between mb-4">
-					<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider">Knowledge DB</h2>
-					<span class="text-[10px] text-hub-dim font-medium">Read only</span>
+					<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider">Vault Health Digest</h2>
+					<span class="text-[10px] text-hub-dim font-medium">Telegram preview</span>
 				</div>
-				{#if knowledgeDb}
-					{#if knowledgeDb.exists}
-						<div class="grid grid-cols-3 gap-3 text-sm">
-							<div>
-								<span class="block text-xs text-hub-muted mb-0.5">Notes indexed</span>
-								<span class="text-hub-text font-mono">{knowledgeDb.noteCount ?? '—'}</span>
-							</div>
-							<div>
-								<span class="block text-xs text-hub-muted mb-0.5">DB size</span>
-								<span class="text-hub-text font-mono">{knowledgeDb.dbSizeBytes ? formatBytes(knowledgeDb.dbSizeBytes) : '—'}</span>
-							</div>
-							<div>
-								<span class="block text-xs text-hub-muted mb-0.5">Last modified</span>
-								<span class="text-hub-text text-xs">{knowledgeDb.lastModified ? formatDate(knowledgeDb.lastModified) : '—'}</span>
-							</div>
-						</div>
-					{:else}
-						<div class="text-sm text-hub-dim">Knowledge DB not found at ~/dev/knowledge-db/knowledge.db</div>
-					{/if}
+				<p class="text-xs text-hub-dim mb-3">
+					Preview the message body that the auto-fix cycle would send to Telegram. <em>Preview last</em> shows the most recent report; <em>Force check + preview</em> runs a fresh detection now.
+				</p>
+				<div class="flex gap-2 mb-3">
+					<button
+						type="button"
+						class="px-3 py-1.5 text-xs font-medium rounded border border-hub-border hover:bg-hub-bg disabled:opacity-50"
+						disabled={digestLoading !== null}
+						onclick={() => loadDigestPreview(false)}
+					>{digestLoading === 'preview' ? 'Loading…' : 'Preview last'}</button>
+					<button
+						type="button"
+						class="px-3 py-1.5 text-xs font-medium rounded border border-hub-border hover:bg-hub-bg disabled:opacity-50"
+						disabled={digestLoading !== null}
+						onclick={() => loadDigestPreview(true)}
+					>{digestLoading === 'check' ? 'Running…' : 'Force check + preview'}</button>
+				</div>
+				{#if digestError}
+					<div class="text-sm text-hub-danger">Error: {digestError}</div>
+				{:else if !digestLoaded}
+					<div class="text-xs text-hub-dim">Click a button above to load.</div>
+				{:else if digestPreview === null}
+					<div class="text-xs text-hub-dim">Silent — nothing to send (no auto-fixes and no issues this cycle).</div>
 				{:else}
-					<div class="text-sm text-hub-dim">Loading...</div>
+					<pre class="text-xs text-hub-text bg-hub-bg border border-hub-border rounded p-3 whitespace-pre-wrap font-mono overflow-x-auto">{digestPreview}</pre>
 				{/if}
 			</div>
 		</section>
@@ -456,7 +494,7 @@
 					<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider px-1">Channels</h2>
 				</div>
 				<div class="space-y-3">
-					{#each channelMetas as meta (meta.id)}
+					{#each channelMetas.filter((m) => m.id !== 'whatsapp') as meta (meta.id)}
 						<ChannelCard
 							{meta}
 							config={channelConfigs[meta.id] || { enabled: false, label: meta.name, defaultFor: [] }}
@@ -465,6 +503,21 @@
 					{/each}
 				</div>
 			</section>
+
+			<!-- WhatsApp gets its own section: pairing UI, allowlist, intent map, worker mode. -->
+			{#if channelMetas.some((m) => m.id === 'whatsapp')}
+				<WhatsAppSection
+					config={(channelConfigs.whatsapp as Record<string, unknown>) ?? {
+						enabled: false,
+						label: 'WhatsApp',
+						defaultFor: [],
+					}}
+					onchange={handleWhatsAppPatch}
+				/>
+			{/if}
+
+			<!-- Routes layer status + per-route Test buttons. -->
+			<RoutesSection />
 		{/if}
 
 		<!-- Reset -->

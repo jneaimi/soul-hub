@@ -8,10 +8,12 @@ import { listSessions, killSession } from '$lib/pty/manager.js';
 import { extractProxyPort, proxyRequest } from '$lib/proxy.js';
 import { getInboxDb, closeInboxDb, startSync, stopSync } from '$lib/inbox/index.js';
 import { seedDefaultsIfEmpty } from '$lib/explorer-roots.js';
+import { soulHubDataDir, soulHubSettingsPath } from '$lib/paths.js';
 import '$lib/secrets.js'; // Load platform secrets into process.env at startup
+import { existsSync } from 'node:fs';
 
 const PIPELINES_DIR = resolve(dirname(config.resolved.catalogDir), 'pipelines');
-const DATA_DIR = resolve(dirname(config.resolved.catalogDir), '.data');
+const DATA_DIR = soulHubDataDir();
 
 // Initialize scheduler on server startup
 initScheduler(PIPELINES_DIR, DATA_DIR);
@@ -161,6 +163,20 @@ export const handle: Handle = async ({ event, resolve: svelteResolve }) => {
 	}
 
 	const pathname = event.url.pathname;
+
+	// First-run gate: if ~/.soul-hub/settings.json is missing, redirect HTML
+	// page loads to /setup. API requests and asset fetches pass through so the
+	// wizard itself can call /api/settings, /api/secrets, and load its bundle.
+	// The check is gated on `Accept: text/html` so only top-level navigations
+	// see the redirect — fetch/XHR responses stay normal.
+	if (!pathname.startsWith('/setup')) {
+		const accept = event.request.headers.get('accept') || '';
+		const isHtmlNav = accept.includes('text/html');
+		if (isHtmlNav && !existsSync(soulHubSettingsPath())) {
+			return new Response(null, { status: 302, headers: { location: '/setup' } });
+		}
+	}
+
 	if (pathname.startsWith('/api/files') || pathname.startsWith('/api/settings/explorer-roots')) {
 		const check = checkFileApiAccess(event.request);
 		if (!check.ok) {

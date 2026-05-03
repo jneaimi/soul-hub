@@ -1,83 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
-import type { ChannelsSettings } from './channels/types.js';
+import { ConfigSchema, type SoulHubConfig } from './config.schema.js';
+import { soulHubSettingsPath } from './paths.js';
 
 const HOME = homedir();
 
-export interface SoulHubConfig {
-	terminal: {
-		fontSize: number;
-		cols: number;
-		rows: number;
-		cursorBlink: boolean;
-	};
-	interface: {
-		defaultPanel: 'code' | 'closed';
-		panelWidth: number;
-	};
-	paths: {
-		devDir: string;
-		vaultDir: string;
-		catalogDir: string;
-		claudeBinary: string;
-	};
-	server: {
-		port: number;
-	};
-	channels: ChannelsSettings;
-	proxy: {
-		enabled: boolean;
-		allowedPortRange: [number, number];
-		blockedPorts: number[];
-	};
-	orchestration: {
-		maxWorkers: number;
-		maxIterationsPerWorker: number;
-		worktreeDir: string;
-		depInstaller: 'pnpm' | 'npm' | 'auto';
-	};
-}
-
-const DEFAULTS: SoulHubConfig = {
-	terminal: {
-		fontSize: 13,
-		cols: 120,
-		rows: 40,
-		cursorBlink: true,
-	},
-	interface: {
-		defaultPanel: 'code',
-		panelWidth: 260,
-	},
-	paths: {
-		devDir: '~/dev',
-		vaultDir: '~/vault',
-		catalogDir: '~/dev/soul-hub/catalog',
-		claudeBinary: '~/.local/bin/claude',
-	},
-	server: {
-		port: 5173,
-	},
-	channels: {
-		telegram: {
-			enabled: false,
-			label: 'Telegram',
-			defaultFor: ['send'],
-		},
-	},
-	proxy: {
-		enabled: true,
-		allowedPortRange: [1024, 9999],
-		blockedPorts: [2400],
-	},
-	orchestration: {
-		maxWorkers: 4,
-		maxIterationsPerWorker: 8,
-		worktreeDir: '.worktrees',
-		depInstaller: 'auto',
-	},
-};
+export type { SoulHubConfig } from './config.schema.js';
 
 /** Expand ~ to $HOME in path strings */
 function expandPath(p: string): string {
@@ -86,52 +15,88 @@ function expandPath(p: string): string {
 	return resolve(p);
 }
 
-/** Deep merge b into a (b wins) */
-function merge<T extends Record<string, any>>(a: T, b: Partial<T>): T {
-	const result = { ...a };
-	for (const key of Object.keys(b) as (keyof T)[]) {
-		const val = b[key];
-		if (val !== undefined && val !== null && typeof val === 'object' && !Array.isArray(val)) {
-			result[key] = merge(a[key] as any, val as any);
-		} else if (val !== undefined) {
-			result[key] = val as T[keyof T];
-		}
-	}
-	return result;
-}
-
 function loadSettings(): SoulHubConfig {
-	// Look for settings.json in: 1) project root (process.cwd), 2) env var, 3) legacy path
+	// Look for settings.json in: 1) explicit env override, 2) ~/.soul-hub/settings.json,
+	// 3) legacy repo-root location (kept as a fallback during migration).
 	const candidates = [
-		resolve(process.cwd(), 'settings.json'),
 		process.env.SOUL_HUB_SETTINGS || '',
-		resolve(HOME, '.soul-hub', 'settings.json'),
+		soulHubSettingsPath(),
+		resolve(process.cwd(), 'settings.json'),
 	].filter(Boolean);
 
+	let parsed: unknown = {};
+	let source: string | null = null;
 	for (const settingsPath of candidates) {
 		try {
-			const raw = readFileSync(settingsPath, 'utf-8');
-			const parsed = JSON.parse(raw);
-			return merge(DEFAULTS, parsed);
+			parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+			source = settingsPath;
+			break;
 		} catch {
 			continue;
 		}
 	}
-	return DEFAULTS;
+
+	const result = ConfigSchema.safeParse(parsed);
+	if (!result.success) {
+		console.error(`[config] settings.json validation failed (source: ${source ?? 'defaults'}):`);
+		for (const issue of result.error.issues) {
+			console.error(`  - ${issue.path.join('.') || '<root>'}: ${issue.message}`);
+		}
+		console.error('[config] Falling back to defaults.');
+		return ConfigSchema.parse({});
+	}
+	return result.data;
 }
 
-// Load once at startup — config changes require restart for path/server values
+function buildResolved(parsed: SoulHubConfig) {
+	return {
+		devDir: expandPath(parsed.paths.devDir),
+		vaultDir: expandPath(parsed.paths.vaultDir),
+		catalogDir: expandPath(parsed.paths.catalogDir),
+		claudeBinary: expandPath(parsed.paths.claudeBinary),
+	};
+}
+
+// Loaded at startup; mutated in place by `reloadConfig()` when settings.json
+// changes. Callers that read `config.<field>` per access (e.g. the WhatsApp
+// adapter's `readChannelConfig`) automatically see the fresh value. Modules
+// that cached a sub-reference at init (e.g. `config.resolved.vaultDir` baked
+// into the vault watcher path) still need a process restart for those slots.
 const _config = loadSettings();
 
 /** Resolved config with ~ expanded to absolute paths */
 export const config: SoulHubConfig & { resolved: { devDir: string; vaultDir: string; catalogDir: string; claudeBinary: string } } = {
 	..._config,
-	resolved: {
-		devDir: expandPath(_config.paths.devDir),
-		vaultDir: expandPath(_config.paths.vaultDir),
-		catalogDir: expandPath(_config.paths.catalogDir),
-		claudeBinary: expandPath(_config.paths.claudeBinary),
-	},
+	resolved: buildResolved(_config),
 };
 
-export { DEFAULTS };
+/** Re-read settings.json and replace every top-level field of the exported
+ *  `config` object in place. Keeps the import reference stable so live
+ *  consumers like `import { config } from '$lib/config.js'` see fresh values
+ *  on next property read.
+ *
+ *  Safe to call from request handlers — re-uses Zod validation; if the file
+ *  is corrupt we keep the old config and log instead of crashing. */
+export function reloadConfig(): { ok: boolean; error?: string } {
+	let fresh: SoulHubConfig;
+	try {
+		fresh = loadSettings();
+	} catch (err) {
+		const msg = (err as Error).message;
+		console.warn('[config] reloadConfig failed, keeping previous values:', msg);
+		return { ok: false, error: msg };
+	}
+
+	for (const key of Object.keys(config) as Array<keyof typeof config>) {
+		if (key === 'resolved') continue;
+		delete (config as Record<string, unknown>)[key];
+	}
+	Object.assign(config, fresh);
+	config.resolved = buildResolved(fresh);
+
+	console.log('[config] Reloaded from settings.json');
+	return { ok: true };
+}
+
+/** Default config (parsed from empty input) — exposed for callers that need a baseline. */
+export const DEFAULTS: SoulHubConfig = ConfigSchema.parse({});

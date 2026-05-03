@@ -8,32 +8,175 @@
  * the vault engine and pipeline scheduler in hooks.server.ts.
  */
 
-import { resolve } from 'node:path';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { resolve, dirname } from 'node:path';
 import { getVaultEngine } from '../vault/index.js';
 import { sendViaChannel } from '../channels/registry.js';
 import { config } from '../config.js';
 import { NotificationStore } from './notifications.js';
-import { healOrphans, healMissingRootIndex, healMissingFrontmatter } from './healers/vault-healer.js';
+import { healOrphans, healMissingRootIndex, healMissingFrontmatter, healBrokenLinks } from './healers/vault-healer.js';
 import type { DetectedIssue, HealthReport, HealResult } from './types.js';
 
 const HEALTH_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 
+/** Map raw IssueType keys to digest-friendly category names. Anything not
+ *  in here falls back to a snake-case → space conversion. */
+const FRIENDLY_NAMES: Record<string, string> = {
+	orphan_notes: 'Orphan notes',
+	dead_links: 'Broken wikilinks',
+	missing_index: 'Missing root index',
+	stale_inbox: 'Stale inbox',
+	governance_violation: 'Governance violations',
+	missing_frontmatter: 'Frontmatter',
+};
+
+const DASHBOARD_URL = process.env.SOUL_HUB_PUBLIC_URL || 'https://soul-hub.jneaimi.com';
+const SAMPLE_PATH_LIMIT = 3;
+
 let instance: SystemHealth | null = null;
+
+function friendlyName(type: string): string {
+	return FRIENDLY_NAMES[type] || type.replace(/_/g, ' ');
+}
+
+/** Render a `fixed[]` entry as digest lines. The `dead_links` healer uses
+ *  a verbose `path: [[raw]] → [[replacement]]` format that wraps badly on
+ *  phone screens; we split it into a path line + an indented rewrite line.
+ *  Other healers store bare paths and render on a single line. */
+function formatFixedEntry(entry: string): string[] {
+	const sep = entry.indexOf(': [[');
+	if (sep < 0) return [`   \`${entry}\``];
+	const path = entry.slice(0, sep);
+	const rewrite = entry.slice(sep + 2); // drop the leading ": "
+	return [`   \`${path}\``, `      ${rewrite}`];
+}
+
+/** Local-time formatted timestamp for digest headers. Telegram clients
+ *  already attach their own message timestamp, but an explicit one in the
+ *  body removes ambiguity when digests are forwarded or quoted. */
+function formatDigestTimestamp(iso: string): string {
+	const d = new Date(iso);
+	const yyyy = d.getFullYear();
+	const mm = String(d.getMonth() + 1).padStart(2, '0');
+	const dd = String(d.getDate()).padStart(2, '0');
+	const hh = String(d.getHours()).padStart(2, '0');
+	const mi = String(d.getMinutes()).padStart(2, '0');
+	return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
+}
+
+/** Build the human-facing digest body. Returns null when nothing notable
+ *  happened (no human-required issues, no auto-fixes, no errors), so the
+ *  caller can stay silent. Pure function — no I/O — so it's trivially
+ *  testable and previewable from the system-health endpoint.
+ *
+ *  Skipped items alone never raise a digest — that's the "self-heal, not
+ *  nag" contract. Errors do raise a digest because they signal the healer
+ *  itself is broken, which a human needs to see. */
+export function buildDigestMessage(
+	report: HealthReport,
+	previousReport: HealthReport | null = null,
+): string | null {
+	const humanIssues = report.issues.filter((i) => i.risk !== 'safe');
+	const totalFixed = report.autoFixed.reduce((s, r) => s + r.fixed.length, 0);
+	const totalErrors = report.autoFixed.reduce((s, r) => s + r.errors.length, 0);
+	const healersWithSkipped = report.autoFixed.filter((r) => r.skipped.length > 0);
+	const healersWithErrors = report.autoFixed.filter((r) => r.errors.length > 0);
+
+	if (humanIssues.length === 0 && totalFixed === 0 && totalErrors === 0) return null;
+
+	const emoji = humanIssues.length > 0 || totalErrors > 0 ? '🟡' : '🟢';
+	const issueCount = humanIssues.length;
+	let issuePhrase = issueCount === 1
+		? '1 issue needs attention'
+		: `${issueCount} issues need attention`;
+
+	// Day-over-day delta on the action-item count. Only shown when a previous
+	// report is available (skipped on first run / fresh restart) and the delta
+	// is non-zero — flat counts add no signal.
+	if (previousReport) {
+		const prevIssueCount = previousReport.issues.filter((i) => i.risk !== 'safe').length;
+		const delta = issueCount - prevIssueCount;
+		if (delta !== 0) {
+			const arrow = delta > 0 ? '↑' : '↓';
+			issuePhrase += ` (${arrow}${Math.abs(delta)} from last check)`;
+		}
+	}
+
+	const lines: string[] = [];
+	lines.push(`${emoji} *[Soul Hub] Vault Health* — ${formatDigestTimestamp(report.timestamp)}`);
+	lines.push(`${report.totalNotes} notes · ${issuePhrase}`);
+
+	if (humanIssues.length > 0) {
+		lines.push('');
+		lines.push('⚠️ *Action items*');
+		for (const i of humanIssues) {
+			lines.push(`• ${i.title}`);
+		}
+	}
+
+	if (totalFixed > 0) {
+		lines.push('');
+		lines.push('✅ *Auto-fixed*');
+		for (const r of report.autoFixed) {
+			if (r.fixed.length === 0) continue;
+			const pct = report.totalNotes > 0
+				? ` (${(r.fixed.length / report.totalNotes * 100).toFixed(1)}%)`
+				: '';
+			lines.push(`• ${friendlyName(r.type)} — ${r.fixed.length} ${r.fixed.length === 1 ? 'note' : 'notes'}${pct}`);
+			for (const entry of r.fixed.slice(0, SAMPLE_PATH_LIMIT)) {
+				for (const line of formatFixedEntry(entry)) lines.push(line);
+			}
+			if (r.fixed.length > SAMPLE_PATH_LIMIT) {
+				lines.push(`   …+${r.fixed.length - SAMPLE_PATH_LIMIT} more`);
+			}
+		}
+	}
+
+	if (healersWithSkipped.length > 0) {
+		lines.push('');
+		lines.push('⏭️ *Skipped*');
+		for (const r of healersWithSkipped) {
+			const n = r.skipped.length;
+			lines.push(`• ${friendlyName(r.type)} — ${n} ${n === 1 ? 'item' : 'items'}`);
+		}
+	}
+
+	if (healersWithErrors.length > 0) {
+		lines.push('');
+		lines.push('❌ *Errors*');
+		for (const r of healersWithErrors) {
+			const n = r.errors.length;
+			lines.push(`• ${friendlyName(r.type)} — ${n} ${n === 1 ? 'error' : 'errors'}`);
+			const first = r.errors[0];
+			lines.push(`   \`${first.path}\``);
+			lines.push(`      ${first.error.slice(0, 120)}`);
+		}
+	}
+
+	lines.push('');
+	lines.push(`📊 ${DASHBOARD_URL}/vault`);
+
+	return lines.join('\n');
+}
 
 export class SystemHealth {
 	readonly notifications: NotificationStore;
 	private healthInterval: ReturnType<typeof setInterval> | null = null;
 	private vaultRoot: string;
+	private reportFile: string;
 	private lastReport: HealthReport | null = null;
+	private previousReport: HealthReport | null = null;
 	private running = false;
 
 	constructor(dataDir: string, vaultRoot: string) {
 		this.notifications = new NotificationStore(dataDir);
 		this.vaultRoot = vaultRoot;
+		this.reportFile = resolve(dataDir, 'last-health-report.json');
 	}
 
 	async init(): Promise<void> {
 		await this.notifications.load();
+		await this.loadPersistedReport();
 
 		// Run health check on startup (delayed 10s to let vault finish indexing)
 		setTimeout(() => this.runHealthCheck(), 10_000);
@@ -51,6 +194,37 @@ export class SystemHealth {
 	/** Get the last health report */
 	getLastReport(): HealthReport | null {
 		return this.lastReport;
+	}
+
+	/** Get the report from before lastReport — used to compute day-over-day
+	 *  deltas in digest previews so the API matches what the next real digest
+	 *  would say. */
+	getPreviousReport(): HealthReport | null {
+		return this.previousReport;
+	}
+
+	/** Restore the last persisted report from disk so day-over-day deltas
+	 *  survive restarts. The loaded report becomes `lastReport`; `previousReport`
+	 *  stays null until the next cycle runs (and shifts lastReport into it). */
+	private async loadPersistedReport(): Promise<void> {
+		try {
+			const raw = await readFile(this.reportFile, 'utf-8');
+			const parsed = JSON.parse(raw) as HealthReport;
+			if (parsed && typeof parsed === 'object' && Array.isArray(parsed.issues)) {
+				this.lastReport = parsed;
+			}
+		} catch {
+			// No persisted report yet — that's fine on first run.
+		}
+	}
+
+	private async savePersistedReport(report: HealthReport): Promise<void> {
+		try {
+			await mkdir(dirname(this.reportFile), { recursive: true });
+			await writeFile(this.reportFile, JSON.stringify(report, null, 2), 'utf-8');
+		} catch (err) {
+			console.warn('[system-health] Failed to persist report:', err);
+		}
 	}
 
 	/** Force a health check now (called by API) */
@@ -123,17 +297,24 @@ export class SystemHealth {
 				notificationsCreated,
 			};
 
+			// Shift the previous report before overwriting — gives buildDigestMessage
+			// a baseline for day-over-day deltas. On first run after restart this
+			// uses the disk-loaded report; on first run ever it stays null.
+			this.previousReport = this.lastReport;
 			this.lastReport = report;
+			await this.savePersistedReport(report);
 
 			const fixedCount = autoFixed.reduce((sum, r) => sum + r.fixed.length, 0);
+			const errorCount = autoFixed.reduce((sum, r) => sum + r.errors.length, 0);
 			const elapsed = Date.now() - start;
 			console.log(
 				`[system-health] Check complete in ${elapsed}ms: ` +
-				`${issues.length} issues found, ${fixedCount} auto-fixed, ${notificationsCreated} notifications`
+				`${issues.length} issues found, ${fixedCount} auto-fixed, ${errorCount} errors, ${notificationsCreated} notifications`
 			);
 
-			// Send digest via built-in channel (Telegram) if anything happened
-			if (notificationsCreated > 0 || fixedCount > 0) {
+			// Send digest if anything notable happened. Errors qualify as notable
+			// even with zero fixes — the healer itself is broken and needs eyes.
+			if (notificationsCreated > 0 || fixedCount > 0 || errorCount > 0) {
 				await this.sendDigestViaChannel(report);
 			}
 
@@ -214,38 +395,21 @@ export class SystemHealth {
 		}
 
 		// ── Dead Links ──
+		// `risk: 'safe'` lets the auto-heal loop in tick() rewrite the
+		// high-confidence (≥0.88 fuzzy match) ones each cycle without a
+		// human click. Anything below threshold gets left in place — it'll
+		// reappear next cycle until either a target shows up or someone
+		// edits the source manually. Genuinely-unfixable links go quiet
+		// rather than nag the digest forever; the user explicitly asked
+		// for self-healing on this surface.
 		if (unresolved.length > 0) {
 			issues.push({
 				type: 'dead_links',
-				risk: 'needs_human',
+				risk: 'safe',
 				title: `${unresolved.length} broken wikilinks`,
 				detail: unresolved.slice(0, 10).map((u) => `${u.source} → [[${u.raw}]]`).join('\n'),
 				paths: unresolved.map((u) => u.source),
-				actions: [
-					{
-						id: 'auto-fix-dead-links',
-						label: 'Auto-fix links',
-						type: 'api',
-						endpoint: '/api/system/actions',
-						method: 'POST',
-						body: { action: 'heal-broken-links' },
-					},
-					{
-						id: 'fix-dead-links-claude',
-						label: 'Fix with Claude (headless)',
-						type: 'api',
-						endpoint: '/api/system/actions',
-						method: 'POST',
-						body: {
-							action: 'run-claude-headless',
-							cwd: '~/vault',
-							model: 'claude-haiku-4-5',
-							timeoutMs: 120_000,
-							allowedTools: ['Edit', 'Read', 'Glob', 'Grep'],
-							prompt: `Fix these broken wikilinks in ~/vault/:\n${unresolved.slice(0, 20).map((u) => `- ${u.source}: [[${u.raw}]]`).join('\n')}\n\nFor each, find the correct target file and rewrite the wikilink, or remove the link if no match exists. Make the edits directly — do not ask for confirmation.`,
-						},
-					},
-				],
+				actions: [],
 			});
 		}
 
@@ -305,38 +469,27 @@ export class SystemHealth {
 				return healMissingRootIndex(this.vaultRoot, allNotes);
 			case 'missing_frontmatter':
 				return healMissingFrontmatter(this.vaultRoot, allNotes);
+			case 'dead_links': {
+				// Re-fetch from the engine rather than relying on the issue's
+				// frozen `paths` — paths is per-source-file but healBrokenLinks
+				// needs the original {source, raw} pairs.
+				const unresolved = vault.getUnresolved();
+				return healBrokenLinks(this.vaultRoot, unresolved, allNotes);
+			}
 			default:
 				return null;
 		}
 	}
 
-	/** Send health digest via built-in channel system (Telegram etc.) */
+	/** Send health digest via built-in channel system (Telegram etc.). The
+	 *  message body is composed by `buildDigestMessage` so the format can
+	 *  be previewed via the system-health endpoint without sending. */
 	private async sendDigestViaChannel(report: HealthReport): Promise<void> {
-		const humanIssues = report.issues.filter((i) => i.risk !== 'safe');
-		const totalFixed = report.autoFixed.reduce((s, r) => s + r.fixed.length, 0);
-
-		if (humanIssues.length === 0 && totalFixed === 0) return;
-
-		const lines: string[] = [];
-
-		if (totalFixed > 0) {
-			lines.push(`*[Soul Hub] Vault Health*`);
-			lines.push('');
-			const fixDetails = report.autoFixed
-				.filter((r) => r.fixed.length > 0)
-				.map((r) => `- ${r.type.replace(/_/g, ' ')}: ${r.fixed.length} fixed`);
-			lines.push(...fixDetails);
-		}
-
-		if (humanIssues.length > 0) {
-			if (lines.length > 0) lines.push('');
-			lines.push(`*${humanIssues.length} issue${humanIssues.length === 1 ? '' : 's'} need attention:*`);
-			lines.push(...humanIssues.map((i) => `- ${i.title}`));
-			lines.push('', '_Open Soul Hub dashboard to review._');
-		}
+		const message = buildDigestMessage(report, this.previousReport);
+		if (!message) return;
 
 		try {
-			const result = await sendViaChannel(undefined, config.channels, lines.join('\n'));
+			const result = await sendViaChannel(undefined, config.channels, message);
 			if (!result.ok) {
 				console.warn(`[system-health] Channel send failed: ${result.error}`);
 			} else {

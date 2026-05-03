@@ -11,19 +11,17 @@
  */
 
 import Database from 'better-sqlite3';
-import { resolve, dirname } from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { InboxAccount, InboxMessage, SyncState, InboxProvider, AccountStatus } from './types.js';
 import { encrypt, decrypt } from './crypto.js';
+import { soulHubDataDir } from '../paths.js';
 
 let db: Database.Database | null = null;
 
 const SCHEMA_VERSION = 2;
 
 function getDbPath(): string {
-	const dataDir = resolve(process.cwd(), '.data');
-	mkdirSync(dataDir, { recursive: true });
-	return resolve(dataDir, 'inbox.db');
+	return resolve(soulHubDataDir(), 'inbox.db');
 }
 
 export function getInboxDb(): Database.Database {

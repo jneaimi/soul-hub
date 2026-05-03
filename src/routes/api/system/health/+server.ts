@@ -1,9 +1,11 @@
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
-import { getSystemHealth } from '$lib/system/index.js';
+import { getSystemHealth, buildDigestMessage } from '$lib/system/index.js';
 
 /**
- * GET /api/system/health — get last health report + active notification count
+ * GET /api/system/health — get last health report + active notification count.
+ * Includes a `digestPreview` showing the would-be Telegram message body for
+ * the last report, or null when the digest would be silent.
  */
 export const GET: RequestHandler = async () => {
 	const health = getSystemHealth();
@@ -12,9 +14,11 @@ export const GET: RequestHandler = async () => {
 	}
 
 	const report = health.getLastReport();
+	const previous = health.getPreviousReport();
 	return json({
 		report,
 		activeNotifications: health.notifications.activeCount,
+		digestPreview: report ? buildDigestMessage(report, previous) : null,
 	});
 };
 
@@ -28,8 +32,10 @@ export const POST: RequestHandler = async () => {
 	}
 
 	const report = await health.forceCheck();
+	const previous = health.getPreviousReport();
 	return json({
 		report,
 		activeNotifications: health.notifications.activeCount,
+		digestPreview: buildDigestMessage(report, previous),
 	});
 };

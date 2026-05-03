@@ -1,6 +1,6 @@
 import { readFile, stat } from 'node:fs/promises';
 import { basename } from 'node:path';
-import type { ChannelAdapter, ChannelMeta, SendResult } from './types.js';
+import type { ChannelAdapter, ChannelMeta, SendResult, TestResult } from './types.js';
 
 const API_BASE = 'https://api.telegram.org/bot';
 
@@ -9,8 +9,21 @@ export const meta: ChannelMeta = {
 	name: 'Telegram',
 	icon: 'send',
 	fields: [
-		{ key: 'token', label: 'Bot Token', type: 'secret', env: 'TELEGRAM_BOT_TOKEN' },
-		{ key: 'chatId', label: 'Chat ID', type: 'secret', env: 'TELEGRAM_CHAT_ID' },
+		{
+			key: 'token',
+			label: 'Bot Token',
+			type: 'secret',
+			env: 'TELEGRAM_BOT_TOKEN',
+			required: true,
+			link: 'https://core.telegram.org/bots#botfather',
+		},
+		{
+			key: 'chatId',
+			label: 'Chat ID',
+			type: 'secret',
+			env: 'TELEGRAM_CHAT_ID',
+			required: true,
+		},
 	],
 	actions: ['send'],
 };
@@ -102,9 +115,61 @@ export async function send(message: string, attachPath?: string): Promise<SendRe
 	return sendMessage(message);
 }
 
+/** Map an HTTP/Telegram outcome to a TestStatus. */
+function mapStatus(httpStatus: number, body?: unknown): TestResult {
+	if (httpStatus === 200) {
+		return { ok: true, status: 'ok' };
+	}
+	if (httpStatus === 401) {
+		return { ok: false, status: 'unauthorized', message: 'Bot token rejected.' };
+	}
+	if (httpStatus === 404) {
+		// Common case for getChat: chat not found / bot not in it
+		return { ok: false, status: 'invalid', message: 'Chat not found or bot has no access.' };
+	}
+	if (httpStatus === 429) {
+		return { ok: false, status: 'ratelimit', message: 'Telegram rate limit hit — try again shortly.' };
+	}
+	const description =
+		body && typeof body === 'object' && 'description' in body
+			? String((body as { description: unknown }).description)
+			: undefined;
+	return { ok: false, status: 'invalid', message: description ?? `HTTP ${httpStatus}` };
+}
+
+/** Test Telegram credentials with two cheap calls: `getMe` validates the
+ *  token; if a chat id is set, `getChat` validates it points at a real chat
+ *  the bot can reach. */
+async function test(): Promise<TestResult> {
+	const token = getToken();
+	const chatId = getChatId();
+	if (!token) {
+		return { ok: false, status: 'unconfigured', message: 'TELEGRAM_BOT_TOKEN is not set.' };
+	}
+
+	try {
+		const meRes = await fetch(`${API_BASE}${token}/getMe`);
+		const meBody = await meRes.json().catch(() => undefined);
+		const meResult = mapStatus(meRes.status, meBody);
+		if (!meResult.ok) return meResult;
+
+		// Token works. If chat id is set, verify it too.
+		if (chatId) {
+			const chatRes = await fetch(`${API_BASE}${token}/getChat?chat_id=${encodeURIComponent(chatId)}`);
+			const chatBody = await chatRes.json().catch(() => undefined);
+			const chatResult = mapStatus(chatRes.status, chatBody);
+			if (!chatResult.ok) return chatResult;
+		}
+		return { ok: true, status: 'ok' };
+	} catch (err) {
+		return { ok: false, status: 'network', message: (err as Error).message };
+	}
+}
+
 /** Telegram adapter */
 export const adapter: ChannelAdapter = {
 	meta,
 	send,
 	isConfigured,
+	test,
 };
