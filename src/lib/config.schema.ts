@@ -203,6 +203,24 @@ export const WhatsAppCommitmentsSchema = z.object({
 	maxPerDay: z.number().int().min(1).max(20).default(5),
 });
 
+/** `/img` configuration — image generation + editing via Gemini Nano
+ *  Banana. One slash command, no flags, system prompt sourced from a
+ *  vault-watched markdown file (per ADR-002). */
+export const WhatsAppImgSchema = z.object({
+	enabled: z.boolean().default(true),
+	/** Per-target soft cap. Hit cap → reply with budget message, no API
+	 *  call. Hard ceiling on the schema (50) prevents a runaway from
+	 *  costing more than ~$2/day at the GA model. */
+	maxPerDay: z.number().int().min(1).max(50).default(20),
+	/** Default Gemini image model. Settings UI exposes a dropdown for
+	 *  swapping to the preview tiers (`gemini-3.1-flash-image-preview`,
+	 *  `gemini-3-pro-image-preview`) once the user wants the cost bump. */
+	model: z.string().default('gemini-2.5-flash-image'),
+	/** Path to the system-prompt markdown file (vault-relative). Hot-
+	 *  reloaded via the vault watcher. Edit in Obsidian. */
+	systemPromptPath: z.string().default('operations/whatsapp/IMG.md'),
+});
+
 export const WhatsAppChannelSchema = ChannelConfigSchema.extend({
 	account: z.string().default('personal'),
 	accounts: z
@@ -213,10 +231,12 @@ export const WhatsAppChannelSchema = ChannelConfigSchema.extend({
 	worker: WhatsAppWorkerSchema.prefault({}),
 	heartbeat: WhatsAppHeartbeatSchema.prefault({}),
 	commitments: WhatsAppCommitmentsSchema.prefault({}),
+	img: WhatsAppImgSchema.prefault({}),
 	intentMap: WhatsAppIntentMapSchema.default({
 		'/save': { route: 'brain-save', description: 'Capture a note (text/image/voice/video) into the vault inbox.' },
 		'/find': { route: 'brain-find', description: 'Search the vault — top 5 matches.' },
 		'/recent': { route: 'brain-recent', description: 'List the 5 most-recently-touched notes.' },
+		'/img': { route: 'img', description: 'Generate an image (no attachment) or edit one (attach the source).' },
 		default: { route: 'vault-chat', dynamic: false },
 	}),
 });
@@ -292,10 +312,17 @@ export const ConfigSchema = z.object({
 				dueDelayHours: 1,
 				maxPerDay: 5,
 			},
+			img: {
+				enabled: true,
+				maxPerDay: 20,
+				model: 'gemini-2.5-flash-image',
+				systemPromptPath: 'operations/whatsapp/IMG.md',
+			},
 			intentMap: {
 				'/save': { route: 'brain-save', description: 'Capture a note (text/image/voice/video) into the vault inbox.' },
 				'/find': { route: 'brain-find', description: 'Search the vault — top 5 matches.' },
 				'/recent': { route: 'brain-recent', description: 'List the 5 most-recently-touched notes.' },
+				'/img': { route: 'img', description: 'Generate an image (no attachment) or edit one (attach the source).' },
 				default: { route: 'vault-chat', dynamic: false },
 			},
 		},
@@ -332,6 +359,14 @@ export const ConfigSchema = z.object({
 			default: 'gemini:gemini-2.5-flash',
 			failover: [],
 			timeoutMs: 4000,
+			retries: 0,
+			onError: ['timeout', '5xx', 'rate_limit', 'network'],
+		},
+		img: {
+			description: 'Image generation + editing via Gemini Nano Banana — direct call (no failover; routes layer is text-only).',
+			default: 'gemini:gemini-2.5-flash-image',
+			failover: [],
+			timeoutMs: 30000,
 			retries: 0,
 			onError: ['timeout', '5xx', 'rate_limit', 'network'],
 		},

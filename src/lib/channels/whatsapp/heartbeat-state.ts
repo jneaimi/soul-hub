@@ -98,6 +98,20 @@ function migrate(db: Database.Database): void {
 		`);
 		db.pragma('user_version = 2');
 	}
+
+	if (version < 3) {
+		// `/img` per-target daily cap. Kept distinct from `daily_counter`
+		// (which is the heartbeat budget) so the two budgets don't collide.
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS img_daily_counter (
+				target  TEXT NOT NULL,
+				ymd     TEXT NOT NULL,
+				count   INTEGER NOT NULL DEFAULT 0,
+				PRIMARY KEY (target, ymd)
+			);
+		`);
+		db.pragma('user_version = 3');
+	}
 }
 
 /** Heartbeat run statuses logged to `proactive_log`. */
@@ -171,6 +185,24 @@ export function incrementDailyCount(target: string, ymd: string): void {
 	getHeartbeatDb()
 		.prepare(
 			`INSERT INTO daily_counter (target, ymd, count) VALUES (?, ?, 1)
+			 ON CONFLICT(target, ymd) DO UPDATE SET count = count + 1`,
+		)
+		.run(target, ymd);
+}
+
+/** Per-target `/img` count for the current day (in the user's wall-clock
+ *  timezone). Distinct from `daily_counter`, which tracks the heartbeat. */
+export function getImgCount(target: string, ymd: string): number {
+	const row = getHeartbeatDb()
+		.prepare('SELECT count FROM img_daily_counter WHERE target = ? AND ymd = ?')
+		.get(target, ymd) as { count: number } | undefined;
+	return row?.count ?? 0;
+}
+
+export function incrementImgCount(target: string, ymd: string): void {
+	getHeartbeatDb()
+		.prepare(
+			`INSERT INTO img_daily_counter (target, ymd, count) VALUES (?, ?, 1)
 			 ON CONFLICT(target, ymd) DO UPDATE SET count = count + 1`,
 		)
 		.run(target, ymd);

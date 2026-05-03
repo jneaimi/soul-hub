@@ -252,6 +252,8 @@ async function main(): Promise<void> {
 				action?: 'reply' | 'help' | 'drop';
 				text?: string;
 				attachPath?: string;
+				kind?: 'image' | 'video' | 'audio' | 'document';
+				caption?: string;
 				error?: string;
 			};
 			if (!resp.ok || !dispatch.ok) {
@@ -264,22 +266,26 @@ async function main(): Promise<void> {
 				);
 				return;
 			}
-			console.log(`[whatsapp-worker] dispatch ok for ${senderTag}: action=${dispatch.action ?? 'reply'} replyLen=${dispatch.text?.length ?? 0}`);
+			console.log(`[whatsapp-worker] dispatch ok for ${senderTag}: action=${dispatch.action ?? 'reply'} replyLen=${dispatch.text?.length ?? 0} attach=${dispatch.attachPath ? 'yes' : 'no'}`);
 			if (dispatch.action === 'drop') return;
-			if (dispatch.text) {
-				if (dispatch.attachPath) {
-					const kind = kindFromPath(dispatch.attachPath);
-					await sendMedia(sock, envelope.chatJid, {
-						kind,
-						path: dispatch.attachPath,
-						caption: kind === 'audio' ? undefined : dispatch.text,
-					});
-					if (kind === 'audio') {
-						await sendText(sock, envelope.chatJid, dispatch.text, cfg.delivery);
-					}
-				} else {
+			// Slice 6 — `attachPath` is a valid response *without* `text` (an
+			// image-only `/img` reply). When both are present, `caption` (or
+			// `text` as a fallback) becomes the WhatsApp caption beneath the
+			// media. Audio doesn't take a caption param so the text is sent
+			// as a follow-up message instead.
+			if (dispatch.attachPath) {
+				const kind = dispatch.kind ?? kindFromPath(dispatch.attachPath);
+				const cap = dispatch.caption ?? (kind === 'audio' ? undefined : dispatch.text);
+				await sendMedia(sock, envelope.chatJid, {
+					kind,
+					path: dispatch.attachPath,
+					caption: kind === 'audio' ? undefined : cap,
+				});
+				if (kind === 'audio' && dispatch.text) {
 					await sendText(sock, envelope.chatJid, dispatch.text, cfg.delivery);
 				}
+			} else if (dispatch.text) {
+				await sendText(sock, envelope.chatJid, dispatch.text, cfg.delivery);
 			}
 		} catch (err) {
 			console.error('[whatsapp-worker] inbound handler error:', (err as Error).message);

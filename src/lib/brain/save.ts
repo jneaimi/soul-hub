@@ -42,6 +42,13 @@ export interface BrainSaveInput {
 	mediaBuffer?: Buffer;
 	mimetype?: string;
 	mediaKind?: BrainMediaKind;
+	/** Slice 6 — `/img` cache fallback. When the user runs `/save` after
+	 *  an `/img` (no fresh attachment), the dispatcher passes the cached
+	 *  generated image here so it gets archived like any other capture.
+	 *  A real inbound attachment (`mediaBuffer`) takes precedence — the
+	 *  user clearly wants to save what they just sent, not the bot's
+	 *  last output. */
+	cachedImage?: { buffer: Buffer; mimetype: string; prompt: string };
 }
 
 export interface BrainSaveResult {
@@ -222,17 +229,34 @@ export async function dispatchBrainSave(input: BrainSaveInput): Promise<BrainSav
 
 	const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD in UTC
 
+	// Slice 6 — promote the `/img` cache image into the regular media
+	// triple if and only if the user didn't attach something fresh. A real
+	// inbound attachment always wins (the user is clearly saving what they
+	// just sent). Cached prompt seeds the body when the user typed nothing.
+	let mediaBuffer = input.mediaBuffer;
+	let mimetype = input.mimetype;
+	let mediaKind: BrainMediaKind | undefined = input.mediaKind;
+	let workingBody = input.workingBody;
+	if (!mediaBuffer && input.cachedImage) {
+		mediaBuffer = input.cachedImage.buffer;
+		mimetype = input.cachedImage.mimetype;
+		mediaKind = 'image';
+		if (!workingBody.trim()) {
+			workingBody = input.cachedImage.prompt;
+		}
+	}
+
 	let extracted: ExtractionOutput = {};
-	if (input.mediaBuffer && input.mimetype && input.mediaKind) {
+	if (mediaBuffer && mimetype && mediaKind) {
 		extracted = await extractFromMedia(
-			input.mediaBuffer,
-			input.mimetype,
-			input.mediaKind,
-			input.workingBody,
+			mediaBuffer,
+			mimetype,
+			mediaKind,
+			workingBody,
 		);
 	}
 
-	const { type, tag, body } = extractTypeFromPrefix(input.workingBody);
+	const { type, tag, body } = extractTypeFromPrefix(workingBody);
 	const title = pickTitle(extracted, body);
 	const slug = slugify(title);
 	const filename = `${today}-${slug}.md`;
@@ -243,14 +267,14 @@ export async function dispatchBrainSave(input: BrainSaveInput): Promise<BrainSav
 	tags.add('whatsapp');
 
 	let assetPath: string | undefined;
-	if (input.mediaBuffer && input.mimetype && input.mediaKind) {
-		const ext = pickAssetExtension(input.mimetype, input.mediaKind);
+	if (mediaBuffer && mimetype && mediaKind) {
+		const ext = pickAssetExtension(mimetype, mediaKind);
 		const assetFilename = `${today}-${slug}${ext}`;
 		const assetResult = await engine.writeAsset({
 			zone: 'inbox/assets',
 			filename: assetFilename,
-			buffer: input.mediaBuffer,
-			mimetype: input.mimetype,
+			buffer: mediaBuffer,
+			mimetype: mimetype,
 			agent: AGENT,
 			context: `whatsapp:${input.envelope.chatJid}:${input.envelope.messageId ?? ''}`,
 		});
@@ -276,11 +300,11 @@ export async function dispatchBrainSave(input: BrainSaveInput): Promise<BrainSav
 		// extra fields from the Gemini Flash extraction pass.
 		const attachment: Record<string, unknown> = {
 			path: assetPath,
-			kind: input.mediaKind,
-			mimetype: input.mimetype,
-			bytes: input.mediaBuffer?.byteLength,
+			kind: mediaKind,
+			mimetype: mimetype,
+			bytes: mediaBuffer?.byteLength,
 		};
-		if (input.mediaKind === 'voice' && body) {
+		if (mediaKind === 'voice' && body) {
 			attachment.transcript = body;
 		}
 		if (extracted.transcript?.trim()) attachment.transcript = extracted.transcript.trim();

@@ -41,6 +41,12 @@ import {
 } from '$lib/channels/whatsapp/heartbeat-commands.js';
 import { extractCommitmentsAsync } from '$lib/channels/whatsapp/commitments-extractor.js';
 import { dispatchBrainSave, dispatchBrainFind, dispatchBrainRecent } from '$lib/brain/index.js';
+import { dispatchImg, rememberLastImage, getLastImage } from '$lib/img/index.js';
+import {
+	getImgCount,
+	incrementImgCount,
+	ymdInTimezone,
+} from '$lib/channels/whatsapp/heartbeat-state.js';
 import { maybeApplyRouter } from '$lib/channels/whatsapp/router.js';
 
 interface InboundBody {
@@ -226,14 +232,93 @@ export const POST: RequestHandler = async ({ request }) => {
 					});
 				}
 			}
+			// Slice 6 — `/img` cache fallback. When `/save` arrives without
+			// fresh attachment bytes, fall back to the most recent generated
+			// image for this conversation. Real attachments win; cache is a
+			// pure fallback.
+			const cachedImage = !buffer ? getLastImage(conversationKey) : undefined;
 			const saveResult = await dispatchBrainSave({
 				envelope,
 				workingBody: brainText,
 				mediaBuffer: buffer,
 				mimetype,
 				mediaKind,
+				cachedImage: cachedImage
+					? { buffer: cachedImage.buffer, mimetype: cachedImage.mimetype, prompt: cachedImage.prompt }
+					: undefined,
 			});
 			replyText = saveResult.text;
+		} else if (intent.route === 'img') {
+			// Slice 6 — `/img` via worker mode. Generate or edit, write to
+			// disk, return as `attachPath` so the worker reads + sends. Cache
+			// + counter live in the main app process so they're shared with
+			// any in-process flows.
+			const imgCfg = cfg.img;
+			if (!imgCfg.enabled) {
+				return json({
+					ok: true,
+					action: 'reply',
+					text: '`/img` is disabled in settings. Toggle it on under WhatsApp → Image generation.',
+				});
+			}
+			const tzForDay = cfg.heartbeat?.activeHours?.timezone ?? 'Asia/Dubai';
+			const today = ymdInTimezone(tzForDay);
+			const count = getImgCount(envelope.senderNumber, today);
+			if (count >= imgCfg.maxPerDay) {
+				return json({
+					ok: true,
+					action: 'reply',
+					text: `You've hit today's image budget (${imgCfg.maxPerDay}/day) — resets midnight ${tzForDay}.`,
+				});
+			}
+			// Decode optional input image — same shape as the vault-chat
+			// branch above, just keyed for editing rather than chat.
+			let inputImages: { buffer: Buffer; mimetype: string }[] | undefined;
+			if (
+				body.mediaBase64 &&
+				envelope.media &&
+				envelope.media.kind !== 'voice' &&
+				envelope.media.kind !== 'sticker'
+			) {
+				try {
+					inputImages = [
+						{
+							buffer: Buffer.from(body.mediaBase64, 'base64'),
+							mimetype: envelope.media.mimetype,
+						},
+					];
+				} catch (err) {
+					return json({
+						ok: true,
+						action: 'reply',
+						text: `Couldn't decode the ${envelope.media.kind} bytes for /img: ${(err as Error).message}`,
+					});
+				}
+			}
+			const imgResult = await dispatchImg({
+				prompt: brainText,
+				conversationKey,
+				account: cfg.account,
+				inputImages,
+				systemPromptPath: imgCfg.systemPromptPath,
+				model: imgCfg.model,
+			});
+			if (imgResult.error) {
+				return json({ ok: true, action: 'reply', text: imgResult.error });
+			}
+			incrementImgCount(envelope.senderNumber, today);
+			rememberLastImage(conversationKey, {
+				buffer: imgResult.buffer,
+				mimetype: imgResult.mimetype,
+				prompt: imgResult.prompt,
+			});
+			return json({
+				ok: true,
+				action: 'reply',
+				attachPath: imgResult.path,
+				kind: 'image',
+				caption: imgResult.caption,
+			});
 		} else if (intent.route === 'brain-find') {
 			replyText = (await dispatchBrainFind(brainText)).text;
 		} else if (intent.route === 'brain-recent') {
