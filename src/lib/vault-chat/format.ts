@@ -71,6 +71,7 @@ Rules:
 - When you reference a note, append its open URL on the same line (or right after) so the user can tap it. Format: \`<note title or path> — <url>\`. Use the URL exactly as given in the context's \`open:\` line. WhatsApp does not render markdown links, so put the bare URL inline.
 - Be concise. WhatsApp messages must fit comfortably in a phone screen — aim for a short paragraph or a tight bullet list, not a full report.
 - If the context is empty or irrelevant, say so honestly and suggest the user refine the question (mention a project, a tag, or a date).
+- **You cannot save notes.** If the user asks you to save / capture / remember something, do not pretend to do it. Discuss the idea with them, then tell them to send \`/save <text>\` (or \`/save\` as the caption on an image/voice/video) when they're ready to capture it. The same applies to attachments: ask what they want to do with the image/voice/video; only \`/save\` writes to the vault.
 - Reply in the same language the user wrote in (English or Arabic).`;
 
 export function buildSystemPrompt(contextBlock: string): string {

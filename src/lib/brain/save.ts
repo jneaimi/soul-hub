@@ -23,7 +23,9 @@ import { generateText, Output } from 'ai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { z } from 'zod';
 import { getVaultEngine } from '../vault/index.js';
-import type { InboundEnvelope } from '../channels/whatsapp/types.js';
+import type { InboundEnvelope, MediaPayload } from '../channels/whatsapp/types.js';
+
+type BrainMediaKind = MediaPayload['kind'];
 
 const PUBLIC_URL = process.env.SOUL_HUB_PUBLIC_URL || 'https://soul-hub.jneaimi.com';
 const AGENT = 'whatsapp-brain';
@@ -39,7 +41,7 @@ export interface BrainSaveInput {
 	 *  via `mediaBase64`. */
 	mediaBuffer?: Buffer;
 	mimetype?: string;
-	mediaKind?: 'image' | 'voice' | 'video' | 'document';
+	mediaKind?: BrainMediaKind;
 }
 
 export interface BrainSaveResult {
@@ -63,15 +65,21 @@ const ExtractionSchema = z.object({
 
 type ExtractionOutput = z.infer<typeof ExtractionSchema>;
 
-const EXTRACTION_PROMPTS: Record<NonNullable<BrainSaveInput['mediaKind']>, string> = {
+/** Per-modality prompts. `voice` and `audio` skip the call entirely
+ *  because the upstream transcribe pass already produced text. `sticker`
+ *  also skips — stickers are emoji-shaped, no useful structured output. */
+const EXTRACTION_PROMPTS: Partial<Record<BrainMediaKind, string>> = {
 	image:
 		'Extract a structured note from this image. Fill `title`, `vision_caption`, and `tags`. Keep the caption factual — no flowery language. If a caption was provided alongside the image, use it to bias the title and tags.',
 	video:
 		'Extract a structured note from this video. Fill `title`, `summary`, `visual_description`, `transcript` (when speech is present), `duration_estimate_seconds`, and `tags`. Keep the summary tight (3–5 sentences).',
 	document:
 		'Extract a structured note from this document. Fill `title`, `summary`, and `tags`. Surface the key claim, the audience, and any actionable bits.',
-	voice: '', // handled upstream via transcribe.ts — no second extraction call
 };
+
+function shouldSkipExtraction(kind: BrainMediaKind): boolean {
+	return kind === 'voice' || kind === 'audio' || kind === 'sticker';
+}
 
 /** Run the multimodal extraction call. Returns `{}` on any failure so
  *  callers can fall back to plain-body save without surfacing an error
@@ -79,10 +87,12 @@ const EXTRACTION_PROMPTS: Record<NonNullable<BrainSaveInput['mediaKind']>, strin
 async function extractFromMedia(
 	buffer: Buffer,
 	mimetype: string,
-	kind: NonNullable<BrainSaveInput['mediaKind']>,
+	kind: BrainMediaKind,
 	caption: string,
 ): Promise<ExtractionOutput> {
-	if (kind === 'voice') return {};
+	if (shouldSkipExtraction(kind)) return {};
+	const promptBase = EXTRACTION_PROMPTS[kind];
+	if (!promptBase) return {};
 
 	const apiKey = process.env.GEMINI_API_KEY;
 	if (!apiKey) return {};
@@ -90,7 +100,6 @@ async function extractFromMedia(
 	const client = createGoogleGenerativeAI({ apiKey });
 	const cleanMime = mimetype.split(';')[0].trim() || 'application/octet-stream';
 
-	const promptBase = EXTRACTION_PROMPTS[kind];
 	const promptWithCaption = caption.trim()
 		? `${promptBase}\n\nCaption supplied by user: ${caption.trim()}`
 		: promptBase;
@@ -214,7 +223,7 @@ export async function dispatchBrainSave(input: BrainSaveInput): Promise<BrainSav
 	const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD in UTC
 
 	let extracted: ExtractionOutput = {};
-	if (input.mediaBuffer && input.mimetype && input.mediaKind && input.mediaKind !== 'voice') {
+	if (input.mediaBuffer && input.mimetype && input.mediaKind) {
 		extracted = await extractFromMedia(
 			input.mediaBuffer,
 			input.mimetype,
@@ -261,17 +270,27 @@ export async function dispatchBrainSave(input: BrainSaveInput): Promise<BrainSav
 		source_context: `whatsapp:${input.envelope.chatJid}:${input.envelope.messageId ?? ''}`,
 	};
 	if (assetPath) {
-		meta.attachments = [
-			{
-				path: assetPath,
-				kind: input.mediaKind,
-				mimetype: input.mimetype,
-				bytes: input.mediaBuffer?.byteLength,
-			},
-		];
-	}
-	if (extracted.duration_estimate_seconds && Number.isFinite(extracted.duration_estimate_seconds)) {
-		meta.duration_estimate_seconds = extracted.duration_estimate_seconds;
+		// Voice attachments carry the upstream transcript + duration
+		// metadata so a future indexer can search audio captures by
+		// transcript without re-OCRing the audio. Image/video pull their
+		// extra fields from the Gemini Flash extraction pass.
+		const attachment: Record<string, unknown> = {
+			path: assetPath,
+			kind: input.mediaKind,
+			mimetype: input.mimetype,
+			bytes: input.mediaBuffer?.byteLength,
+		};
+		if (input.mediaKind === 'voice' && body) {
+			attachment.transcript = body;
+		}
+		if (extracted.transcript?.trim()) attachment.transcript = extracted.transcript.trim();
+		if (extracted.vision_caption?.trim()) attachment.vision_caption = extracted.vision_caption.trim();
+		if (extracted.summary?.trim()) attachment.summary = extracted.summary.trim();
+		if (extracted.visual_description?.trim()) attachment.visual_description = extracted.visual_description.trim();
+		if (extracted.duration_estimate_seconds && Number.isFinite(extracted.duration_estimate_seconds)) {
+			attachment.duration_estimate_seconds = extracted.duration_estimate_seconds;
+		}
+		meta.attachments = [attachment];
 	}
 
 	const noteResult = await engine.createNote({

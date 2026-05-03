@@ -176,44 +176,62 @@ async function main(): Promise<void> {
 
 			// Voice → transcript (worker-side; same Gemini call as in-process
 			// dispatcher). Failures degrade to a friendly user-visible reply.
+			// Also collect the buffer for ANY media kind (image/voice/video/
+			// document) so the main app's `/save` brain handler can archive
+			// the asset + run multimodal extraction without re-downloading.
+			// Cap-checked against `delivery.maxMediaSizeMB`; oversize media
+			// skips the buffer ride (text caption still flows through).
 			let transcript: string | undefined;
-			if (envelope.media?.kind === 'voice' && cfg.delivery.transcribeVoiceNotes) {
+			let mediaBase64: string | undefined;
+			if (envelope.media) {
 				const maxBytes = cfg.delivery.maxMediaSizeMB * 1024 * 1024;
-				if (envelope.media.fileLength && envelope.media.fileLength > maxBytes) {
+				const oversize = !!envelope.media.fileLength && envelope.media.fileLength > maxBytes;
+				if (oversize && envelope.media.kind === 'voice' && cfg.delivery.transcribeVoiceNotes) {
 					await sendText(
 						sock,
 						envelope.chatJid,
-						`Voice note exceeds ${cfg.delivery.maxMediaSizeMB}MB cap (was ${(envelope.media.fileLength / 1024 / 1024).toFixed(1)}MB) — not transcribing.`,
+						`Voice note exceeds ${cfg.delivery.maxMediaSizeMB}MB cap (was ${(envelope.media.fileLength! / 1024 / 1024).toFixed(1)}MB) — not transcribing.`,
 						cfg.delivery,
 					);
 					return;
 				}
-				try {
-					const buffer = await downloadMedia(raw);
+				if (!oversize) {
 					try {
-						saveMediaToDisk({
-							account: cfg.account,
-							messageId: envelope.messageId || `inbound-${Date.now()}`,
-							payload: envelope.media,
-							buffer,
-						});
-					} catch {
-						/* archival is optional */
+						const buffer = await downloadMedia(raw);
+						try {
+							saveMediaToDisk({
+								account: cfg.account,
+								messageId: envelope.messageId || `inbound-${Date.now()}`,
+								payload: envelope.media,
+								buffer,
+							});
+						} catch {
+							/* archival is optional */
+						}
+						mediaBase64 = buffer.toString('base64');
+						if (envelope.media.kind === 'voice' && cfg.delivery.transcribeVoiceNotes) {
+							try {
+								const result = await transcribeVoiceNote({
+									audio: buffer,
+									mimetype: envelope.media.mimetype,
+									providerRef: cfg.delivery.transcribeProvider,
+								});
+								transcript = result.text;
+							} catch (err) {
+								await sendText(
+									sock,
+									envelope.chatJid,
+									`Couldn't transcribe voice note: ${(err as Error).message}`,
+									cfg.delivery,
+								);
+								return;
+							}
+						}
+					} catch (err) {
+						console.warn(`[whatsapp-worker] media download failed for ${senderTag}: ${(err as Error).message}`);
+						// Fall through — main app still gets the envelope; routes
+						// that don't need media will continue working.
 					}
-					const result = await transcribeVoiceNote({
-						audio: buffer,
-						mimetype: envelope.media.mimetype,
-						providerRef: cfg.delivery.transcribeProvider,
-					});
-					transcript = result.text;
-				} catch (err) {
-					await sendText(
-						sock,
-						envelope.chatJid,
-						`Couldn't transcribe voice note: ${(err as Error).message}`,
-						cfg.delivery,
-					);
-					return;
 				}
 			}
 
@@ -227,7 +245,7 @@ async function main(): Promise<void> {
 			const resp = await fetch(`${MAIN_APP_URL}/api/channels/whatsapp/_inbound`, {
 				method: 'POST',
 				headers,
-				body: JSON.stringify({ envelope, transcript }),
+				body: JSON.stringify({ envelope, transcript, mediaBase64 }),
 			});
 			const dispatch = (await resp.json()) as {
 				ok?: boolean;

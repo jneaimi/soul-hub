@@ -24,7 +24,7 @@ import {
 import { extractCommitmentsAsync } from './commitments-extractor.js';
 import { dispatchBrainSave, dispatchBrainFind, dispatchBrainRecent } from '../../brain/index.js';
 import { maybeApplyRouter } from './router.js';
-import type { InboundEnvelope, WhatsAppChannelConfig } from './types.js';
+import type { InboundEnvelope, MediaPayload, WhatsAppChannelConfig } from './types.js';
 
 const HELP_PREFIX = 'I do not recognise that command. Available:';
 
@@ -41,14 +41,15 @@ function helpReply(intentMap: WhatsAppChannelConfig['intentMap']): string {
 	return lines.join('\n');
 }
 
-/** Voice-note pipeline: size-check → download → transcribe → return text.
- *  On any failure the dispatcher surfaces a friendly reply and the
- *  routes-layer call is skipped. */
+/** Voice-note pipeline: size-check → download → transcribe → return text
+ *  AND the underlying buffer so a downstream `/save` can archive the audio
+ *  without re-downloading. On any failure the dispatcher surfaces a
+ *  friendly reply and the routes-layer call is skipped. */
 async function transcribeIfVoice(
 	envelope: InboundEnvelope,
 	rawMessage: proto.IWebMessageInfo,
 	config: WhatsAppChannelConfig,
-): Promise<{ text?: string; error?: string }> {
+): Promise<{ text?: string; buffer?: Buffer; error?: string }> {
 	const media = envelope.media;
 	if (!media || media.kind !== 'voice') return { text: undefined };
 	if (!config.delivery.transcribeVoiceNotes) return { text: undefined };
@@ -85,7 +86,7 @@ async function transcribeIfVoice(
 			mimetype: media.mimetype,
 			providerRef: config.delivery.transcribeProvider,
 		});
-		return { text: result.text };
+		return { text: result.text, buffer };
 	} catch (err) {
 		return { error: `Couldn't transcribe voice note: ${(err as Error).message}` };
 	}
@@ -135,7 +136,7 @@ export async function dispatchInbound(
 		await sendText(
 			sock,
 			envelope.chatJid,
-			`I received your ${envelope.media.kind}, but I can only act on it with a caption or a follow-up message describing what to do.`,
+			`I got your ${envelope.media.kind}. Tell me what you want to do with it — ask a question, describe it, or send \`/save\` (as a follow-up message or as the caption next time) to capture it to the vault.`,
 			config.delivery,
 		);
 		return;
@@ -230,18 +231,22 @@ export async function dispatchInbound(
 			const result = await dispatchVaultChat(userText, conversationKey);
 			replyText = result.text || '(no reply)';
 		} else if (intent.route === 'brain-save') {
-			// Download the binary for image/video/document so save.ts can run
-			// extraction + archive the asset. Voice already came through
-			// `transcribeIfVoice` as text; we don't dual-archive into the
-			// vault — Saveing a voice transcript persists just the text.
+			// Voice — buffer was already fetched by `transcribeIfVoice` above
+			// (transcript landed in `workingBody`). Reuse it instead of
+			// re-downloading. Image/video/document — download here so save.ts
+			// can run extraction + archive the asset.
 			let buffer: Buffer | undefined;
 			let mimetype: string | undefined;
-			let mediaKind: 'image' | 'video' | 'document' | undefined;
-			if (envelope.media && envelope.media.kind !== 'voice') {
+			let mediaKind: MediaPayload['kind'] | undefined;
+			if (envelope.media?.kind === 'voice' && transcription.buffer) {
+				buffer = transcription.buffer;
+				mimetype = envelope.media.mimetype;
+				mediaKind = 'voice';
+			} else if (envelope.media && envelope.media.kind !== 'sticker') {
 				try {
 					buffer = await downloadMedia(rawMessage);
 					mimetype = envelope.media.mimetype;
-					mediaKind = envelope.media.kind as 'image' | 'video' | 'document';
+					mediaKind = envelope.media.kind;
 				} catch (err) {
 					await sendText(
 						sock,

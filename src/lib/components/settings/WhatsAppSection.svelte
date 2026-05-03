@@ -22,7 +22,7 @@
 			enabled?: boolean;
 			label?: string;
 			access?: { allowFrom?: string[] };
-			intentMap?: Record<string, IntentMapping>;
+			intentMap?: Record<string, IntentMapping & { dynamic?: boolean }>;
 			worker?: { enabled?: boolean; url?: string; mainAppUrl?: string };
 			heartbeat?: Record<string, unknown>;
 		};
@@ -178,15 +178,25 @@
 	});
 
 	function commitIntentMap() {
-		const next: Record<string, IntentMapping> = {};
+		const next: Record<string, IntentMapping & { dynamic?: boolean }> = {};
 		for (const row of intentRows) {
 			const token = row.token.trim();
 			if (!token) continue;
 			next[token] = { route: row.route.trim() };
 			if (row.description.trim()) next[token].description = row.description.trim();
+			// Preserve `dynamic` (Slice 1.5 smart-router opt-in) — only meaningful
+			// on the `default` row, but a row-edit shouldn't silently drop it.
+			const prior = config?.intentMap?.[token];
+			if (prior && typeof prior.dynamic === 'boolean') next[token].dynamic = prior.dynamic;
 		}
 		intentSyncedFrom = JSON.stringify(next);
 		onchange({ intentMap: next });
+	}
+
+	function toggleDynamicRouter(enabled: boolean) {
+		// Send only the changed nested field — the server's deep-merge keeps
+		// the rest of `intentMap` and the rest of `channels.whatsapp` intact.
+		onchange({ intentMap: { default: { route: 'vault-chat', dynamic: enabled } } });
 	}
 
 	function addIntentRow() {
@@ -359,6 +369,28 @@
 					<span class="block text-[10px] text-hub-dim mt-1">
 						DMs from these numbers reach the routes layer; everything else is dropped silently.
 					</span>
+				</div>
+
+				<!-- Smart router (Slice 1.5) — opt-in dynamic routing for free-form messages -->
+				<div class="border-t border-hub-border pt-3">
+					<label class="flex items-start justify-between gap-3 cursor-pointer">
+						<div class="flex flex-col">
+							<span class="text-xs text-hub-muted">Smart router for free-form messages</span>
+							<span class="text-[10px] text-hub-dim leading-relaxed">
+								When on, non-slash messages run through a regex pre-filter and a Gemini Flash
+								fallback so phrases like "save this idea …" or "find my heartbeat notes" route
+								to <code>brain-save</code> / <code>brain-find</code> without the slash.
+								Sub-threshold confidence falls back to <code>vault-chat</code>. Decisions are
+								surfaced at <code>recentRouterDecisions[]</code> on the status endpoint.
+							</span>
+						</div>
+						<input
+							type="checkbox"
+							checked={config?.intentMap?.default?.dynamic === true}
+							onchange={(e) => toggleDynamicRouter(e.currentTarget.checked)}
+							class="mt-0.5 w-4 h-4 cursor-pointer accent-hub-cta"
+						/>
+					</label>
 				</div>
 
 				<!-- Intent map -->

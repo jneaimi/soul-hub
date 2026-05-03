@@ -35,10 +35,16 @@ const DECISION_BUFFER_MAX = 20;
 const SAFE_DEFAULT = 'vault-chat';
 
 /** Per-route confidence floors. Below the floor → fall back to vault-chat
- *  (the safe default — chatting back at the user is the cheap mistake;
- *  writing the wrong note is the expensive one). */
+ *  (the safe default — chatting back at the user is the cheap mistake).
+ *
+ *  **Writes are slash-only.** The brain-save route is intentionally absent
+ *  from this map (and from the LLM enum below). Auto-routing a free-form
+ *  "save this idea" to brain-save would create vault notes the user
+ *  didn't explicitly ask for — including media captures the user might
+ *  just want to discuss. `/save` remains the explicit handle for any
+ *  capture intent. Reads are router-eligible because a wrong /find or
+ *  /recent costs nothing — wrong save costs a junk note. */
 const THRESHOLDS: Record<string, number> = {
-	'brain-save': 0.8,
 	'brain-find': 0.6,
 	'brain-recent': 0.6,
 	'vault-chat': 0.5,
@@ -68,17 +74,13 @@ export function getRouterDecisions(): RouterDecision[] {
 
 /** Regex pre-filter. Returns the matched route name + a short reason
  *  string, or `null` if nothing matched. Patterns are intentionally
- *  conservative — false positives on save are worse than misses (the
- *  LLM fallback catches the misses). */
+ *  conservative — false positives on a read are cheap, but writes are
+ *  routed via slash only so the regex set covers reads only.
+ *
+ *  Save/capture verbs are deliberately absent here — see THRESHOLDS
+ *  comment for rationale. */
 function regexPreFilter(message: string): { route: string; reason: string } | null {
 	const lower = message.toLowerCase();
-
-	// Save / capture / remember markers — only fire when paired with an
-	// object-pointer ("this", "that", a noun phrase) so we don't catch
-	// "save the date" as a save-to-vault command.
-	if (/\b(save|capture|remember|note down|jot down|write down|record this|store this)\b/.test(lower)) {
-		return { route: 'brain-save', reason: 'capture verb + object marker' };
-	}
 
 	// Recency markers — "what did I", "what's recent/latest/new", "show me
 	// recent". Tight enough that a vague "what's new with you" still misses.
@@ -108,34 +110,33 @@ function regexPreFilter(message: string): { route: string; reason: string } | nu
  *  unions and quietly drops nested objects. */
 const RouterDecisionSchema = z.object({
 	route: z
-		.enum(['brain-save', 'brain-find', 'brain-recent', 'vault-chat'])
-		.describe('Which intent best matches the user message. Default to "vault-chat" when unsure — chatting back is the safe mistake.'),
+		.enum(['brain-find', 'brain-recent', 'vault-chat'])
+		.describe('Which intent best matches the user message. Default to "vault-chat" when unsure — chatting back is the safe mistake. Saving to the vault is slash-only (`/save`); never route here.'),
 	confidence: z
 		.number()
 		.min(0)
 		.max(1)
-		.describe('Your confidence in the route, 0 to 1. Be conservative — a wrong "brain-save" pollutes the vault. Use ≥0.8 only when the user clearly wants to capture; ≥0.6 for clear retrieval intent; ≤0.5 if ambiguous.'),
+		.describe('Your confidence in the route, 0 to 1. Use ≥0.6 for clear retrieval intent; below 0.5 routes to vault-chat anyway.'),
 	reason: z
 		.string()
 		.describe('Short (≤ 12 words) explanation of why this route fits.')
 		.optional(),
 });
 
-const ROUTER_SYSTEM_PROMPT = `You route inbound WhatsApp messages to one of four intents on a Soul Hub vault assistant.
+const ROUTER_SYSTEM_PROMPT = `You route inbound WhatsApp messages to one of three read intents on a Soul Hub vault assistant. Saving to the vault is slash-only (\`/save\`) and never reachable from this router — if the user wants to capture something, they will use the explicit slash command, so route capture-sounding messages to vault-chat for discussion instead.
 
 Routes:
-- brain-save: user wants to capture / save / remember a note. They're handing you content. Examples: "save this idea: ...", "remember to call Ali", "note down that ...".
 - brain-find: user wants to retrieve a specific past note. Search verbs: find, search, look up, "where's my note about ...", "do I have anything on ...".
 - brain-recent: user wants the most-recently-touched notes. Recency markers: "what's new", "show me recent decisions", "what did I work on yesterday".
-- vault-chat: free-form questions about the vault, follow-ups, or anything that doesn't clearly want write/find/recent. This is the safe default. Use it whenever you're unsure.
+- vault-chat: free-form questions, discussion, or anything that doesn't clearly want a list of past notes. This is the safe default. Use it for "save this idea …", "remember to …", "look at this image and tell me what you think" — saving is opt-in via /save, so phrasing like that is for discussion, not capture.
 
 Confidence calibration:
-- 0.9–1.0: unambiguous explicit intent ("save this: ...").
-- 0.7–0.8: clear intent with light noise ("hey, save this idea about chess").
-- 0.5–0.6: ambiguous — pick the most plausible route but flag it.
-- below 0.5: route to vault-chat. The dispatcher's threshold gate sends low-confidence picks to chat anyway.
+- 0.9–1.0: unambiguous explicit retrieval intent ("find my notes about heartbeat").
+- 0.7–0.8: clear intent with light noise ("hey, show me what I wrote about chess engines").
+- 0.5–0.6: ambiguous — pick the most plausible read route but flag it.
+- below 0.5: route to vault-chat.
 
-A wrong "brain-save" creates a junk note that pollutes the vault — bias toward vault-chat when in doubt.`;
+When in doubt, vault-chat. Discussion is always the right default.`;
 
 async function llmRoute(
 	message: string,

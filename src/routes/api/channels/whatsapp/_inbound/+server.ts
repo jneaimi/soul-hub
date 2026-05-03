@@ -28,6 +28,7 @@ import {
 	getChannelConfig,
 	resolveIntent,
 	type InboundEnvelope,
+	type MediaPayload,
 } from '$lib/channels/whatsapp/index.js';
 import { dispatchRoute, RouteNotFoundError } from '$lib/routes/index.js';
 import { dispatchVaultChat } from '$lib/vault-chat/index.js';
@@ -107,7 +108,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({
 			ok: true,
 			action: 'reply',
-			text: `I received your ${envelope.media.kind}, but I can only act on it with a caption or a follow-up message describing what to do.`,
+			text: `I got your ${envelope.media.kind}. Tell me what you want to do with it — ask a question, describe it, or send \`/save\` (as a follow-up message or as the caption next time) to capture it to the vault.`,
 		});
 	}
 
@@ -182,16 +183,19 @@ export const POST: RequestHandler = async ({ request }) => {
 			replyText = result.text || '(no reply)';
 		} else if (intent.route === 'brain-save') {
 			// Worker-mode binary plumbing: the worker piggybacks media bytes
-			// as base64 in `body.mediaBase64` so we don't re-download from
-			// WhatsApp. Decode here and pass a Buffer to brain.save.
+			// as base64 in `body.mediaBase64` (Slice 0). Decode here and pass
+			// a Buffer to brain.save. All four media kinds participate —
+			// voice gets archived alongside its transcript (transcript is
+			// already in `workingBody`); image/video/document also fire a
+			// single Gemini Flash extraction inside save.ts.
 			let buffer: Buffer | undefined;
 			let mimetype: string | undefined;
-			let mediaKind: 'image' | 'video' | 'document' | undefined;
-			if (body.mediaBase64 && envelope.media && envelope.media.kind !== 'voice') {
+			let mediaKind: MediaPayload['kind'] | undefined;
+			if (body.mediaBase64 && envelope.media) {
 				try {
 					buffer = Buffer.from(body.mediaBase64, 'base64');
 					mimetype = envelope.media.mimetype;
-					mediaKind = envelope.media.kind as 'image' | 'video' | 'document';
+					mediaKind = envelope.media.kind;
 				} catch (err) {
 					return json({
 						ok: true,
