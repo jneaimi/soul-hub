@@ -10,7 +10,14 @@ import { config as soulHubConfig, reloadConfig } from '../../config.js';
 import { WhatsAppChannelSchema } from '../../config.schema.js';
 import { parseDurationMs } from './heartbeat-loader.js';
 import { initHeartbeat, triggerHeartbeat } from './heartbeat.js';
-import { recentLog, getDailyCount, ymdInTimezone } from './heartbeat-state.js';
+import {
+	recentLog,
+	getDailyCount,
+	ymdInTimezone,
+	dismissCommitment,
+	listCommitmentsForTarget,
+	type CommitmentRow,
+} from './heartbeat-state.js';
 import type { WhatsAppChannelConfig } from './types.js';
 
 function readChannelConfig(): WhatsAppChannelConfig | null {
@@ -138,4 +145,59 @@ export async function handleHeartbeatMetaCommand(body: string): Promise<string> 
 	if (first === '/mute') return handleMute(rest);
 	if (first === '/resume') return handleResume();
 	return `Unknown command "${first}".`;
+}
+
+// ─── Commitments (Slice 5) ─────────────────────────────────────────────
+
+export function isCommitmentsMetaCommand(body: string): boolean {
+	const trimmed = body.trim().toLowerCase();
+	if (!trimmed) return false;
+	return trimmed.split(/\s+/, 1)[0] === '/commitments';
+}
+
+function fmtCommitmentLine(c: CommitmentRow): string {
+	const status = c.status === 'pending' ? '⏳' : c.status === 'surfaced' ? '✓' : '✕';
+	const due = new Date(c.dueAfterTs).toLocaleString('en-GB', {
+		day: '2-digit',
+		month: '2-digit',
+		hour: '2-digit',
+		minute: '2-digit',
+	});
+	return `[#${c.id}] ${status} due ${due} — ${c.suggestedText}`;
+}
+
+/** Handle `/commitments` (list) and `/commitments dismiss <id>`. Scoped
+ *  to the sender's (channel, target) so users only ever see their own
+ *  commitments — a leak between numbers would be a privacy bug. */
+export async function handleCommitmentsMetaCommand(
+	body: string,
+	senderNumber: string,
+): Promise<string> {
+	const trimmed = body.trim();
+	const parts = trimmed.split(/\s+/);
+	const sub = (parts[1] ?? 'list').toLowerCase();
+
+	if (sub === 'list' || sub === '') {
+		const rows = listCommitmentsForTarget('whatsapp', senderNumber, 20);
+		if (rows.length === 0) return 'No open commitments.';
+		const lines = ['Open commitments:', ...rows.map(fmtCommitmentLine)];
+		lines.push('', 'Dismiss with `/commitments dismiss <id>`.');
+		return lines.join('\n');
+	}
+
+	if (sub === 'dismiss') {
+		const idStr = parts[2];
+		if (!idStr) return 'Usage: `/commitments dismiss <id>`.';
+		const id = Number(idStr);
+		if (!Number.isFinite(id) || id <= 0) return `"${idStr}" is not a valid commitment id.`;
+		// Scope check — only dismiss when the row actually belongs to this
+		// sender. Without this, anyone allowlisted could nuke another user's
+		// commitments by guessing IDs.
+		const owned = listCommitmentsForTarget('whatsapp', senderNumber, 1000).some((c) => c.id === id);
+		if (!owned) return `Commitment #${id} not found for your number.`;
+		const ok = dismissCommitment(id);
+		return ok ? `Dismissed commitment #${id}.` : `Commitment #${id} was already dismissed.`;
+	}
+
+	return `Unknown subcommand "${sub}". Try \`/commitments list\` or \`/commitments dismiss <id>\`.`;
 }

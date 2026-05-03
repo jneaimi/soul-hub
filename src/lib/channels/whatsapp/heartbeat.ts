@@ -25,10 +25,14 @@ import { stripHeartbeatToken } from './heartbeat-ok.js';
 import {
 	appendLog,
 	getDailyCount,
+	getDueCommitments,
+	dismissCommitment,
+	markCommitmentsSurfaced,
 	getTaskLastRun,
 	incrementDailyCount,
 	setTaskLastRun,
 	ymdInTimezone,
+	type CommitmentRow,
 	type HeartbeatStatus,
 } from './heartbeat-state.js';
 import type { WhatsAppChannelConfig } from './types.js';
@@ -143,7 +147,12 @@ function computeDueTasks(tasks: HeartbeatTask[], now = Date.now()): HeartbeatTas
 	});
 }
 
-function buildUserPrompt(basePrompt: string, body: string, due: HeartbeatTask[]): string {
+function buildUserPrompt(
+	basePrompt: string,
+	body: string,
+	due: HeartbeatTask[],
+	dueCommitments: CommitmentRow[] = [],
+): string {
 	const parts: string[] = [basePrompt];
 	if (body.trim()) parts.push(body.trim());
 	if (due.length > 0) {
@@ -151,6 +160,18 @@ function buildUserPrompt(basePrompt: string, body: string, due: HeartbeatTask[])
 		for (const t of due) {
 			parts.push(`### ${t.name}\n${t.prompt}`);
 		}
+	}
+	if (dueCommitments.length > 0) {
+		const lines: string[] = [
+			'\nOpen commitments inferred from prior chats with this user:',
+			'',
+			'Decide for each whether it still warrants a check-in. If you compose a natural follow-up, weave them in — the user expects a single coherent message, not a list. If none feel relevant, reply `HEARTBEAT_OK` (with no IDs) to dismiss them all. To dismiss only specific ones while still composing about others, append the IDs: `HEARTBEAT_OK 3 7`.',
+			'',
+		];
+		for (const c of dueCommitments) {
+			lines.push(`[#${c.id}] ${c.suggestedText}`);
+		}
+		parts.push(lines.join('\n'));
 	}
 	return parts.join('\n\n');
 }
@@ -236,17 +257,31 @@ export async function runHeartbeatOnce(
 		return { status: 'gated_cap' };
 	}
 
-	// Empty checklist → no-op, no API call.
 	const checklist = getHeartbeatChecklist(hb.checklistPath);
 	const dueTasks = computeDueTasks(checklist.tasks);
-	if (checklist.isEmpty || (checklist.tasks.length > 0 && dueTasks.length === 0 && !checklist.body.trim())) {
+
+	// Slice 5 — fetch due commitments for this (channel, target) pair so
+	// the agent can weave them into a check-in. Cheap query (indexed on
+	// channel+target+status+due_after_ts). Empty when commitments are
+	// disabled or nothing's due. Capped at the per-day knob.
+	const dueCommitments = cfg.commitments.enabled && hb.target
+		? getDueCommitments('whatsapp', hb.target).slice(0, cfg.commitments.maxPerDay)
+		: [];
+
+	// Empty checklist + no commitments → no-op, no API call. We allow a
+	// tick when commitments alone are present so the agent has something
+	// to consider even if HEARTBEAT.md is bare.
+	const checklistEmpty =
+		checklist.isEmpty ||
+		(checklist.tasks.length > 0 && dueTasks.length === 0 && !checklist.body.trim());
+	if (checklistEmpty && dueCommitments.length === 0) {
 		appendLog({ ts: Date.now(), target: hb.target, status: 'skipped_empty' });
 		return { status: 'skipped_empty' };
 	}
 
 	// Compose + call.
 	const system = getSoulBody(hb.soulPath);
-	const user = buildUserPrompt(hb.basePrompt, checklist.body, dueTasks);
+	const user = buildUserPrompt(hb.basePrompt, checklist.body, dueTasks, dueCommitments);
 
 	let modelResult: { text: string; tokensIn?: number; tokensOut?: number };
 	try {
@@ -271,7 +306,26 @@ export async function runHeartbeatOnce(
 		setTaskLastRun(t.name);
 	}
 
+	const includedCommitmentIds = dueCommitments.map((c) => c.id);
+
+	// Apply commitment dismissals first so the per-tick "surfaced" mark
+	// below doesn't include rows the agent explicitly nuked.
+	for (const id of ack.dismissedIds) {
+		if (includedCommitmentIds.includes(id)) {
+			dismissCommitment(id);
+		}
+	}
+
 	if (ack.shouldSkip) {
+		// HEARTBEAT_OK without IDs → dismiss every included commitment
+		// (the agent saw them all and judged none worth surfacing).
+		// HEARTBEAT_OK with IDs → only those got dismissed above; the
+		// rest stay pending for the next tick.
+		if (ack.dismissedIds.length === 0 && includedCommitmentIds.length > 0) {
+			for (const id of includedCommitmentIds) {
+				dismissCommitment(id);
+			}
+		}
 		appendLog({
 			ts: Date.now(),
 			target: hb.target,
@@ -297,6 +351,13 @@ export async function runHeartbeatOnce(
 			model: hb.model,
 		});
 		return { status: 'error' };
+	}
+
+	// Delivered → mark remaining commitments (those not explicitly
+	// dismissed above) as surfaced so they don't re-fire next tick.
+	const toSurface = includedCommitmentIds.filter((id) => !ack.dismissedIds.includes(id));
+	if (toSurface.length > 0) {
+		markCommitmentsSurfaced(toSurface);
 	}
 
 	incrementDailyCount(hb.target, ymd);

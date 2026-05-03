@@ -35,7 +35,10 @@ import { isResetCommand, resetConversation } from '$lib/vault-chat/history.js';
 import {
 	isHeartbeatMetaCommand,
 	handleHeartbeatMetaCommand,
+	isCommitmentsMetaCommand,
+	handleCommitmentsMetaCommand,
 } from '$lib/channels/whatsapp/heartbeat-commands.js';
+import { extractCommitmentsAsync } from '$lib/channels/whatsapp/commitments-extractor.js';
 
 interface InboundBody {
 	envelope: InboundEnvelope;
@@ -123,6 +126,20 @@ export const POST: RequestHandler = async ({ request }) => {
 		}
 	}
 
+	// Slice 5 — `/commitments [list|dismiss <id>]`. Scoped by senderNumber.
+	if (isCommitmentsMetaCommand(workingBody)) {
+		try {
+			const reply = await handleCommitmentsMetaCommand(workingBody, envelope.senderNumber);
+			return json({ ok: true, action: 'reply', text: reply });
+		} catch (err) {
+			return json({
+				ok: true,
+				action: 'reply',
+				text: `Commitments command failed: ${(err as Error).message}`,
+			});
+		}
+	}
+
 	const intent = resolveIntent(workingBody, cfg.intentMap);
 
 	if (intent.route === 'unknown' || intent.route === 'help') {
@@ -138,7 +155,20 @@ export const POST: RequestHandler = async ({ request }) => {
 					messages: [{ role: 'user', content: userText }],
 					maxOutputTokens: 800,
 				});
-		return json({ ok: true, action: 'reply', text: result.text || '(no reply)' });
+		const replyText = result.text || '(no reply)';
+
+		// Slice 5 — fire-and-forget commitment extraction. Mirrors dispatch.ts;
+		// runs after we've decided what to send back so it can never delay
+		// the worker's reply. Gated inside the helper (off by default).
+		extractCommitmentsAsync({
+			channel: 'whatsapp',
+			target: envelope.senderNumber,
+			userText,
+			agentReply: replyText,
+			sourceMsgId: envelope.messageId || null,
+		});
+
+		return json({ ok: true, action: 'reply', text: replyText });
 	} catch (err) {
 		const message =
 			err instanceof RouteNotFoundError

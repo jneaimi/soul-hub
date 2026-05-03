@@ -15,7 +15,13 @@ import { downloadMedia, saveMediaToDisk } from './media.js';
 import { transcribeVoiceNote } from './transcribe.js';
 import { resolveSenderLid } from './lid-resolve.js';
 import { isResetCommand, resetConversation } from '../../vault-chat/history.js';
-import { isHeartbeatMetaCommand, handleHeartbeatMetaCommand } from './heartbeat-commands.js';
+import {
+	isHeartbeatMetaCommand,
+	handleHeartbeatMetaCommand,
+	isCommitmentsMetaCommand,
+	handleCommitmentsMetaCommand,
+} from './heartbeat-commands.js';
+import { extractCommitmentsAsync } from './commitments-extractor.js';
 import type { InboundEnvelope, WhatsAppChannelConfig } from './types.js';
 
 const HELP_PREFIX = 'I do not recognise that command. Available:';
@@ -169,6 +175,22 @@ export async function dispatchInbound(
 		return;
 	}
 
+	// Slice 5 — `/commitments [list|dismiss <id>]`. Scoped to sender's number.
+	if (isCommitmentsMetaCommand(workingBody)) {
+		try {
+			const reply = await handleCommitmentsMetaCommand(workingBody, envelope.senderNumber);
+			await sendText(sock, envelope.chatJid, reply, config.delivery);
+		} catch (err) {
+			await sendText(
+				sock,
+				envelope.chatJid,
+				`Commitments command failed: ${(err as Error).message}`,
+				config.delivery,
+			);
+		}
+		return;
+	}
+
 	const intent = resolveIntent(workingBody, config.intentMap);
 
 	if (intent.route === 'unknown') {
@@ -193,7 +215,19 @@ export async function dispatchInbound(
 					messages: [{ role: 'user', content: userText }],
 					maxOutputTokens: 800,
 				});
-		await sendText(sock, envelope.chatJid, result.text || '(no reply)', config.delivery);
+		const replyText = result.text || '(no reply)';
+		await sendText(sock, envelope.chatJid, replyText, config.delivery);
+
+		// Slice 5 — fire-and-forget extraction of inferred commitments. Off
+		// by default; gated inside extractCommitmentsAsync. Runs after the
+		// user already has the reply so it can never delay the chat.
+		extractCommitmentsAsync({
+			channel: 'whatsapp',
+			target: envelope.senderNumber,
+			userText,
+			agentReply: replyText,
+			sourceMsgId: envelope.messageId || null,
+		});
 	} catch (err) {
 		const message = err instanceof RouteNotFoundError
 			? `Route "${intent.route}" is not configured. Edit settings.json or remove this command from intentMap.`

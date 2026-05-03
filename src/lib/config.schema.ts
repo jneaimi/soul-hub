@@ -166,6 +166,35 @@ export const WhatsAppHeartbeatSchema = z.object({
 		),
 });
 
+/** Inferred commitments — Slice 5. After every meaningful WhatsApp exchange,
+ *  a hidden Flash extraction pass spots conversation-bound follow-ups
+ *  ("interview tomorrow" → check in afterward). Off by default. Stored
+ *  scoped to (channel, target) so a commitment from one chat can't leak
+ *  to another. See `~/vault/projects/soul-hub-brain/index.md → Slice 5`. */
+export const WhatsAppCommitmentsSchema = z.object({
+	enabled: z.boolean().default(false),
+	/** Provider:model ref for the extraction call. Should be cheap — runs
+	 *  on every meaningful exchange. Flash is the default. */
+	extractionModel: z
+		.string()
+		.regex(/^(gemini|claude-cli|openrouter|anthropic):.+$/, 'Expected "<provider>:<model>"')
+		.default('gemini:gemini-2.5-flash'),
+	/** Below this score the extracted commitment is dropped without
+	 *  storage. 0.8 is conservative — false positives are worse than
+	 *  false negatives because users see the noise. */
+	confidenceThreshold: z.number().min(0).max(1).default(0.8),
+	/** Earliest the extracted commitment becomes due. Clamps to at least
+	 *  one heartbeat interval after creation so we don't echo it back
+	 *  in the very next tick. */
+	dueDelayHours: z.number().min(0).max(168).default(1),
+	/** Cap on commitments included in a single heartbeat tick — controls
+	 *  prompt bloat. Each row only surfaces once (status flips to
+	 *  `surfaced` after delivery), so the global noise ceiling is
+	 *  governed by `heartbeat.maxPerDay`, which counts all deliveries
+	 *  regardless of source. This knob just keeps any one tick brief. */
+	maxPerDay: z.number().int().min(1).max(20).default(5),
+});
+
 export const WhatsAppChannelSchema = ChannelConfigSchema.extend({
 	account: z.string().default('personal'),
 	accounts: z
@@ -175,6 +204,7 @@ export const WhatsAppChannelSchema = ChannelConfigSchema.extend({
 	delivery: WhatsAppDeliverySchema.prefault({}),
 	worker: WhatsAppWorkerSchema.prefault({}),
 	heartbeat: WhatsAppHeartbeatSchema.prefault({}),
+	commitments: WhatsAppCommitmentsSchema.prefault({}),
 	intentMap: WhatsAppIntentMapSchema.default({
 		'/translate': { route: 'translate-arabic' },
 		default: { route: 'vault-chat' },
@@ -244,6 +274,13 @@ export const ConfigSchema = z.object({
 				ackMaxChars: 300,
 				isolatedSession: true,
 				model: 'gemini:gemini-2.5-flash',
+			},
+			commitments: {
+				enabled: false,
+				extractionModel: 'gemini:gemini-2.5-flash',
+				confidenceThreshold: 0.8,
+				dueDelayHours: 1,
+				maxPerDay: 5,
 			},
 			intentMap: {
 				'/translate': { route: 'translate-arabic' },

@@ -1,9 +1,10 @@
 /** Heartbeat persistence — better-sqlite3 at
- *  `~/.soul-hub/data/whatsapp/heartbeat.db`. Three tables:
+ *  `~/.soul-hub/data/whatsapp/heartbeat.db`. Tables:
  *
  *   - proactive_log   — every tick (sent / ack / gated / skipped / error)
  *   - daily_counter   — per-target, per-day count for the maxPerDay gate
  *   - task_state      — per-task lastRunAt for the per-task interval gate
+ *   - commitments     — Slice 5 inferred follow-ups, scoped to (channel, target)
  *
  *  Mirrors the lazy-singleton + WAL pattern from `src/lib/inbox/db.ts`.
  *  Distinct DB from inbox.db (which is the Outlook email cache, unrelated).
@@ -73,6 +74,29 @@ function migrate(db: Database.Database): void {
 			);
 		`);
 		db.pragma('user_version = 1');
+	}
+
+	if (version < 2) {
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS commitments (
+				id              INTEGER PRIMARY KEY AUTOINCREMENT,
+				channel         TEXT    NOT NULL,
+				target          TEXT    NOT NULL,
+				suggested_text  TEXT    NOT NULL,
+				due_after_ts    INTEGER NOT NULL,
+				status          TEXT    NOT NULL DEFAULT 'pending',
+				source_msg_id   TEXT,
+				confidence      REAL    NOT NULL,
+				created_at      INTEGER NOT NULL,
+				surfaced_at     INTEGER,
+				dismissed_at    INTEGER
+			);
+			CREATE INDEX IF NOT EXISTS idx_commitments_due
+				ON commitments(channel, target, status, due_after_ts);
+			CREATE INDEX IF NOT EXISTS idx_commitments_created
+				ON commitments(created_at DESC);
+		`);
+		db.pragma('user_version = 2');
 	}
 }
 
@@ -166,4 +190,108 @@ export function setTaskLastRun(taskName: string, at = Date.now()): void {
 			 ON CONFLICT(task_name) DO UPDATE SET last_run_at = excluded.last_run_at`,
 		)
 		.run(taskName, at);
+}
+
+// ─── Commitments (Slice 5) ─────────────────────────────────────────────
+
+export type CommitmentStatus = 'pending' | 'surfaced' | 'dismissed';
+
+export interface CommitmentRow {
+	id: number;
+	channel: string;
+	target: string;
+	suggestedText: string;
+	dueAfterTs: number;
+	status: CommitmentStatus;
+	sourceMsgId: string | null;
+	confidence: number;
+	createdAt: number;
+	surfacedAt: number | null;
+	dismissedAt: number | null;
+}
+
+export interface InsertCommitmentInput {
+	channel: string;
+	target: string;
+	suggestedText: string;
+	dueAfterTs: number;
+	sourceMsgId: string | null;
+	confidence: number;
+}
+
+export function insertCommitment(input: InsertCommitmentInput): number {
+	const stmt = getHeartbeatDb().prepare(
+		`INSERT INTO commitments (channel, target, suggested_text, due_after_ts, status, source_msg_id, confidence, created_at)
+		 VALUES (@channel, @target, @suggestedText, @dueAfterTs, 'pending', @sourceMsgId, @confidence, @createdAt)`,
+	);
+	const result = stmt.run({
+		channel: input.channel,
+		target: input.target,
+		suggestedText: input.suggestedText,
+		dueAfterTs: input.dueAfterTs,
+		sourceMsgId: input.sourceMsgId,
+		confidence: input.confidence,
+		createdAt: Date.now(),
+	});
+	return Number(result.lastInsertRowid);
+}
+
+const COMMITMENT_SELECT = `
+	id, channel, target,
+	suggested_text  AS suggestedText,
+	due_after_ts    AS dueAfterTs,
+	status,
+	source_msg_id   AS sourceMsgId,
+	confidence,
+	created_at      AS createdAt,
+	surfaced_at     AS surfacedAt,
+	dismissed_at    AS dismissedAt
+`;
+
+/** Pending commitments whose due time has arrived, scoped to one
+ *  conversation so a commitment from chat A never leaks to chat B. */
+export function getDueCommitments(channel: string, target: string, now = Date.now()): CommitmentRow[] {
+	return getHeartbeatDb()
+		.prepare(
+			`SELECT ${COMMITMENT_SELECT} FROM commitments
+			 WHERE channel = ? AND target = ? AND status = 'pending' AND due_after_ts <= ?
+			 ORDER BY due_after_ts ASC, id ASC`,
+		)
+		.all(channel, target, now) as CommitmentRow[];
+}
+
+/** Mark commitments as surfaced. Called after the heartbeat tick that
+ *  included them — prevents the same commitment from being repeatedly
+ *  re-included until the user/agent dismisses it. */
+export function markCommitmentsSurfaced(ids: number[], at = Date.now()): void {
+	if (ids.length === 0) return;
+	const placeholders = ids.map(() => '?').join(',');
+	getHeartbeatDb()
+		.prepare(
+			`UPDATE commitments SET status = 'surfaced', surfaced_at = ?
+			 WHERE id IN (${placeholders})`,
+		)
+		.run(at, ...ids);
+}
+
+export function dismissCommitment(id: number, at = Date.now()): boolean {
+	const result = getHeartbeatDb()
+		.prepare(
+			`UPDATE commitments SET status = 'dismissed', dismissed_at = ?
+			 WHERE id = ? AND status != 'dismissed'`,
+		)
+		.run(at, id);
+	return result.changes > 0;
+}
+
+/** All non-dismissed commitments for a (channel, target) pair — used by
+ *  `/commitments list` slash command. Bounded to keep replies short. */
+export function listCommitmentsForTarget(channel: string, target: string, limit = 20): CommitmentRow[] {
+	return getHeartbeatDb()
+		.prepare(
+			`SELECT ${COMMITMENT_SELECT} FROM commitments
+			 WHERE channel = ? AND target = ? AND status != 'dismissed'
+			 ORDER BY created_at DESC LIMIT ?`,
+		)
+		.all(channel, target, limit) as CommitmentRow[];
 }
