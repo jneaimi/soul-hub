@@ -61,6 +61,14 @@
 		model: 'gemini:gemini-2.5-flash',
 	};
 
+	interface RuntimeStatus {
+		withinActiveHours: boolean;
+		muteRemainingMs: number | null;
+		dailyCount: number;
+		dailyCap: number;
+		scheduleDescription: string;
+	}
+
 	let entries = $state<LogEntry[]>([]);
 	let logBusy = $state(false);
 	let logError = $state<string | null>(null);
@@ -70,6 +78,7 @@
 	let runError = $state<string | null>(null);
 
 	let showAdvanced = $state(false);
+	let runtime = $state<RuntimeStatus | null>(null);
 
 	let pollHandle: ReturnType<typeof setInterval> | null = null;
 
@@ -88,6 +97,24 @@
 		}
 	}
 
+	async function fetchRuntime() {
+		try {
+			const res = await fetch('/api/channels/whatsapp/heartbeat/status');
+			if (!res.ok) return;
+			const data = await res.json();
+			if (!data.ok) return;
+			runtime = {
+				withinActiveHours: data.withinActiveHours,
+				muteRemainingMs: data.muteRemainingMs,
+				dailyCount: data.dailyCount,
+				dailyCap: data.dailyCap,
+				scheduleDescription: data.scheduleDescription,
+			};
+		} catch {
+			/* keep last value */
+		}
+	}
+
 	async function runNow() {
 		runBusy = true;
 		runResult = null;
@@ -97,7 +124,7 @@
 			const data = await res.json();
 			if (!data.ok) throw new Error(data.error ?? 'Run failed');
 			runResult = { status: data.status, text: data.text };
-			await fetchLog();
+			await Promise.all([fetchLog(), fetchRuntime()]);
 		} catch (err) {
 			runError = (err as Error).message;
 		} finally {
@@ -123,6 +150,29 @@
 		const muteUntil = durationMs === null ? null : new Date(Date.now() + durationMs).toISOString();
 		patchHeartbeat({ muteUntil });
 	}
+
+	/** Convert a `<input type="datetime-local">` value (e.g. "2026-05-04T08:30")
+	 *  into a UTC ISO string the schema accepts. Empty string clears mute. */
+	function setMuteUntilLocal(localValue: string) {
+		if (!localValue) {
+			patchHeartbeat({ muteUntil: null });
+			return;
+		}
+		const parsed = Date.parse(localValue);
+		if (Number.isNaN(parsed)) return;
+		patchHeartbeat({ muteUntil: new Date(parsed).toISOString() });
+	}
+
+	const muteUntilLocalValue = $derived.by(() => {
+		const v = config?.muteUntil;
+		if (!v) return '';
+		const ms = Date.parse(v);
+		if (Number.isNaN(ms) || ms < Date.now()) return '';
+		// `datetime-local` expects "YYYY-MM-DDTHH:mm" in the user's local TZ.
+		const d = new Date(ms);
+		const pad = (n: number) => n.toString().padStart(2, '0');
+		return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+	});
 
 	const muteState = $derived.by(() => {
 		const v = config?.muteUntil;
@@ -156,7 +206,11 @@
 	onMount(() => {
 		if (config?.enabled) {
 			void fetchLog();
-			pollHandle = setInterval(fetchLog, 60_000);
+			void fetchRuntime();
+			pollHandle = setInterval(() => {
+				void fetchLog();
+				void fetchRuntime();
+			}, 60_000);
 		}
 	});
 
@@ -168,6 +222,7 @@
 		// Refetch when the section is toggled on; clear when off.
 		if (config?.enabled && entries.length === 0 && !logBusy) {
 			void fetchLog();
+			void fetchRuntime();
 		}
 	});
 </script>
@@ -203,6 +258,25 @@
 
 	{#if config?.enabled}
 		<div class="border-t border-hub-border px-3 pb-3 pt-2.5 space-y-3">
+			<!-- Runtime status line — would-fire-now check + cap counter -->
+			{#if runtime}
+				<div class="flex flex-wrap items-center gap-2 text-[11px]">
+					{#if muteState}
+						<span class="text-hub-warning">Muted ({muteState})</span>
+					{:else if !runtime.withinActiveHours}
+						<span class="text-hub-warning">Outside active hours</span>
+					{:else if runtime.dailyCount >= runtime.dailyCap}
+						<span class="text-hub-warning">Daily cap reached</span>
+					{:else}
+						<span class="text-hub-cta">Active</span>
+					{/if}
+					<span class="text-hub-dim">·</span>
+					<span class="text-hub-muted font-mono">{runtime.dailyCount}/{runtime.dailyCap} today</span>
+					<span class="text-hub-dim">·</span>
+					<span class="text-hub-dim truncate">{runtime.scheduleDescription}</span>
+				</div>
+			{/if}
+
 			<!-- Cadence + target -->
 			<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
 				<div>
@@ -335,16 +409,36 @@
 						</button>
 					{/if}
 				</div>
+				<div class="mt-2">
+					<label for="hb-mute-until" class="block text-[10px] text-hub-dim mb-1">
+						Or mute until a specific time
+					</label>
+					<input
+						id="hb-mute-until"
+						type="datetime-local"
+						value={muteUntilLocalValue}
+						oninput={(e) => setMuteUntilLocal((e.currentTarget as HTMLInputElement).value)}
+						class="px-2 py-1.5 bg-hub-bg border border-hub-border rounded text-xs text-hub-text font-mono"
+					/>
+				</div>
 			</div>
 
-			<!-- Vault links -->
-			<div class="text-[11px] text-hub-dim space-y-0.5">
-				<div>
-					Personality: <code class="text-hub-muted">{config?.soulPath ?? DEFAULTS.soulPath}</code>
-				</div>
-				<div>
-					Checklist: <code class="text-hub-muted">{config?.checklistPath ?? DEFAULTS.checklistPath}</code>
-				</div>
+			<!-- Vault links — deep-link to the Soul Hub vault page in edit mode.
+				 Slashes inside query strings have no special meaning, so the raw
+				 path round-trips through URL.searchParams cleanly. -->
+			<div class="text-[11px] text-hub-dim flex flex-wrap gap-x-4 gap-y-0.5">
+				<a
+					href="/vault?note={config?.soulPath ?? DEFAULTS.soulPath}&view=edit"
+					class="text-hub-cta hover:underline"
+				>
+					Edit personality →
+				</a>
+				<a
+					href="/vault?note={config?.checklistPath ?? DEFAULTS.checklistPath}&view=edit"
+					class="text-hub-cta hover:underline"
+				>
+					Edit checklist →
+				</a>
 			</div>
 
 			<!-- Advanced -->

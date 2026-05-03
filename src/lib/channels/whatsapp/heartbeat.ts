@@ -80,6 +80,44 @@ function muteActive(cfg: HeartbeatConfig): boolean {
 	return Date.now() < until;
 }
 
+export interface HeartbeatRuntimeStatus {
+	enabled: boolean;
+	target: string | null;
+	withinActiveHours: boolean;
+	muteUntil: string | null;
+	muteRemainingMs: number | null;
+	dailyCount: number;
+	dailyCap: number;
+	soulPath: string;
+	checklistPath: string;
+	scheduleDescription: string;
+}
+
+/** Snapshot used by the Settings UI status line. Cheap — no LLM, no DB
+ *  writes, just config + one daily-counter read. Safe to poll. */
+export function getHeartbeatRuntimeStatus(): HeartbeatRuntimeStatus | null {
+	const cfg = readChannelConfig();
+	if (!cfg) return null;
+	const hb = cfg.heartbeat;
+	const ymd = ymdInTimezone(hb.activeHours.timezone);
+	const dailyCount = hb.target ? getDailyCount(hb.target, ymd) : 0;
+	const muteUntilMs = hb.muteUntil ? Date.parse(hb.muteUntil) : NaN;
+	const muteRemainingMs =
+		!Number.isNaN(muteUntilMs) && muteUntilMs > Date.now() ? muteUntilMs - Date.now() : null;
+	return {
+		enabled: hb.enabled,
+		target: hb.target ?? null,
+		withinActiveHours: withinActiveHours(hb),
+		muteUntil: hb.muteUntil ?? null,
+		muteRemainingMs,
+		dailyCount,
+		dailyCap: hb.maxPerDay,
+		soulPath: hb.soulPath,
+		checklistPath: hb.checklistPath,
+		scheduleDescription: `every ${hb.every} within ${hb.activeHours.start}–${hb.activeHours.end} ${hb.activeHours.timezone}`,
+	};
+}
+
 function targetToJid(e164: string): string {
 	return `${e164.replace(/^\+/, '')}@s.whatsapp.net`;
 }

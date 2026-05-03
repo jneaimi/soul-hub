@@ -39,7 +39,9 @@ export {
 	triggerHeartbeat,
 	runHeartbeatOnce,
 	isHeartbeatRunning,
+	getHeartbeatRuntimeStatus,
 } from './heartbeat.js';
+export type { HeartbeatRuntimeStatus } from './heartbeat.js';
 export { recentLog as recentHeartbeatLog } from './heartbeat-state.js';
 export type { HeartbeatStatus, LogEntry as HeartbeatLogEntry } from './heartbeat-state.js';
 export type {
