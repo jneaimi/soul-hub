@@ -41,7 +41,7 @@ import {
 } from '$lib/channels/whatsapp/heartbeat-commands.js';
 import { extractCommitmentsAsync } from '$lib/channels/whatsapp/commitments-extractor.js';
 import { dispatchBrainSave, dispatchBrainFind, dispatchBrainRecent } from '$lib/brain/index.js';
-import { dispatchImg, rememberLastImage, getLastImage } from '$lib/img/index.js';
+import { dispatchImg, rememberLastImage, getLastImage, rememberLastUserImage, getLastUserImage } from '$lib/img/index.js';
 import {
 	getImgCount,
 	incrementImgCount,
@@ -110,18 +110,39 @@ export const POST: RequestHandler = async ({ request }) => {
 
 	const workingBody = body.transcript?.trim() || envelope.body;
 
-	if (envelope.media && envelope.media.kind !== 'voice' && !workingBody.trim()) {
-		return json({
-			ok: true,
-			action: 'reply',
-			text: `I got your ${envelope.media.kind}. Tell me what you want to do with it — ask a question, describe it, or send \`/save\` (as a follow-up message or as the caption next time) to capture it to the vault.`,
-		});
+	// Conversation key — computed early so we can both stash the inbound
+	// image cache (Slice 6 follow-up) and use it in the reset / heartbeat
+	// branches below.
+	const conversationKey = envelope.isGroup ? envelope.chatJid : envelope.senderNumber;
+
+	// Inbound image cache (worker-mode mirror of dispatch.ts): when the
+	// user sends an image, decode the worker-shipped `mediaBase64` once
+	// and stash a copy keyed by `conversationKey` so a follow-up `/img`
+	// can edit that image without re-uploading. Hoisted above the
+	// no-caption ack so the cache populates even when the user just
+	// dropped a photo without a caption.
+	let inboundImageBuffer: Buffer | undefined;
+	let inboundImageMime: string | undefined;
+	if (body.mediaBase64 && envelope.media?.kind === 'image') {
+		try {
+			inboundImageBuffer = Buffer.from(body.mediaBase64, 'base64');
+			inboundImageMime = envelope.media.mimetype;
+			rememberLastUserImage(conversationKey, {
+				buffer: inboundImageBuffer,
+				mimetype: inboundImageMime,
+			});
+		} catch (err) {
+			console.warn(`[_inbound] inbound image cache: decode failed: ${(err as Error).message}`);
+		}
 	}
 
-	// Conversation key: groups share one thread across members; DMs thread
-	// per-sender. Computed once up here so reset can use it before intent
-	// resolution (reset is a meta-command, not a route).
-	const conversationKey = envelope.isGroup ? envelope.chatJid : envelope.senderNumber;
+	if (envelope.media && envelope.media.kind !== 'voice' && !workingBody.trim()) {
+		const hint =
+			envelope.media.kind === 'image'
+				? `I got your image. Tell me what you want to do with it — ask a question, describe it, send \`/img <how to edit>\` to edit it, or \`/save\` to capture it to the vault.`
+				: `I got your ${envelope.media.kind}. Tell me what you want to do with it — ask a question, describe it, or send \`/save\` (as a follow-up message or as the caption next time) to capture it to the vault.`;
+		return json({ ok: true, action: 'reply', text: hint });
+	}
 
 	// Reset commands wipe per-key history and short-circuit before any
 	// routing. Hoisted above `resolveIntent` because `/reset` etc. would
@@ -185,13 +206,15 @@ export const POST: RequestHandler = async ({ request }) => {
 
 		let replyText: string;
 		if (intent.route === 'vault-chat') {
-			// Multimodal pass-through — worker shipped media bytes via
-			// `body.mediaBase64` (Slice 0/polish). Decode and hand to
-			// vault-chat so the LLM can actually see image/video/document.
-			// Voice already arrived as a transcript in `body.transcript` →
-			// no second pass needed.
+			// Multimodal pass-through — when the message has image/video/
+			// document attached, hand the bytes to vault-chat. Reuse the
+			// already-decoded image buffer if we cached it at the top of
+			// this handler; only decode here for non-image modalities
+			// (which we don't auto-cache).
 			let chatMedia: { buffer: Buffer; mimetype: string; kind: MediaPayload['kind'] } | undefined;
-			if (
+			if (inboundImageBuffer && inboundImageMime && envelope.media?.kind === 'image') {
+				chatMedia = { buffer: inboundImageBuffer, mimetype: inboundImageMime, kind: 'image' };
+			} else if (
 				body.mediaBase64 &&
 				envelope.media &&
 				envelope.media.kind !== 'voice' &&
@@ -219,7 +242,12 @@ export const POST: RequestHandler = async ({ request }) => {
 			let buffer: Buffer | undefined;
 			let mimetype: string | undefined;
 			let mediaKind: MediaPayload['kind'] | undefined;
-			if (body.mediaBase64 && envelope.media) {
+			if (inboundImageBuffer && inboundImageMime && envelope.media?.kind === 'image') {
+				// Reuse the already-decoded image; saves a redundant Buffer.from.
+				buffer = inboundImageBuffer;
+				mimetype = inboundImageMime;
+				mediaKind = 'image';
+			} else if (body.mediaBase64 && envelope.media) {
 				try {
 					buffer = Buffer.from(body.mediaBase64, 'base64');
 					mimetype = envelope.media.mimetype;
@@ -271,14 +299,21 @@ export const POST: RequestHandler = async ({ request }) => {
 					text: `You've hit today's image budget (${imgCfg.maxPerDay}/day) — resets midnight ${tzForDay}.`,
 				});
 			}
-			// Decode optional input image — same shape as the vault-chat
-			// branch above, just keyed for editing rather than chat.
+			// Three sources of input image (mirroring dispatch.ts):
+			//   1. Image already cached at the top of this handler — reuse
+			//      its decoded buffer to skip a second decode.
+			//   2. Non-image attachment (video/document) — decode inline.
+			//   3. User's last inbound image from the cache (Slice 6
+			//      follow-up) so "[photo] then `/img <edit>`" works.
 			let inputImages: { buffer: Buffer; mimetype: string }[] | undefined;
-			if (
+			if (inboundImageBuffer && inboundImageMime) {
+				inputImages = [{ buffer: inboundImageBuffer, mimetype: inboundImageMime }];
+			} else if (
 				body.mediaBase64 &&
 				envelope.media &&
 				envelope.media.kind !== 'voice' &&
-				envelope.media.kind !== 'sticker'
+				envelope.media.kind !== 'sticker' &&
+				envelope.media.kind !== 'image'
 			) {
 				try {
 					inputImages = [
@@ -293,6 +328,11 @@ export const POST: RequestHandler = async ({ request }) => {
 						action: 'reply',
 						text: `Couldn't decode the ${envelope.media.kind} bytes for /img: ${(err as Error).message}`,
 					});
+				}
+			} else {
+				const cachedUser = getLastUserImage(conversationKey);
+				if (cachedUser) {
+					inputImages = [{ buffer: cachedUser.buffer, mimetype: cachedUser.mimetype }];
 				}
 			}
 			const imgResult = await dispatchImg({

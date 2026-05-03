@@ -218,4 +218,11 @@ export async function dispatchImg(input: ImgInput): Promise<ImgResult> {
 	};
 }
 
-export { rememberLastImage, getLastImage, forgetLastImage } from './cache.js';
+export {
+	rememberLastImage,
+	getLastImage,
+	forgetLastImage,
+	rememberLastUserImage,
+	getLastUserImage,
+	forgetLastUserImage,
+} from './cache.js';

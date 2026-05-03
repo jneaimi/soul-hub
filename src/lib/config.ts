@@ -45,7 +45,47 @@ function loadSettings(): SoulHubConfig {
 		console.error('[config] Falling back to defaults.');
 		return ConfigSchema.parse({});
 	}
-	return result.data;
+	return applyAdditiveSchemaDefaults(result.data);
+}
+
+/** Walks the parsed config and adds any schema-default keys to `Record`-
+ *  style maps (`channels.whatsapp.intentMap`, `routes`) that the user's
+ *  saved settings.json doesn't have yet. Lets future slices add new
+ *  commands (like Slice 6's `/img` or a future `/video`) without forcing
+ *  the user to hand-edit settings.json — Zod's object `.default(…)` only
+ *  fires when the field is fully missing, not when the user has *some*
+ *  keys saved.
+ *
+ *  Existing keys are never overwritten — if the user pointed `/save` at a
+ *  custom route, that stays. We only **add** missing keys.
+ *
+ *  Pure: returns the same object back after mutation. The merged map is
+ *  rebuilt from scratch so the runtime object isn't shared with the
+ *  schema-default reference. */
+function applyAdditiveSchemaDefaults(cfg: SoulHubConfig): SoulHubConfig {
+	const defaults = ConfigSchema.parse({});
+
+	const userIntentMap = cfg.channels.whatsapp.intentMap as Record<string, unknown>;
+	const defaultIntentMap = defaults.channels.whatsapp.intentMap as Record<string, unknown>;
+	const mergedIntentMap: Record<string, unknown> = { ...userIntentMap };
+	for (const [token, mapping] of Object.entries(defaultIntentMap)) {
+		if (!(token in mergedIntentMap)) {
+			mergedIntentMap[token] = mapping;
+		}
+	}
+	cfg.channels.whatsapp.intentMap = mergedIntentMap as typeof cfg.channels.whatsapp.intentMap;
+
+	const userRoutes = cfg.routes as Record<string, unknown>;
+	const defaultRoutes = defaults.routes as Record<string, unknown>;
+	const mergedRoutes: Record<string, unknown> = { ...userRoutes };
+	for (const [name, spec] of Object.entries(defaultRoutes)) {
+		if (!(name in mergedRoutes)) {
+			mergedRoutes[name] = spec;
+		}
+	}
+	cfg.routes = mergedRoutes as typeof cfg.routes;
+
+	return cfg;
 }
 
 function buildResolved(parsed: SoulHubConfig) {

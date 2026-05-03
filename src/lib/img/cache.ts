@@ -90,3 +90,65 @@ export function _resetImageCache(): void {
 export function getCacheSize(): number {
 	return cache.size;
 }
+
+// ----- Inbound user-image cache --------------------------------------------
+//
+// Symmetric to the bot-output cache above, but for the *inbound* side: when
+// the user sends an image, we stash it so a follow-up `/img <prompt>` (no
+// fresh attachment) can edit that image. Same TTL + sweep + LRU policy;
+// distinct map so the two directions don't clobber each other.
+
+interface CachedUserImage {
+	buffer: Buffer;
+	mimetype: string;
+	ts: number;
+}
+
+const userCache = new Map<string, CachedUserImage>();
+let userSweepTimer: ReturnType<typeof setInterval> | null = null;
+
+function ensureUserSweep(): void {
+	if (userSweepTimer) return;
+	userSweepTimer = setInterval(() => {
+		const cutoff = Date.now() - TTL_MS;
+		for (const [key, entry] of userCache) {
+			if (entry.ts < cutoff) userCache.delete(key);
+		}
+	}, SWEEP_INTERVAL_MS);
+	if (typeof userSweepTimer.unref === 'function') userSweepTimer.unref();
+}
+
+function evictOldestUserIfNeeded(): void {
+	if (userCache.size < MAX_ENTRIES) return;
+	const oldestKey = userCache.keys().next().value;
+	if (oldestKey !== undefined) userCache.delete(oldestKey);
+}
+
+/** Store the user's most recent inbound image for this conversation. */
+export function rememberLastUserImage(
+	conversationKey: string,
+	entry: { buffer: Buffer; mimetype: string },
+): void {
+	ensureUserSweep();
+	userCache.delete(conversationKey);
+	evictOldestUserIfNeeded();
+	userCache.set(conversationKey, { ...entry, ts: Date.now() });
+}
+
+/** Retrieve the user's last inbound image, or `undefined` if absent / expired.
+ *  Hits update `ts` so a `/img → reply → /img` chain stays fresh. */
+export function getLastUserImage(conversationKey: string): CachedUserImage | undefined {
+	const entry = userCache.get(conversationKey);
+	if (!entry) return undefined;
+	if (Date.now() - entry.ts > TTL_MS) {
+		userCache.delete(conversationKey);
+		return undefined;
+	}
+	return entry;
+}
+
+/** Drop a specific conversation's inbound cache. Reserved for future flows
+ *  (e.g. an explicit "forget that photo" slash command). */
+export function forgetLastUserImage(conversationKey: string): void {
+	userCache.delete(conversationKey);
+}

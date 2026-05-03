@@ -23,7 +23,7 @@ import {
 } from './heartbeat-commands.js';
 import { extractCommitmentsAsync } from './commitments-extractor.js';
 import { dispatchBrainSave, dispatchBrainFind, dispatchBrainRecent } from '../../brain/index.js';
-import { dispatchImg, rememberLastImage, getLastImage } from '../../img/index.js';
+import { dispatchImg, rememberLastImage, getLastImage, rememberLastUserImage, getLastUserImage } from '../../img/index.js';
 import {
 	getImgCount,
 	incrementImgCount,
@@ -135,23 +135,48 @@ export async function dispatchInbound(
 		workingBody = transcription.text;
 	}
 
-	// Non-voice media without a caption: acknowledge but don't try to
-	// route empty text. (Captions on images/videos already populate `body`
-	// via `extractText`, so those flow through normally.)
-	if (envelope.media && envelope.media.kind !== 'voice' && !workingBody.trim()) {
-		await sendText(
-			sock,
-			envelope.chatJid,
-			`I got your ${envelope.media.kind}. Tell me what you want to do with it — ask a question, describe it, or send \`/save\` (as a follow-up message or as the caption next time) to capture it to the vault.`,
-			config.delivery,
-		);
-		return;
+	// Conversation key — groups share one thread, DMs thread per-sender.
+	// Computed early because both the inbound-image cache (Slice 6
+	// follow-up) and the meta-command branches need it.
+	const conversationKey = envelope.isGroup ? envelope.chatJid : envelope.senderNumber;
+
+	// Inbound image cache (Slice 6 follow-up): when the user sends an
+	// image — caption or no caption — download it once and stash a copy
+	// keyed by `conversationKey`. Subsequent `/img <prompt>` (no fresh
+	// attachment) falls back to this cache so the natural WhatsApp flow
+	// "[photo] then `/img make it night`" works without forwarding the
+	// image back. Same TTL/LRU as the bot-output cache. We hold the
+	// buffer in `inboundImageBuffer` so the downstream branches reuse
+	// it instead of paying a second `downloadMedia` call.
+	let inboundImageBuffer: Buffer | undefined;
+	let inboundImageMime: string | undefined;
+	if (envelope.media?.kind === 'image') {
+		try {
+			inboundImageBuffer = await downloadMedia(rawMessage);
+			inboundImageMime = envelope.media.mimetype;
+			rememberLastUserImage(conversationKey, {
+				buffer: inboundImageBuffer,
+				mimetype: inboundImageMime,
+			});
+		} catch (err) {
+			console.warn(`[whatsapp] inbound image cache: download failed: ${(err as Error).message}`);
+			// Soft-fail. Downstream branches that need the buffer will
+			// either re-download or surface their own error.
+		}
 	}
 
-	// Conversation key — groups share one thread, DMs thread per-sender.
-	// Computed once so reset can use it before intent resolution (reset
-	// is a meta-command, not a route).
-	const conversationKey = envelope.isGroup ? envelope.chatJid : envelope.senderNumber;
+	// Non-voice media without a caption: acknowledge but don't try to
+	// route empty text. (Captions on images/videos already populate `body`
+	// via `extractText`, so those flow through normally.) The cache above
+	// already ran, so a follow-up `/img` will pick this image up.
+	if (envelope.media && envelope.media.kind !== 'voice' && !workingBody.trim()) {
+		const hint =
+			envelope.media.kind === 'image'
+				? `I got your image. Tell me what you want to do with it — ask a question, describe it, send \`/img <how to edit>\` to edit it, or \`/save\` to capture it to the vault.`
+				: `I got your ${envelope.media.kind}. Tell me what you want to do with it — ask a question, describe it, or send \`/save\` (as a follow-up message or as the caption next time) to capture it to the vault.`;
+		await sendText(sock, envelope.chatJid, hint, config.delivery);
+		return;
+	}
 
 	// Reset commands wipe per-key history and short-circuit before any
 	// routing. Hoisted above `resolveIntent` because `/reset` etc. would
@@ -235,12 +260,16 @@ export async function dispatchInbound(
 		let replyText: string;
 		if (intent.route === 'vault-chat') {
 			// Multimodal pass-through — when the message has image/video/audio/
-			// document attached, fetch the bytes once here and hand them to
-			// vault-chat so the LLM can actually see what the user sent
-			// (instead of "I can't see images directly"). Voice already came
-			// through `transcribeIfVoice` as text — no second pass needed.
+			// document attached, hand the bytes to vault-chat so the LLM can
+			// actually see what the user sent. Voice already came through
+			// `transcribeIfVoice` as text — no second pass needed.
+			// Reuse the inbound image buffer when we already cached it at
+			// the top of this function; download here only for non-image
+			// modalities (video / document / audio).
 			let chatMedia: { buffer: Buffer; mimetype: string; kind: MediaPayload['kind'] } | undefined;
-			if (envelope.media && envelope.media.kind !== 'voice' && envelope.media.kind !== 'sticker') {
+			if (inboundImageBuffer && inboundImageMime && envelope.media?.kind === 'image') {
+				chatMedia = { buffer: inboundImageBuffer, mimetype: inboundImageMime, kind: 'image' };
+			} else if (envelope.media && envelope.media.kind !== 'voice' && envelope.media.kind !== 'sticker') {
 				try {
 					const buf = await downloadMedia(rawMessage);
 					chatMedia = { buffer: buf, mimetype: envelope.media.mimetype, kind: envelope.media.kind };
@@ -263,6 +292,11 @@ export async function dispatchInbound(
 				buffer = transcription.buffer;
 				mimetype = envelope.media.mimetype;
 				mediaKind = 'voice';
+			} else if (inboundImageBuffer && inboundImageMime && envelope.media?.kind === 'image') {
+				// Reuse the inbound-cached image rather than downloading twice.
+				buffer = inboundImageBuffer;
+				mimetype = inboundImageMime;
+				mediaKind = 'image';
 			} else if (envelope.media && envelope.media.kind !== 'sticker') {
 				try {
 					buffer = await downloadMedia(rawMessage);
@@ -308,10 +342,23 @@ export async function dispatchInbound(
 				if (count >= imgCfg.maxPerDay) {
 					replyText = `You've hit today's image budget (${imgCfg.maxPerDay}/day) — resets midnight ${tzForDay}.`;
 				} else {
-					// Editing branch — pull the input image bytes once. Voice and
-					// sticker can't be edited (no useful image content); skip them.
+					// Editing branch — three sources of input image, in order:
+					//   1. Fresh image on this message — already cached above
+					//      as `inboundImageBuffer` so we avoid a second download.
+					//   2. A non-image attachment (video / document) — those
+					//      aren't auto-cached; download inline.
+					//   3. The user's last inbound image in this conversation,
+					//      from the cache. This makes "[photo] then `/img <edit>`"
+					//      work without forwarding the image back to the bot.
 					let inputImages: { buffer: Buffer; mimetype: string }[] | undefined;
-					if (envelope.media && envelope.media.kind !== 'voice' && envelope.media.kind !== 'sticker') {
+					if (inboundImageBuffer && inboundImageMime) {
+						inputImages = [{ buffer: inboundImageBuffer, mimetype: inboundImageMime }];
+					} else if (
+						envelope.media &&
+						envelope.media.kind !== 'voice' &&
+						envelope.media.kind !== 'sticker' &&
+						envelope.media.kind !== 'image'
+					) {
 						try {
 							const buf = await downloadMedia(rawMessage);
 							inputImages = [{ buffer: buf, mimetype: envelope.media.mimetype }];
@@ -323,6 +370,11 @@ export async function dispatchInbound(
 								config.delivery,
 							);
 							return;
+						}
+					} else {
+						const cachedUser = getLastUserImage(conversationKey);
+						if (cachedUser) {
+							inputImages = [{ buffer: cachedUser.buffer, mimetype: cachedUser.mimetype }];
 						}
 					}
 					const imgResult = await dispatchImg({
