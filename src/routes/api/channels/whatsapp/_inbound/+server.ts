@@ -43,7 +43,19 @@ import { extractCommitmentsAsync } from '$lib/channels/whatsapp/commitments-extr
 interface InboundBody {
 	envelope: InboundEnvelope;
 	transcript?: string;
+	/** Slice 0 — optional base64-encoded media bytes piggybacked from the
+	 *  worker so the main app can run Gemini Flash captioning / vision /
+	 *  document parsing without re-downloading from WhatsApp. The worker
+	 *  caps the encoded string at 16MB (≈12MB raw) to stay under
+	 *  SvelteKit's default request body limit. Slice 1 consumers will
+	 *  decode this into a Buffer and persist via `engine.writeAsset()`. */
+	mediaBase64?: string;
 }
+
+/** Hard cap on the encoded `mediaBase64` field. Keep in sync with
+ *  MAX_ASSET_SIZE on the engine side (16MB). Mismatch would let the
+ *  worker ship more bytes than the engine accepts, wasting bandwidth. */
+const MAX_MEDIA_BASE64_BYTES = 16 * 1024 * 1024;
 
 function helpReply(intentMap: Record<string, { route: string; description?: string }>): string {
 	const lines: string[] = ['I do not recognise that command. Available:'];
@@ -73,6 +85,10 @@ export const POST: RequestHandler = async ({ request }) => {
 		body = (await request.json()) as InboundBody;
 	} catch {
 		throw error(400, 'Invalid JSON.');
+	}
+
+	if (typeof body.mediaBase64 === 'string' && body.mediaBase64.length > MAX_MEDIA_BASE64_BYTES) {
+		throw error(413, `mediaBase64 exceeds ${MAX_MEDIA_BASE64_BYTES} bytes.`);
 	}
 
 	const envelope = body.envelope;

@@ -209,7 +209,7 @@ export interface WriteError {
 
 export interface WriteLogEntry {
 	timestamp: string;
-	action: 'create' | 'update' | 'archive' | 'move' | 'delete';
+	action: 'create' | 'update' | 'archive' | 'move' | 'delete' | 'create-asset';
 	path: string;
 	previousPath?: string;
 	agent?: string;
@@ -218,6 +218,26 @@ export interface WriteLogEntry {
 	type?: string;
 	success: boolean;
 	error?: string;
+}
+
+/** Slice 0 — binary asset writes. Mirrors `CreateNoteRequest` discipline
+ *  but for non-markdown files (images, voice, video, documents). Captures
+ *  land in `inbox/assets/<YYYY-MM-DD>-<slug>.<ext>` per the brain
+ *  frontmatter contract. Notes reference assets via `attachments[].path`. */
+export interface WriteAssetRequest {
+	/** Target zone (e.g., "inbox/assets"). */
+	zone: string;
+	/** Filename including extension (e.g., "2026-05-03-voice-note.ogg"). */
+	filename: string;
+	/** Raw bytes. */
+	buffer: Buffer;
+	/** MIME type (e.g., "audio/ogg", "image/jpeg"). Stored in the write
+	 *  log for audit; not enforced beyond size + zone checks. */
+	mimetype: string;
+	/** Agent name for rate limiting + audit (e.g., "whatsapp-brain"). */
+	agent?: string;
+	/** Optional source context (chat JID, message ID) for traceability. */
+	context?: string;
 }
 
 // ── Template ────────────────────────────────────────────────
@@ -362,6 +382,13 @@ export const GLOBAL_REQUIRED_FIELDS = ['type', 'created', 'tags'];
 
 /** Maximum note size in bytes (1MB) */
 export const MAX_NOTE_SIZE = 1024 * 1024;
+
+/** Maximum asset size in bytes (16MB). Aligned with the worker `_inbound`
+ *  `mediaBase64?` cap so anything the worker can ship up the main app can
+ *  also persist. Base64 inflates by ~33%, so 16MB raw ≈ 22MB encoded — the
+ *  worker side caps the *encoded* string at 16MB to stay under SvelteKit's
+ *  default request body limit. Keep in sync. */
+export const MAX_ASSET_SIZE = 16 * 1024 * 1024;
 
 /** Folders to ignore when scanning */
 export const IGNORED_FOLDERS = ['.vault', '.obsidian', '.git', 'node_modules', '.trash'];

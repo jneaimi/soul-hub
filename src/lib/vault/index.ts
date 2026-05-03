@@ -4,10 +4,10 @@ import matter from 'gray-matter';
 import type {
 	VaultNote, VaultConfig, SearchQuery, SearchResult,
 	GraphData, VaultStats, VaultHealth, VaultZone, VaultTemplate,
-	CreateNoteRequest, UpdateNoteRequest, WriteResult, WriteError,
+	CreateNoteRequest, UpdateNoteRequest, WriteAssetRequest, WriteResult, WriteError,
 	WriteLogEntry
 } from './types.js';
-import { GLOBAL_REQUIRED_FIELDS, MAX_NOTE_SIZE } from './types.js';
+import { GLOBAL_REQUIRED_FIELDS, MAX_NOTE_SIZE, MAX_ASSET_SIZE } from './types.js';
 import { VaultIndexer } from './indexer.js';
 import { VaultSearch } from './search.js';
 import { VaultGraph } from './graph.js';
@@ -420,6 +420,115 @@ export class VaultEngine {
 		return { success: true, path: relPath };
 	}
 
+	/** Slice 0 — write a binary asset (image, voice, video, document) into
+	 *  a vault zone. Mirrors `createNote` discipline (zone resolution, rate
+	 *  limit, atomic write, write-log entry) but skips the markdown-only
+	 *  steps (frontmatter, template, dedup). Path traversal is blocked by
+	 *  asserting the resolved absolute path stays inside `rootDir`. */
+	async writeAsset(req: WriteAssetRequest): Promise<WriteResult | WriteError> {
+		// Filename hygiene — no slashes, no leading dots, has an extension.
+		// (Subdirectories are expressed via `zone`, not embedded in filename.)
+		if (!req.filename || req.filename.includes('/') || req.filename.includes('\\')) {
+			return { success: false, error: 'Filename must not contain path separators.' };
+		}
+		if (req.filename.startsWith('.')) {
+			return { success: false, error: 'Filename must not start with a dot.' };
+		}
+		if (!/\.[A-Za-z0-9]+$/.test(req.filename)) {
+			return { success: false, error: 'Filename must have an extension.' };
+		}
+
+		// Size cap — keeps WhatsApp media + general user uploads safe.
+		if (req.buffer.byteLength === 0) {
+			return { success: false, error: 'Asset buffer is empty.' };
+		}
+		if (req.buffer.byteLength > MAX_ASSET_SIZE) {
+			return {
+				success: false,
+				error: `Asset exceeds maximum size of ${MAX_ASSET_SIZE} bytes (was ${req.buffer.byteLength}).`,
+			};
+		}
+
+		// Rate limit agent writes (binaries count too — vision/voice ops
+		// can fan out fast).
+		if (req.agent) {
+			const rateCheck = this.checkRateLimit(req.agent);
+			if (!rateCheck.allowed) {
+				this.logWrite({
+					action: 'create-asset',
+					path: join(req.zone, req.filename),
+					agent: req.agent,
+					context: req.context,
+					zone: req.zone.split('/')[0],
+					success: false,
+					error: `Rate limit exceeded (${VaultEngine.RATE_LIMIT_MAX_WRITES}/hour). Resets at ${rateCheck.resetAt}`,
+				});
+				return {
+					success: false,
+					error: `Rate limit exceeded for agent "${req.agent}". Max ${VaultEngine.RATE_LIMIT_MAX_WRITES} writes per hour. Resets at ${rateCheck.resetAt}`,
+				};
+			}
+		}
+
+		const relPath = join(req.zone, req.filename);
+		const absPath = resolve(this.config.rootDir, relPath);
+
+		// Path traversal guard — `join('inbox', '../../etc')` resolves above
+		// rootDir, so we explicitly assert the absolute path stays inside.
+		// `+ sep` on rootDir prevents a sibling directory from passing
+		// (`/vault-evil` shouldn't match `startsWith('/vault')`).
+		const rootWithSep = this.config.rootDir.endsWith('/')
+			? this.config.rootDir
+			: this.config.rootDir + '/';
+		if (!absPath.startsWith(rootWithSep)) {
+			return { success: false, error: 'Resolved path escapes the vault root.' };
+		}
+
+		// File existence check — never overwrite an existing asset (callers
+		// should disambiguate with a date+slug filename).
+		try {
+			await stat(absPath);
+			return { success: false, error: `Asset already exists: ${relPath}` };
+		} catch {
+			// good — file doesn't exist
+		}
+
+		// Atomic write: tmp + rename. No watcher reindex (binaries aren't
+		// in the note index — they're referenced from notes' frontmatter).
+		try {
+			await mkdir(dirname(absPath), { recursive: true });
+			const tmpPath = absPath + '.tmp';
+			await writeFile(tmpPath, req.buffer);
+			await rename(tmpPath, absPath);
+		} catch (err) {
+			this.logWrite({
+				action: 'create-asset',
+				path: relPath,
+				agent: req.agent,
+				context: req.context,
+				zone: req.zone.split('/')[0],
+				success: false,
+				error: err instanceof Error ? err.message : String(err),
+			});
+			return {
+				success: false,
+				error: `Asset write failed: ${err instanceof Error ? err.message : String(err)}`,
+			};
+		}
+
+		this.logWrite({
+			action: 'create-asset',
+			path: relPath,
+			agent: req.agent,
+			context: req.context,
+			zone: req.zone.split('/')[0],
+			type: req.mimetype,
+			success: true,
+		});
+
+		return { success: true, path: relPath };
+	}
+
 	async updateNote(path: string, req: UpdateNoteRequest): Promise<WriteResult | WriteError> {
 		const existing = this.indexer.get(path);
 		if (!existing) {
@@ -632,25 +741,79 @@ export class VaultEngine {
 		return { pruned };
 	}
 
-	async archiveOldNotes(zone: string, maxAgeDays: number): Promise<{ archived: string[] }> {
+	async archiveOldNotes(zone: string, maxAgeDays: number): Promise<{ archived: string[]; assetsArchived: number }> {
 		const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
 		const archived: string[] = [];
+		let assetsArchived = 0;
 
 		const notes = this.indexer.filter({ zone });
 		for (const note of notes) {
 			if (note.mtime < cutoff) {
+				// Slice 0 — collect referenced asset paths from the frontmatter
+				// `attachments[].path` array before archiving the note. We move
+				// the note first, then chase the assets so that even if asset
+				// moves fail the note still ends up in archive (its content is
+				// the source of truth).
+				const attachmentPaths = collectAttachmentPaths(note.meta);
+
 				const result = await this.moveNote(note.path, 'archive');
-				if (result.success) {
-					archived.push(note.path);
+				if (!result.success) continue;
+				archived.push(note.path);
+
+				for (const assetPath of attachmentPaths) {
+					const moved = await this.moveAssetToArchive(assetPath);
+					if (moved) assetsArchived++;
 				}
 			}
 		}
 
 		if (archived.length > 0) {
-			console.log(`[vault] Archived ${archived.length} notes from ${zone}/ (older than ${maxAgeDays} days)`);
+			console.log(
+				`[vault] Archived ${archived.length} notes from ${zone}/ ` +
+					`(older than ${maxAgeDays} days)` +
+					(assetsArchived > 0 ? ` + ${assetsArchived} referenced asset(s)` : ''),
+			);
 		}
 
-		return { archived };
+		return { archived, assetsArchived };
+	}
+
+	/** Move a binary asset to the archive zone, mirroring its source path
+	 *  under `archive/`. Skips with a warning if the destination already
+	 *  exists (we never overwrite). Returns true on success. */
+	private async moveAssetToArchive(relPath: string): Promise<boolean> {
+		const absSource = resolve(this.config.rootDir, relPath);
+		try {
+			await stat(absSource);
+		} catch {
+			// Note referenced an asset that's already missing — nothing to do.
+			return false;
+		}
+
+		// Strip the leading zone and prefix with `archive/`. `inbox/assets/foo.jpg`
+		// → `archive/assets/foo.jpg`. Single-segment paths fall back to placing
+		// the file directly under `archive/`.
+		const segments = relPath.split('/').filter(Boolean);
+		const archiveRel =
+			segments.length > 1 ? join('archive', ...segments.slice(1)) : join('archive', segments[0] ?? relPath);
+		const absDest = resolve(this.config.rootDir, archiveRel);
+
+		try {
+			await stat(absDest);
+			console.warn(`[vault] Asset already exists in archive — skipping: ${archiveRel}`);
+			return false;
+		} catch {
+			// Good — destination is free.
+		}
+
+		try {
+			await mkdir(dirname(absDest), { recursive: true });
+			await rename(absSource, absDest);
+			return true;
+		} catch (err) {
+			console.warn(`[vault] Failed to archive asset ${relPath}: ${err instanceof Error ? err.message : String(err)}`);
+			return false;
+		}
 	}
 
 	async scaffoldProject(projectName: string): Promise<{ created: string[]; existed: string[] }> {
@@ -752,6 +915,24 @@ project: ${projectName}
 
 		return { created, existed };
 	}
+}
+
+/** Slice 0 helper — pull asset paths out of a note's frontmatter. The
+ *  brain frontmatter contract uses `attachments: [{path, kind, ...}]`.
+ *  Tolerant by design: silently ignores entries without a string `path`,
+ *  or stray non-array shapes. Skips paths that contain `..` so a malformed
+ *  note can't trick the archiver into moving files outside the vault. */
+function collectAttachmentPaths(meta: Record<string, unknown>): string[] {
+	const raw = meta?.attachments;
+	if (!Array.isArray(raw)) return [];
+	const paths: string[] = [];
+	for (const entry of raw) {
+		if (entry && typeof entry === 'object' && typeof (entry as { path?: unknown }).path === 'string') {
+			const p = (entry as { path: string }).path;
+			if (p && !p.includes('..')) paths.push(p);
+		}
+	}
+	return paths;
 }
 
 export function getVaultEngine(): VaultEngine | null {
