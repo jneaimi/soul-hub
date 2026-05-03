@@ -39,6 +39,7 @@ import {
 	handleCommitmentsMetaCommand,
 } from '$lib/channels/whatsapp/heartbeat-commands.js';
 import { extractCommitmentsAsync } from '$lib/channels/whatsapp/commitments-extractor.js';
+import { dispatchBrainSave, dispatchBrainFind, dispatchBrainRecent } from '$lib/brain/index.js';
 
 interface InboundBody {
 	envelope: InboundEnvelope;
@@ -163,15 +164,55 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 
 	try {
+		// vault-chat wants a placeholder when the user just sent `/<route>` with
+		// no body; brain commands handle empty natively. Keep both shapes in
+		// scope and pick the right one per branch.
 		const userText = intent.body || '(empty message)';
+		const brainText = intent.body;
 
-		const result = intent.route === 'vault-chat'
-			? await dispatchVaultChat(userText, conversationKey)
-			: await dispatchRoute(intent.route, {
-					messages: [{ role: 'user', content: userText }],
-					maxOutputTokens: 800,
-				});
-		const replyText = result.text || '(no reply)';
+		let replyText: string;
+		if (intent.route === 'vault-chat') {
+			const result = await dispatchVaultChat(userText, conversationKey);
+			replyText = result.text || '(no reply)';
+		} else if (intent.route === 'brain-save') {
+			// Worker-mode binary plumbing: the worker piggybacks media bytes
+			// as base64 in `body.mediaBase64` so we don't re-download from
+			// WhatsApp. Decode here and pass a Buffer to brain.save.
+			let buffer: Buffer | undefined;
+			let mimetype: string | undefined;
+			let mediaKind: 'image' | 'video' | 'document' | undefined;
+			if (body.mediaBase64 && envelope.media && envelope.media.kind !== 'voice') {
+				try {
+					buffer = Buffer.from(body.mediaBase64, 'base64');
+					mimetype = envelope.media.mimetype;
+					mediaKind = envelope.media.kind as 'image' | 'video' | 'document';
+				} catch (err) {
+					return json({
+						ok: true,
+						action: 'reply',
+						text: `Couldn't decode the ${envelope.media.kind} bytes for /save: ${(err as Error).message}`,
+					});
+				}
+			}
+			const saveResult = await dispatchBrainSave({
+				envelope,
+				workingBody: brainText,
+				mediaBuffer: buffer,
+				mimetype,
+				mediaKind,
+			});
+			replyText = saveResult.text;
+		} else if (intent.route === 'brain-find') {
+			replyText = (await dispatchBrainFind(brainText)).text;
+		} else if (intent.route === 'brain-recent') {
+			replyText = (await dispatchBrainRecent()).text;
+		} else {
+			const result = await dispatchRoute(intent.route, {
+				messages: [{ role: 'user', content: userText }],
+				maxOutputTokens: 800,
+			});
+			replyText = result.text || '(no reply)';
+		}
 
 		// Slice 5 — fire-and-forget commitment extraction. Mirrors dispatch.ts;
 		// runs after we've decided what to send back so it can never delay

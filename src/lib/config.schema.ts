@@ -206,7 +206,9 @@ export const WhatsAppChannelSchema = ChannelConfigSchema.extend({
 	heartbeat: WhatsAppHeartbeatSchema.prefault({}),
 	commitments: WhatsAppCommitmentsSchema.prefault({}),
 	intentMap: WhatsAppIntentMapSchema.default({
-		'/translate': { route: 'translate-arabic' },
+		'/save': { route: 'brain-save', description: 'Capture a note (text/image/voice/video) into the vault inbox.' },
+		'/find': { route: 'brain-find', description: 'Search the vault — top 5 matches.' },
+		'/recent': { route: 'brain-recent', description: 'List the 5 most-recently-touched notes.' },
 		default: { route: 'vault-chat' },
 	}),
 });
@@ -283,7 +285,9 @@ export const ConfigSchema = z.object({
 				maxPerDay: 5,
 			},
 			intentMap: {
-				'/translate': { route: 'translate-arabic' },
+				'/save': { route: 'brain-save', description: 'Capture a note (text/image/voice/video) into the vault inbox.' },
+				'/find': { route: 'brain-find', description: 'Search the vault — top 5 matches.' },
+				'/recent': { route: 'brain-recent', description: 'List the 5 most-recently-touched notes.' },
 				default: { route: 'vault-chat' },
 			},
 		},
@@ -299,12 +303,28 @@ export const ConfigSchema = z.object({
 			retries: 1,
 			onError: ['timeout', '5xx', 'rate_limit', 'network'],
 		},
-		'translate-arabic': {
-			description: 'Bilingual translation route — Gemini direct preferred for cost.',
+		'brain-save': {
+			description: 'Multimodal extraction for `/save` — Gemini Flash directly (cheap + supports image/video/document).',
 			default: 'gemini:gemini-2.5-flash',
 			failover: ['openrouter:google/gemini-2.5-flash'],
-			timeoutMs: 8000,
+			timeoutMs: 12000,
 			retries: 1,
+			onError: ['timeout', '5xx', 'rate_limit', 'network'],
+		},
+		'brain-find': {
+			description: 'Lexical vault search for `/find` — no LLM call; route registered for telemetry symmetry.',
+			default: 'gemini:gemini-2.5-flash',
+			failover: [],
+			timeoutMs: 4000,
+			retries: 0,
+			onError: ['timeout', '5xx', 'rate_limit', 'network'],
+		},
+		'brain-recent': {
+			description: 'Recency listing for `/recent` — no LLM call; route registered for telemetry symmetry.',
+			default: 'gemini:gemini-2.5-flash',
+			failover: [],
+			timeoutMs: 4000,
+			retries: 0,
 			onError: ['timeout', '5xx', 'rate_limit', 'network'],
 		},
 	}),

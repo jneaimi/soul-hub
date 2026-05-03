@@ -381,7 +381,7 @@
 									type="text"
 									bind:value={row.token}
 									onblur={commitIntentMap}
-									placeholder="/translate or default"
+									placeholder="/save or default"
 									class="bg-hub-bg border border-hub-border rounded-md px-2 py-1 text-xs text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-cta/50"
 								/>
 								<input

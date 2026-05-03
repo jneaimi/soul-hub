@@ -22,6 +22,7 @@ import {
 	handleCommitmentsMetaCommand,
 } from './heartbeat-commands.js';
 import { extractCommitmentsAsync } from './commitments-extractor.js';
+import { dispatchBrainSave, dispatchBrainFind, dispatchBrainRecent } from '../../brain/index.js';
 import type { InboundEnvelope, WhatsAppChannelConfig } from './types.js';
 
 const HELP_PREFIX = 'I do not recognise that command. Available:';
@@ -206,16 +207,65 @@ export async function dispatchInbound(
 	try {
 		// vault-chat goes through the lexical orchestrator (ADR-004) so the
 		// reply is grounded in the user's vault, not the model's own knowledge.
-		// All other intents call the routes layer directly.
+		// /save, /find, /recent are intercepted here too — they read/write the
+		// vault directly rather than hitting the LLM (save still calls Flash
+		// for multimodal extraction internally). All other intents fall
+		// through to the routes layer.
+		// `(empty message)` placeholder is a vault-chat convenience — gives the
+		// LLM something to chew on. Brain commands handle empty bodies natively
+		// (`/find` returns usage; `/save` with image-only caption is legit), so
+		// they receive the raw `intent.body`.
 		const userText = intent.body || '(empty message)';
+		const brainText = intent.body;
 
-		const result = intent.route === 'vault-chat'
-			? await dispatchVaultChat(userText, conversationKey)
-			: await dispatchRoute(intent.route, {
-					messages: [{ role: 'user', content: userText }],
-					maxOutputTokens: 800,
-				});
-		const replyText = result.text || '(no reply)';
+		let replyText: string;
+		if (intent.route === 'vault-chat') {
+			const result = await dispatchVaultChat(userText, conversationKey);
+			replyText = result.text || '(no reply)';
+		} else if (intent.route === 'brain-save') {
+			// Download the binary for image/video/document so save.ts can run
+			// extraction + archive the asset. Voice already came through
+			// `transcribeIfVoice` as text; we don't dual-archive into the
+			// vault — Saveing a voice transcript persists just the text.
+			let buffer: Buffer | undefined;
+			let mimetype: string | undefined;
+			let mediaKind: 'image' | 'video' | 'document' | undefined;
+			if (envelope.media && envelope.media.kind !== 'voice') {
+				try {
+					buffer = await downloadMedia(rawMessage);
+					mimetype = envelope.media.mimetype;
+					mediaKind = envelope.media.kind as 'image' | 'video' | 'document';
+				} catch (err) {
+					await sendText(
+						sock,
+						envelope.chatJid,
+						`Couldn't fetch the ${envelope.media.kind} for /save: ${(err as Error).message}`,
+						config.delivery,
+					);
+					return;
+				}
+			}
+			const saveResult = await dispatchBrainSave({
+				envelope,
+				workingBody: brainText,
+				mediaBuffer: buffer,
+				mimetype,
+				mediaKind,
+			});
+			replyText = saveResult.text;
+		} else if (intent.route === 'brain-find') {
+			const findResult = await dispatchBrainFind(brainText);
+			replyText = findResult.text;
+		} else if (intent.route === 'brain-recent') {
+			const recentResult = await dispatchBrainRecent();
+			replyText = recentResult.text;
+		} else {
+			const result = await dispatchRoute(intent.route, {
+				messages: [{ role: 'user', content: userText }],
+				maxOutputTokens: 800,
+			});
+			replyText = result.text || '(no reply)';
+		}
 		await sendText(sock, envelope.chatJid, replyText, config.delivery);
 
 		// Slice 5 — fire-and-forget extraction of inferred commitments. Off
