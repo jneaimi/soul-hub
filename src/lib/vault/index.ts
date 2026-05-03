@@ -31,7 +31,21 @@ export class VaultEngine {
 	private static readonly MAX_LOG_ENTRIES = 500;
 	private agentWriteCounts = new Map<string, { count: number; windowStart: number }>();
 	private static readonly RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
-	private static readonly RATE_LIMIT_MAX_WRITES = 50; // per agent per hour
+	/** Default per-agent ceiling. Bursty human-driven agents (whatsapp-brain
+	 *  in particular — a person typing `/save` rapidly in a chat) override
+	 *  this via `RATE_LIMIT_OVERRIDES` so they don't trip the limiter on
+	 *  ordinary use. Background agents stay at the conservative default. */
+	private static readonly RATE_LIMIT_MAX_WRITES = 50;
+	private static readonly RATE_LIMIT_OVERRIDES: Record<string, number> = {
+		// Slice 0 risk-table entry: human typing in WhatsApp is bursty —
+		// 50/hr cuts off a power user mid-sentence. 200/hr leaves headroom
+		// without removing the floor entirely.
+		'whatsapp-brain': 200,
+	};
+
+	private static rateLimitFor(agent: string): number {
+		return VaultEngine.RATE_LIMIT_OVERRIDES[agent] ?? VaultEngine.RATE_LIMIT_MAX_WRITES;
+	}
 
 	constructor(config: VaultConfig) {
 		this.config = config;
@@ -235,22 +249,23 @@ export class VaultEngine {
 		return log.slice(0, opts?.limit ?? 50);
 	}
 
-	private checkRateLimit(agent: string): { allowed: boolean; remaining: number; resetAt: string } {
+	private checkRateLimit(agent: string): { allowed: boolean; remaining: number; resetAt: string; ceiling: number } {
 		const now = Date.now();
 		const entry = this.agentWriteCounts.get(agent);
+		const ceiling = VaultEngine.rateLimitFor(agent);
 
 		if (!entry || (now - entry.windowStart) > VaultEngine.RATE_LIMIT_WINDOW_MS) {
 			this.agentWriteCounts.set(agent, { count: 1, windowStart: now });
-			return { allowed: true, remaining: VaultEngine.RATE_LIMIT_MAX_WRITES - 1, resetAt: new Date(now + VaultEngine.RATE_LIMIT_WINDOW_MS).toISOString() };
+			return { allowed: true, remaining: ceiling - 1, resetAt: new Date(now + VaultEngine.RATE_LIMIT_WINDOW_MS).toISOString(), ceiling };
 		}
 
-		if (entry.count >= VaultEngine.RATE_LIMIT_MAX_WRITES) {
+		if (entry.count >= ceiling) {
 			const resetAt = new Date(entry.windowStart + VaultEngine.RATE_LIMIT_WINDOW_MS).toISOString();
-			return { allowed: false, remaining: 0, resetAt };
+			return { allowed: false, remaining: 0, resetAt, ceiling };
 		}
 
 		entry.count++;
-		return { allowed: true, remaining: VaultEngine.RATE_LIMIT_MAX_WRITES - entry.count, resetAt: new Date(entry.windowStart + VaultEngine.RATE_LIMIT_WINDOW_MS).toISOString() };
+		return { allowed: true, remaining: ceiling - entry.count, resetAt: new Date(entry.windowStart + VaultEngine.RATE_LIMIT_WINDOW_MS).toISOString(), ceiling };
 	}
 
 	private checkDuplicate(zone: string, content: string, title: string): { isDuplicate: boolean; similarPath?: string } {
@@ -339,9 +354,9 @@ export class VaultEngine {
 					zone: req.zone.split('/')[0],
 					type: req.meta.type as string | undefined,
 					success: false,
-					error: `Rate limit exceeded (${VaultEngine.RATE_LIMIT_MAX_WRITES}/hour). Resets at ${rateCheck.resetAt}`,
+					error: `Rate limit exceeded (${rateCheck.ceiling}/hour). Resets at ${rateCheck.resetAt}`,
 				});
-				return { success: false, error: `Rate limit exceeded for agent "${req.meta.source_agent}". Max ${VaultEngine.RATE_LIMIT_MAX_WRITES} writes per hour. Resets at ${rateCheck.resetAt}` };
+				return { success: false, error: `Rate limit exceeded for agent "${req.meta.source_agent}". Max ${rateCheck.ceiling} writes per hour. Resets at ${rateCheck.resetAt}` };
 			}
 		}
 
@@ -461,11 +476,11 @@ export class VaultEngine {
 					context: req.context,
 					zone: req.zone.split('/')[0],
 					success: false,
-					error: `Rate limit exceeded (${VaultEngine.RATE_LIMIT_MAX_WRITES}/hour). Resets at ${rateCheck.resetAt}`,
+					error: `Rate limit exceeded (${rateCheck.ceiling}/hour). Resets at ${rateCheck.resetAt}`,
 				});
 				return {
 					success: false,
-					error: `Rate limit exceeded for agent "${req.agent}". Max ${VaultEngine.RATE_LIMIT_MAX_WRITES} writes per hour. Resets at ${rateCheck.resetAt}`,
+					error: `Rate limit exceeded for agent "${req.agent}". Max ${rateCheck.ceiling} writes per hour. Resets at ${rateCheck.resetAt}`,
 				};
 			}
 		}
