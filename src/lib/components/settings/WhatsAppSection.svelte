@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
+	import HeartbeatSection from './HeartbeatSection.svelte';
 
 	type ConnectionState =
 		| 'disconnected'
@@ -23,6 +24,7 @@
 			access?: { allowFrom?: string[] };
 			intentMap?: Record<string, IntentMapping>;
 			worker?: { enabled?: boolean; url?: string; mainAppUrl?: string };
+			heartbeat?: Record<string, unknown>;
 		};
 		/** Patches are typed as `Record<string, unknown>` so the parent's
 		 *  generic deep-merge handler can accept us without a typed
@@ -466,6 +468,15 @@
 						</span>
 					{/if}
 				</div>
+
+				<!-- Heartbeat — proactive nudges driven by operations/soul.md +
+					 operations/whatsapp/HEARTBEAT.md. Lives in the WhatsApp section
+					 because delivery is per-channel, but the cadence/cap/mute knobs
+					 are heartbeat-specific. -->
+				<HeartbeatSection
+					config={(config.heartbeat ?? {}) as Record<string, unknown>}
+					{onchange}
+				/>
 			</div>
 		{:else}
 			<div class="border-t border-hub-border px-4 py-3">
