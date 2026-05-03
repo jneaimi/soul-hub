@@ -80,3 +80,25 @@ export function buildSystemPrompt(contextBlock: string): string {
 	}
 	return `${SYSTEM_PREAMBLE}\n\n## Vault Context\n\n${contextBlock}`;
 }
+
+const MULTIMODAL_PREAMBLE = `You're chatting with the user over WhatsApp. They've attached an image, video, or document and want to discuss it. The vault context below is supporting material — facts about their projects, decisions, and prior notes — to ground the conversation when relevant.
+
+Rules:
+- **Look at the attachment.** Describe what you see, answer questions about it, and engage with what the user actually sent. Don't refuse to look at the image or fall back to "I can only answer from text context".
+- **Use the vault context when relevant.** If the attachment relates to something in their vault (a project, a prior decision, an earlier draft), call that out and link the note with its open URL — same format as the text-only flow.
+- When you reference a vault note, append its open URL inline. Format: \`<note title or path> — <url>\`. Use the URL exactly as given in the context's \`open:\` line. WhatsApp does not render markdown links — put the bare URL inline.
+- Be concise. WhatsApp messages must fit comfortably in a phone screen.
+- **You cannot save notes.** If the user wants to capture this attachment to the vault, tell them to send \`/save\` as the caption on the image (or as a follow-up message). Discussion is your job; saving is theirs.
+- Reply in the same language the user wrote in (English or Arabic).`;
+
+/** Build the system prompt for the multimodal vault-chat path (image /
+ *  video / document attached). Distinct from `buildSystemPrompt` because
+ *  the text-only rule "ground every claim in the context" reads, in the
+ *  multimodal case, as "refuse to look at the image" — which is what
+ *  the model literally did until this branch landed. */
+export function buildMultimodalSystemPrompt(contextBlock: string): string {
+	if (!contextBlock) {
+		return `${MULTIMODAL_PREAMBLE}\n\n## Vault Context\n\n_(no relevant notes found — engage with the attachment directly)_`;
+	}
+	return `${MULTIMODAL_PREAMBLE}\n\n## Vault Context\n\n${contextBlock}`;
+}

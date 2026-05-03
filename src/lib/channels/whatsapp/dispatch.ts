@@ -228,7 +228,22 @@ export async function dispatchInbound(
 
 		let replyText: string;
 		if (intent.route === 'vault-chat') {
-			const result = await dispatchVaultChat(userText, conversationKey);
+			// Multimodal pass-through — when the message has image/video/audio/
+			// document attached, fetch the bytes once here and hand them to
+			// vault-chat so the LLM can actually see what the user sent
+			// (instead of "I can't see images directly"). Voice already came
+			// through `transcribeIfVoice` as text — no second pass needed.
+			let chatMedia: { buffer: Buffer; mimetype: string; kind: MediaPayload['kind'] } | undefined;
+			if (envelope.media && envelope.media.kind !== 'voice' && envelope.media.kind !== 'sticker') {
+				try {
+					const buf = await downloadMedia(rawMessage);
+					chatMedia = { buffer: buf, mimetype: envelope.media.mimetype, kind: envelope.media.kind };
+				} catch (err) {
+					console.warn(`[whatsapp] media download for vault-chat failed: ${(err as Error).message}`);
+					// Fall through — chat still works on the caption alone.
+				}
+			}
+			const result = await dispatchVaultChat(userText, conversationKey, chatMedia);
 			replyText = result.text || '(no reply)';
 		} else if (intent.route === 'brain-save') {
 			// Voice — buffer was already fetched by `transcribeIfVoice` above

@@ -179,7 +179,29 @@ export const POST: RequestHandler = async ({ request }) => {
 
 		let replyText: string;
 		if (intent.route === 'vault-chat') {
-			const result = await dispatchVaultChat(userText, conversationKey);
+			// Multimodal pass-through — worker shipped media bytes via
+			// `body.mediaBase64` (Slice 0/polish). Decode and hand to
+			// vault-chat so the LLM can actually see image/video/document.
+			// Voice already arrived as a transcript in `body.transcript` →
+			// no second pass needed.
+			let chatMedia: { buffer: Buffer; mimetype: string; kind: MediaPayload['kind'] } | undefined;
+			if (
+				body.mediaBase64 &&
+				envelope.media &&
+				envelope.media.kind !== 'voice' &&
+				envelope.media.kind !== 'sticker'
+			) {
+				try {
+					chatMedia = {
+						buffer: Buffer.from(body.mediaBase64, 'base64'),
+						mimetype: envelope.media.mimetype,
+						kind: envelope.media.kind,
+					};
+				} catch (err) {
+					console.warn(`[_inbound] mediaBase64 decode for vault-chat failed: ${(err as Error).message}`);
+				}
+			}
+			const result = await dispatchVaultChat(userText, conversationKey, chatMedia);
 			replyText = result.text || '(no reply)';
 		} else if (intent.route === 'brain-save') {
 			// Worker-mode binary plumbing: the worker piggybacks media bytes
