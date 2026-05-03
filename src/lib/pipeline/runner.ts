@@ -1188,7 +1188,7 @@ export async function listPipelines(pipelinesDir: string): Promise<{ name: strin
 
 /** Find all chains that reference a given pipeline by name */
 export async function findChainReferences(pipelineName: string): Promise<string[]> {
-	const pipDir = config.resolved.pipelinesDir || join(config.resolved.devDir, 'soul-hub', 'pipelines');
+	const pipDir = join(config.resolved.devDir, 'soul-hub', 'pipelines');
 	const refs: string[] = [];
 	try {
 		const entries = await readdir(pipDir, { withFileTypes: true });
