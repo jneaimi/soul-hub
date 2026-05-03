@@ -7,7 +7,12 @@ import { config } from '../config.js';
 import { RouteNotFoundError } from './errors.js';
 import type { RouteConfig } from './types.js';
 
-const routes = new Map<string, RouteConfig>(Object.entries(config.routes ?? {}));
+// Cast: Zod infers `default`/`failover` as plain `string`, but RouteConfig
+// types them as the `ProviderRef` template-literal — runtime values match,
+// the TS types just disagree on width. The schema is the source of truth.
+const routes = new Map<string, RouteConfig>(
+	Object.entries(config.routes ?? {}) as [string, RouteConfig][],
+);
 
 export function getRoute(name: string): RouteConfig {
 	const route = routes.get(name);

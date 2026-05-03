@@ -1,4 +1,5 @@
 import { generateText } from 'ai';
+import type { JSONValue } from 'ai';
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import type { ChatProvider, ChatRequest, ChatResult } from './types.js';
 
@@ -29,7 +30,7 @@ export const openrouter: ChatProvider = {
 		const client = createOpenRouter({ apiKey });
 		const modelId = req.model ?? DEFAULT_MODEL;
 
-		const providerOptions: Record<string, Record<string, unknown>> = {};
+		const providerOptions: Record<string, Record<string, JSONValue>> = {};
 		if (req.cacheControl && isAnthropicModel(modelId)) {
 			providerOptions.openrouter = {
 				cacheControl: { type: req.cacheControl },
