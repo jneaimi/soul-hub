@@ -40,6 +40,7 @@ import {
 } from '$lib/channels/whatsapp/heartbeat-commands.js';
 import { extractCommitmentsAsync } from '$lib/channels/whatsapp/commitments-extractor.js';
 import { dispatchBrainSave, dispatchBrainFind, dispatchBrainRecent } from '$lib/brain/index.js';
+import { maybeApplyRouter } from '$lib/channels/whatsapp/router.js';
 
 interface InboundBody {
 	envelope: InboundEnvelope;
@@ -157,7 +158,12 @@ export const POST: RequestHandler = async ({ request }) => {
 		}
 	}
 
-	const intent = resolveIntent(workingBody, cfg.intentMap);
+	// Same intercept chain as in-process dispatch.ts — slash → router →
+	// chat. `maybeApplyRouter` is a no-op when `intentMap.default.dynamic`
+	// is off (the default), preserving legacy behaviour for users who
+	// haven't opted in.
+	const baseIntent = resolveIntent(workingBody, cfg.intentMap);
+	const intent = await maybeApplyRouter(baseIntent, cfg.intentMap);
 
 	if (intent.route === 'unknown' || intent.route === 'help') {
 		return json({ ok: true, action: 'help', text: helpReply(cfg.intentMap) });

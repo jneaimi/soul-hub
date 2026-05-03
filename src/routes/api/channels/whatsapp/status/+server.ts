@@ -1,6 +1,7 @@
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { getChannelConfig, getResolvedStatus } from '$lib/channels/whatsapp/index.js';
+import { getRouterDecisions } from '$lib/channels/whatsapp/router.js';
 
 /** GET /api/channels/whatsapp/status — poll target for the settings UI.
  *  Returns the live state machine snapshot + a small config preview so
@@ -26,5 +27,6 @@ export const GET: RequestHandler = async () => {
 					workerEnabled: cfg.worker.enabled,
 				}
 			: null,
+		recentRouterDecisions: getRouterDecisions(),
 	});
 };

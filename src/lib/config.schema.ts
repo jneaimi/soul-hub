@@ -72,6 +72,14 @@ export const WhatsAppIntentMapSchema = z.record(
 	z.object({
 		route: z.string(),
 		description: z.string().optional(),
+		/** Slice 1.5 — opt-in smart routing for free-form (non-slash) messages.
+		 *  Only meaningful on the `default` entry; ignored on slash entries
+		 *  (those always dispatch the explicit `/<command>` regardless).
+		 *  When `false` (default), free-form messages always flow to the
+		 *  `default.route` (`vault-chat`). When `true`, the dispatcher first
+		 *  runs `routeFreeForm()` (regex → Gemini Flash with confidence
+		 *  thresholds) and rewrites the route if the router is sure enough. */
+		dynamic: z.boolean().optional(),
 	}),
 );
 
@@ -209,7 +217,7 @@ export const WhatsAppChannelSchema = ChannelConfigSchema.extend({
 		'/save': { route: 'brain-save', description: 'Capture a note (text/image/voice/video) into the vault inbox.' },
 		'/find': { route: 'brain-find', description: 'Search the vault — top 5 matches.' },
 		'/recent': { route: 'brain-recent', description: 'List the 5 most-recently-touched notes.' },
-		default: { route: 'vault-chat' },
+		default: { route: 'vault-chat', dynamic: false },
 	}),
 });
 
@@ -288,7 +296,7 @@ export const ConfigSchema = z.object({
 				'/save': { route: 'brain-save', description: 'Capture a note (text/image/voice/video) into the vault inbox.' },
 				'/find': { route: 'brain-find', description: 'Search the vault — top 5 matches.' },
 				'/recent': { route: 'brain-recent', description: 'List the 5 most-recently-touched notes.' },
-				default: { route: 'vault-chat' },
+				default: { route: 'vault-chat', dynamic: false },
 			},
 		},
 	}),

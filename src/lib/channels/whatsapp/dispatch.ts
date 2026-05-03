@@ -23,6 +23,7 @@ import {
 } from './heartbeat-commands.js';
 import { extractCommitmentsAsync } from './commitments-extractor.js';
 import { dispatchBrainSave, dispatchBrainFind, dispatchBrainRecent } from '../../brain/index.js';
+import { maybeApplyRouter } from './router.js';
 import type { InboundEnvelope, WhatsAppChannelConfig } from './types.js';
 
 const HELP_PREFIX = 'I do not recognise that command. Available:';
@@ -192,7 +193,13 @@ export async function dispatchInbound(
 		return;
 	}
 
-	const intent = resolveIntent(workingBody, config.intentMap);
+	// Resolve slash → route mapping first. `maybeApplyRouter` then rewrites
+	// the route only when the message wasn't a slash command AND the user
+	// has opted in via `intentMap.default.dynamic`. Order mirrors the
+	// ADR-001 §3 intercept chain: reset → slash meta → activeWorkflow?
+	// (Slice 4 placeholder) → router → vault-chat.
+	const baseIntent = resolveIntent(workingBody, config.intentMap);
+	const intent = await maybeApplyRouter(baseIntent, config.intentMap);
 
 	if (intent.route === 'unknown') {
 		await sendText(sock, envelope.chatJid, helpReply(config.intentMap), config.delivery);
