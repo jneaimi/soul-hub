@@ -246,6 +246,13 @@
 				</a>
 			{/if}
 			<a
+				href="/agents/orchestrator"
+				class="px-3 py-1.5 rounded-lg text-sm text-hub-muted hover:text-hub-text hover:bg-hub-card transition-colors cursor-pointer"
+				title="WhatsApp orchestrator falsifier dashboard"
+			>
+				Orchestrator
+			</a>
+			<a
 				href="/agents/skills"
 				class="px-3 py-1.5 rounded-lg text-sm text-hub-muted hover:text-hub-text hover:bg-hub-card transition-colors cursor-pointer"
 				title="Manage installed skills"

@@ -16,3 +16,5 @@ export {
 } from './active-runs.js';
 export type { ActiveRun } from './active-runs.js';
 export type { OrchestratorAction, OrchestratorDecision, DecideResult } from './types.js';
+export { getOrchestratorMetrics } from './metrics.js';
+export type { OrchestratorMetrics } from './metrics.js';
