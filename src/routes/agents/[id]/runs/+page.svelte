@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 
 	type Status = 'success' | 'error' | 'cancelled' | 'timeout' | 'budget-exceeded';
@@ -115,11 +114,14 @@
 		{ id: 'test', label: 'Test' },
 	];
 
-	onMount(load);
-
+	// Single source of truth for fetch: re-run whenever `id` or `modeFilter`
+	// changes. Reading `loading` inside the effect would create a feedback
+	// loop (load() flips loading false→true→false, refiring the effect),
+	// so we don't guard on it — overlapping loads just resolve last-wins.
 	$effect(() => {
+		void id;
 		void modeFilter;
-		if (!loading) load();
+		load();
 	});
 </script>
 
