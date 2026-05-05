@@ -2,12 +2,20 @@ import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { listAgents, writeAgent, getAgent, bumpStoreVersion, getStoreVersion } from '$lib/agents/store.js';
 import { AgentDraftSchema } from '$lib/agents/types.js';
+import { getAgentStatsBatch } from '$lib/agents/runs.js';
 
-/** GET /api/agents — list all agents across Lane A + Lane B. */
+/** GET /api/agents — list all agents across Lane A + Lane B. Each agent
+ *  carries a `stats` block sourced from `agent_runs` (production-mode runs
+ *  only by default — test-runner blips don't pollute lifetime totals). */
 export const GET: RequestHandler = async () => {
 	const result = listAgents();
+	const stats = getAgentStatsBatch(result.agents.map((a) => a.id));
+	const enriched = result.agents.map((a) => ({
+		...a,
+		stats: stats.get(a.id) ?? null,
+	}));
 	return json({
-		agents: result.agents,
+		agents: enriched,
 		laneADir: result.laneADir,
 		laneBDir: result.laneBDir,
 		errors: result.errors,

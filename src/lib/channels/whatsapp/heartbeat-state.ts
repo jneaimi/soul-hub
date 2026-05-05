@@ -214,6 +214,46 @@ function migrate(db: Database.Database): void {
 		`);
 		db.pragma('user_version = 7');
 	}
+
+	if (version < 8) {
+		// Phase 5 of soul-hub-agents — `agent_runs` registry. Owned conceptually
+		// by `src/lib/agents/runs.ts`; schema lives here for the same single-
+		// migration-owner reason as `scheduler_runs` / `voice_acks`. Schema
+		// derives from soul-hub-whatsapp ADR-005 with two Soul-Hub-agents
+		// extensions: `mode` (production|test — keeps test-runner blips out
+		// of lifetime stats) and `backend`/`provider`/`model` for analytics.
+		// `jid` and `source_message` stay nullable — only WhatsApp dispatch
+		// (ADR-005) populates them; UI/API dispatches leave them NULL.
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS agent_runs (
+				id              INTEGER PRIMARY KEY AUTOINCREMENT,
+				run_id          TEXT    NOT NULL,
+				agent_id        TEXT    NOT NULL,
+				backend         TEXT    NOT NULL,
+				model           TEXT,
+				provider        TEXT,
+				mode            TEXT    NOT NULL DEFAULT 'production',
+				task_spec       TEXT    NOT NULL,
+				source_message  TEXT,
+				jid             TEXT,
+				started_at      INTEGER NOT NULL,
+				finished_at     INTEGER,
+				duration_ms     INTEGER,
+				status          TEXT    NOT NULL,
+				cost_usd        REAL    NOT NULL DEFAULT 0,
+				num_turns       INTEGER NOT NULL DEFAULT 0,
+				result_excerpt  TEXT,
+				error_message   TEXT
+			);
+			CREATE INDEX IF NOT EXISTS idx_agent_runs_agent_started
+				ON agent_runs(agent_id, started_at DESC);
+			CREATE INDEX IF NOT EXISTS idx_agent_runs_run_id
+				ON agent_runs(run_id);
+			CREATE INDEX IF NOT EXISTS idx_agent_runs_jid_started
+				ON agent_runs(jid, started_at DESC) WHERE jid IS NOT NULL;
+		`);
+		db.pragma('user_version = 8');
+	}
 }
 
 /** Heartbeat run statuses logged to `proactive_log`. */

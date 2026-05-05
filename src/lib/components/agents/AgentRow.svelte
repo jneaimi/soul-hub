@@ -7,6 +7,15 @@
 	type Lane = 'A' | 'B';
 	type Health = 'ready' | 'unhealthy' | 'unknown';
 
+	interface AgentStats {
+		totalRuns: number;
+		totalCostUsd: number;
+		totalTurns: number;
+		successRate: number;
+		lastRunAt: number | null;
+		lastStatus: string | null;
+	}
+
 	interface AgentSummary {
 		id: string;
 		name: string;
@@ -22,6 +31,7 @@
 		health_reason?: string;
 		source_path: string;
 		system_prompt: string;
+		stats?: AgentStats | null;
 	}
 
 	interface Props {
@@ -51,10 +61,37 @@
 		'user-created': 'text-hub-cta',
 		external: 'text-hub-dim',
 	};
+
+	function relTime(ms: number): string {
+		const diff = Date.now() - ms;
+		const min = 60_000;
+		const hr = 60 * min;
+		const day = 24 * hr;
+		if (diff < min) return 'just now';
+		if (diff < hr) return `${Math.floor(diff / min)}m ago`;
+		if (diff < day) return `${Math.floor(diff / hr)}h ago`;
+		if (diff < 30 * day) return `${Math.floor(diff / day)}d ago`;
+		return new Date(ms).toISOString().slice(0, 10);
+	}
+
+	function fmtCost(usd: number): string {
+		if (!usd) return '$0';
+		if (usd < 0.01) return '<$0.01';
+		if (usd < 1) return `$${usd.toFixed(2)}`;
+		return `$${usd.toFixed(2)}`;
+	}
+
+	const statusColor: Record<string, string> = {
+		success: 'text-hub-cta',
+		error: 'text-hub-danger',
+		cancelled: 'text-hub-muted',
+		timeout: 'text-hub-warning',
+		'budget-exceeded': 'text-hub-warning',
+	};
 </script>
 
 <div class="bg-hub-card rounded-xl border border-hub-border overflow-hidden">
-	<div class="px-4 py-3 grid grid-cols-1 md:grid-cols-[auto_1fr_auto_auto_auto] gap-4 items-start md:items-center">
+	<div class="px-4 py-3 grid grid-cols-1 md:grid-cols-[auto_1fr_auto_auto_auto_auto] gap-4 items-start md:items-center">
 		<!-- Status pill -->
 		<div class="md:pr-2">
 			<StatusPill state={agent.health === 'ready' ? 'ready' : 'unhealthy'} size="sm" />
@@ -106,6 +143,30 @@
 			<div class="text-hub-dim text-[10px]">{agent.tools.length} tool{agent.tools.length === 1 ? '' : 's'}</div>
 		</div>
 
+		<!-- Lifetime stats -->
+		<a
+			href="/agents/{encodeURIComponent(agent.id)}/runs"
+			class="text-[11px] text-hub-muted hover:text-hub-text min-w-[110px] block group cursor-pointer"
+			title="Open run history"
+		>
+			{#if agent.stats && agent.stats.totalRuns > 0}
+				<div class="flex items-center gap-1.5">
+					<span class="font-medium {statusColor[agent.stats.lastStatus ?? ''] ?? 'text-hub-text'}">
+						{agent.stats.totalRuns}
+					</span>
+					<span class="text-hub-dim text-[10px]">run{agent.stats.totalRuns === 1 ? '' : 's'}</span>
+				</div>
+				<div class="text-hub-dim text-[10px] mt-0.5">
+					{agent.stats.lastRunAt ? relTime(agent.stats.lastRunAt) : '—'}
+					{#if agent.stats.totalCostUsd > 0}
+						· {fmtCost(agent.stats.totalCostUsd)}
+					{/if}
+				</div>
+			{:else}
+				<div class="text-hub-dim text-[10px] group-hover:text-hub-muted">never run</div>
+			{/if}
+		</a>
+
 		<!-- Actions -->
 		<div class="flex items-center gap-1.5 flex-shrink-0">
 			<a
@@ -114,6 +175,13 @@
 				title="Test in chat"
 			>
 				▶ Test
+			</a>
+			<a
+				href="/agents/{encodeURIComponent(agent.id)}/runs"
+				class="px-2 py-1 rounded-md text-[11px] font-medium text-hub-muted hover:text-hub-text hover:bg-hub-bg transition-colors cursor-pointer"
+				title="Run history"
+			>
+				⏱ Runs
 			</a>
 			<a
 				href="/agents/{encodeURIComponent(agent.id)}/edit"

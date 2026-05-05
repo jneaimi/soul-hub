@@ -7,12 +7,15 @@ import {
 	bumpStoreVersion,
 } from '$lib/agents/store.js';
 import { AgentDraftSchema } from '$lib/agents/types.js';
+import { getAgentStats } from '$lib/agents/runs.js';
 
-/** GET /api/agents/[id] — single-agent fetch for the edit form. */
+/** GET /api/agents/[id] — single-agent fetch for the edit form. Includes
+ *  lifetime `stats` (production-mode only) for the runs table on the row. */
 export const GET: RequestHandler = async ({ params }) => {
 	const agent = getAgent(params.id ?? '');
 	if (!agent) return json({ error: 'not found' }, { status: 404 });
-	return json({ agent });
+	const stats = getAgentStats(agent.id);
+	return json({ agent: { ...agent, stats } });
 };
 
 /** PUT /api/agents/[id] — update. Body must be a valid AgentDraft whose `id`

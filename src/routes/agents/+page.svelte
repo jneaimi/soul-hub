@@ -7,6 +7,15 @@
 	type Lane = 'A' | 'B';
 	type Health = 'ready' | 'unhealthy' | 'unknown';
 
+	interface AgentStats {
+		totalRuns: number;
+		totalCostUsd: number;
+		totalTurns: number;
+		successRate: number;
+		lastRunAt: number | null;
+		lastStatus: string | null;
+	}
+
 	interface AgentSummary {
 		id: string;
 		name: string;
@@ -22,6 +31,7 @@
 		health_reason?: string;
 		source_path: string;
 		system_prompt: string;
+		stats?: AgentStats | null;
 	}
 
 	type FilterMode = 'all' | 'pty' | 'cli-flag' | 'ai-sdk' | 'unhealthy';
