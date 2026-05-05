@@ -2,6 +2,15 @@ import type { Handle } from '@sveltejs/kit';
 import { resolve, dirname } from 'node:path';
 import { config } from '$lib/config.js';
 import { initScheduler } from '$lib/pipeline/index.js';
+import {
+	initSchedulerCore,
+	shutdownScheduler,
+	registerTaskHandler,
+} from '$lib/scheduler/index.js';
+import { triggerPipelineFactory } from '$lib/scheduler/handlers/trigger-pipeline.js';
+import { shellScriptFactory } from '$lib/scheduler/handlers/shell-script.js';
+import { dailyFocusFactory } from '$lib/scheduler/handlers/daily-focus.js';
+import { vaultScoutFactory } from '$lib/scheduler/handlers/vault-scout.js';
 import { initVault, getVaultEngine } from '$lib/vault/index.js';
 import { initSystemHealth, getSystemHealth } from '$lib/system/index.js';
 import { listSessions, killSession } from '$lib/pty/manager.js';
@@ -62,6 +71,49 @@ try {
 	console.error('[agents/watcher] Failed to initialize:', err);
 }
 
+// Register built-in task handlers. Must happen BEFORE initSchedulerCore
+// so reconcileFromSettings finds the handlers when it walks the task
+// list. New task types (Phase 3+) register here too.
+try {
+	registerTaskHandler(
+		'trigger-pipeline',
+		triggerPipelineFactory,
+		'Run a Soul Hub pipeline on a cron schedule.',
+	);
+	registerTaskHandler(
+		'shell-script',
+		shellScriptFactory,
+		'Run an arbitrary shell command (e.g. python script) on a cron schedule.',
+	);
+	registerTaskHandler(
+		'daily-focus',
+		dailyFocusFactory,
+		'Mon-Fri morning focus picker — Slot A (freshest active) + Slot B (oldest stalled).',
+	);
+	registerTaskHandler(
+		'vault-scout',
+		vaultScoutFactory,
+		'Daily AI-driven vault scout — extracts milestones, synthesizes via Gemini Flash, queues voice-eligible inbox notes.',
+	);
+} catch (err) {
+	console.error('[scheduler] handler registration failed:', err);
+}
+
+// Initialize the unified scheduler (sweep stale rows → reconcile from
+// settings → run catchup-on-boot).
+(async () => {
+	try {
+		const result = await initSchedulerCore(config.scheduler);
+		console.log(
+			`[scheduler] init: registered=${result.reconcile.registered.length} ` +
+				`skipped=${result.reconcile.skipped.length} ` +
+				`swept=${result.swept} catchupFired=${result.catchupFired}`,
+		);
+	} catch (err) {
+		console.error('[scheduler] Failed to initialize:', err);
+	}
+})();
+
 // Recover interrupted orchestration runs on startup
 (async () => {
 	try {
@@ -101,6 +153,9 @@ function gracefulShutdown(signal: string) {
 
 	// Stop the agents-lane watcher (close chokidar handles cleanly)
 	shutdownAgentsWatcher().catch(() => {});
+
+	// Stop every cron task so PM2 reload doesn't leak intervals.
+	shutdownScheduler();
 
 	// Cleanup orchestration workers (async, best-effort)
 	(async () => {

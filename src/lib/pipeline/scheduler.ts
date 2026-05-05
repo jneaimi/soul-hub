@@ -1,4 +1,3 @@
-import cron from 'node-cron';
 import { readFile, writeFile, mkdir, readdir, access } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { parsePipeline } from './parser.js';
@@ -6,25 +5,18 @@ import { parseChain } from './chain-parser.js';
 import { runPipeline } from './runner.js';
 import { runChain } from './chain-runner.js';
 import { scanFolder, moveFile, ensureWatchDirs, type WatchConfig, type WatchStatus } from './folder-watcher.js';
-import type { PipelineRun } from './types.js';
 
-/** Per-pipeline automation config (stored in .data/automation.json, NOT in YAML) */
+/** Per-pipeline automation config (stored in .data/automation.json, NOT in YAML).
+ *
+ *  Cron-based scheduling extracted to `src/lib/scheduler/` per ADR-005;
+ *  `schedule` and `scheduleEnabled` are no longer accepted here. Pipelines
+ *  retain only event triggers (webhook + folder watcher). To run a
+ *  pipeline on a schedule, declare it in `settings.json.scheduler.tasks`
+ *  with `type: 'trigger-pipeline'`. */
 interface AutomationConfig {
-	schedule?: string;       // cron expression
-	scheduleEnabled?: boolean;
 	triggerEnabled?: boolean;
 	triggerSecret?: string;  // per-pipeline secret token
 	watch?: WatchConfig;
-}
-
-/** Scheduled job runtime state */
-interface ScheduledJob {
-	pipelineName: string;
-	cronExpr: string;
-	task: ReturnType<typeof cron.schedule>;
-	enabled: boolean;
-	lastRun?: string;
-	lastStatus?: string;
 }
 
 /** Run history entry persisted to disk */
@@ -40,7 +32,6 @@ interface RunRecord {
 	nodeSummary?: { id: string; pipeline: string; status: string; durationMs?: number; error?: string; outputPath?: string }[];
 }
 
-const scheduledJobs = new Map<string, ScheduledJob>();
 let automationConfigs: Record<string, AutomationConfig> = {};
 
 /** Active folder watchers keyed by pipeline/chain name */
@@ -98,36 +89,24 @@ export async function initScheduler(pipDir: string, dataDir: string): Promise<vo
 		savedInputs = {};
 	}
 
-	// Stop all existing jobs before re-scanning
-	for (const [, job] of scheduledJobs) {
-		job.task.stop();
-	}
-	scheduledJobs.clear();
-
-	// Register cron jobs from automation config
-	try {
-		const entries = await readdir(pipelinesDir, { withFileTypes: true });
-		for (const entry of entries) {
-			if (!entry.isDirectory()) continue;
-			let yamlPath = resolve(pipelinesDir, entry.name, 'pipeline.yaml');
-			let specName = '';
-			try {
-				const spec = await parsePipeline(yamlPath);
-				specName = spec.name;
-			} catch {
-				// Try chain.yaml
-				yamlPath = resolve(pipelinesDir, entry.name, 'chain.yaml');
-				try {
-					const spec = await parseChain(yamlPath);
-					specName = spec.name;
-				} catch { continue; }
-			}
-			const autoConfig = automationConfigs[specName];
-			if (autoConfig?.schedule && autoConfig.scheduleEnabled !== false) {
-				registerSchedule(specName, autoConfig.schedule, yamlPath);
-			}
+	// Strip any legacy schedule fields from in-memory configs so a
+	// post-migration restart never re-introduces them. The migration
+	// script is the canonical cleanup; this is belt-and-braces for
+	// installs that skipped it.
+	let stripped = 0;
+	for (const [name, autoConfig] of Object.entries(automationConfigs)) {
+		const legacy = autoConfig as AutomationConfig & { schedule?: unknown; scheduleEnabled?: unknown };
+		if (legacy.schedule !== undefined || legacy.scheduleEnabled !== undefined) {
+			delete legacy.schedule;
+			delete legacy.scheduleEnabled;
+			automationConfigs[name] = legacy;
+			stripped += 1;
 		}
-	} catch { /* pipelines dir doesn't exist */ }
+	}
+	if (stripped > 0) {
+		console.warn(`[scheduler] dropped legacy schedule fields from ${stripped} pipeline config(s) — run scripts/migrate-pipeline-schedules.ts to move them to settings.json`);
+		await persistAutomation();
+	}
 
 	// Register folder watchers from automation config
 	for (const [name, autoConfig] of Object.entries(automationConfigs)) {
@@ -161,29 +140,7 @@ export async function initScheduler(pipDir: string, dataDir: string): Promise<vo
 		}
 	}
 
-	console.log(`[scheduler] Initialized: ${scheduledJobs.size} scheduled, ${folderWatchers.size} watchers, ${Object.keys(automationConfigs).length} configured, ${runHistory.length} history records`);
-}
-
-/** Register a cron schedule for a pipeline */
-function registerSchedule(name: string, cronExpr: string, yamlPath: string): void {
-	if (!cron.validate(cronExpr)) {
-		console.error(`[scheduler] Invalid cron expression for "${name}": ${cronExpr}`);
-		return;
-	}
-
-	const task = cron.schedule(cronExpr, async () => {
-		console.log(`[scheduler] Triggered: ${name}`);
-		await executeScheduledRun(name, yamlPath, 'scheduled');
-	});
-
-	scheduledJobs.set(name, {
-		pipelineName: name,
-		cronExpr,
-		task,
-		enabled: true,
-	});
-
-	console.log(`[scheduler] Registered: ${name} — ${cronExpr}`);
+	console.log(`[pipeline] Initialized: ${folderWatchers.size} watchers, ${Object.keys(automationConfigs).length} configured, ${runHistory.length} history records`);
 }
 
 function registerFolderWatcher(
@@ -312,7 +269,10 @@ export function getAutomationConfig(name: string): AutomationConfig {
 	return automationConfigs[name] || {};
 }
 
-/** Update automation config for a pipeline and re-register schedules */
+/** Update automation config for a pipeline. Cron scheduling extracted
+ *  per ADR-005 — only `triggerEnabled`, `triggerSecret`, and `watch`
+ *  are honoured here. Any `schedule`/`scheduleEnabled` keys passed
+ *  in are silently ignored (the API layer warns on receipt). */
 export async function setAutomationConfig(name: string, config: Partial<AutomationConfig>): Promise<void> {
 	const existing = automationConfigs[name] || {};
 	automationConfigs[name] = { ...existing, ...config };
@@ -320,21 +280,7 @@ export async function setAutomationConfig(name: string, config: Partial<Automati
 	// Persist
 	await persistAutomation();
 
-	// Re-register schedule if changed
 	const autoConfig = automationConfigs[name];
-	const existingJob = scheduledJobs.get(name);
-
-	// Stop existing job
-	if (existingJob) {
-		existingJob.task.stop();
-		scheduledJobs.delete(name);
-	}
-
-	// Start new job if schedule is configured and enabled
-	if (autoConfig.schedule && autoConfig.scheduleEnabled !== false) {
-		const yamlPath = resolve(pipelinesDir, name, 'pipeline.yaml');
-		registerSchedule(name, autoConfig.schedule, yamlPath);
-	}
 
 	// Re-register folder watcher if changed
 	if (config.watch !== undefined) {
@@ -357,47 +303,9 @@ export async function setAutomationConfig(name: string, config: Partial<Automati
 	}
 }
 
-/** Get all automation configs with schedule info */
-export function getSchedules(): {
-	name: string;
-	schedule?: string;
-	scheduleEnabled: boolean;
-	triggerEnabled: boolean;
-	triggerSecret?: string;
-	lastRun?: string;
-	lastStatus?: string;
-}[] {
-	const results: ReturnType<typeof getSchedules> = [];
-	for (const [name, config] of Object.entries(automationConfigs)) {
-		const job = scheduledJobs.get(name);
-		results.push({
-			name,
-			schedule: config.schedule,
-			scheduleEnabled: config.scheduleEnabled !== false && !!config.schedule,
-			triggerEnabled: config.triggerEnabled !== false,
-			triggerSecret: config.triggerSecret,
-			lastRun: job?.lastRun,
-			lastStatus: job?.lastStatus,
-		});
-	}
-	return results;
-}
-
-/** Toggle schedule on/off */
-export function toggleSchedule(name: string, enabled: boolean): boolean {
-	const config = automationConfigs[name];
-	if (!config?.schedule) return false;
-
-	config.scheduleEnabled = enabled;
-	persistAutomation();
-
-	const job = scheduledJobs.get(name);
-	if (job) {
-		if (enabled) job.task.start(); else job.task.stop();
-		job.enabled = enabled;
-	}
-	return true;
-}
+// `getSchedules` + `toggleSchedule` removed in ADR-005 Phase 1.5 —
+// cron scheduling lives in `src/lib/scheduler/` now. Pipelines retain
+// only event triggers (webhook + folder watcher).
 
 /** Check if webhook trigger is enabled for a pipeline */
 export function isTriggerEnabled(name: string): boolean {
@@ -430,21 +338,7 @@ export async function executeScheduledRun(
 	} catch {
 		activePipelines.delete(name);
 		console.warn(`[scheduler] Skipping "${name}" — pipeline YAML not found: ${yamlPath}`);
-		const job = scheduledJobs.get(name);
-		if (job) { job.task.stop(); scheduledJobs.delete(name); }
 		return { runId: '', status: 'skipped' };
-	}
-
-	// Guard: verify schedule is still enabled (protects against ghost cron jobs)
-	if (trigger === 'scheduled') {
-		const autoConfig = automationConfigs[name];
-		if (!autoConfig?.schedule || autoConfig.scheduleEnabled === false) {
-			activePipelines.delete(name);
-			console.log(`[scheduler] Blocking ghost trigger for "${name}" — no active schedule`);
-			const job = scheduledJobs.get(name);
-			if (job) { job.task.stop(); scheduledJobs.delete(name); }
-			return { runId: '', status: 'blocked' };
-		}
 	}
 
 	const runId = crypto.randomUUID().slice(0, 8);
@@ -487,12 +381,6 @@ export async function executeScheduledRun(
 					...(s.outputType ? { outputType: s.outputType } : {}),
 				})),
 			};
-		}
-
-		const job = scheduledJobs.get(name);
-		if (job) {
-			job.lastRun = record.startedAt;
-			job.lastStatus = record.status;
 		}
 
 		runHistory.unshift(record);
@@ -567,12 +455,14 @@ export function getSavedInputs(name: string): Record<string, string | number> {
 	return savedInputs[name] || {};
 }
 
-/** Remove all automation state for a pipeline (schedule, watcher, saved inputs) */
+/** Remove all automation state for a pipeline (watcher, saved inputs).
+ *
+ *  Note: scheduler tasks of type `trigger-pipeline` are NOT cleaned up
+ *  here — they live in `settings.json` and are owned by the unified
+ *  scheduler. If a pipeline is deleted, the matching scheduler task
+ *  will continue to fire `pipeline.yaml not found` warnings until the
+ *  user removes it from the Scheduler UI. */
 export async function cleanupPipelineState(name: string): Promise<void> {
-	// Stop scheduled job
-	const job = scheduledJobs.get(name);
-	if (job) { job.task.stop(); scheduledJobs.delete(name); }
-
 	// Stop folder watcher
 	const watcher = folderWatchers.get(name);
 	if (watcher) { clearInterval(watcher.timer); folderWatchers.delete(name); }

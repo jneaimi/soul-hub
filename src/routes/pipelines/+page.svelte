@@ -81,14 +81,14 @@
 	let inputValues = $state<Record<string, string | number>>({});
 	let envStatus = $state<EnvStatus[]>([]);
 
-	// Selected pipeline schedule state
+	// Selected pipeline schedule state.
+	// `selectedSchedule` historically wrapped both cron + trigger fields.
+	// ADR-004 extracted cron to /scheduler; this object now only carries event-trigger
+	// state (triggerEnabled, triggerSecret) plus the pipeline name.
 	let selectedSchedule = $state<Schedule | null>(null);
 	let webhookUrl = $state('');
 	let cfClientId = $state('');
 	let cfClientSecret = $state('');
-	let editingSchedule = $state(false);
-	let scheduleInput = $state('');
-	let scheduleSaving = $state(false);
 	let editingSecret = $state(false);
 	let secretInput = $state('');
 
@@ -304,11 +304,9 @@
 	// Mobile detection (coarse pointer = touch device)
 	let isMobile = $state(false);
 
-	// Schedules
+	// Pipeline trigger state (cron lives in /scheduler per ADR-004).
 	interface Schedule {
 		name: string;
-		schedule?: string;
-		scheduleEnabled: boolean;
 		triggerEnabled: boolean;
 		triggerSecret?: string;
 		lastRun?: string;
@@ -519,7 +517,7 @@
 					envStatus = data.envStatus || [];
 					selectedSchedule = schedules.find((s) => s.name === name) || null;
 					if (!selectedSchedule) {
-						selectedSchedule = { name, scheduleEnabled: false, triggerEnabled: true };
+						selectedSchedule = { name, triggerEnabled: true };
 					}
 					webhookUrl = `${window.location.origin}/api/pipelines/trigger`;
 					// Load watch config
@@ -577,8 +575,6 @@
 							const cfg = await cfgRes.json();
 							selectedSchedule = {
 								name,
-								schedule: cfg.schedule,
-								scheduleEnabled: cfg.scheduleEnabled !== false && !!cfg.schedule,
 								triggerEnabled: cfg.triggerEnabled !== false,
 								triggerSecret: cfg.triggerSecret,
 							};
@@ -586,7 +582,7 @@
 					} catch { /* silent */ }
 				}
 				if (!selectedSchedule) {
-					selectedSchedule = { name, scheduleEnabled: false, triggerEnabled: true };
+					selectedSchedule = { name, triggerEnabled: true };
 				}
 				webhookUrl = `${window.location.origin}/api/pipelines/trigger`;
 				// Load watch config
@@ -648,9 +644,6 @@
 		fixRequests = [];
 		selectedSchedule = null;
 		webhookUrl = '';
-		editingSchedule = false;
-		scheduleInput = '';
-		scheduleSaving = false;
 		editingSecret = false;
 		secretInput = '';
 		filePathStatus = {};
@@ -736,31 +729,6 @@
 		gateSubmitting = new Set(gateSubmitting);
 	}
 
-	async function saveSchedule(name: string, cronExpr: string | null) {
-		scheduleSaving = true;
-		try {
-			const res = await fetch('/api/pipelines/config', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ name, schedule: cronExpr, scheduleEnabled: !!cronExpr }),
-			});
-			if (res.ok) {
-				editingSchedule = false;
-				// Refresh schedules
-				const schedRes = await fetch('/api/pipelines/schedules');
-				if (schedRes.ok) {
-					const data = await schedRes.json();
-					schedules = data.schedules || [];
-				}
-				// Update local state
-				if (selectedSchedule) {
-					selectedSchedule = { ...selectedSchedule, schedule: cronExpr || undefined, scheduleEnabled: !!cronExpr };
-				}
-			}
-		} catch { /* silent */ }
-		scheduleSaving = false;
-	}
-
 	async function saveTriggerConfig(name: string, updates: { triggerEnabled?: boolean; triggerSecret?: string | null }) {
 		try {
 			await fetch('/api/pipelines/config', {
@@ -799,23 +767,6 @@
 					} : { enabled: false },
 				}),
 			});
-		} catch { /* silent */ }
-	}
-
-	async function toggleScheduleEnabled(name: string, enabled: boolean) {
-		try {
-			await fetch('/api/pipelines/schedules', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ name, enabled }),
-			});
-			const schedule = schedules.find((s) => s.name === name);
-			if (schedule) schedule.scheduleEnabled = enabled;
-			schedules = [...schedules];
-			// Update selected schedule state too
-			if (selectedSchedule && selectedSchedule.name === name) {
-				selectedSchedule = { ...selectedSchedule, scheduleEnabled: enabled };
-			}
 		} catch { /* silent */ }
 	}
 
@@ -1311,7 +1262,6 @@
 					{/if}
 					<div class="divide-y divide-hub-border/60">
 						{#each filteredPipelines as pipeline}
-							{@const pipelineSchedule = schedules.find((s) => s.name === pipeline.name)}
 							{@const lastRun = persistedHistory.find(h => h.pipelineName === pipeline.name)}
 							<button
 								onclick={() => selectPipeline(pipeline.name)}
@@ -1389,48 +1339,20 @@
 						>
 							<svg class="w-3 h-3 transition-transform {showSettings ? 'rotate-90' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
 							Settings
-							{#if selectedSchedule.schedule || selectedSchedule.triggerEnabled || watchEnabled}
+							{#if selectedSchedule.triggerEnabled || watchEnabled}
 								<span class="w-1.5 h-1.5 rounded-full bg-hub-cta/60"></span>
 							{/if}
 						</button>
 						{#if showSettings}
 						<div class="bg-hub-surface border border-hub-border rounded-lg p-4 space-y-3">
-							<!-- Schedule -->
-							<div class="flex items-center gap-3 flex-wrap">
-								<span class="text-xs text-hub-muted w-16 flex-shrink-0">Schedule</span>
-								{#if editingSchedule}
-									<input
-										type="text"
-										bind:value={scheduleInput}
-										placeholder="e.g. 0 8 * * * (daily 8am)"
-										onkeydown={(e) => { if (e.key === 'Enter') saveSchedule(selectedName, scheduleInput || null); if (e.key === 'Escape') { editingSchedule = false; } }}
-										class="flex-1 min-w-[200px] bg-hub-bg border border-hub-border rounded-md px-2 py-1 text-xs text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-info/50"
-									/>
-									<button onclick={() => saveSchedule(selectedName, scheduleInput || null)} disabled={scheduleSaving}
-										class="text-[10px] text-hub-cta hover:text-hub-cta/80 cursor-pointer">{scheduleSaving ? '...' : 'Save'}</button>
-									<button onclick={() => { editingSchedule = false; }}
-										class="text-[10px] text-hub-dim hover:text-hub-muted cursor-pointer">Cancel</button>
-								{:else if selectedSchedule.schedule}
-									<span class="text-xs font-mono text-hub-text bg-hub-bg px-2 py-1 rounded">{selectedSchedule.schedule}</span>
-									<button
-										onclick={() => toggleScheduleEnabled(selectedName, !selectedSchedule!.scheduleEnabled)}
-										class="w-9 h-5 rounded-full transition-colors cursor-pointer flex-shrink-0 relative
-											{selectedSchedule.scheduleEnabled ? 'bg-hub-cta' : 'bg-hub-border'}"
-									>
-										<span class="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform
-											{selectedSchedule.scheduleEnabled ? 'left-4' : 'left-0.5'}"></span>
-									</button>
-									<span class="text-[10px] {selectedSchedule.scheduleEnabled ? 'text-hub-cta' : 'text-hub-dim'}">
-										{selectedSchedule.scheduleEnabled ? 'Active' : 'Paused'}
-									</span>
-									<button onclick={() => { editingSchedule = true; scheduleInput = selectedSchedule?.schedule || ''; }}
-										class="text-[10px] text-hub-info hover:text-hub-info/80 cursor-pointer ml-auto">Edit</button>
-									<button onclick={() => saveSchedule(selectedName, null)}
-										class="text-[10px] text-hub-danger hover:text-hub-danger/80 cursor-pointer">Remove</button>
-								{:else}
-									<button onclick={() => { editingSchedule = true; scheduleInput = ''; }}
-										class="text-xs text-hub-info hover:text-hub-info/80 cursor-pointer">+ Add schedule</button>
-								{/if}
+							<!-- Scheduling is owned by /scheduler (per ADR-004). -->
+							<div class="flex items-start gap-3">
+								<span class="text-xs text-hub-muted w-16 flex-shrink-0 pt-0.5">Schedule</span>
+								<p class="text-[11px] text-hub-dim flex-1">
+									Pipelines run on demand or via the
+									<a href="/scheduler/builder" class="text-hub-info hover:text-hub-text underline-offset-2 hover:underline">scheduler</a>
+									(create a task with type <code class="font-mono text-hub-info">trigger-pipeline</code>).
+								</p>
 							</div>
 
 							<!-- Webhook trigger -->
@@ -1779,48 +1701,20 @@
 						>
 							<svg class="w-3 h-3 transition-transform {showSettings ? 'rotate-90' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
 							Settings
-							{#if selectedSchedule.schedule || selectedSchedule.triggerEnabled || watchEnabled}
+							{#if selectedSchedule.triggerEnabled || watchEnabled}
 								<span class="w-1.5 h-1.5 rounded-full bg-hub-cta/60"></span>
 							{/if}
 						</button>
 						{#if showSettings}
 						<div class="bg-hub-surface border border-hub-border rounded-lg p-4 space-y-3">
-							<!-- Schedule -->
-							<div class="flex items-center gap-3 flex-wrap">
-								<span class="text-xs text-hub-muted w-16 flex-shrink-0">Schedule</span>
-								{#if editingSchedule}
-									<input
-										type="text"
-										bind:value={scheduleInput}
-										placeholder="e.g. 0 8 * * * (daily 8am)"
-										onkeydown={(e) => { if (e.key === 'Enter') saveSchedule(selectedName, scheduleInput || null); if (e.key === 'Escape') { editingSchedule = false; } }}
-										class="flex-1 min-w-[200px] bg-hub-bg border border-hub-border rounded-md px-2 py-1 text-xs text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-info/50"
-									/>
-									<button onclick={() => saveSchedule(selectedName, scheduleInput || null)} disabled={scheduleSaving}
-										class="text-[10px] text-hub-cta hover:text-hub-cta/80 cursor-pointer">{scheduleSaving ? '...' : 'Save'}</button>
-									<button onclick={() => { editingSchedule = false; }}
-										class="text-[10px] text-hub-dim hover:text-hub-muted cursor-pointer">Cancel</button>
-								{:else if selectedSchedule.schedule}
-									<span class="text-xs font-mono text-hub-text bg-hub-bg px-2 py-1 rounded">{selectedSchedule.schedule}</span>
-									<button
-										onclick={() => toggleScheduleEnabled(selectedName, !selectedSchedule!.scheduleEnabled)}
-										class="w-9 h-5 rounded-full transition-colors cursor-pointer flex-shrink-0 relative
-											{selectedSchedule.scheduleEnabled ? 'bg-hub-cta' : 'bg-hub-border'}"
-									>
-										<span class="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform
-											{selectedSchedule.scheduleEnabled ? 'left-4' : 'left-0.5'}"></span>
-									</button>
-									<span class="text-[10px] {selectedSchedule.scheduleEnabled ? 'text-hub-cta' : 'text-hub-dim'}">
-										{selectedSchedule.scheduleEnabled ? 'Active' : 'Paused'}
-									</span>
-									<button onclick={() => { editingSchedule = true; scheduleInput = selectedSchedule?.schedule || ''; }}
-										class="text-[10px] text-hub-info hover:text-hub-info/80 cursor-pointer ml-auto">Edit</button>
-									<button onclick={() => saveSchedule(selectedName, null)}
-										class="text-[10px] text-hub-danger hover:text-hub-danger/80 cursor-pointer">Remove</button>
-								{:else}
-									<button onclick={() => { editingSchedule = true; scheduleInput = ''; }}
-										class="text-xs text-hub-info hover:text-hub-info/80 cursor-pointer">+ Add schedule</button>
-								{/if}
+							<!-- Scheduling is owned by /scheduler (per ADR-004). -->
+							<div class="flex items-start gap-3">
+								<span class="text-xs text-hub-muted w-16 flex-shrink-0 pt-0.5">Schedule</span>
+								<p class="text-[11px] text-hub-dim flex-1">
+									Pipelines run on demand or via the
+									<a href="/scheduler/builder" class="text-hub-info hover:text-hub-text underline-offset-2 hover:underline">scheduler</a>
+									(create a task with type <code class="font-mono text-hub-info">trigger-pipeline</code>).
+								</p>
 							</div>
 
 							<!-- Webhook trigger -->

@@ -50,6 +50,16 @@
 	}
 	let explorerRoots = $state<ExplorerRoot[]>([]);
 
+	// Scheduler tile data
+	interface SchedulerTaskSummary {
+		id: string;
+		type: string;
+		enabled: boolean;
+		lastStatus: string | null;
+		nextRunAt: string | null;
+	}
+	let schedulerTasks = $state<SchedulerTaskSummary[]>([]);
+
 	// Add project modal
 	let showAddModal = $state(false);
 	let addingPaths = $state<Set<string>>(new Set());
@@ -105,6 +115,45 @@
 			if (res.ok) dashboard = await res.json();
 		} catch { /* silent */ }
 	}
+
+	async function loadScheduler() {
+		try {
+			const res = await fetch('/api/scheduler/tasks?historyLimit=1');
+			if (res.ok) {
+				const data = await res.json();
+				schedulerTasks = (data.tasks ?? []).map((t: SchedulerTaskSummary) => ({
+					id: t.id,
+					type: t.type,
+					enabled: t.enabled,
+					lastStatus: t.lastStatus,
+					nextRunAt: t.nextRunAt,
+				}));
+			}
+		} catch { /* silent */ }
+	}
+
+	function nextSchedulerLabel(iso: string | null): string {
+		if (!iso) return '—';
+		const ms = new Date(iso).getTime() - Date.now();
+		if (ms < 0) return 'overdue';
+		const mins = Math.floor(ms / 60_000);
+		const hours = Math.floor(mins / 60);
+		const days = Math.floor(hours / 24);
+		if (days > 0) return `in ${days}d ${hours % 24}h`;
+		if (hours > 0) return `in ${hours}h ${mins % 60}m`;
+		return `in ${mins}m`;
+	}
+
+	const schedulerSummary = $derived.by(() => {
+		const total = schedulerTasks.length;
+		const active = schedulerTasks.filter((t) => t.enabled).length;
+		const failed = schedulerTasks.filter((t) => t.lastStatus === 'error').length;
+		const next = schedulerTasks
+			.filter((t) => t.enabled && t.nextRunAt)
+			.map((t) => new Date(t.nextRunAt!).getTime())
+			.sort((a, b) => a - b)[0];
+		return { total, active, failed, nextLabel: next ? nextSchedulerLabel(new Date(next).toISOString()) : '—' };
+	});
 
 	async function loadPlaybooks() {
 		try {
@@ -195,6 +244,7 @@
 		loadDashboard();
 		loadPlaybooks();
 		loadExplorerRoots();
+		loadScheduler();
 		loadAgents();
 	}
 
@@ -676,6 +726,54 @@
 										<div class="text-lg font-semibold text-hub-info">{agentsByBackend.ai}</div>
 										<div class="text-[10px] text-hub-dim font-mono">AI SDK</div>
 									</div>
+								</div>
+								<div class="mt-2 pt-2 border-t border-hub-border/50 text-[10px] text-hub-dim text-center">
+									Read-only · Phase 1
+								</div>
+							{/if}
+						</div>
+
+						<!-- Scheduler -->
+						<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
+							<div class="flex items-center justify-between mb-3">
+								<div class="flex items-center gap-2">
+									<h3 class="text-sm font-semibold text-hub-text">Scheduler</h3>
+									{#if schedulerSummary.total > 0}
+										<span class="text-[11px] text-hub-dim bg-hub-bg px-1.5 py-0.5 rounded">{schedulerSummary.total}</span>
+									{/if}
+								</div>
+								<div class="flex items-center gap-2">
+									<a
+										href="/scheduler/builder"
+										class="w-7 h-7 grid place-items-center rounded-md text-hub-dim hover:text-hub-cta hover:bg-hub-surface transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50"
+										aria-label="New task"
+										title="New scheduled task"
+									>
+										<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+									</a>
+									<a href="/scheduler" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">View all</a>
+								</div>
+							</div>
+							{#if schedulerTasks.length === 0}
+								<p class="text-xs text-hub-dim py-3 text-center">No tasks yet</p>
+							{:else}
+								<div class="space-y-1.5">
+									{#each schedulerTasks.slice(0, 4) as t (t.id)}
+										<a
+											href="/scheduler"
+											class="flex items-center justify-between py-1 px-2 rounded-lg hover:bg-hub-surface transition-colors cursor-pointer group"
+										>
+											<span class="text-xs text-hub-muted group-hover:text-hub-text transition-colors truncate">{t.id}</span>
+											<span
+												class="flex-shrink-0 w-2 h-2 rounded-full {!t.enabled ? 'bg-hub-dim' : t.lastStatus === 'error' ? 'bg-hub-danger' : t.lastStatus === 'success' ? 'bg-hub-cta/70' : 'bg-hub-info/60'}"
+												title={t.enabled ? `${t.lastStatus ?? 'scheduled'}` : 'disabled'}
+											></span>
+										</a>
+									{/each}
+								</div>
+								<div class="mt-3 pt-2 border-t border-hub-border/50 flex items-center justify-between text-[10px] text-hub-dim">
+									<span>{schedulerSummary.active} active{schedulerSummary.failed > 0 ? ` · ${schedulerSummary.failed} failed` : ''}</span>
+									<span>next {schedulerSummary.nextLabel}</span>
 								</div>
 							{/if}
 						</div>

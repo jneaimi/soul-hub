@@ -4,7 +4,8 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { soulHubSettingsPath } from '$lib/paths.js';
 import { ConfigSchema } from '$lib/config.schema.js';
-import { reloadConfig } from '$lib/config.js';
+import { config, reloadConfig } from '$lib/config.js';
+import { reconcileFromSettings } from '$lib/scheduler/index.js';
 
 const SETTINGS_PATH = soulHubSettingsPath();
 
@@ -92,11 +93,23 @@ export const POST: RequestHandler = async ({ request }) => {
 		// absolute paths at startup — those still need a restart.
 		const reload = reloadConfig();
 
+		// Pull scheduler tasks back into the live registry. Add/remove/update
+		// happen idempotently — already-correct tasks stay running.
+		let schedulerReconciled: number | null = null;
+		try {
+			const r = reconcileFromSettings(config.scheduler);
+			schedulerReconciled =
+				r.registered.length + r.unregistered.length + r.updated.length;
+		} catch (err) {
+			console.error('[settings] scheduler reconcile failed:', err);
+		}
+
 		return json({
 			ok: true,
 			settings: candidate,
 			reloaded: reload.ok,
 			reloadError: reload.error,
+			schedulerReconciled,
 		});
 	} catch (err) {
 		return json({ error: `Failed to save: ${(err as Error).message}` }, { status: 500 });

@@ -3,7 +3,6 @@ import { json } from '@sveltejs/kit';
 import { resolve, dirname } from 'node:path';
 import { config } from '$lib/config.js';
 import { getAutomationConfig, setAutomationConfig, getWatchStatus, parsePipeline } from '$lib/pipeline/index.js';
-import cron from 'node-cron';
 
 const PIPELINES_DIR = resolve(dirname(config.resolved.catalogDir), 'pipelines');
 
@@ -19,7 +18,12 @@ export const GET: RequestHandler = async ({ url }) => {
 	});
 };
 
-/** POST /api/pipelines/config — update automation config */
+/** POST /api/pipelines/config — update automation config.
+ *
+ *  ADR-005: cron scheduling extracted to `/scheduler`. `schedule` and
+ *  `scheduleEnabled` are still accepted for backward-compat with older
+ *  clients but are silently dropped — declare a Scheduler task with
+ *  `type: 'trigger-pipeline'` instead. */
 export const POST: RequestHandler = async ({ request }) => {
 	const body = await request.json();
 	const { name, schedule, scheduleEnabled, triggerEnabled, triggerSecret, watch } = body as {
@@ -41,14 +45,14 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ error: `Pipeline "${name}" not found` }, { status: 404 });
 	}
 
-	// Validate cron if provided
-	if (schedule && !cron.validate(schedule)) {
-		return json({ error: `Invalid cron expression: ${schedule}` }, { status: 400 });
+	// Drop legacy schedule fields with a one-line warning.
+	if (schedule !== undefined || scheduleEnabled !== undefined) {
+		console.warn(
+			`[pipelines/config] dropped legacy schedule fields for "${name}" — declare a 'trigger-pipeline' Scheduler task instead (ADR-005)`,
+		);
 	}
 
 	const update: Record<string, unknown> = {};
-	if (schedule !== undefined) update.schedule = schedule || undefined;
-	if (scheduleEnabled !== undefined) update.scheduleEnabled = scheduleEnabled;
 	if (triggerEnabled !== undefined) update.triggerEnabled = triggerEnabled;
 	if (triggerSecret !== undefined) update.triggerSecret = triggerSecret || undefined;
 	if (watch !== undefined) update.watch = watch;

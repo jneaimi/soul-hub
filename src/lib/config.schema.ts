@@ -254,6 +254,36 @@ export const ProxySchema = z.object({
 	blockedPorts: z.array(z.number().int()).default([2400]),
 });
 
+/** A single scheduled task declared in settings.json.
+ *
+ *  `type` resolves at runtime to a registered task handler (see
+ *  `src/lib/scheduler/task-types.ts`). Tasks whose type isn't yet
+ *  registered are skipped with a warning instead of failing the load —
+ *  this keeps the scheduler tolerant of incremental rollout (e.g. a
+ *  user upgrading Soul Hub between phases). */
+export const SchedulerTaskSchema = z.object({
+	id: z.string().min(1).regex(/^[a-z0-9][a-z0-9-_]*$/, 'lowercase kebab/snake; letters, digits, - or _'),
+	type: z.string().min(1),
+	cron: z.string().min(1),
+	timezone: z.string().optional(),
+	enabled: z.boolean().default(true),
+	noOverlap: z.boolean().default(true),
+	description: z.string().optional(),
+	/** Task-handler-specific config — opaque to the scheduler. The
+	 *  factory for `type` is responsible for parsing this. */
+	params: z.record(z.string(), z.unknown()).default({}),
+});
+
+export const SchedulerSchema = z.object({
+	enabled: z.boolean().default(true),
+	/** When the process boots, any `started` row whose age exceeds this
+	 *  is closed out as `error: 'process-crashed'` so overlap protection
+	 *  doesn't stay jammed after a crash. Default 30 min covers every
+	 *  expected task; raise it if a long migration runs as a task. */
+	staleRunMaxRuntimeMs: z.number().int().min(60_000).default(30 * 60 * 1000),
+	tasks: z.array(SchedulerTaskSchema).default([]),
+});
+
 export const ConfigSchema = z.object({
 	terminal: TerminalSchema.prefault({}),
 	interface: InterfaceSchema.prefault({}),
@@ -329,6 +359,7 @@ export const ConfigSchema = z.object({
 	}),
 	orchestration: OrchestrationSchema.prefault({}),
 	proxy: ProxySchema.prefault({}),
+	scheduler: SchedulerSchema.prefault({}),
 	routes: RoutesSchema.prefault({
 		'vault-chat': {
 			description: 'Free-form chat against the vault — primary intent for WhatsApp DMs.',
