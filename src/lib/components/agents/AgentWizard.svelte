@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
 
 	type Backend = 'claude-pty' | 'claude-cli-flag' | 'ai-sdk';
 	type Provider = 'anthropic' | 'openai' | 'openrouter' | 'google' | 'mistral';
@@ -53,8 +54,59 @@
 	let name = $state(seed.name ?? '');
 	let description = $state(seed.description ?? '');
 	let toolsRaw = $state((seed.tools ?? []).join(', '));
-	let skillsRaw = $state((seed.skills ?? []).join(', '));
+	let skillsSelected = $state<string[]>([...(seed.skills ?? [])]);
+	let skillSearch = $state('');
 	let systemPrompt = $state(seed.system_prompt ?? '');
+
+	// Skills catalogue — fetched from /api/skills; each entry: id + description.
+	interface SkillOption {
+		id: string;
+		description: string;
+	}
+	let skillCatalogue = $state<SkillOption[]>([]);
+	let skillCatalogueError = $state<string | null>(null);
+	let skillCatalogueLoading = $state(true);
+
+	async function loadSkillCatalogue() {
+		try {
+			const res = await fetch('/api/skills');
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			const data = await res.json();
+			skillCatalogue = (data.skills ?? []).map((s: { id: string; description: string }) => ({
+				id: s.id,
+				description: s.description,
+			}));
+			skillCatalogueError = null;
+		} catch (err) {
+			skillCatalogueError = (err as Error).message;
+		} finally {
+			skillCatalogueLoading = false;
+		}
+	}
+
+	onMount(() => {
+		loadSkillCatalogue();
+	});
+
+	function toggleSkill(id: string) {
+		if (skillsSelected.includes(id)) {
+			skillsSelected = skillsSelected.filter((s) => s !== id);
+		} else {
+			skillsSelected = [...skillsSelected, id];
+		}
+	}
+
+	const skillsFiltered = $derived.by(() => {
+		const q = skillSearch.trim().toLowerCase();
+		if (!q) return skillCatalogue;
+		return skillCatalogue.filter(
+			(s) => s.id.toLowerCase().includes(q) || s.description.toLowerCase().includes(q),
+		);
+	});
+
+	const orphanSkills = $derived(
+		skillsSelected.filter((id) => !skillCatalogue.some((c) => c.id === id)),
+	);
 
 	let backend = $state<Backend>(seed.backend ?? 'claude-pty');
 
@@ -99,10 +151,7 @@
 			.split(',')
 			.map((t) => t.trim())
 			.filter(Boolean);
-		const skills = skillsRaw
-			.split(',')
-			.map((s) => s.trim())
-			.filter(Boolean);
+		const skills = [...skillsSelected];
 
 		const draft: Record<string, unknown> = {
 			id,
@@ -347,32 +396,107 @@
 			{/if}
 		</div>
 
-		<!-- Tools / Skills -->
-		<div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-			<div>
-				<label for="agent-tools" class="block text-xs text-hub-muted mb-1">
-					Tools <span class="text-hub-dim">(comma-separated)</span>
+		<!-- Tools -->
+		<div>
+			<label for="agent-tools" class="block text-xs text-hub-muted mb-1">
+				Tools <span class="text-hub-dim">(comma-separated)</span>
+			</label>
+			<input
+				id="agent-tools"
+				type="text"
+				bind:value={toolsRaw}
+				placeholder="Read, Write, Bash, WebFetch"
+				class="w-full px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50"
+			/>
+		</div>
+
+		<!-- Skills multi-select -->
+		<div>
+			<div class="flex items-center justify-between mb-1">
+				<label for="agent-skill-search" class="block text-xs text-hub-muted">
+					Skills <span class="text-hub-dim">— pick from installed</span>
 				</label>
-				<input
-					id="agent-tools"
-					type="text"
-					bind:value={toolsRaw}
-					placeholder="Read, Write, Bash, WebFetch"
-					class="w-full px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50"
-				/>
+				<a
+					href="/agents/skills"
+					target="_blank"
+					rel="noopener"
+					class="text-[11px] text-hub-info hover:text-hub-text"
+				>
+					Manage skills →
+				</a>
 			</div>
-			<div>
-				<label for="agent-skills" class="block text-xs text-hub-muted mb-1">
-					Skills <span class="text-hub-dim">(comma-separated)</span>
-				</label>
-				<input
-					id="agent-skills"
-					type="text"
-					bind:value={skillsRaw}
-					placeholder="brain, research"
-					class="w-full px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50"
-				/>
-			</div>
+			{#if skillsSelected.length > 0}
+				<div class="flex flex-wrap gap-1.5 mb-2">
+					{#each skillsSelected as id (id)}
+						{@const isOrphan = orphanSkills.includes(id)}
+						<button
+							type="button"
+							onclick={() => toggleSkill(id)}
+							class="px-2 py-0.5 rounded-md text-[11px] font-mono cursor-pointer transition-colors
+								{isOrphan
+									? 'bg-hub-warning/15 text-hub-warning border border-hub-warning/40 hover:bg-hub-warning/25'
+									: 'bg-hub-cta/15 text-hub-cta border border-hub-cta/40 hover:bg-hub-cta/25'}"
+							title={isOrphan ? 'Selected but not installed locally' : 'Click to remove'}
+						>
+							{id} ×
+						</button>
+					{/each}
+				</div>
+			{/if}
+			<input
+				id="agent-skill-search"
+				type="search"
+				bind:value={skillSearch}
+				placeholder={skillCatalogueLoading
+					? 'Loading skills…'
+					: skillCatalogue.length === 0
+						? 'No skills installed — click Manage skills →'
+						: `Search ${skillCatalogue.length} installed skills…`}
+				disabled={skillCatalogueLoading || skillCatalogue.length === 0}
+				class="w-full px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-sm text-hub-text focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50 disabled:opacity-50"
+			/>
+			{#if skillCatalogueError}
+				<p class="text-[11px] text-hub-danger mt-1">Failed to load skills: {skillCatalogueError}</p>
+			{:else if !skillCatalogueLoading && skillCatalogue.length > 0}
+				<div class="mt-2 max-h-40 overflow-y-auto bg-hub-bg border border-hub-border rounded-lg p-1.5 space-y-0.5">
+					{#each skillsFiltered.slice(0, 50) as skill (skill.id)}
+						{@const selected = skillsSelected.includes(skill.id)}
+						<button
+							type="button"
+							onclick={() => toggleSkill(skill.id)}
+							class="w-full text-left px-2 py-1 rounded text-xs flex items-center gap-2 cursor-pointer transition-colors
+								{selected
+									? 'bg-hub-cta/15 text-hub-cta'
+									: 'text-hub-muted hover:text-hub-text hover:bg-hub-card'}"
+						>
+							<span class="w-3 h-3 flex-shrink-0">
+								{#if selected}
+									<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+										<polyline points="20 6 9 17 4 12"/>
+									</svg>
+								{/if}
+							</span>
+							<span class="font-mono">{skill.id}</span>
+							{#if skill.description}
+								<span class="text-hub-dim truncate">— {skill.description}</span>
+							{/if}
+						</button>
+					{/each}
+					{#if skillsFiltered.length > 50}
+						<p class="text-[10px] text-hub-dim px-2 py-1">
+							+{skillsFiltered.length - 50} more — refine search to see them.
+						</p>
+					{/if}
+					{#if skillsFiltered.length === 0}
+						<p class="text-[11px] text-hub-dim px-2 py-1">No matches.</p>
+					{/if}
+				</div>
+			{/if}
+			{#if orphanSkills.length > 0}
+				<p class="text-[11px] text-hub-warning mt-1">
+					⚠ Selected but not installed: {orphanSkills.join(', ')} — install via <a href="/agents/skills" class="underline">/agents/skills</a> or remove.
+				</p>
+			{/if}
 		</div>
 
 		<!-- Permissions -->

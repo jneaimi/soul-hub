@@ -6,11 +6,11 @@
  * dispatcher reports them as "provider package not installed" so the UI
  * can surface a clear error.
  *
- * Tools: empty in v1 (text-generation + skill-context-injection only). When
- * the skills installer lands in Phase 4, we'll resolve `agent.skills[]` to
- * `~/.claude/skills/<id>/SKILL.md` bodies and inject them as system prompt
- * context. For now skills are surfaced as a comment header so the model
- * knows the agent's intent.
+ * Tools: empty in v1 (text-generation + skill-context-injection only). Phase
+ * 4 added SKILL.md injection — `agent.skills[]` is resolved against
+ * `~/.claude/skills/<id>/SKILL.md` and the bodies are concatenated into the
+ * system prompt so Lane B sees the same triggers + workflow guidance Claude
+ * Code's auto-loader surfaces in Lane A.
  *
  * Per ADR-001: `stopWhen: stepCountIs(N)` replaces deprecated v5 `maxSteps`.
  */
@@ -24,6 +24,7 @@ import type { LanguageModel } from 'ai';
 import type { AgentSummary } from '../types.js';
 import type { BackendDispatcher, DispatchEvent, DispatchOptions, DispatchResult } from './types.js';
 import { resolveBudget } from './budget.js';
+import { readSkillBody } from '$lib/skills/index.js';
 
 interface ProviderResolution {
 	model: LanguageModel;
@@ -79,8 +80,31 @@ function resolveProvider(provider: string, modelId: string): ProviderResolution 
 function composeInstructions(agent: AgentSummary): string {
 	const sys = agent.system_prompt?.trim() ?? '';
 	if (agent.skills.length === 0) return sys;
-	const skillsHeader = `Skills available (referenced by id — full SKILL.md injection arrives in Phase 4): ${agent.skills.join(', ')}`;
-	return sys ? `${sys}\n\n---\n\n${skillsHeader}` : skillsHeader;
+
+	const blocks: string[] = [];
+	const missing: string[] = [];
+	for (const skillId of agent.skills) {
+		const skill = readSkillBody(skillId);
+		if (skill.missing) {
+			missing.push(skillId);
+			continue;
+		}
+		const header = `## Skill: ${skill.name} (id: ${skill.id})`;
+		const desc = skill.description ? `_${skill.description}_\n\n` : '';
+		blocks.push(`${header}\n\n${desc}${skill.body.trim()}`);
+	}
+
+	const parts: string[] = [];
+	if (sys) parts.push(sys);
+	if (blocks.length > 0) {
+		parts.push('# Skills available\n\n' + blocks.join('\n\n---\n\n'));
+	}
+	if (missing.length > 0) {
+		parts.push(
+			`Note: skill(s) referenced but not installed — ${missing.join(', ')}. Install via /agents/skills.`,
+		);
+	}
+	return parts.join('\n\n---\n\n');
 }
 
 export const aiSdkDispatcher: BackendDispatcher = {

@@ -190,6 +190,13 @@
 			</div>
 			<div class="flex-1"></div>
 			<a
+				href="/agents/skills"
+				class="px-3 py-1.5 rounded-lg text-sm text-hub-muted hover:text-hub-text hover:bg-hub-card transition-colors cursor-pointer"
+				title="Manage installed skills"
+			>
+				Skills
+			</a>
+			<a
 				href="/agents/new"
 				class="px-3 py-1.5 rounded-lg bg-hub-cta text-black font-medium text-sm hover:bg-hub-cta/90 transition-colors cursor-pointer"
 			>
