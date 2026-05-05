@@ -4,6 +4,8 @@
  *  tasks that write files. ChatProvider is for request/response chat
  *  used by the routes layer (WhatsApp dispatch, vault chat, etc.). */
 
+import type { JSONValue } from 'ai';
+
 export interface ChatMessage {
 	role: 'user' | 'assistant' | 'system';
 	content: string;
@@ -25,6 +27,14 @@ export interface ChatRequest {
 	 *  via `providerOptions.anthropic.cacheControl`. Ignored by other
 	 *  providers (per AI SDK spec). */
 	cacheControl?: 'ephemeral';
+	/** Raw AI SDK provider options forwarded to `generateText`. Use this
+	 *  to disable Gemini thinking on JSON-output calls (the orchestrator
+	 *  classifier hit empty/non-JSON responses when thinking ate the
+	 *  output budget — see `feedback_gemini_thinking_budget`). Shape:
+	 *  `{ google: { thinkingConfig: { thinkingBudget: 0 } } }`. AI SDK's
+	 *  shape is `Record<string, JSONObject>`; we use `JSONValue` here so
+	 *  callers don't have to import the SDK's internal types. */
+	providerOptions?: Record<string, Record<string, JSONValue>>;
 }
 
 export interface ChatUsage {

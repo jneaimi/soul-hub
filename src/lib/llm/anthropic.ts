@@ -1,6 +1,7 @@
 import { generateText } from 'ai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import type { ChatProvider, ChatRequest, ChatResult } from './types.js';
+import { mergeProviderOptions } from './provider-options.js';
 
 const ENV_KEY = 'ANTHROPIC_API_KEY';
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
@@ -25,17 +26,18 @@ export const anthropic: ChatProvider = {
 		const client = createAnthropic({ apiKey });
 		const modelId = req.model ?? DEFAULT_MODEL;
 
+		const cacheOpts = req.cacheControl
+			? { anthropic: { cacheControl: { type: req.cacheControl } } }
+			: undefined;
+		const merged = mergeProviderOptions(req.providerOptions, cacheOpts);
+
 		const result = await generateText({
 			model: client(modelId),
 			system: req.system,
 			messages: req.messages,
 			maxOutputTokens: req.maxOutputTokens,
 			abortSignal: req.signal,
-			...(req.cacheControl && {
-				providerOptions: {
-					anthropic: { cacheControl: { type: req.cacheControl } },
-				},
-			}),
+			...(merged && { providerOptions: merged }),
 		});
 
 		return {

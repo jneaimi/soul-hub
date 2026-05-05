@@ -2,6 +2,7 @@ import { generateText } from 'ai';
 import type { JSONValue } from 'ai';
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import type { ChatProvider, ChatRequest, ChatResult } from './types.js';
+import { mergeProviderOptions } from './provider-options.js';
 
 const ENV_KEY = 'OPENROUTER_API_KEY';
 const DEFAULT_MODEL = 'google/gemini-2.5-flash';
@@ -30,14 +31,17 @@ export const openrouter: ChatProvider = {
 		const client = createOpenRouter({ apiKey });
 		const modelId = req.model ?? DEFAULT_MODEL;
 
-		const providerOptions: Record<string, Record<string, JSONValue>> = {};
-		if (req.cacheControl && isAnthropicModel(modelId)) {
-			providerOptions.openrouter = {
-				cacheControl: { type: req.cacheControl },
-				// Pin Anthropic-direct so top-level cache_control survives the hop.
-				provider: { order: ['Anthropic'] },
-			};
-		}
+		const cacheOpts: Record<string, Record<string, JSONValue>> | undefined =
+			req.cacheControl && isAnthropicModel(modelId)
+				? {
+						openrouter: {
+							cacheControl: { type: req.cacheControl },
+							// Pin Anthropic-direct so top-level cache_control survives the hop.
+							provider: { order: ['Anthropic'] },
+						},
+					}
+				: undefined;
+		const merged = mergeProviderOptions(req.providerOptions, cacheOpts);
 
 		const result = await generateText({
 			model: client(modelId),
@@ -45,7 +49,7 @@ export const openrouter: ChatProvider = {
 			messages: req.messages,
 			maxOutputTokens: req.maxOutputTokens,
 			abortSignal: req.signal,
-			...(Object.keys(providerOptions).length > 0 && { providerOptions }),
+			...(merged && { providerOptions: merged }),
 		});
 
 		return {

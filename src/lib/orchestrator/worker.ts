@@ -79,14 +79,17 @@ function terminalLine(agentId: string, result: DispatchResult): string {
 }
 
 /** Build the chat-friendly body for a settled run. Success runs get the
- *  ANSI-cleaned output; failure / timeout / cancel runs get a single-line
- *  reason. */
+ *  ANSI-cleaned output; failure / timeout runs get a single-line reason.
+ *  Cancel returns empty so the caller skips the body send — the cancel
+ *  handler in `_inbound/+server.ts` already replied "🛑 Cancelled
+ *  *agent*." and the status edit shows "🛑 agent cancelled (Xs)". A
+ *  third "Stopped on your request." would be redundant. */
 function settleBody(result: DispatchResult): string {
 	if (result.status === 'success') {
 		const cleaned = cleanAgentOutputForChat(result.output, REPLY_LIMIT_CHARS);
 		return cleaned || '(no readable output — full result saved to the vault)';
 	}
-	if (result.status === 'cancelled') return 'Stopped on your request.';
+	if (result.status === 'cancelled') return '';
 	if (result.status === 'timeout') {
 		return `Timed out at ${(result.duration_ms / 1000).toFixed(0)}s. Partial output (if any) saved to the vault.`;
 	}

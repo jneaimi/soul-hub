@@ -28,6 +28,7 @@ export const gemini: ChatProvider = {
 			messages: req.messages,
 			maxOutputTokens: req.maxOutputTokens,
 			abortSignal: req.signal,
+			...(req.providerOptions && { providerOptions: req.providerOptions }),
 		});
 
 		return {

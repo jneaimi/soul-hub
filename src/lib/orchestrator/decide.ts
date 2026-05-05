@@ -74,8 +74,20 @@ export async function decide(userMessage: string, opts: DecideOptions = {}): Pro
 		const result = await dispatchRoute(ORCHESTRATOR_ROUTE, {
 			system,
 			messages,
-			maxOutputTokens: 500,
+			// 800 leaves headroom for the JSON payload after Gemini reserves
+			// thinking tokens (even with thinkingBudget=0, Flash still emits
+			// short reasoning preambles occasionally). 500 was empirically
+			// too tight — orchestrator fell through to vault-chat with
+			// "non-JSON output" on real WhatsApp messages 2026-05-06.
+			maxOutputTokens: 800,
 			signal: opts.signal,
+			// Disable thinking on Gemini Flash for the classifier — we want
+			// fast structured JSON, not extended reasoning. See feedback
+			// `gemini_thinking_budget`. Ignored by the OpenRouter primary
+			// (per-AI-SDK-spec), so safe across the whole failover chain.
+			providerOptions: {
+				google: { thinkingConfig: { thinkingBudget: 0 } },
+			},
 		});
 		rawText = result.text ?? '';
 	} catch (err) {
