@@ -24,6 +24,10 @@ module.exports = {
         // Lift to 30MB so our 25MB-per-file upload cap (in /api/files) works
         // through the browser; multipart overhead needs the extra headroom.
         BODY_SIZE_LIMIT: '30000000',
+        // Public URL for deeplinks back into Soul Hub from external surfaces
+        // (WhatsApp `more` reply, etc.). No trailing slash. Override in
+        // ~/.soul-hub/.env if you self-host on a different domain.
+        SOUL_HUB_PUBLIC_URL: process.env.SOUL_HUB_PUBLIC_URL || 'https://soul-hub.jneaimi.com',
         // Pipeline env vars — inherited from shell as a fallback when env_file
         // doesn't carry them yet (during migration). Once a key is in
         // ~/.soul-hub/.env, the env_file value wins.

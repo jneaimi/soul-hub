@@ -30,11 +30,13 @@ import {
 	markCommitmentsSurfaced,
 	getTaskLastRun,
 	incrementDailyCount,
+	markVoiceAcked,
 	setTaskLastRun,
 	ymdInTimezone,
 	type CommitmentRow,
 	type HeartbeatStatus,
 } from './heartbeat-state.js';
+import { getEligibleVoiceItems, type VoiceQueueItem } from '../../vault/voice-queue.js';
 import type { WhatsAppChannelConfig } from './types.js';
 
 type HeartbeatConfig = WhatsAppChannelConfig['heartbeat'];
@@ -43,6 +45,7 @@ let activeCron: ReturnType<typeof cron.schedule> | null = null;
 let activeInterval: ReturnType<typeof setInterval> | null = null;
 
 const MUTE_HINT = "\n\n(reply 'mute 24h' to pause)";
+const VOICE_ACK_HINT = "\n(reply 'done' / 'skip' / 'later' to ack · 'more' for sources)";
 
 function readChannelConfig(): WhatsAppChannelConfig | null {
 	const raw = soulHubConfig.channels?.whatsapp ?? {};
@@ -152,6 +155,7 @@ function buildUserPrompt(
 	body: string,
 	due: HeartbeatTask[],
 	dueCommitments: CommitmentRow[] = [],
+	voiceItems: VoiceQueueItem[] = [],
 ): string {
 	const parts: string[] = [basePrompt];
 	if (body.trim()) parts.push(body.trim());
@@ -170,6 +174,20 @@ function buildUserPrompt(
 		];
 		for (const c of dueCommitments) {
 			lines.push(`[#${c.id}] ${c.suggestedText}`);
+		}
+		parts.push(lines.join('\n'));
+	}
+	if (voiceItems.length > 0) {
+		const lines: string[] = [
+			'\nVoice-queue items from the vault inbox (per ADR-003 — already ranked by priority + due-date):',
+			'',
+			"These are nudges the system flagged as voice-eligible. Decide whether any are worth weaving into your message right now. If you compose a message, the surfaced items are auto-acked (won't re-fire). If you reply `HEARTBEAT_OK` they remain pending for the next tick. Don't list them mechanically — pick what's actionable and integrate naturally.",
+			'',
+		];
+		for (const v of voiceItems) {
+			const due = v.dueAt ? ` (due ${v.dueAt.toISOString().slice(0, 10)})` : '';
+			lines.push(`- [${v.priority}]${due} ${v.summary}`);
+			lines.push(`  source: ${v.notePath}`);
 		}
 		parts.push(lines.join('\n'));
 	}
@@ -268,20 +286,25 @@ export async function runHeartbeatOnce(
 		? getDueCommitments('whatsapp', hb.target).slice(0, cfg.commitments.maxPerDay)
 		: [];
 
-	// Empty checklist + no commitments → no-op, no API call. We allow a
-	// tick when commitments alone are present so the agent has something
-	// to consider even if HEARTBEAT.md is bare.
+	// Phase 4 / ADR-003 — voice-queue items from the inbox. Same shape
+	// of input as commitments: scoped query, capped, fed to the agent.
+	// Cap at 5 to keep the prompt bounded (agents pick what's useful).
+	const voiceItems = getEligibleVoiceItems({ limit: 5 });
+
+	// Empty checklist + no commitments + no voice items → no-op, no API
+	// call. We allow a tick when any of those are present so the agent
+	// has something to consider even if HEARTBEAT.md is bare.
 	const checklistEmpty =
 		checklist.isEmpty ||
 		(checklist.tasks.length > 0 && dueTasks.length === 0 && !checklist.body.trim());
-	if (checklistEmpty && dueCommitments.length === 0) {
+	if (checklistEmpty && dueCommitments.length === 0 && voiceItems.length === 0) {
 		appendLog({ ts: Date.now(), target: hb.target, status: 'skipped_empty' });
 		return { status: 'skipped_empty' };
 	}
 
 	// Compose + call.
 	const system = getSoulBody(hb.soulPath);
-	const user = buildUserPrompt(hb.basePrompt, checklist.body, dueTasks, dueCommitments);
+	const user = buildUserPrompt(hb.basePrompt, checklist.body, dueTasks, dueCommitments, voiceItems);
 
 	let modelResult: { text: string; tokensIn?: number; tokensOut?: number };
 	try {
@@ -338,7 +361,8 @@ export async function runHeartbeatOnce(
 		return { status: 'ack' };
 	}
 
-	const finalText = ack.cleanText + MUTE_HINT;
+	const voiceHint = voiceItems.length > 0 ? VOICE_ACK_HINT : '';
+	const finalText = ack.cleanText + voiceHint + MUTE_HINT;
 	const delivery = await deliver(finalText, cfg, hb.target);
 	if (!delivery.ok) {
 		appendLog({
@@ -358,6 +382,18 @@ export async function runHeartbeatOnce(
 	const toSurface = includedCommitmentIds.filter((id) => !ack.dismissedIds.includes(id));
 	if (toSurface.length > 0) {
 		markCommitmentsSurfaced(toSurface);
+	}
+
+	// Phase 4 / ADR-003 auto-ack — voice items that were included in the
+	// agent's prompt are marked acked once delivery succeeds (regardless
+	// of whether the message text references them; the agent saw them).
+	// HEARTBEAT_OK paths skip this — items remain pending in the queue
+	// for another tick. Same for delivery failures.
+	if (voiceItems.length > 0) {
+		markVoiceAcked(
+			voiceItems.map((v) => v.notePath),
+			'auto',
+		);
 	}
 
 	incrementDailyCount(hb.target, ymd);

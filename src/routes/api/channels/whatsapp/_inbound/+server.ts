@@ -43,10 +43,14 @@ import { extractCommitmentsAsync } from '$lib/channels/whatsapp/commitments-extr
 import { dispatchBrainSave, dispatchBrainFind, dispatchBrainRecent } from '$lib/brain/index.js';
 import { dispatchImg, rememberLastImage, getLastImage, rememberLastUserImage, getLastUserImage } from '$lib/img/index.js';
 import {
+	applyReplyAck,
+	getRecentVoiceSurface,
 	getImgCount,
 	incrementImgCount,
 	ymdInTimezone,
+	type ReplyAckMethod,
 } from '$lib/channels/whatsapp/heartbeat-state.js';
+import { getVaultEngine } from '$lib/vault/index.js';
 import { maybeApplyRouter } from '$lib/channels/whatsapp/router.js';
 
 interface InboundBody {
@@ -184,6 +188,59 @@ export const POST: RequestHandler = async ({ request }) => {
 				text: `Commitments command failed: ${(err as Error).message}`,
 			});
 		}
+	}
+
+	// Phase 4.5 + 4.6 — voice-queue reply-ack and detail-on-demand.
+	// Bare "done" / "skip" / "later" (case-insensitive, single word) updates
+	// the most-recent auto-acked voice-queue rows within a 4h window. Bare
+	// "more" returns a list of those items with deeplinks (no ack mutation).
+	// Falls through to normal routing when the message isn't a recognised
+	// keyword OR no recent voice surface exists — so a bare "done" stays
+	// a valid conversational reply to vault-chat. ADR-003 reply-ack
+	// semantics: done/skip = permanent ack; later = 4h cooldown then
+	// re-eligible.
+	const trimmedLower = workingBody.trim().toLowerCase();
+	if (trimmedLower === 'done' || trimmedLower === 'skip' || trimmedLower === 'later') {
+		const method = `reply-${trimmedLower}` as ReplyAckMethod;
+		const updated = applyReplyAck(method);
+		if (updated > 0) {
+			const verb =
+				method === 'reply-done'
+					? 'Marked as done'
+					: method === 'reply-skip'
+						? 'Skipped'
+						: 'Snoozed for 4 hours';
+			const noun = updated === 1 ? 'voice-queue item' : `${updated} voice-queue items`;
+			return json({ ok: true, action: 'reply', text: `${verb}: ${noun}.` });
+		}
+		// No recent voice surface → user is just saying "done" / "skip" /
+		// "later" in conversation. Fall through to vault-chat below.
+	}
+	if (trimmedLower === 'more') {
+		const recent = getRecentVoiceSurface();
+		if (recent.length > 0) {
+			const publicUrl = (process.env.SOUL_HUB_PUBLIC_URL ?? '').replace(/\/$/, '');
+			const engine = getVaultEngine();
+			const lines: string[] = ['Recent voice items:'];
+			for (let i = 0; i < recent.length; i++) {
+				const r = recent[i];
+				const note = engine?.getNote(r.notePath);
+				const summary =
+					(typeof note?.meta?.voice_summary === 'string' ? note.meta.voice_summary : null) ??
+					note?.title ??
+					r.notePath;
+				lines.push(`${i + 1}. ${summary}`);
+				if (publicUrl) {
+					lines.push(`   ${publicUrl}/vault?note=${encodeURIComponent(r.notePath)}`);
+				} else {
+					lines.push(`   ${r.notePath}`);
+				}
+			}
+			lines.push("\n(reply 'done' / 'skip' / 'later' to ack)");
+			return json({ ok: true, action: 'reply', text: lines.join('\n') });
+		}
+		// No recent surface → fall through to vault-chat (treat "more" as
+		// a conversational word).
 	}
 
 	// Same intercept chain as in-process dispatch.ts — slash → router →
