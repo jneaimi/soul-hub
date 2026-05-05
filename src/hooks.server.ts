@@ -7,6 +7,7 @@ import { initSystemHealth, getSystemHealth } from '$lib/system/index.js';
 import { listSessions, killSession } from '$lib/pty/manager.js';
 import { extractProxyPort, proxyRequest } from '$lib/proxy.js';
 import { getInboxDb, closeInboxDb, startSync, stopSync } from '$lib/inbox/index.js';
+import { initAgentsWatcher, shutdownAgentsWatcher } from '$lib/agents/watcher.js';
 import { seedDefaultsIfEmpty } from '$lib/explorer-roots.js';
 import { soulHubDataDir, soulHubSettingsPath } from '$lib/paths.js';
 import '$lib/secrets.js'; // Load platform secrets into process.env at startup
@@ -54,6 +55,13 @@ try {
 	console.error('[inbox] Failed to initialize:', err);
 }
 
+// Start agents lane watcher (Phase 2 — bumps store version on file change)
+try {
+	initAgentsWatcher();
+} catch (err) {
+	console.error('[agents/watcher] Failed to initialize:', err);
+}
+
 // Recover interrupted orchestration runs on startup
 (async () => {
 	try {
@@ -90,6 +98,9 @@ function gracefulShutdown(signal: string) {
 	// Shutdown vault engine (stop file watcher)
 	const vault = getVaultEngine();
 	if (vault) vault.shutdown();
+
+	// Stop the agents-lane watcher (close chokidar handles cleanly)
+	shutdownAgentsWatcher().catch(() => {});
 
 	// Cleanup orchestration workers (async, best-effort)
 	(async () => {

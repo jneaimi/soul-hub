@@ -30,6 +30,19 @@ body {
 ::-webkit-scrollbar-thumb { background: var(--color-hub-border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #475569; }
 
+/* Scheduler + Agents routes — keyboard focus indicator. Tab through any
+   button, anchor, or input and the active element gets a visible
+   CTA-coloured ring. Scoped via `data-scheduler` / `data-agents` so we
+   don't accidentally regress focus styling elsewhere in the app. Inputs
+   already define their own focus:ring-* in markup; we skip them here so
+   the rules don't compete. */
+[data-scheduler] :is(button, a):focus-visible,
+[data-agents] :is(button, a):focus-visible {
+	outline: none;
+	box-shadow: 0 0 0 2px var(--color-hub-bg), 0 0 0 4px var(--color-hub-cta);
+	border-radius: 0.5rem;
+}
+
 /* Mobile extra keys — must never steal focus from terminal */
 .xkey-bar {
 	-webkit-user-select: none;

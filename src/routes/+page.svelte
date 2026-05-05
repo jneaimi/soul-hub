@@ -170,12 +170,32 @@
 
 	let vaultEventSource: EventSource | null = null;
 
+	let agentCount = $state(0);
+	let agentsByBackend = $state<{ pty: number; cli: number; ai: number }>({ pty: 0, cli: 0, ai: 0 });
+
+	async function loadAgents() {
+		try {
+			const res = await fetch('/api/agents');
+			if (res.ok) {
+				const data = await res.json();
+				const list = (data.agents ?? []) as { backend: 'claude-pty' | 'claude-cli-flag' | 'ai-sdk' }[];
+				agentCount = list.length;
+				agentsByBackend = {
+					pty: list.filter((a) => a.backend === 'claude-pty').length,
+					cli: list.filter((a) => a.backend === 'claude-cli-flag').length,
+					ai: list.filter((a) => a.backend === 'ai-sdk').length,
+				};
+			}
+		} catch { /* silent */ }
+	}
+
 	function refreshVolatile() {
 		// Fires on tab focus, SSE reindex, or explicit user action.
 		loadVault();
 		loadDashboard();
 		loadPlaybooks();
 		loadExplorerRoots();
+		loadAgents();
 	}
 
 	onMount(() => {
@@ -627,8 +647,41 @@
 							</div>
 						</div>
 
+						<!-- Agents -->
+						<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
+							<div class="flex items-center justify-between mb-3">
+								<div class="flex items-center gap-2">
+									<h3 class="text-sm font-semibold text-hub-text">Agents</h3>
+									{#if agentCount > 0}
+										<span class="text-[11px] text-hub-dim bg-hub-bg px-1.5 py-0.5 rounded">{agentCount}</span>
+									{/if}
+								</div>
+								<div class="flex items-center gap-2">
+									<a href="/agents" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">View all</a>
+								</div>
+							</div>
+							{#if agentCount === 0}
+								<p class="text-xs text-hub-dim py-3 text-center">No agents found</p>
+							{:else}
+								<div class="flex items-center justify-around py-2">
+									<div class="text-center">
+										<div class="text-lg font-semibold text-hub-purple">{agentsByBackend.pty}</div>
+										<div class="text-[10px] text-hub-dim font-mono">PTY</div>
+									</div>
+									<div class="text-center">
+										<div class="text-lg font-semibold text-hub-warning">{agentsByBackend.cli}</div>
+										<div class="text-[10px] text-hub-dim font-mono">CLI</div>
+									</div>
+									<div class="text-center">
+										<div class="text-lg font-semibold text-hub-info">{agentsByBackend.ai}</div>
+										<div class="text-[10px] text-hub-dim font-mono">AI SDK</div>
+									</div>
+								</div>
+							{/if}
+						</div>
+
 						<!-- Playbooks -->
-						<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-3">
+						<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
 							<div class="flex items-center justify-between mb-3">
 								<div class="flex items-center gap-2">
 									<h3 class="text-sm font-semibold text-hub-text">Playbooks</h3>
@@ -678,7 +731,7 @@
 						</div>
 
 						<!-- Files Explorer -->
-						<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-3">
+						<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
 							<div class="flex items-center justify-between mb-3">
 								<h3 class="text-sm font-semibold text-hub-text">
 									Files

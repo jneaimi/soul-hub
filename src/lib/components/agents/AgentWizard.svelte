@@ -1,0 +1,571 @@
+<script lang="ts">
+	import { goto } from '$app/navigation';
+
+	type Backend = 'claude-pty' | 'claude-cli-flag' | 'ai-sdk';
+	type Provider = 'anthropic' | 'openai' | 'openrouter' | 'google' | 'mistral';
+
+	interface Permissions {
+		vault_read: boolean;
+		vault_write: boolean;
+		web: boolean;
+		shell: boolean;
+	}
+
+	interface Budget {
+		max_usd: number;
+		max_turns: number;
+		timeout_sec: number;
+	}
+
+	interface Initial {
+		id?: string;
+		name?: string;
+		description?: string;
+		model?: string;
+		tools?: string[];
+		skills?: string[];
+		permissions?: Partial<Permissions>;
+		budget?: Partial<Budget>;
+		system_prompt?: string;
+		backend?: Backend;
+		// ai-sdk-specific
+		provider?: Provider;
+		// pty-specific
+		worktree_isolated?: boolean;
+		parallel_safe?: boolean;
+		mcp_preset?: string;
+	}
+
+	interface Props {
+		mode: 'create' | 'edit';
+		initial?: Initial;
+	}
+
+	const props: Props = $props();
+	// Snapshot props at component-creation time. The wizard is one-shot —
+	// the parent waits for `initial` to load, then mounts this component.
+	// Prop changes after mount aren't supported (and aren't expected).
+	const seed = props.initial ?? {};
+	const isEdit = props.mode === 'edit';
+
+	// ─── form state ─────────────────────────────────────────────────────────
+	let id = $state(seed.id ?? '');
+	let name = $state(seed.name ?? '');
+	let description = $state(seed.description ?? '');
+	let toolsRaw = $state((seed.tools ?? []).join(', '));
+	let skillsRaw = $state((seed.skills ?? []).join(', '));
+	let systemPrompt = $state(seed.system_prompt ?? '');
+
+	let backend = $state<Backend>(seed.backend ?? 'claude-pty');
+
+	// Common model field — used for claude-* backends. AI SDK uses the modelAiSdk slot.
+	let modelClaude = $state(
+		seed.backend !== 'ai-sdk' ? (seed.model ?? 'sonnet') : 'sonnet',
+	);
+	let modelAiSdk = $state(
+		seed.backend === 'ai-sdk' ? (seed.model ?? '') : '',
+	);
+	let provider = $state<Provider>(seed.provider ?? 'anthropic');
+
+	// PTY-specific
+	let worktreeIsolated = $state(seed.worktree_isolated ?? true);
+	let parallelSafe = $state(seed.parallel_safe ?? true);
+	let mcpPreset = $state(seed.mcp_preset ?? '');
+
+	// Permissions + budget
+	let permVaultRead = $state(seed.permissions?.vault_read ?? false);
+	let permVaultWrite = $state(seed.permissions?.vault_write ?? false);
+	let permWeb = $state(seed.permissions?.web ?? false);
+	let permShell = $state(seed.permissions?.shell ?? false);
+
+	let maxUsd = $state(seed.budget?.max_usd ?? 0.5);
+	let maxTurns = $state(seed.budget?.max_turns ?? 20);
+	let timeoutSec = $state(seed.budget?.timeout_sec ?? 60);
+
+	// ─── derived validation ──────────────────────────────────────────────────
+	const idValid = $derived(/^[a-z0-9][a-z0-9_-]*$/.test(id));
+	const nameValid = $derived(name.trim().length > 0);
+	const promptValid = $derived(systemPrompt.trim().length > 0);
+	const aiSdkValid = $derived(backend !== 'ai-sdk' || modelAiSdk.trim().length > 0);
+
+	const formValid = $derived(idValid && nameValid && promptValid && aiSdkValid);
+
+	// ─── save ────────────────────────────────────────────────────────────────
+	let saving = $state(false);
+	let saveError = $state<string | null>(null);
+
+	function buildDraft() {
+		const tools = toolsRaw
+			.split(',')
+			.map((t) => t.trim())
+			.filter(Boolean);
+		const skills = skillsRaw
+			.split(',')
+			.map((s) => s.trim())
+			.filter(Boolean);
+
+		const draft: Record<string, unknown> = {
+			id,
+			name: name.trim() || id,
+			description: description.trim(),
+			tools,
+			skills,
+			permissions: {
+				vault_read: permVaultRead,
+				vault_write: permVaultWrite,
+				web: permWeb,
+				shell: permShell,
+			},
+			budget: {
+				max_usd: Number(maxUsd) || 0,
+				max_turns: Number(maxTurns) || 1,
+				timeout_sec: Number(timeoutSec) || 1,
+			},
+			system_prompt: systemPrompt,
+			provenance: 'user-created',
+		};
+
+		if (backend === 'claude-pty') {
+			draft.model = modelClaude.trim() || undefined;
+			draft.spec = {
+				backend: 'claude-pty',
+				worktree_isolated: worktreeIsolated,
+				parallel_safe: parallelSafe,
+				mcp_preset: mcpPreset.trim() || undefined,
+			};
+		} else if (backend === 'claude-cli-flag') {
+			draft.model = modelClaude.trim() || undefined;
+			draft.spec = { backend: 'claude-cli-flag' };
+		} else {
+			draft.model = modelAiSdk.trim();
+			draft.spec = {
+				backend: 'ai-sdk',
+				provider,
+				model: modelAiSdk.trim(),
+			};
+		}
+
+		return draft;
+	}
+
+	async function save() {
+		saveError = null;
+		if (!formValid) {
+			saveError = 'Please fix validation errors above before saving.';
+			return;
+		}
+		saving = true;
+		try {
+			const draft = buildDraft();
+			const url = isEdit ? `/api/agents/${encodeURIComponent(id)}` : '/api/agents';
+			const method = isEdit ? 'PUT' : 'POST';
+			const res = await fetch(url, {
+				method,
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(draft),
+			});
+			const data = await res.json();
+			if (!res.ok) {
+				saveError = data.error ?? `HTTP ${res.status}`;
+				if (data.issues) {
+					saveError += ': ' + data.issues.map((i: { message?: string }) => i.message).join(', ');
+				}
+				saving = false;
+				return;
+			}
+			goto('/agents');
+		} catch (err) {
+			saveError = (err as Error).message;
+			saving = false;
+		}
+	}
+
+	function cancel() {
+		goto('/agents');
+	}
+
+	// ─── backend cards ──────────────────────────────────────────────────────
+	interface BackendCard {
+		id: Backend;
+		label: string;
+		oneLine: string;
+		risk: string | null;
+		colorActive: string;
+	}
+
+	const backendCards: BackendCard[] = [
+		{
+			id: 'claude-pty',
+			label: 'PTY',
+			oneLine: 'Parallel-safe interactive Claude Code session. Recommended.',
+			risk: null,
+			colorActive: 'border-hub-purple/60 bg-hub-purple/10 text-hub-text',
+		},
+		{
+			id: 'claude-cli-flag',
+			label: 'CLI flag',
+			oneLine: '`claude -p --agent <id>`. Single-call only.',
+			risk: '⚠ avoid concurrent dispatch (anthropics/claude-code#18666)',
+			colorActive: 'border-hub-warning/60 bg-hub-warning/10 text-hub-text',
+		},
+		{
+			id: 'ai-sdk',
+			label: 'AI SDK',
+			oneLine: 'BYOK — Anthropic, OpenAI, OpenRouter, Google, Mistral.',
+			risk: null,
+			colorActive: 'border-hub-info/60 bg-hub-info/10 text-hub-text',
+		},
+	];
+
+	const providers: Provider[] = ['anthropic', 'openai', 'openrouter', 'google', 'mistral'];
+</script>
+
+<div class="space-y-4">
+	<!-- Step 1: Backend -->
+	<section class="bg-hub-card rounded-xl border border-hub-border p-4 space-y-3">
+		<div class="flex items-center gap-2">
+			<span
+				class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-hub-cta text-black text-[11px] font-semibold"
+				>1</span
+			>
+			<h2 class="text-sm font-semibold text-hub-text">Backend</h2>
+			{#if isEdit}
+				<span class="text-[10px] text-hub-warning">⚠ changing backend rewrites the agent in a new lane</span>
+			{/if}
+		</div>
+		<div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+			{#each backendCards as card (card.id)}
+				<button
+					type="button"
+					onclick={() => (backend = card.id)}
+					class="text-left p-3 rounded-lg border transition-colors cursor-pointer
+						{backend === card.id
+							? card.colorActive
+							: 'border-hub-border bg-hub-bg text-hub-muted hover:text-hub-text hover:border-hub-border/80'}"
+				>
+					<div class="text-sm font-semibold mb-1">{card.label}</div>
+					<div class="text-[11px] text-hub-muted leading-snug">{card.oneLine}</div>
+					{#if card.risk}
+						<div class="text-[10px] text-hub-warning mt-1.5">{card.risk}</div>
+					{/if}
+				</button>
+			{/each}
+		</div>
+	</section>
+
+	<!-- Step 2: Identity -->
+	<section class="bg-hub-card rounded-xl border border-hub-border p-4 space-y-3">
+		<div class="flex items-center gap-2">
+			<span
+				class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-hub-cta text-black text-[11px] font-semibold"
+				>2</span
+			>
+			<h2 class="text-sm font-semibold text-hub-text">Identity</h2>
+		</div>
+		<div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+			<div>
+				<label for="agent-id" class="block text-xs text-hub-muted mb-1">
+					ID <span class="text-hub-dim">(lowercase, hyphens, no spaces)</span>
+				</label>
+				<input
+					id="agent-id"
+					type="text"
+					bind:value={id}
+					disabled={isEdit}
+					placeholder="research-junior"
+					class="w-full px-3 py-2 rounded-lg bg-hub-bg border text-sm text-hub-text font-mono focus:outline-none focus:ring-1 disabled:opacity-60 disabled:cursor-not-allowed
+						{idValid || !id
+							? 'border-hub-border focus:border-hub-cta/50 focus:ring-hub-cta/50'
+							: 'border-hub-danger/60 focus:border-hub-danger focus:ring-hub-danger/30'}"
+				/>
+				{#if id && !idValid}
+					<p class="text-[11px] text-hub-danger mt-1">
+						Use lowercase letters, digits, hyphens, or underscores. Must start with a letter or
+						digit.
+					</p>
+				{/if}
+			</div>
+			<div>
+				<label for="agent-name" class="block text-xs text-hub-muted mb-1">
+					Name <span class="text-hub-dim">(display label)</span>
+				</label>
+				<input
+					id="agent-name"
+					type="text"
+					bind:value={name}
+					placeholder="Research Junior"
+					class="w-full px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-sm text-hub-text focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50"
+				/>
+			</div>
+		</div>
+		<div>
+			<label for="agent-desc" class="block text-xs text-hub-muted mb-1">
+				Description <span class="text-hub-dim">(one line — appears in lists)</span>
+			</label>
+			<input
+				id="agent-desc"
+				type="text"
+				bind:value={description}
+				placeholder="Quick research agent for time-sensitive lookups"
+				class="w-full px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-sm text-hub-text focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50"
+			/>
+		</div>
+	</section>
+
+	<!-- Step 3: Configure -->
+	<section class="bg-hub-card rounded-xl border border-hub-border p-4 space-y-4">
+		<div class="flex items-center gap-2">
+			<span
+				class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-hub-cta text-black text-[11px] font-semibold"
+				>3</span
+			>
+			<h2 class="text-sm font-semibold text-hub-text">Configure</h2>
+		</div>
+
+		<!-- System prompt -->
+		<div>
+			<label for="agent-prompt" class="block text-xs text-hub-muted mb-1">
+				System prompt
+			</label>
+			<textarea
+				id="agent-prompt"
+				bind:value={systemPrompt}
+				rows="10"
+				placeholder="You are a focused research agent…"
+				class="w-full px-3 py-2 rounded-lg bg-hub-bg border text-[13px] text-hub-text font-mono focus:outline-none focus:ring-1
+					{promptValid || !systemPrompt
+						? 'border-hub-border focus:border-hub-cta/50 focus:ring-hub-cta/50'
+						: 'border-hub-danger/60 focus:border-hub-danger focus:ring-hub-danger/30'}"
+			></textarea>
+			{#if !systemPrompt}
+				<p class="text-[11px] text-hub-dim mt-1">
+					This is what the agent reads at the start of every dispatch. Be specific about role,
+					inputs, expected outputs, and stop conditions.
+				</p>
+			{:else if !promptValid}
+				<p class="text-[11px] text-hub-danger mt-1">System prompt cannot be empty.</p>
+			{/if}
+		</div>
+
+		<!-- Tools / Skills -->
+		<div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+			<div>
+				<label for="agent-tools" class="block text-xs text-hub-muted mb-1">
+					Tools <span class="text-hub-dim">(comma-separated)</span>
+				</label>
+				<input
+					id="agent-tools"
+					type="text"
+					bind:value={toolsRaw}
+					placeholder="Read, Write, Bash, WebFetch"
+					class="w-full px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50"
+				/>
+			</div>
+			<div>
+				<label for="agent-skills" class="block text-xs text-hub-muted mb-1">
+					Skills <span class="text-hub-dim">(comma-separated)</span>
+				</label>
+				<input
+					id="agent-skills"
+					type="text"
+					bind:value={skillsRaw}
+					placeholder="brain, research"
+					class="w-full px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50"
+				/>
+			</div>
+		</div>
+
+		<!-- Permissions -->
+		<div>
+			<div class="text-xs text-hub-muted mb-1.5">Permissions</div>
+			<div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+				<label class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-hub-bg border border-hub-border text-xs text-hub-muted cursor-pointer hover:text-hub-text transition-colors">
+					<input type="checkbox" bind:checked={permVaultRead} class="accent-hub-cta cursor-pointer" />
+					Vault read
+				</label>
+				<label class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-hub-bg border border-hub-border text-xs text-hub-muted cursor-pointer hover:text-hub-text transition-colors">
+					<input type="checkbox" bind:checked={permVaultWrite} class="accent-hub-cta cursor-pointer" />
+					Vault write
+				</label>
+				<label class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-hub-bg border border-hub-border text-xs text-hub-muted cursor-pointer hover:text-hub-text transition-colors">
+					<input type="checkbox" bind:checked={permWeb} class="accent-hub-cta cursor-pointer" />
+					Web
+				</label>
+				<label class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-hub-bg border border-hub-border text-xs text-hub-muted cursor-pointer hover:text-hub-text transition-colors">
+					<input type="checkbox" bind:checked={permShell} class="accent-hub-cta cursor-pointer" />
+					Shell
+				</label>
+			</div>
+		</div>
+
+		<!-- Budget -->
+		<div>
+			<div class="text-xs text-hub-muted mb-1.5">Budget</div>
+			<div class="grid grid-cols-3 gap-2">
+				<div>
+					<label for="agent-usd" class="block text-[10px] text-hub-dim mb-0.5 uppercase tracking-wider">Max USD</label>
+					<input
+						id="agent-usd"
+						type="number"
+						min="0"
+						step="0.05"
+						bind:value={maxUsd}
+						class="w-full px-2 py-1.5 rounded bg-hub-bg border border-hub-border text-xs font-mono text-hub-text focus:outline-none focus:ring-1 focus:ring-hub-cta/50"
+					/>
+				</div>
+				<div>
+					<label for="agent-turns" class="block text-[10px] text-hub-dim mb-0.5 uppercase tracking-wider">Max turns</label>
+					<input
+						id="agent-turns"
+						type="number"
+						min="1"
+						bind:value={maxTurns}
+						class="w-full px-2 py-1.5 rounded bg-hub-bg border border-hub-border text-xs font-mono text-hub-text focus:outline-none focus:ring-1 focus:ring-hub-cta/50"
+					/>
+				</div>
+				<div>
+					<label for="agent-timeout" class="block text-[10px] text-hub-dim mb-0.5 uppercase tracking-wider">Timeout (s)</label>
+					<input
+						id="agent-timeout"
+						type="number"
+						min="1"
+						bind:value={timeoutSec}
+						class="w-full px-2 py-1.5 rounded bg-hub-bg border border-hub-border text-xs font-mono text-hub-text focus:outline-none focus:ring-1 focus:ring-hub-cta/50"
+					/>
+				</div>
+			</div>
+		</div>
+
+		<!-- Backend-specific -->
+		<div class="border-t border-hub-border/60 pt-4 space-y-3">
+			<div class="text-xs text-hub-muted">
+				Backend-specific
+				<span class="text-hub-dim">— shows fields for {backend}</span>
+			</div>
+
+			{#if backend === 'claude-pty'}
+				<div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+					<div>
+						<label for="claude-model" class="block text-xs text-hub-muted mb-1">Model</label>
+						<input
+							id="claude-model"
+							type="text"
+							bind:value={modelClaude}
+							placeholder="sonnet"
+							class="w-full px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50"
+						/>
+					</div>
+					<div>
+						<label for="mcp-preset" class="block text-xs text-hub-muted mb-1">
+							MCP preset <span class="text-hub-dim">(optional)</span>
+						</label>
+						<input
+							id="mcp-preset"
+							type="text"
+							bind:value={mcpPreset}
+							placeholder="strict-isolated"
+							class="w-full px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50"
+						/>
+					</div>
+				</div>
+				<div class="flex flex-wrap gap-3 pt-1">
+					<label class="flex items-center gap-2 text-xs text-hub-muted cursor-pointer">
+						<input type="checkbox" bind:checked={worktreeIsolated} class="accent-hub-cta cursor-pointer" />
+						Worktree-isolated
+					</label>
+					<label class="flex items-center gap-2 text-xs text-hub-muted cursor-pointer">
+						<input type="checkbox" bind:checked={parallelSafe} class="accent-hub-cta cursor-pointer" />
+						Parallel-safe
+					</label>
+				</div>
+			{:else if backend === 'claude-cli-flag'}
+				<div class="bg-hub-warning/10 border border-hub-warning/40 rounded-lg p-3 text-xs text-hub-warning">
+					Single-call only. Avoid concurrent dispatch — see anthropics/claude-code#18666.
+				</div>
+				<div>
+					<label for="claude-cli-model" class="block text-xs text-hub-muted mb-1">Model</label>
+					<input
+						id="claude-cli-model"
+						type="text"
+						bind:value={modelClaude}
+						placeholder="sonnet"
+						class="w-full px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50"
+					/>
+				</div>
+			{:else if backend === 'ai-sdk'}
+				<div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+					<div>
+						<label for="ai-provider" class="block text-xs text-hub-muted mb-1">Provider</label>
+						<select
+							id="ai-provider"
+							bind:value={provider}
+							class="w-full px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-sm text-hub-text focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50"
+						>
+							{#each providers as p (p)}
+								<option value={p}>{p}</option>
+							{/each}
+						</select>
+					</div>
+					<div>
+						<label for="ai-model" class="block text-xs text-hub-muted mb-1">Model</label>
+						<input
+							id="ai-model"
+							type="text"
+							bind:value={modelAiSdk}
+							placeholder={provider === 'anthropic'
+								? 'claude-sonnet-4-6'
+								: provider === 'openrouter'
+									? 'moonshotai/kimi-k2-6'
+									: 'model-id'}
+							class="w-full px-3 py-2 rounded-lg bg-hub-bg border text-sm text-hub-text font-mono focus:outline-none focus:ring-1
+								{aiSdkValid || !modelAiSdk
+									? 'border-hub-border focus:border-hub-cta/50 focus:ring-hub-cta/50'
+									: 'border-hub-danger/60 focus:border-hub-danger focus:ring-hub-danger/30'}"
+						/>
+						{#if !aiSdkValid && backend === 'ai-sdk'}
+							<p class="text-[11px] text-hub-danger mt-1">Model is required for AI SDK agents.</p>
+						{/if}
+					</div>
+				</div>
+				<p class="text-[11px] text-hub-dim">
+					API key resolved from <code class="text-hub-muted">~/.soul-hub/.env</code> at dispatch time. Add keys
+					in <a href="/settings" class="text-hub-info hover:text-hub-text">Settings</a> if missing.
+				</p>
+			{/if}
+		</div>
+	</section>
+
+	<!-- Save / Cancel -->
+	<div class="flex items-center gap-2">
+		{#if saveError}
+			<div class="flex-1 bg-hub-danger/10 border border-hub-danger/40 rounded-lg p-2.5 text-xs text-hub-danger">
+				{saveError}
+			</div>
+		{:else}
+			<div class="flex-1 text-[11px] text-hub-dim">
+				{#if !formValid}
+					Fix the highlighted fields above to enable save.
+				{:else if backend === 'claude-pty' || backend === 'claude-cli-flag'}
+					Saves to <code class="text-hub-muted">~/.claude/agents/{id || '<id>'}.md</code> (Lane A)
+				{:else}
+					Saves to <code class="text-hub-muted">~/.soul-hub/data/agents/{id || '<id>'}.yaml</code> (Lane B)
+				{/if}
+			</div>
+		{/if}
+		<button
+			type="button"
+			onclick={cancel}
+			class="px-3 py-1.5 rounded-lg text-sm text-hub-muted hover:text-hub-text hover:bg-hub-card transition-colors cursor-pointer"
+		>
+			Cancel
+		</button>
+		<button
+			type="button"
+			onclick={save}
+			disabled={!formValid || saving}
+			class="px-3 py-1.5 rounded-lg bg-hub-cta text-black font-medium text-sm hover:bg-hub-cta/90 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+		>
+			{saving ? 'Saving…' : isEdit ? 'Save changes' : 'Create agent'}
+		</button>
+	</div>
+</div>
