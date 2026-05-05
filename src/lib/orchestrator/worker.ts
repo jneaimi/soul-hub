@@ -32,7 +32,7 @@ import {
 	cleanAgentOutputForChat,
 	extractVaultPath,
 } from '$lib/conversation/index.js';
-import { setActive, clearActive } from './active-runs.js';
+import { setActive, clearActive, listActiveByJid } from './active-runs.js';
 
 export interface RunInBackgroundArgs {
 	jid: string;
@@ -181,8 +181,21 @@ export function runInBackground(args: RunInBackgroundArgs): void {
 	// Single 60s check-in. Sent as a separate message so the user notices
 	// it; previous design edited the ack every 8s and produced a wall of
 	// pings. After this fires once, silence until terminal.
+	//
+	// Disambiguation: when another run of the SAME agent is already alive on
+	// this JID at fire time, the per-agent name in "Still working on
+	// *researcher*" is ambiguous (two researcher runs send identical
+	// pings). The cap-rejection message at dispatch time already told the
+	// user there are multiple runs, so we suppress the redundant check-in
+	// instead of emitting an ambiguous one. A solo run still gets it.
 	const checkInTimer = setTimeout(() => {
 		if (terminated) return;
+		const peers = listActiveByJid(jid).filter(
+			(r) => r.agentId === agentId && r.runId !== registeredRunId,
+		);
+		if (peers.length > 0) {
+			return;
+		}
 		void workerSend(worker, {
 			to: jid,
 			text: `Still working on *${agentId}* — 60s in. Reply *cancel* to stop, or wait — I'll send the summary here.`,

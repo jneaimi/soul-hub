@@ -39,7 +39,13 @@ import {
 	cancelByJid as cancelOrchestratorRuns,
 	checkCapacity as checkDispatchCapacity,
 	formatCapacityRejection,
+	setPending as setPendingProposal,
+	getPending as getPendingProposal,
+	clearPending as clearPendingProposal,
+	classifyProposalReply,
+	formatProposal,
 } from '$lib/orchestrator/index.js';
+import { dispatchWebSearch, formatWebSearchForChat } from '$lib/web-search/index.js';
 import { workerSend as workerSendForOrchestrator } from '$lib/channels/whatsapp/worker-client.js';
 import { isResetCommand, resetConversation, saveTurn } from '$lib/vault-chat/history.js';
 import { getConversationContext, buildAgentContextBrief } from '$lib/conversation/index.js';
@@ -272,19 +278,20 @@ export const POST: RequestHandler = async ({ request }) => {
 		const brainText = intent.body;
 
 		let replyText: string;
-		// WhatsApp ADR-005 — orchestrator slot. Fires only on the freeform
-		// vault-chat fallthrough, no media, no active run for this JID.
-		// Slash commands (/img, /save, /brain*, /heartbeat etc.) are
-		// resolved by `resolveIntent` above and bypass this entirely.
+		// WhatsApp ADR-005 + ADR-006 — orchestrator slot. Fires only on the
+		// freeform vault-chat fallthrough, no media. Slash commands handled
+		// upstream by resolveIntent. ADR-006 introduces the 6-action model
+		// with a propose-confirm step before any heavy dispatch.
 		if (intent.route === 'vault-chat' && !envelope.media) {
 			// Phase 1.5a — `cancel` / `stop` short-circuits when ANY runs
-			// are active for this JID. Cancels every active run on the JID
-			// (per-jid cap = 2 means there can be up to two). Other messages
-			// fall through to normal classification below — the user can
-			// continue chatting while a delegate runs.
+			// are active OR a proposal is pending. Cancels every active
+			// run on the JID and drops any pending proposal so the user
+			// gets a clean slate.
 			const lower = workingBody.trim().toLowerCase();
 			if (lower === 'cancel' || lower === 'stop') {
 				const active = listActiveOrchestratorRuns(envelope.chatJid);
+				const hadPending = !!getPendingProposal(conversationKey);
+				if (hadPending) clearPendingProposal(conversationKey);
 				if (active.length > 0) {
 					const cancelled = cancelOrchestratorRuns(envelope.chatJid);
 					const text =
@@ -293,14 +300,98 @@ export const POST: RequestHandler = async ({ request }) => {
 							: `🛑 Cancelled ${cancelled.length} runs: ${cancelled.map((r) => `*${r.agentId}*`).join(', ')}.`;
 					return json({ ok: true, action: 'reply', text });
 				}
+				if (hadPending) {
+					return json({ ok: true, action: 'reply', text: '🛑 Dropped the pending proposal.' });
+				}
 				return json({ ok: true, action: 'reply', text: 'Nothing to cancel.' });
 			}
 
+			// ADR-006 — pending-proposal interception. Runs BEFORE the
+			// classifier. If a proposal is alive on this conversation, the
+			// next message is read as a confirm/decline/switch-to-web/
+			// unrelated reply. "Unrelated" drops the proposal and falls
+			// through to normal classification (the user moved on).
+			const pending = getPendingProposal(conversationKey);
+			if (pending) {
+				const turnNow = Date.now();
+				const replyKind = classifyProposalReply(workingBody);
+
+				if (replyKind === 'confirm') {
+					// Execute the stored proposal — same path as direct dispatch.
+					clearPendingProposal(conversationKey);
+					const capacity = checkDispatchCapacity(envelope.chatJid);
+					if (!capacity.ok) {
+						saveTurn(conversationKey, 'user', workingBody, turnNow);
+						const rejection = formatCapacityRejection(capacity);
+						saveTurn(conversationKey, 'assistant', rejection, turnNow + 1);
+						return json({ ok: true, action: 'reply', text: rejection });
+					}
+
+					const ackText = `On it — running *${pending.agentId}*. I'll send the summary here when it's ready (reply *cancel* to stop).`;
+					let progressMessageId: string | undefined;
+					try {
+						const sendResult = await workerSendForOrchestrator(cfg.worker, {
+							to: envelope.chatJid,
+							text: ackText,
+						});
+						if (sendResult.ok && sendResult.messageId) {
+							progressMessageId = sendResult.messageId;
+						}
+					} catch (err) {
+						console.warn(
+							`[orchestrator] confirm-ack send failed (${(err as Error).message}); continuing without it`,
+						);
+					}
+					saveTurn(conversationKey, 'user', workingBody, turnNow);
+					const ctxConfirmed = getConversationContext(conversationKey, {
+						jid: envelope.chatJid,
+					});
+					const agentContext = buildAgentContextBrief(ctxConfirmed);
+					orchestratorDispatch({
+						jid: envelope.chatJid,
+						agentId: pending.agentId,
+						task: pending.task,
+						sourceMessage: workingBody,
+						worker: cfg.worker,
+						progressMessageId,
+						conversationKey,
+						agentContext,
+					});
+					return json({ ok: true, action: 'drop' });
+				}
+
+				if (replyKind === 'decline') {
+					clearPendingProposal(conversationKey);
+					saveTurn(conversationKey, 'user', workingBody, turnNow);
+					const text = 'Got it — dropped that. What would you like instead?';
+					saveTurn(conversationKey, 'assistant', text, turnNow + 1);
+					return json({ ok: true, action: 'reply', text });
+				}
+
+				if (replyKind === 'switch-to-web') {
+					// User wants the quick web-search alternative on the same
+					// topic. We use the proposal's label as the search query
+					// (it's a one-line description of what they wanted).
+					clearPendingProposal(conversationKey);
+					saveTurn(conversationKey, 'user', workingBody, turnNow);
+					try {
+						const r = await dispatchWebSearch(pending.label);
+						const text = formatWebSearchForChat(r);
+						saveTurn(conversationKey, 'assistant', text, turnNow + 1);
+						return json({ ok: true, action: 'reply', text });
+					} catch (err) {
+						const text = `Couldn't run a web search: ${(err as Error).message}`;
+						saveTurn(conversationKey, 'assistant', text, turnNow + 1);
+						return json({ ok: true, action: 'reply', text });
+					}
+				}
+
+				// 'unrelated' — drop the proposal and fall through to normal
+				// classification on the new message.
+				clearPendingProposal(conversationKey);
+			}
+
 			// Phase 5 — load unified conversation context BEFORE deciding.
-			// Snapshot the prior turns and recent dispatches so anaphoric
-			// follow-ups ("tell me more", "advice on this") resolve. The
-			// new user turn is saved AFTER decide() returns, so the snapshot
-			// excludes the message we're currently classifying.
 			const ctx = getConversationContext(conversationKey, { jid: envelope.chatJid });
 
 			const orch = await orchestratorDecide(workingBody, { history: ctx.history });
@@ -312,30 +403,63 @@ export const POST: RequestHandler = async ({ request }) => {
 				const turnNow = Date.now();
 				if (decision.action === 'reply' && decision.reply) {
 					replyText = decision.reply;
-					// Persist the conversational round so the next turn
-					// (orchestrator or vault-chat) can see it.
 					saveTurn(conversationKey, 'user', workingBody, turnNow);
 					saveTurn(conversationKey, 'assistant', replyText, turnNow + 1);
+				} else if (decision.action === 'web-search') {
+					// Quick Gemini-grounded lookup. Cheap, fast, conversational
+					// reply with a citation. No agent dispatch, no PTY. The
+					// user turn was not yet saved — save it here so vault-chat
+					// can see it on the next turn.
+					saveTurn(conversationKey, 'user', workingBody, turnNow);
+					try {
+						const r = await dispatchWebSearch(decision.webQuery ?? workingBody);
+						const text = formatWebSearchForChat(r);
+						saveTurn(conversationKey, 'assistant', text, turnNow + 1);
+						return json({ ok: true, action: 'reply', text });
+					} catch (err) {
+						const text = `Couldn't run a web search: ${(err as Error).message}`;
+						saveTurn(conversationKey, 'assistant', text, turnNow + 1);
+						return json({ ok: true, action: 'reply', text });
+					}
+				} else if (decision.action === 'vault-search') {
+					// Defer the lookup to vault-chat. Persist the user turn
+					// here; vault-chat's reply persists below.
+					saveTurn(conversationKey, 'user', workingBody, turnNow);
+					replyText = '';
+				} else if (
+					decision.action === 'propose-dispatch' &&
+					decision.agent &&
+					decision.task &&
+					decision.proposalLabel
+				) {
+					// ADR-006 — propose-then-confirm. Stash the proposal,
+					// render the confirmation prompt deterministically, wait
+					// for the user's next reply.
+					const proposal = setPendingProposal({
+						conversationKey,
+						agentId: decision.agent,
+						task: decision.task,
+						label: decision.proposalLabel,
+					});
+					saveTurn(conversationKey, 'user', workingBody, turnNow);
+					const text = formatProposal(proposal);
+					saveTurn(conversationKey, 'assistant', text, turnNow + 1);
+					return json({ ok: true, action: 'reply', text });
 				} else if (decision.action === 'clarify' && decision.reply) {
 					// Phase 5 — clarify-fallthrough: when we have prior history,
-					// vault-chat (which is anaphora-aware via buildRetrievalInput)
-					// gets a shot at the follow-up before we admit defeat. Cold
-					// conversations (no history) still return the clarify text
-					// directly — there's nothing to anchor against.
+					// vault-chat gets a shot at the follow-up before we admit
+					// defeat. Cold conversations return the clarify text directly.
 					if (ctx.history.length > 0) {
 						replyText = '';
-						// fall through to vault-chat block below
 					} else {
 						saveTurn(conversationKey, 'user', workingBody, turnNow);
 						saveTurn(conversationKey, 'assistant', decision.reply, turnNow + 1);
 						return json({ ok: true, action: 'reply', text: decision.reply });
 					}
 				} else if (decision.action === 'dispatch' && decision.agent && decision.task) {
-					// Phase 1.5a — concurrency cap check. Per-jid cap allows
-					// one long research + one quick task in parallel; global
-					// cap is the backstop against runaway dispatch. When the
-					// cap rejects, surface the running list so the user can
-					// see what's blocking the slot.
+					// Direct dispatch — only fires when the model returned
+					// `action: dispatch` with confidence ≥0.85 (otherwise
+					// decide.ts downgrades to propose-dispatch).
 					const capacity = checkDispatchCapacity(envelope.chatJid);
 					if (!capacity.ok) {
 						saveTurn(conversationKey, 'user', workingBody, turnNow);
@@ -344,11 +468,7 @@ export const POST: RequestHandler = async ({ request }) => {
 						return json({ ok: true, action: 'reply', text: rejection });
 					}
 
-					// Conversational ack — captures the message id so the
-					// worker can settle it on terminal status. We return
-					// `action: 'drop'` so the worker process doesn't
-					// double-send.
-					const ackText = `On it — delegating to *${decision.agent}*. I'll send the summary here when it's ready (you can keep chatting; reply *cancel* to stop).`;
+					const ackText = `On it — running *${decision.agent}*. I'll send the summary here when it's ready (reply *cancel* to stop).`;
 					let progressMessageId: string | undefined;
 					try {
 						const sendResult = await workerSendForOrchestrator(cfg.worker, {
@@ -363,11 +483,6 @@ export const POST: RequestHandler = async ({ request }) => {
 							`[orchestrator] initial ack send failed (${(err as Error).message}); continuing without it`,
 						);
 					}
-					// Phase 5 — persist the user turn now (worker will write the
-					// agent-result summary on settle, with its own ts so PK
-					// collision is impossible). Build the curated agent brief
-					// from the conversation context so the dispatched agent
-					// sees the prior topic.
 					saveTurn(conversationKey, 'user', workingBody, turnNow);
 					const agentContext = buildAgentContextBrief(ctx);
 					orchestratorDispatch({
@@ -382,7 +497,6 @@ export const POST: RequestHandler = async ({ request }) => {
 					});
 					return json({ ok: true, action: 'drop' });
 				} else {
-					// Schema validated but action shape inconsistent — fall through.
 					replyText = '';
 				}
 			} else {

@@ -20,3 +20,11 @@ export { getOrchestratorMetrics } from './metrics.js';
 export type { OrchestratorMetrics } from './metrics.js';
 export { checkCapacity, formatCapacityRejection, PER_JID_CAP, GLOBAL_CAP } from './concurrency.js';
 export type { CapacityResult } from './concurrency.js';
+export {
+	setPending,
+	getPending,
+	clearPending,
+	classifyProposalReply,
+	formatProposal,
+} from './pending-proposals.js';
+export type { PendingProposal, ProposalReplyKind } from './pending-proposals.js';

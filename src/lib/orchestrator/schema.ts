@@ -2,13 +2,12 @@
  * Runtime-built Zod schema for the orchestrator decision.
  *
  * The `agent` enum is rebuilt per call from `listAgents()` filtered on
- * `health === 'ready'`, so newly created agents become dispatchable
- * immediately and unhealthy ones drop out — without a build step.
+ * `health === 'ready'` AND `chat_dispatchable === true`, so newly created
+ * agents become dispatchable immediately without a build step.
  *
- * No discriminated unions: per `feedback_ai_sdk_v6_structured_output`,
- * Gemini's controlled generation rejects them. Flat object, optional
- * fields, validation rules enforced in `decide.ts` rather than at the
- * schema layer.
+ * Per `feedback_ai_sdk_v6_structured_output` memory: Gemini's controlled
+ * generation rejects discriminated unions. Flat object, optional fields,
+ * cross-field validation enforced in `decide.ts`.
  */
 
 import { z } from 'zod';
@@ -20,13 +19,7 @@ export interface OrchestratorSchemaContext {
 	agents: AgentSummary[];
 }
 
-/** Build the schema + return the agent list used to construct it. The
- *  caller wants both — the agent list feeds the system prompt's inventory
- *  and the post-validation policy gate. */
 export function buildOrchestratorSchema(): OrchestratorSchemaContext {
-	// Only chat-dispatchable, healthy agents are exposed to the orchestrator's
-	// closed enum. The `chat_dispatchable` field replaces the Phase 1
-	// `tools.includes('Bash')` heuristic — see decide.ts.
 	const ready = listAgents().agents.filter(
 		(a) => a.health === 'ready' && a.chat_dispatchable === true,
 	);
@@ -37,10 +30,19 @@ export function buildOrchestratorSchema(): OrchestratorSchemaContext {
 			: z.enum([ready[0].id, ...ready.slice(1).map((a) => a.id)] as [string, ...string[]]);
 
 	const schema = z.object({
-		action: z.enum(['reply', 'dispatch', 'clarify']),
+		action: z.enum([
+			'reply',
+			'web-search',
+			'vault-search',
+			'propose-dispatch',
+			'dispatch',
+			'clarify',
+		]),
 		reply: z.string().optional(),
 		agent: agentEnum.optional(),
 		task: z.string().min(20).max(2000).optional(),
+		proposalLabel: z.string().max(120).optional(),
+		webQuery: z.string().max(500).optional(),
 		confidence: z.number().min(0).max(1),
 		// Reasoning is audit-only (logs); Gemini sometimes packs verbose
 		// chain-of-thought in here, so don't reject the whole payload over
