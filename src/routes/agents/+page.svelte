@@ -36,6 +36,15 @@
 
 	type FilterMode = 'all' | 'pty' | 'cli-flag' | 'ai-sdk' | 'unhealthy';
 
+	interface OpenRouterBalance {
+		available: boolean;
+		usage_monthly?: number;
+		usage_daily?: number;
+		limit?: number | null;
+		limit_remaining?: number | null;
+		is_free_tier?: boolean;
+	}
+
 	let agents = $state<AgentSummary[]>([]);
 	let laneADir = $state('');
 	let laneBDir = $state('');
@@ -48,6 +57,7 @@
 	let installingSeed = $state(false);
 	let toast = $state<{ kind: 'success' | 'error' | 'info'; text: string } | null>(null);
 	let pollInterval: ReturnType<typeof setInterval> | null = null;
+	let orBalance = $state<OpenRouterBalance | null>(null);
 
 	function flashToast(kind: 'success' | 'error' | 'info', text: string) {
 		toast = { kind, text };
@@ -69,6 +79,21 @@
 			loadError = (err as Error).message;
 		} finally {
 			loading = false;
+		}
+	}
+
+	async function loadOpenRouterBalance() {
+		try {
+			const res = await fetch('/api/openrouter/balance');
+			if (!res.ok) {
+				orBalance = null;
+				return;
+			}
+			const data = (await res.json()) as OpenRouterBalance;
+			orBalance = data.available ? data : null;
+		} catch {
+			// Best-effort — chip just disappears on transient failure.
+			orBalance = null;
 		}
 	}
 
@@ -165,9 +190,13 @@
 
 	onMount(() => {
 		loadAgents();
-		// Refresh every 30s so newly-saved agents (Phase 2+) appear without a
-		// hard reload. Same cadence as /scheduler for consistency.
-		pollInterval = setInterval(loadAgents, 30_000);
+		loadOpenRouterBalance();
+		// Refresh agent list every 30s; OR balance every 60s (server-side TTL
+		// matches, so additional polls would just hit the cache).
+		pollInterval = setInterval(() => {
+			loadAgents();
+			loadOpenRouterBalance();
+		}, 30_000);
 	});
 
 	onDestroy(() => {
@@ -199,6 +228,23 @@
 				<h1 class="text-lg font-semibold text-hub-text">Agents</h1>
 			</div>
 			<div class="flex-1"></div>
+			{#if orBalance}
+				<a
+					href="/settings"
+					class="px-2.5 py-1.5 rounded-lg text-[11px] font-mono text-hub-info hover:text-hub-text hover:bg-hub-info/10 transition-colors cursor-pointer flex items-center gap-1.5"
+					title="OpenRouter spend — click to manage in Settings"
+				>
+					<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+					</svg>
+					<span>OR</span>
+					<span class="text-hub-muted">${(orBalance.usage_monthly ?? 0).toFixed(2)}/mo</span>
+					{#if orBalance.limit_remaining != null}
+						<span class="text-hub-dim">·</span>
+						<span class="text-hub-muted">${(orBalance.limit_remaining ?? 0).toFixed(2)} left</span>
+					{/if}
+				</a>
+			{/if}
 			<a
 				href="/agents/skills"
 				class="px-3 py-1.5 rounded-lg text-sm text-hub-muted hover:text-hub-text hover:bg-hub-card transition-colors cursor-pointer"
