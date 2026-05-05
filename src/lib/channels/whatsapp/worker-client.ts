@@ -15,6 +15,10 @@ interface WorkerSendBody {
 	attachPath?: string;
 	kind?: 'image' | 'video' | 'audio' | 'document';
 	caption?: string;
+	/** ADR-005 Phase 2 — edit the previously sent message in place. The
+	 *  worker reconstructs the WAMessageKey from `{id: editId, remoteJid:
+	 *  to, fromMe: true}` and passes it as the Baileys `edit` option. */
+	editId?: string;
 }
 
 interface WorkerSendResult {

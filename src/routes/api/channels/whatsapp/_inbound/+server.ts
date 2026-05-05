@@ -38,6 +38,7 @@ import {
 	getActiveByJid as getActiveOrchestratorRun,
 	cancelByJid as cancelOrchestratorRun,
 } from '$lib/orchestrator/index.js';
+import { workerSend as workerSendForOrchestrator } from '$lib/channels/whatsapp/worker-client.js';
 import { isResetCommand, resetConversation } from '$lib/vault-chat/history.js';
 import {
 	isHeartbeatMetaCommand,
@@ -303,18 +304,36 @@ export const POST: RequestHandler = async ({ request }) => {
 				} else if (decision.action === 'clarify' && decision.reply) {
 					return json({ ok: true, action: 'reply', text: decision.reply });
 				} else if (decision.action === 'dispatch' && decision.agent && decision.task) {
+					// ADR-005 Phase 2 — own the status message ourselves so
+					// we can edit it via Baileys as the run progresses. We
+					// send the initial "🟡 Working…" synchronously here,
+					// capture its messageId, kick off the background run
+					// passing the id forward, and return action='drop' so
+					// the worker process doesn't double-send.
+					const ackText = `🟡 Working on \`${decision.agent}\`… reply \`cancel\` to stop.`;
+					let progressMessageId: string | undefined;
+					try {
+						const sendResult = await workerSendForOrchestrator(cfg.worker, {
+							to: envelope.chatJid,
+							text: ackText,
+						});
+						if (sendResult.ok && sendResult.messageId) {
+							progressMessageId = sendResult.messageId;
+						}
+					} catch (err) {
+						console.warn(
+							`[orchestrator] initial ack send failed (${(err as Error).message}); continuing without progress edits`,
+						);
+					}
 					orchestratorDispatch({
 						jid: envelope.chatJid,
 						agentId: decision.agent,
 						task: decision.task,
 						sourceMessage: workingBody,
 						worker: cfg.worker,
+						progressMessageId,
 					});
-					return json({
-						ok: true,
-						action: 'reply',
-						text: `🟡 Working on it — \`${decision.agent}\`. I'll send the result back here when it's done. Reply \`cancel\` to stop.`,
-					});
+					return json({ ok: true, action: 'drop' });
 				} else {
 					// Schema validated but action shape inconsistent — fall through.
 					replyText = '';

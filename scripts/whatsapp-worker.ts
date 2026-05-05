@@ -35,7 +35,7 @@ import {
 } from '../src/lib/channels/whatsapp/connection.ts';
 import { resolveSenderLid, seedLidMappingsForAllowlist } from '../src/lib/channels/whatsapp/lid-resolve.ts';
 import { collectMentionedJids } from '../src/lib/channels/whatsapp/inbound.ts';
-import { sendMedia, sendText, reactTo } from '../src/lib/channels/whatsapp/outbound.ts';
+import { sendMedia, sendText, reactTo, editText } from '../src/lib/channels/whatsapp/outbound.ts';
 import { kindFromPath, downloadMedia, saveMediaToDisk } from '../src/lib/channels/whatsapp/media.ts';
 import { transcribeVoiceNote } from '../src/lib/channels/whatsapp/transcribe.ts';
 import { checkAccess } from '../src/lib/channels/whatsapp/access-control.ts';
@@ -337,6 +337,10 @@ async function main(): Promise<void> {
 					attachPath?: string;
 					kind?: 'image' | 'video' | 'audio' | 'document';
 					caption?: string;
+					/** ADR-005 Phase 2 — when present, edit the previously sent
+					 *  message identified by `editId` instead of sending a new
+					 *  one. Used by the orchestrator's progress callback. */
+					editId?: string;
 				};
 				try {
 					body = JSON.parse(raw) as typeof body;
@@ -344,6 +348,15 @@ async function main(): Promise<void> {
 					return send(res, 400, { ok: false, error: 'Invalid JSON.' });
 				}
 				if (!body.to) return send(res, 400, { ok: false, error: 'Missing `to`.' });
+
+				if (body.editId) {
+					if (!body.text) {
+						return send(res, 400, { ok: false, error: 'Edit requires `text`.' });
+					}
+					const editResult = await editText(sock, body.to, body.editId, body.text);
+					if (!editResult.ok) return send(res, 502, editResult);
+					return send(res, 200, { ok: true, messageId: body.editId });
+				}
 
 				if (body.attachPath) {
 					const kind = body.kind ?? kindFromPath(body.attachPath);

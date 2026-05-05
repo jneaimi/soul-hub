@@ -13,7 +13,7 @@ export {
 export { start, stop, getStatus, getSocket, onMessage, onConnect } from './connection.js';
 export { dispatchInbound } from './dispatch.js';
 export { resolveSenderLid, seedLidMappingsForAllowlist } from './lid-resolve.js';
-export { sendText, sendMedia, reactTo, chunkText } from './outbound.js';
+export { sendText, sendMedia, reactTo, chunkText, editText } from './outbound.js';
 export {
 	extractMediaPayload,
 	downloadMedia,

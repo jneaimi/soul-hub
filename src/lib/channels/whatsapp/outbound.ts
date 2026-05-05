@@ -82,6 +82,29 @@ export async function sendText(
 	return { ok: true, messageIds: ids };
 }
 
+/** Edit a previously sent text message in place. Used by the orchestrator
+ *  progress streaming (ADR-005 Phase 2) to morph a single "🟡 Working…"
+ *  bubble into "✅ done" instead of spamming the chat with milestone
+ *  messages. The WAMessageKey is reconstructed from the messageId we
+ *  captured when sending the original — sender-side messages have
+ *  `fromMe: true` and `remoteJid: chatJid`. */
+export async function editText(
+	sock: WASocket,
+	chatJid: string,
+	messageId: string,
+	newText: string,
+): Promise<{ ok: boolean; error?: string }> {
+	try {
+		await sock.sendMessage(
+			chatJid,
+			{ text: newText, edit: { remoteJid: chatJid, id: messageId, fromMe: true } },
+		);
+		return { ok: true };
+	} catch (err) {
+		return { ok: false, error: (err as Error).message };
+	}
+}
+
 /** React to an inbound message (e.g. the 👀 ack emoji). Best-effort —
  *  reaction failures don't break the reply path. */
 export async function reactTo(
