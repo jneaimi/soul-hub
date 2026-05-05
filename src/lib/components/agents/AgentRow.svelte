@@ -31,6 +31,7 @@
 		health_reason?: string;
 		source_path: string;
 		system_prompt: string;
+		chat_dispatchable?: boolean;
 		stats?: AgentStats | null;
 	}
 
@@ -117,6 +118,14 @@
 						title={agent.health_reason}
 					>
 						⚠ shadowed
+					</span>
+				{/if}
+				{#if agent.chat_dispatchable}
+					<span
+						class="text-[10px] text-hub-cta font-medium px-1.5 py-0.5 bg-hub-cta/10 rounded border border-hub-cta/40 flex-shrink-0"
+						title="The WhatsApp orchestrator may dispatch this agent from chat (ADR-005)."
+					>
+						💬 chat
 					</span>
 				{/if}
 			</div>

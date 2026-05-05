@@ -24,7 +24,12 @@ export interface OrchestratorSchemaContext {
  *  caller wants both — the agent list feeds the system prompt's inventory
  *  and the post-validation policy gate. */
 export function buildOrchestratorSchema(): OrchestratorSchemaContext {
-	const ready = listAgents().agents.filter((a) => a.health === 'ready');
+	// Only chat-dispatchable, healthy agents are exposed to the orchestrator's
+	// closed enum. The `chat_dispatchable` field replaces the Phase 1
+	// `tools.includes('Bash')` heuristic — see decide.ts.
+	const ready = listAgents().agents.filter(
+		(a) => a.health === 'ready' && a.chat_dispatchable === true,
+	);
 
 	const agentEnum =
 		ready.length === 0

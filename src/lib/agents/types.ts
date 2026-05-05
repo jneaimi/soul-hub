@@ -80,6 +80,11 @@ export const AgentSummarySchema = z.object({
 	health_reason: z.string().optional(),
 	source_path: z.string(),
 	system_prompt: z.string(),
+	/** Per WhatsApp ADR-005 — explicit per-agent flag controlling whether
+	 *  the orchestrator may dispatch this agent from a chat surface. False
+	 *  by default; user opts in via /agents wizard. Replaces the Phase 1
+	 *  `tools.includes('Bash')` heuristic. */
+	chat_dispatchable: z.boolean().default(false),
 });
 export type AgentSummary = z.infer<typeof AgentSummarySchema>;
 
@@ -123,6 +128,7 @@ export const AgentDraftSchema = z.object({
 	budget: BudgetSchema,
 	system_prompt: z.string().default(''),
 	provenance: Provenance.default('user-created'),
+	chat_dispatchable: z.boolean().default(false),
 	spec: z.discriminatedUnion('backend', [
 		ClaudePtyDraftSpec,
 		ClaudeCliFlagDraftSpec,

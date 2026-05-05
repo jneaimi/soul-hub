@@ -46,10 +46,27 @@ function elapsedSec(startedAt: number): number {
 	return Math.round((Date.now() - startedAt) / 1000);
 }
 
-function progressLine(agentId: string, startedAt: number, stepCount: number): string {
+/** Backend hint surfaced inside the progress message. The orchestrator
+ *  doesn't know which backend the agent was bound to until the dispatch
+ *  generator yields its first `started` event — but the inbound handler
+ *  has the agent record in hand, so we plumb it through. */
+function backendHint(backend?: string): string {
+	if (!backend) return '';
+	if (backend === 'claude-pty') return ' · pty';
+	if (backend === 'claude-cli-flag') return ' · cli-flag';
+	if (backend === 'ai-sdk') return ' · ai-sdk';
+	return '';
+}
+
+function progressLine(
+	agentId: string,
+	startedAt: number,
+	stepCount: number,
+	backend?: string,
+): string {
 	const sec = elapsedSec(startedAt);
 	const stepBit = stepCount > 0 ? ` · step ${stepCount}` : '';
-	return `🟡 Working on \`${agentId}\` (${sec}s${stepBit})…`;
+	return `🟡 Working on \`${agentId}\` (${sec}s${stepBit}${backendHint(backend)})…`;
 }
 
 function terminalLine(agentId: string, result: DispatchResult): string {
@@ -137,6 +154,7 @@ export function runInBackground(args: RunInBackgroundArgs): void {
 	const controller = new AbortController();
 	const startedAt = Date.now();
 	let stepCount = 0;
+	let backend: string | undefined;
 	let lastEditAt = 0;
 	let lastStatusLine = '';
 
@@ -144,7 +162,7 @@ export function runInBackground(args: RunInBackgroundArgs): void {
 		if (!progressMessageId) return;
 		const now = Date.now();
 		if (!force && now - lastEditAt < EDIT_THROTTLE_MS) return;
-		const line = progressLine(agentId, startedAt, stepCount).slice(0, STATUS_LINE_MAX);
+		const line = progressLine(agentId, startedAt, stepCount, backend).slice(0, STATUS_LINE_MAX);
 		if (line === lastStatusLine) return;
 		lastEditAt = now;
 		lastStatusLine = line;
@@ -176,6 +194,7 @@ export function runInBackground(args: RunInBackgroundArgs): void {
 				const event = next.value as DispatchEvent;
 				if (event.type === 'started') {
 					runId = event.runId;
+					backend = event.backend;
 					setActive(jid, { runId, agentId, startedAt, abortController: controller });
 				} else if (event.type === 'step') {
 					stepCount = event.n;

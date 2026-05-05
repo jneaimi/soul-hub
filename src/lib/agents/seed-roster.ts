@@ -25,6 +25,10 @@ interface SeedSpec {
 	skills: string[];
 	model: string;
 	system_prompt: string;
+	/** Whether the WhatsApp orchestrator may dispatch this agent based on
+	 *  natural-language messages. Off for code-modifying or admin agents
+	 *  (sentinel, inspector) — they require an explicit /agents trigger. */
+	chat_dispatchable?: boolean;
 }
 
 const SEEDS: SeedSpec[] = [
@@ -38,6 +42,7 @@ const SEEDS: SeedSpec[] = [
 		model: 'sonnet',
 		system_prompt:
 			'You are a research agent. Given a topic or question, gather supporting evidence from multiple sources, analyse it, and produce a structured report with citations. Save outputs to the location named in the prompt.',
+		chat_dispatchable: true,
 	},
 	{
 		id: 'scribe',
@@ -49,6 +54,7 @@ const SEEDS: SeedSpec[] = [
 		model: 'sonnet',
 		system_prompt:
 			'You are a content drafter. Produce clear, concise drafts that match the requested format (post / article / newsletter). When asked for Arabic, use the brand voice and culturally appropriate tone for the GCC audience. Avoid AI tells, marketing slop, and filler phrasing.',
+		chat_dispatchable: true,
 	},
 	{
 		id: 'quill',
@@ -60,6 +66,7 @@ const SEEDS: SeedSpec[] = [
 		model: 'sonnet',
 		system_prompt:
 			'You are an editor. Read the draft, fix grammar, tighten prose, and remove predictable AI tells. Preserve the original voice. Output the edited version plus a short summary of edits made.',
+		chat_dispatchable: true,
 	},
 	{
 		id: 'keeper',
@@ -71,6 +78,7 @@ const SEEDS: SeedSpec[] = [
 		model: 'haiku',
 		system_prompt:
 			'You are a vault hygiene agent. Read `~/vault/_pending-fixes.json`, address each issue in turn (orphan, stale_inbox, dead_link, status_contradiction), then update the catalog. Be conservative — never delete content without explicit instruction.',
+		chat_dispatchable: true,
 	},
 	{
 		id: 'lighthouse',
@@ -82,6 +90,7 @@ const SEEDS: SeedSpec[] = [
 		model: 'sonnet',
 		system_prompt:
 			'You are an SEO auditor. Inspect the named project for SEO health: meta tags, OG/Twitter cards, structured data, sitemap, robots.txt, page speed, and accessibility. Report findings with severity ratings and suggested fixes.',
+		chat_dispatchable: true,
 	},
 	{
 		id: 'guardian',
@@ -93,6 +102,7 @@ const SEEDS: SeedSpec[] = [
 		model: 'sonnet',
 		system_prompt:
 			'You are a brand audit agent. Compare the live brand surfaces (site, social profiles, newsletter) against the documented brand voice and design system. Flag inconsistencies with examples and suggest fixes.',
+		chat_dispatchable: true,
 	},
 	{
 		id: 'inspector',
@@ -136,6 +146,7 @@ const SEEDS: SeedSpec[] = [
 		model: 'haiku',
 		system_prompt:
 			'You are a CRM agent. Manage contacts via Google Sheets + Obsidian. Log interactions, advance pipeline stages, and surface overdue follow-ups. Keep updates concise and factual.',
+		chat_dispatchable: true,
 	},
 ];
 
@@ -152,6 +163,7 @@ function buildDrafts(): AgentDraft[] {
 		budget: { max_usd: 0.5, max_turns: 20, timeout_sec: 60 },
 		system_prompt: s.system_prompt,
 		provenance: 'builtin',
+		chat_dispatchable: s.chat_dispatchable === true,
 		spec: { backend: 'claude-pty', worktree_isolated: true, parallel_safe: true },
 	}));
 }

@@ -29,6 +29,7 @@
 		budget?: Partial<Budget>;
 		system_prompt?: string;
 		backend?: Backend;
+		chat_dispatchable?: boolean;
 		// ai-sdk-specific
 		provider?: Provider;
 		// pty-specific
@@ -134,6 +135,11 @@
 	let maxTurns = $state(seed.budget?.max_turns ?? 20);
 	let timeoutSec = $state(seed.budget?.timeout_sec ?? 60);
 
+	// Per WhatsApp ADR-005 — explicit per-agent flag for chat dispatch.
+	// Off by default; users opt in agents whose work is safe to trigger
+	// from a single WhatsApp message.
+	let chatDispatchable = $state(seed.chat_dispatchable ?? false);
+
 	// ─── derived validation ──────────────────────────────────────────────────
 	const idValid = $derived(/^[a-z0-9][a-z0-9_-]*$/.test(id));
 	const nameValid = $derived(name.trim().length > 0);
@@ -172,6 +178,7 @@
 			},
 			system_prompt: systemPrompt,
 			provenance: 'user-created',
+			chat_dispatchable: chatDispatchable,
 		};
 
 		if (backend === 'claude-pty') {
@@ -520,6 +527,24 @@
 					Shell
 				</label>
 			</div>
+		</div>
+
+		<!-- Chat dispatch policy (ADR-005) -->
+		<div>
+			<div class="text-xs text-hub-muted mb-1.5">Chat dispatch</div>
+			<label class="flex items-start gap-2 px-2.5 py-2 rounded-lg bg-hub-bg border border-hub-border text-xs text-hub-muted cursor-pointer hover:text-hub-text transition-colors">
+				<input
+					type="checkbox"
+					bind:checked={chatDispatchable}
+					class="accent-hub-cta cursor-pointer mt-0.5"
+				/>
+				<span>
+					<span class="text-hub-text font-medium">Dispatchable from chat</span>
+					<span class="block text-[10px] text-hub-dim mt-0.5 leading-snug">
+						When on, the WhatsApp orchestrator may dispatch this agent based on the user's natural-language message. Leave off for code-modifying or admin-class agents.
+					</span>
+				</span>
+			</label>
 		</div>
 
 		<!-- Budget -->

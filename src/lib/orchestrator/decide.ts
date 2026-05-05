@@ -16,7 +16,6 @@ import { dispatchRoute } from '$lib/routes/index.js';
 import { buildOrchestratorSchema } from './schema.js';
 import { buildSystemPrompt } from './prompt.js';
 import type { DecideResult, OrchestratorDecision } from './types.js';
-import type { AgentSummary } from '$lib/agents/types.js';
 
 const ORCHESTRATOR_ROUTE = 'orchestrator';
 const CONFIDENCE_DISPATCH_THRESHOLD = 0.7;
@@ -43,10 +42,6 @@ function extractJsonBlock(raw: string): string | null {
 
 export interface DecideOptions {
 	signal?: AbortSignal;
-	/** Disallow agents whose `tools` include `Bash` from dispatching via
-	 *  chat. Defaults to true (the WhatsApp inbound handler should never
-	 *  flip this off). */
-	denyShellAgents?: boolean;
 }
 
 export async function decide(userMessage: string, opts: DecideOptions = {}): Promise<DecideResult> {
@@ -56,7 +51,7 @@ export async function decide(userMessage: string, opts: DecideOptions = {}): Pro
 		return {
 			decision: { action: 'clarify', reply: ABSTAIN_REPLY, confidence: 0 },
 			fellThrough: true,
-			note: 'no ready agents in registry',
+			note: 'no chat-dispatchable agents in registry',
 		};
 	}
 
@@ -142,25 +137,10 @@ export async function decide(userMessage: string, opts: DecideOptions = {}): Pro
 			};
 		}
 
-		const denyShell = opts.denyShellAgents !== false;
-		if (denyShell && agentHasShell(agents, decision.agent)) {
-			return {
-				decision: {
-					action: 'reply',
-					reply: `\`${decision.agent}\` has shell access and isn't allowed to run from chat. Use the /agents UI to dispatch it.`,
-					confidence: decision.confidence,
-				},
-				fellThrough: false,
-				note: 'shell-policy refusal',
-			};
-		}
+		// No additional dispatch-policy gate needed: `buildOrchestratorSchema`
+		// already filtered to chat_dispatchable agents only, so `decision.agent`
+		// is guaranteed to be in that allowlist.
 	}
 
 	return { decision, fellThrough: false };
-}
-
-function agentHasShell(agents: AgentSummary[], id: string): boolean {
-	const a = agents.find((x) => x.id === id);
-	if (!a) return false;
-	return a.tools.some((t) => t === 'Bash' || t.toLowerCase() === 'shell');
 }

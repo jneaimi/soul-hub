@@ -17,6 +17,7 @@
 		tools: string[];
 		skills: string[];
 		system_prompt: string;
+		chat_dispatchable?: boolean;
 	}
 
 	let initial = $state<Partial<FetchedAgent> | null>(null);

@@ -62,6 +62,7 @@ interface ClaudeMdFrontmatter {
 	skills?: string[];
 	backend?: string;
 	provenance?: string;
+	chat_dispatchable?: boolean;
 }
 
 /** Parse `~/.claude/agents/<id>.md`. Tools is a comma-separated string per Anthropic's
@@ -120,6 +121,7 @@ function parseLaneA(filePath: string): AgentSummary | null {
 		health: 'ready',
 		source_path: filePath,
 		system_prompt: parsed.content.trim(),
+		chat_dispatchable: fm.chat_dispatchable === true,
 	};
 }
 
@@ -144,6 +146,7 @@ interface LaneBFile {
 	skills?: string[];
 	provenance?: string;
 	system_prompt?: string;
+	chat_dispatchable?: boolean;
 	spec?:
 		| { backend: 'claude-pty'; [k: string]: unknown }
 		| { backend: 'claude-cli-flag' }
@@ -196,6 +199,7 @@ function parseLaneB(filePath: string): AgentSummary | null {
 		health: 'ready', // Phase 2 adds key-presence + skill-existence checks
 		source_path: filePath,
 		system_prompt: String(doc.system_prompt ?? '').trim(),
+		chat_dispatchable: doc.chat_dispatchable === true,
 	};
 }
 
@@ -341,6 +345,7 @@ function writeLaneA(draft: AgentDraft): string {
 		skills: draft.skills.length > 0 ? draft.skills : undefined,
 		backend: draft.spec.backend, // Soul Hub extension
 		provenance: draft.provenance,
+		chat_dispatchable: draft.chat_dispatchable === true ? true : undefined,
 	};
 
 	// Strip undefined values so the YAML stays clean
@@ -368,6 +373,7 @@ function writeLaneB(draft: AgentDraft): string {
 		permissions: draft.permissions,
 		budget: draft.budget,
 		provenance: draft.provenance,
+		chat_dispatchable: draft.chat_dispatchable === true,
 		spec: draft.spec,
 		system_prompt: draft.system_prompt,
 	};
