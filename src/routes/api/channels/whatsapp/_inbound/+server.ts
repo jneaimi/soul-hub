@@ -32,6 +32,12 @@ import {
 } from '$lib/channels/whatsapp/index.js';
 import { dispatchRoute, RouteNotFoundError } from '$lib/routes/index.js';
 import { dispatchVaultChat } from '$lib/vault-chat/index.js';
+import {
+	decide as orchestratorDecide,
+	runInBackground as orchestratorDispatch,
+	getActiveByJid as getActiveOrchestratorRun,
+	cancelByJid as cancelOrchestratorRun,
+} from '$lib/orchestrator/index.js';
 import { isResetCommand, resetConversation } from '$lib/vault-chat/history.js';
 import {
 	isHeartbeatMetaCommand,
@@ -262,7 +268,68 @@ export const POST: RequestHandler = async ({ request }) => {
 		const brainText = intent.body;
 
 		let replyText: string;
-		if (intent.route === 'vault-chat') {
+		// WhatsApp ADR-005 — orchestrator slot. Fires only on the freeform
+		// vault-chat fallthrough, no media, no active run for this JID.
+		// Slash commands (/img, /save, /brain*, /heartbeat etc.) are
+		// resolved by `resolveIntent` above and bypass this entirely.
+		if (intent.route === 'vault-chat' && !envelope.media) {
+			const active = getActiveOrchestratorRun(envelope.chatJid);
+			if (active) {
+				const lower = workingBody.trim().toLowerCase();
+				if (lower === 'cancel' || lower === 'stop') {
+					const cancelled = cancelOrchestratorRun(envelope.chatJid);
+					return json({
+						ok: true,
+						action: 'reply',
+						text: cancelled
+							? `🛑 Cancelled \`${cancelled.agentId}\`.`
+							: 'Nothing to cancel.',
+					});
+				}
+				const elapsedSec = Math.round((Date.now() - active.startedAt) / 1000);
+				return json({
+					ok: true,
+					action: 'reply',
+					text: `Still working on \`${active.agentId}\` (${elapsedSec}s in). Reply \`cancel\` to stop, or wait — I'll send the result here.`,
+				});
+			}
+
+			const orch = await orchestratorDecide(workingBody);
+			if (!orch.fellThrough) {
+				const decision = orch.decision;
+				if (decision.action === 'reply' && decision.reply) {
+					replyText = decision.reply;
+					// Skip the vault-chat call below — we already have a reply.
+				} else if (decision.action === 'clarify' && decision.reply) {
+					return json({ ok: true, action: 'reply', text: decision.reply });
+				} else if (decision.action === 'dispatch' && decision.agent && decision.task) {
+					orchestratorDispatch({
+						jid: envelope.chatJid,
+						agentId: decision.agent,
+						task: decision.task,
+						sourceMessage: workingBody,
+						worker: cfg.worker,
+					});
+					return json({
+						ok: true,
+						action: 'reply',
+						text: `🟡 Working on it — \`${decision.agent}\`. I'll send the result back here when it's done. Reply \`cancel\` to stop.`,
+					});
+				} else {
+					// Schema validated but action shape inconsistent — fall through.
+					replyText = '';
+				}
+			} else {
+				replyText = '';
+				if (orch.note) {
+					console.warn(`[orchestrator] fell through: ${orch.note}`);
+				}
+			}
+		} else {
+			replyText = '';
+		}
+
+		if (intent.route === 'vault-chat' && !replyText) {
 			// Multimodal pass-through — when the message has image/video/
 			// document attached, hand the bytes to vault-chat. Reuse the
 			// already-decoded image buffer if we cached it at the top of
