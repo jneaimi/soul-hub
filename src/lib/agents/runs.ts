@@ -257,3 +257,27 @@ export function listAgentRuns(
 		)
 		.all(...args) as AgentRunRow[];
 }
+
+/** List runs for a single conversation (WhatsApp `jid`), newest-first. Used
+ *  by the conversation-context helper to feed the orchestrator a thin slice
+ *  of recent agent activity for the same chat. */
+export function listAgentRunsByJid(
+	jid: string,
+	opts: { limit?: number; mode?: DispatchMode } = {},
+): AgentRunRow[] {
+	const limit = Math.min(Math.max(opts.limit ?? 5, 1), 100);
+	const modeFilter = opts.mode ? 'AND mode = ?' : '';
+	const args: unknown[] = [jid];
+	if (opts.mode) args.push(opts.mode);
+	args.push(limit);
+
+	return db()
+		.prepare(
+			`SELECT ${SELECT_COLS}
+			FROM agent_runs
+			WHERE jid = ? ${modeFilter}
+			ORDER BY started_at DESC
+			LIMIT ?`,
+		)
+		.all(...args) as AgentRunRow[];
+}

@@ -63,6 +63,9 @@ interface ClaudeMdFrontmatter {
 	backend?: string;
 	provenance?: string;
 	chat_dispatchable?: boolean;
+	/** Soul Hub extension. Claude Code ignores unknown frontmatter keys, so
+	 *  this travels safely alongside the agent's main spec. */
+	budget?: { max_usd?: number; max_turns?: number; timeout_sec?: number };
 }
 
 /** Parse `~/.claude/agents/<id>.md`. Tools is a comma-separated string per Anthropic's
@@ -122,7 +125,23 @@ function parseLaneA(filePath: string): AgentSummary | null {
 		source_path: filePath,
 		system_prompt: parsed.content.trim(),
 		chat_dispatchable: fm.chat_dispatchable === true,
+		budget: extractBudget(fm.budget),
 	};
+}
+
+/** Read a partial budget block from frontmatter or YAML. Type-guarded so a
+ *  malformed `budget:` field can't crash the parser. Empty result → undefined
+ *  so the runtime falls through to PRODUCTION_DEFAULTS. */
+function extractBudget(raw: unknown): AgentSummary['budget'] {
+	if (!raw || typeof raw !== 'object') return undefined;
+	const o = raw as Record<string, unknown>;
+	const out: { max_usd?: number; max_turns?: number; timeout_sec?: number } = {};
+	if (typeof o.max_usd === 'number' && o.max_usd >= 0) out.max_usd = o.max_usd;
+	if (typeof o.max_turns === 'number' && o.max_turns > 0 && Number.isInteger(o.max_turns))
+		out.max_turns = o.max_turns;
+	if (typeof o.timeout_sec === 'number' && o.timeout_sec > 0 && Number.isInteger(o.timeout_sec))
+		out.timeout_sec = o.timeout_sec;
+	return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function normaliseTools(input: unknown): string[] {
@@ -200,6 +219,7 @@ function parseLaneB(filePath: string): AgentSummary | null {
 		source_path: filePath,
 		system_prompt: String(doc.system_prompt ?? '').trim(),
 		chat_dispatchable: doc.chat_dispatchable === true,
+		budget: extractBudget((doc as Record<string, unknown>).budget),
 	};
 }
 
@@ -346,6 +366,10 @@ function writeLaneA(draft: AgentDraft): string {
 		backend: draft.spec.backend, // Soul Hub extension
 		provenance: draft.provenance,
 		chat_dispatchable: draft.chat_dispatchable === true ? true : undefined,
+		// Soul Hub extension — Claude Code ignores unknown frontmatter keys.
+		// Persist the budget block so per-agent timeout/turn overrides survive
+		// a save round-trip from the wizard.
+		budget: draft.budget,
 	};
 
 	// Strip undefined values so the YAML stays clean
@@ -370,7 +394,6 @@ function writeLaneB(draft: AgentDraft): string {
 		description: draft.description,
 		tools: draft.tools,
 		skills: draft.skills,
-		permissions: draft.permissions,
 		budget: draft.budget,
 		provenance: draft.provenance,
 		chat_dispatchable: draft.chat_dispatchable === true,

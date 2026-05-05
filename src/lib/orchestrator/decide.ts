@@ -16,6 +16,7 @@ import { dispatchRoute } from '$lib/routes/index.js';
 import { buildOrchestratorSchema } from './schema.js';
 import { buildSystemPrompt } from './prompt.js';
 import type { DecideResult, OrchestratorDecision } from './types.js';
+import type { ChatMessage } from '$lib/llm/types.js';
 
 const ORCHESTRATOR_ROUTE = 'orchestrator';
 const CONFIDENCE_DISPATCH_THRESHOLD = 0.7;
@@ -42,6 +43,11 @@ function extractJsonBlock(raw: string): string | null {
 
 export interface DecideOptions {
 	signal?: AbortSignal;
+	/** Phase 5 — conversation history for the same `conversationKey`. Loaded
+	 *  by the caller via `getConversationContext()` and passed in oldest-first
+	 *  so this function can prepend to the messages array. Empty array =
+	 *  cold conversation, behaves as before (single-turn classification). */
+	history?: ChatMessage[];
 }
 
 export async function decide(userMessage: string, opts: DecideOptions = {}): Promise<DecideResult> {
@@ -56,11 +62,13 @@ export async function decide(userMessage: string, opts: DecideOptions = {}): Pro
 	}
 
 	const system = buildSystemPrompt(agents);
+	const history = opts.history ?? [];
+	const messages: ChatMessage[] = [...history, { role: 'user', content: userMessage }];
 	let rawText = '';
 	try {
 		const result = await dispatchRoute(ORCHESTRATOR_ROUTE, {
 			system,
-			messages: [{ role: 'user', content: userMessage }],
+			messages,
 			maxOutputTokens: 400,
 			signal: opts.signal,
 		});

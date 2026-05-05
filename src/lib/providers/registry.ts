@@ -8,7 +8,6 @@ import { provider as anthropic } from './anthropic.js';
 import { provider as elevenlabs } from './elevenlabs.js';
 import { provider as resend } from './resend.js';
 import { provider as youtube } from './youtube.js';
-import { provider as linear } from './linear.js';
 import { provider as huggingface } from './huggingface.js';
 import { provider as googleMaps } from './google-maps.js';
 import { provider as eodhd } from './eodhd.js';
@@ -23,7 +22,6 @@ const providers: ProviderTester[] = [
 	elevenlabs,
 	resend,
 	youtube,
-	linear,
 	huggingface,
 	googleMaps,
 	eodhd,

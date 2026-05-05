@@ -27,7 +27,6 @@
 		{ key: 'GEMINI_API_KEY', description: 'Gemini API for image + Veo video generation', usedBy: ['generate skill', 'media-creator agent'] },
 		{ key: 'ELEVENLABS_API_KEY', description: 'ElevenLabs text-to-speech', usedBy: ['generate skill', 'media-creator agent'] },
 		{ key: 'RESEND_API_KEY', description: 'Resend email API for newsletters', usedBy: ['newsletter skill'] },
-		{ key: 'LINEAR_API_KEY', description: 'Linear project management API', usedBy: ['claude-soul agents'] },
 		{ key: 'GOOGLE_API_KEY', description: 'Google Cloud Platform (Geocoding, Places, Maps)', usedBy: ['cafe-deals pipeline'] },
 		{ key: 'HF_API_TOKEN', description: 'Hugging Face Inference API (optional)', usedBy: ['research skill'] },
 		{ key: 'EODHD_API_KEY', description: 'EODHD financial data API', usedBy: ['market skill'] },

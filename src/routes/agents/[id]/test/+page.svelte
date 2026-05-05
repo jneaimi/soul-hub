@@ -14,6 +14,7 @@
 		model?: string;
 		provider?: string;
 		source_path: string;
+		budget?: { max_usd?: number; max_turns?: number; timeout_sec?: number };
 	}
 
 	let agent = $state<AgentSummary | null>(null);

@@ -159,12 +159,11 @@ function buildDrafts(): AgentDraft[] {
 		model: s.model,
 		tools: s.tools,
 		skills: s.skills,
-		permissions: { vault_read: true, vault_write: false, web: false, shell: false },
 		budget: { max_usd: 0.5, max_turns: 20, timeout_sec: 60 },
 		system_prompt: s.system_prompt,
 		provenance: 'builtin',
 		chat_dispatchable: s.chat_dispatchable === true,
-		spec: { backend: 'claude-pty', worktree_isolated: true, parallel_safe: true },
+		spec: { backend: 'claude-pty', worktree_isolated: true },
 	}));
 }
 

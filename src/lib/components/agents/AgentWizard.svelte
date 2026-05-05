@@ -5,13 +5,6 @@
 	type Backend = 'claude-pty' | 'claude-cli-flag' | 'ai-sdk';
 	type Provider = 'anthropic' | 'openai' | 'openrouter' | 'google' | 'mistral';
 
-	interface Permissions {
-		vault_read: boolean;
-		vault_write: boolean;
-		web: boolean;
-		shell: boolean;
-	}
-
 	interface Budget {
 		max_usd: number;
 		max_turns: number;
@@ -25,7 +18,6 @@
 		model?: string;
 		tools?: string[];
 		skills?: string[];
-		permissions?: Partial<Permissions>;
 		budget?: Partial<Budget>;
 		system_prompt?: string;
 		backend?: Backend;
@@ -34,8 +26,6 @@
 		provider?: Provider;
 		// pty-specific
 		worktree_isolated?: boolean;
-		parallel_safe?: boolean;
-		mcp_preset?: string;
 	}
 
 	interface Props {
@@ -122,15 +112,8 @@
 
 	// PTY-specific
 	let worktreeIsolated = $state(seed.worktree_isolated ?? true);
-	let parallelSafe = $state(seed.parallel_safe ?? true);
-	let mcpPreset = $state(seed.mcp_preset ?? '');
 
-	// Permissions + budget
-	let permVaultRead = $state(seed.permissions?.vault_read ?? false);
-	let permVaultWrite = $state(seed.permissions?.vault_write ?? false);
-	let permWeb = $state(seed.permissions?.web ?? false);
-	let permShell = $state(seed.permissions?.shell ?? false);
-
+	// Budget
 	let maxUsd = $state(seed.budget?.max_usd ?? 0.5);
 	let maxTurns = $state(seed.budget?.max_turns ?? 20);
 	let timeoutSec = $state(seed.budget?.timeout_sec ?? 60);
@@ -165,12 +148,6 @@
 			description: description.trim(),
 			tools,
 			skills,
-			permissions: {
-				vault_read: permVaultRead,
-				vault_write: permVaultWrite,
-				web: permWeb,
-				shell: permShell,
-			},
 			budget: {
 				max_usd: Number(maxUsd) || 0,
 				max_turns: Number(maxTurns) || 1,
@@ -186,8 +163,6 @@
 			draft.spec = {
 				backend: 'claude-pty',
 				worktree_isolated: worktreeIsolated,
-				parallel_safe: parallelSafe,
-				mcp_preset: mcpPreset.trim() || undefined,
 			};
 		} else if (backend === 'claude-cli-flag') {
 			draft.model = modelClaude.trim() || undefined;
@@ -506,29 +481,6 @@
 			{/if}
 		</div>
 
-		<!-- Permissions -->
-		<div>
-			<div class="text-xs text-hub-muted mb-1.5">Permissions</div>
-			<div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
-				<label class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-hub-bg border border-hub-border text-xs text-hub-muted cursor-pointer hover:text-hub-text transition-colors">
-					<input type="checkbox" bind:checked={permVaultRead} class="accent-hub-cta cursor-pointer" />
-					Vault read
-				</label>
-				<label class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-hub-bg border border-hub-border text-xs text-hub-muted cursor-pointer hover:text-hub-text transition-colors">
-					<input type="checkbox" bind:checked={permVaultWrite} class="accent-hub-cta cursor-pointer" />
-					Vault write
-				</label>
-				<label class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-hub-bg border border-hub-border text-xs text-hub-muted cursor-pointer hover:text-hub-text transition-colors">
-					<input type="checkbox" bind:checked={permWeb} class="accent-hub-cta cursor-pointer" />
-					Web
-				</label>
-				<label class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-hub-bg border border-hub-border text-xs text-hub-muted cursor-pointer hover:text-hub-text transition-colors">
-					<input type="checkbox" bind:checked={permShell} class="accent-hub-cta cursor-pointer" />
-					Shell
-				</label>
-			</div>
-		</div>
-
 		<!-- Chat dispatch policy (ADR-005) -->
 		<div>
 			<div class="text-xs text-hub-muted mb-1.5">Chat dispatch</div>
@@ -593,38 +545,20 @@
 			</div>
 
 			{#if backend === 'claude-pty'}
-				<div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-					<div>
-						<label for="claude-model" class="block text-xs text-hub-muted mb-1">Model</label>
-						<input
-							id="claude-model"
-							type="text"
-							bind:value={modelClaude}
-							placeholder="sonnet"
-							class="w-full px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50"
-						/>
-					</div>
-					<div>
-						<label for="mcp-preset" class="block text-xs text-hub-muted mb-1">
-							MCP preset <span class="text-hub-dim">(optional)</span>
-						</label>
-						<input
-							id="mcp-preset"
-							type="text"
-							bind:value={mcpPreset}
-							placeholder="strict-isolated"
-							class="w-full px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50"
-						/>
-					</div>
+				<div>
+					<label for="claude-model" class="block text-xs text-hub-muted mb-1">Model</label>
+					<input
+						id="claude-model"
+						type="text"
+						bind:value={modelClaude}
+						placeholder="sonnet"
+						class="w-full px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50"
+					/>
 				</div>
 				<div class="flex flex-wrap gap-3 pt-1">
 					<label class="flex items-center gap-2 text-xs text-hub-muted cursor-pointer">
 						<input type="checkbox" bind:checked={worktreeIsolated} class="accent-hub-cta cursor-pointer" />
 						Worktree-isolated
-					</label>
-					<label class="flex items-center gap-2 text-xs text-hub-muted cursor-pointer">
-						<input type="checkbox" bind:checked={parallelSafe} class="accent-hub-cta cursor-pointer" />
-						Parallel-safe
 					</label>
 				</div>
 			{:else if backend === 'claude-cli-flag'}

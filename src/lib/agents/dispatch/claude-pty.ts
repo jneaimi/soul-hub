@@ -47,9 +47,9 @@ export const claudePtyDispatcher: BackendDispatcher = {
 
 		const runId = crypto.randomUUID().slice(0, 8);
 		const started = Date.now();
-		const budget = resolveBudget(opts.mode);
+		const budget = resolveBudget(opts.mode, agent.budget);
 
-		const prompt = composePrompt(agent, opts.task);
+		const prompt = composePrompt(agent, opts.task, opts.context);
 		const model = agent.model || 'sonnet';
 
 		let session;
@@ -166,10 +166,14 @@ export const claudePtyDispatcher: BackendDispatcher = {
 	},
 };
 
-function composePrompt(agent: AgentSummary, task: string): string {
+function composePrompt(agent: AgentSummary, task: string, context?: string): string {
 	const sys = agent.system_prompt?.trim();
-	if (!sys) return task;
-	return `${sys}\n\n---\n\n# Task\n\n${task}`;
+	const ctx = context?.trim();
+	const sections: string[] = [];
+	if (sys) sections.push(sys);
+	if (ctx) sections.push(ctx);
+	sections.push(`# Task\n\n${task}`);
+	return sections.length === 1 ? task : sections.join('\n\n---\n\n');
 }
 
 function stripAnsi(s: string): string {

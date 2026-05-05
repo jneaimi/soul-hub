@@ -23,10 +23,14 @@ const TEST_CAPS: ResolvedBudget = {
 	timeout_ms: 60_000,
 };
 
+// Production default raised from 60s → 180s after first real research dispatch
+// hit the wall-clock at 60.1s mid-task. Web research (WebSearch + a couple of
+// WebFetch calls + synthesis) reliably needs 90-150s; 180s covers the median
+// with headroom. Per-agent budgets (researcher, etc.) override upward.
 const PRODUCTION_DEFAULTS: ResolvedBudget = {
 	max_usd: 0.5,
-	max_turns: 20,
-	timeout_ms: 60_000,
+	max_turns: 25,
+	timeout_ms: 180_000,
 };
 
 /** Resolve the budget for a dispatch. Test mode floors at the smaller of

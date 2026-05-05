@@ -16,6 +16,11 @@ export interface DispatchOptions {
 	mode: DispatchMode;
 	task: string;
 	signal?: AbortSignal;
+	/** Optional conversation brief built by the orchestrator. Lane dispatchers
+	 *  prepend it to the task prompt so the agent sees the gist of the chat
+	 *  it was dispatched from. Bounded to ~600 chars upstream — never the
+	 *  raw 16-turn history. Empty/undefined → behave as before (single-shot). */
+	context?: string;
 }
 
 export type DispatchEvent =

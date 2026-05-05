@@ -2,10 +2,13 @@
  * POST /api/channels/whatsapp/orchestrator/cancel
  *
  * Body: { jid: string }
- * Response: { ok: true, cancelled: { runId, agentId, startedAt } | null }
+ * Response: { ok: true, cancelled: Array<{ runId, agentId, startedAt }> }
  *
- * Cancels any active orchestrator-initiated agent run for the given JID.
- * Idempotent — returns `cancelled: null` if nothing was running.
+ * Cancels every active orchestrator-initiated agent run for the given
+ * JID. Idempotent — returns `cancelled: []` when nothing was running.
+ *
+ * Phase 1.5a returns an array because per-jid cap = 2 means there can
+ * be up to two concurrent runs on a single chat.
  */
 
 import type { RequestHandler } from './$types';
@@ -26,12 +29,10 @@ export const POST: RequestHandler = async ({ request }) => {
 	const cancelled = cancelByJid(jid);
 	return json({
 		ok: true,
-		cancelled: cancelled
-			? {
-					runId: cancelled.runId,
-					agentId: cancelled.agentId,
-					startedAt: cancelled.startedAt,
-				}
-			: null,
+		cancelled: cancelled.map((r) => ({
+			runId: r.runId,
+			agentId: r.agentId,
+			startedAt: r.startedAt,
+		})),
 	});
 };

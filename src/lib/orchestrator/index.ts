@@ -8,13 +8,15 @@ export type { DecideOptions } from './decide.js';
 export { runInBackground } from './worker.js';
 export type { RunInBackgroundArgs } from './worker.js';
 export {
-	getActiveByJid,
 	setActive,
 	clearActive,
 	cancelByJid,
 	listActive,
+	listActiveByJid,
 } from './active-runs.js';
 export type { ActiveRun } from './active-runs.js';
 export type { OrchestratorAction, OrchestratorDecision, DecideResult } from './types.js';
 export { getOrchestratorMetrics } from './metrics.js';
 export type { OrchestratorMetrics } from './metrics.js';
+export { checkCapacity, formatCapacityRejection, PER_JID_CAP, GLOBAL_CAP } from './concurrency.js';
+export type { CapacityResult } from './concurrency.js';

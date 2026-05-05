@@ -123,20 +123,37 @@ const RouterDecisionSchema = z.object({
 		.optional(),
 });
 
-const ROUTER_SYSTEM_PROMPT = `You route inbound WhatsApp messages to one of three read intents on a Soul Hub vault assistant. Saving to the vault is slash-only (\`/save\`) and never reachable from this router — if the user wants to capture something, they will use the explicit slash command, so route capture-sounding messages to vault-chat for discussion instead.
+const ROUTER_SYSTEM_PROMPT = `You route inbound WhatsApp messages from a single user to one of three read intents on their PERSONAL Soul Hub vault assistant. Saving is slash-only (\`/save\`) — never route here.
+
+The vault contains the user's OWN saved notes (decisions, drafts, learnings, captures from past chats). brain-find and brain-recent return lists of those personal notes. They are NOT general-purpose web search and they are NOT topical Q&A. Topical curiosity about the world goes to vault-chat, where a downstream orchestrator can dispatch research/specialist agents.
 
 Routes:
-- brain-find: user wants to retrieve a specific past note. Search verbs: find, search, look up, "where's my note about ...", "do I have anything on ...".
-- brain-recent: user wants the most-recently-touched notes. Recency markers: "what's new", "show me recent decisions", "what did I work on yesterday".
-- vault-chat: free-form questions, discussion, or anything that doesn't clearly want a list of past notes. This is the safe default. Use it for "save this idea …", "remember to …", "look at this image and tell me what you think" — saving is opt-in via /save, so phrasing like that is for discussion, not capture.
+- brain-find: user is asking about THEIR OWN past notes — something they wrote before and want surfaced. Triggers require explicit personal-vault scoping: "find my notes on X", "where's my note about X", "do I have anything saved on X", "did I write about X", "search my vault for X", "what have I written about X". The user must be referencing their personal saved knowledge.
+- brain-recent: user wants their MOST RECENTLY WRITTEN notes. Triggers: "what's new in my vault", "show me my recent decisions", "what did I work on yesterday", "my latest captures". Always personal, always recency-scoped.
+- vault-chat: EVERYTHING else. Discussion, topical questions, general curiosity, greetings, ambiguous phrasing, capture-sounding phrases, media discussion. This is the safe default — the downstream orchestrator handles topical research, agent dispatch, and delegation from here.
+
+Critical disambiguation (study these — they are exactly the cases that have misrouted in production):
+- "i want to know how is farming doing in the UAE" → vault-chat (topical curiosity about the world, not personal-note retrieval)
+- "i want information on organic farming" → vault-chat (topical, not personal-note retrieval)
+- "tell me about heartbeat design" → vault-chat (topical, even though "heartbeat" might be in the vault)
+- "how does X work" → vault-chat (topical Q&A)
+- "what's the latest on Y" → vault-chat (asking about external state, not the user's notes)
+- "find my notes on farming" → brain-find (explicit personal-note reference: "my notes")
+- "where's my heartbeat ADR" → brain-find (explicit personal scope: "my")
+- "did I save anything about chess engines" → brain-find (explicit "I save" past tense)
+- "what's new" alone → vault-chat (too vague, probably small talk)
+- "what's new in my drafts" → brain-recent (explicit personal scope)
+- "show me what I wrote yesterday" → brain-recent (explicit personal + recency)
+
+Heuristic: if the user did NOT use a possessive pronoun (my/I) or an explicit vault verb (save/find/search/look up + personal scope), default to vault-chat. "I want to know about X" reads as retrieval to a generic LLM but in this app it means topical curiosity → vault-chat.
 
 Confidence calibration:
-- 0.9–1.0: unambiguous explicit retrieval intent ("find my notes about heartbeat").
-- 0.7–0.8: clear intent with light noise ("hey, show me what I wrote about chess engines").
-- 0.5–0.6: ambiguous — pick the most plausible read route but flag it.
-- below 0.5: route to vault-chat.
+- 0.9–1.0: unambiguous personal-note retrieval ("find my notes about heartbeat", "show me my recent decisions").
+- 0.7–0.8: clear personal scope with light noise ("hey show me what I wrote about chess engines").
+- 0.5–0.6: ambiguous — almost always means vault-chat is safer.
+- below 0.5: vault-chat.
 
-When in doubt, vault-chat. Discussion is always the right default.`;
+When in doubt, vault-chat. Topical retrieval is NOT brain-find. Discussion is always the right default.`;
 
 async function llmRoute(
 	message: string,

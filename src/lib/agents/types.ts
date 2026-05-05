@@ -42,22 +42,28 @@ export type AiSdkProvider = z.infer<typeof AiSdkProvider>;
 
 // ─── shared sub-schemas ────────────────────────────────────────────────────
 
-const PermissionsSchema = z
-	.object({
-		vault_read: z.boolean().default(false),
-		vault_write: z.boolean().default(false),
-		web: z.boolean().default(false),
-		shell: z.boolean().default(false),
-	})
-	.prefault({});
-
 const BudgetSchema = z
 	.object({
 		max_usd: z.number().nonnegative().default(0.5),
-		max_turns: z.number().int().positive().default(20),
-		timeout_sec: z.number().int().positive().default(60),
+		max_turns: z.number().int().positive().default(25),
+		// 180s default raised from 60s after first real research dispatch hit
+		// the wall-clock at 60.1s mid-task. Per-agent overrides (researcher,
+		// lighthouse, etc.) bump higher when the workload warrants it.
+		timeout_sec: z.number().int().positive().default(180),
 	})
 	.prefault({});
+
+/** Read-time budget shape — partial because Lane A frontmatter and Lane B
+ *  YAML may carry only the fields the user wanted to override. The runtime
+ *  `resolveBudget()` falls back to PRODUCTION_DEFAULTS for missing fields. */
+const ReadBudgetSchema = z
+	.object({
+		max_usd: z.number().nonnegative(),
+		max_turns: z.number().int().positive(),
+		timeout_sec: z.number().int().positive(),
+	})
+	.partial()
+	.optional();
 
 // Note: in Zod 4, `.default({})` on objects requires the full output shape.
 // `.prefault({})` lets partial inputs flow to inner-field defaults — see the
@@ -85,6 +91,10 @@ export const AgentSummarySchema = z.object({
 	 *  by default; user opts in via /agents wizard. Replaces the Phase 1
 	 *  `tools.includes('Bash')` heuristic. */
 	chat_dispatchable: z.boolean().default(false),
+	/** Per-agent budget override read from frontmatter (Lane A) or YAML
+	 *  (Lane B). Partial — any subset of fields. Missing fields fall through
+	 *  to `PRODUCTION_DEFAULTS` in `dispatch/budget.ts` at runtime. */
+	budget: ReadBudgetSchema,
 });
 export type AgentSummary = z.infer<typeof AgentSummarySchema>;
 
@@ -99,9 +109,9 @@ export const IdSlug = z
 
 const ClaudePtyDraftSpec = z.object({
 	backend: z.literal('claude-pty'),
+	// Forward-looking marker — flagged by `claude-pty.ts` until ADR-001's
+	// worktree mode lands. Currently the dispatcher always runs in vaultDir.
 	worktree_isolated: z.boolean().default(true),
-	parallel_safe: z.boolean().default(true),
-	mcp_preset: z.string().optional(),
 });
 
 const ClaudeCliFlagDraftSpec = z.object({
@@ -124,7 +134,6 @@ export const AgentDraftSchema = z.object({
 	model: z.string().optional(),
 	tools: z.array(z.string()).default([]),
 	skills: z.array(z.string()).default([]),
-	permissions: PermissionsSchema,
 	budget: BudgetSchema,
 	system_prompt: z.string().default(''),
 	provenance: Provenance.default('user-created'),

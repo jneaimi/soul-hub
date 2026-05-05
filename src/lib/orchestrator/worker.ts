@@ -1,27 +1,37 @@
 /**
  * Background dispatch worker — runs the agent via `dispatchAgent` and
- * morphs a single WhatsApp status message via Baileys edits as the run
- * progresses (ADR-005 Phase 2).
+ * settles the WhatsApp ack message when the run terminates.
  *
- * Contract with the inbound handler:
- *   - The handler synchronously sends the initial "🟡 Working on it…"
- *     message via `workerSend` and captures the resulting `messageId`.
- *   - It then calls `runInBackground({progressMessageId, …})` and returns
- *     `{action: 'drop'}` so the worker process doesn't double-send.
- *   - This module owns the message from then on: edits it through the
- *     run, settles it on terminal status. If the run output exceeds the
- *     edit-friendly size (~3.5KB), the status message is settled to a
- *     short summary and the full output is sent as a follow-up message.
+ * Phase 1.5a UX rewrite:
+ *   - The handler synchronously sends a single conversational ack
+ *     ("On it — delegating to *agent*. I'll send the summary…") and
+ *     captures its `messageId`.
+ *   - This module owns the message from then on: leaves it untouched
+ *     during the run (no 8s edit cadence — the previous behavior spammed
+ *     the user with progress lines), fires ONE optional 60s check-in as
+ *     a SEPARATE message if the run is still alive, then settles the
+ *     original ack with terminal status on completion.
+ *   - On settle, agent stdout is run through `cleanAgentOutputForChat`
+ *     (ANSI/box-draw stripping + banner-line removal). A best-effort
+ *     vault-path extraction renders a clickable Soul Hub URL in a
+ *     follow-up message so the user can pull the long-form report.
  *
- * Throttle: at most one edit per `EDIT_THROTTLE_MS`. `step` events bypass
- * the throttle (they are inherently milestoned). Final/terminal edits
- * always fire.
+ * Cancel: the abort controller is registered in `active-runs` keyed by
+ * `runId`. `cancelByJid(jid)` aborts every run on the JID; the dispatch
+ * generator's catch-block produces a `cancelled` result and we settle
+ * the message.
  */
 
 import { dispatchAgent } from '$lib/agents/dispatch/index.js';
 import type { DispatchEvent, DispatchResult } from '$lib/agents/dispatch/types.js';
 import { workerSend } from '$lib/channels/whatsapp/worker-client.js';
 import type { WhatsAppWorkerConfig } from '$lib/channels/whatsapp/types.js';
+import { saveTurn } from '$lib/vault-chat/history.js';
+import {
+	summarizeAgentResultForHistory,
+	cleanAgentOutputForChat,
+	extractVaultPath,
+} from '$lib/conversation/index.js';
 import { setActive, clearActive } from './active-runs.js';
 
 export interface RunInBackgroundArgs {
@@ -31,55 +41,36 @@ export interface RunInBackgroundArgs {
 	sourceMessage: string;
 	worker: WhatsAppWorkerConfig;
 	/** ID of the WhatsApp message the inbound handler just sent (the
-	 *  "🟡 Working on it…" ack). The progress callback edits this same
-	 *  message in place. When undefined, progress edits are skipped and
-	 *  only the final result lands as a fresh message — keeps the path
-	 *  alive if the initial send failed for any reason. */
+	 *  conversational ack). The settle step edits this same message in
+	 *  place when the run finishes. When undefined, the settle path falls
+	 *  back to a fresh message — keeps the path alive if the initial send
+	 *  failed for any reason. */
 	progressMessageId?: string;
+	/** Phase 5 — conversation key (DM senderNumber, group chatJid). Used to
+	 *  write a one-line agent-result summary to `chat_history` when the run
+	 *  settles, so the next conversational turn (in either the orchestrator
+	 *  or vault-chat) sees that this agent ran and what it answered. */
+	conversationKey?: string;
+	/** Phase 5 — orchestrator-built brief inlined into the agent's task
+	 *  prompt at dispatch time. Bounded ~600 chars upstream by
+	 *  `buildAgentContextBrief`. */
+	agentContext?: string;
 }
 
-const EDIT_THROTTLE_MS = 8_000;
 const REPLY_LIMIT_CHARS = 3_500; // WhatsApp text cap is ~4096; leave headroom.
-const STATUS_LINE_MAX = 200;
-
-function elapsedSec(startedAt: number): number {
-	return Math.round((Date.now() - startedAt) / 1000);
-}
-
-/** Backend hint surfaced inside the progress message. The orchestrator
- *  doesn't know which backend the agent was bound to until the dispatch
- *  generator yields its first `started` event — but the inbound handler
- *  has the agent record in hand, so we plumb it through. */
-function backendHint(backend?: string): string {
-	if (!backend) return '';
-	if (backend === 'claude-pty') return ' · pty';
-	if (backend === 'claude-cli-flag') return ' · cli-flag';
-	if (backend === 'ai-sdk') return ' · ai-sdk';
-	return '';
-}
-
-function progressLine(
-	agentId: string,
-	startedAt: number,
-	stepCount: number,
-	backend?: string,
-): string {
-	const sec = elapsedSec(startedAt);
-	const stepBit = stepCount > 0 ? ` · step ${stepCount}` : '';
-	return `🟡 Working on \`${agentId}\` (${sec}s${stepBit}${backendHint(backend)})…`;
-}
+const STILL_RUNNING_CHECKIN_MS = 60_000;
 
 function terminalLine(agentId: string, result: DispatchResult): string {
 	const prefix =
 		result.status === 'success'
-			? `✅ \`${agentId}\` finished`
+			? `✅ *${agentId}* finished`
 			: result.status === 'cancelled'
-				? `🛑 \`${agentId}\` cancelled`
+				? `🛑 *${agentId}* cancelled`
 				: result.status === 'timeout'
-					? `⏱ \`${agentId}\` timed out`
+					? `⏱ *${agentId}* timed out`
 					: result.status === 'budget-exceeded'
-						? `💸 \`${agentId}\` hit its budget`
-						: `⚠️ \`${agentId}\` errored`;
+						? `💸 *${agentId}* hit its budget`
+						: `⚠️ *${agentId}* errored`;
 
 	const cost = result.cost_usd > 0 ? ` · $${result.cost_usd.toFixed(4)}` : '';
 	const turns = result.num_turns ? ` · ${result.num_turns} turns` : '';
@@ -87,8 +78,38 @@ function terminalLine(agentId: string, result: DispatchResult): string {
 	return `${prefix} (${dur}${turns}${cost})`;
 }
 
-/** Settle the run: edit the status message, send the full output as a
- *  follow-up if it doesn't fit cleanly inside the edit. */
+/** Build the chat-friendly body for a settled run. Success runs get the
+ *  ANSI-cleaned output; failure / timeout / cancel runs get a single-line
+ *  reason. */
+function settleBody(result: DispatchResult): string {
+	if (result.status === 'success') {
+		const cleaned = cleanAgentOutputForChat(result.output, REPLY_LIMIT_CHARS);
+		return cleaned || '(no readable output — full result saved to the vault)';
+	}
+	if (result.status === 'cancelled') return 'Stopped on your request.';
+	if (result.status === 'timeout') {
+		return `Timed out at ${(result.duration_ms / 1000).toFixed(0)}s. Partial output (if any) saved to the vault.`;
+	}
+	if (result.status === 'budget-exceeded') {
+		return `Hit cost / turn budget. Partial output (if any) saved to the vault.`;
+	}
+	return result.error ? result.error.slice(0, 500) : 'Unknown error.';
+}
+
+/** Render a clickable vault URL for a given vault-relative path, or null
+ *  if `SOUL_HUB_PUBLIC_URL` is not configured. The /vault?note=… form is
+ *  what the rest of the app uses (see _inbound's "more" handler). */
+function vaultUrl(vaultRelPath: string): string | null {
+	const base = (process.env.SOUL_HUB_PUBLIC_URL ?? '').replace(/\/$/, '');
+	if (!base) return null;
+	return `${base}/vault?note=${encodeURIComponent(vaultRelPath)}`;
+}
+
+/** Settle the run: edit the original ack to a terminal status line, and
+ *  send the cleaned body (+ optional vault URL) as one or two follow-up
+ *  messages. We never try to cram everything into the edit anymore — the
+ *  body is multi-line cleaned text and edits beyond a few hundred chars
+ *  read poorly across WhatsApp clients. */
 async function settleRun(args: {
 	jid: string;
 	agentId: string;
@@ -98,34 +119,6 @@ async function settleRun(args: {
 }): Promise<void> {
 	const { jid, agentId, worker, progressMessageId, result } = args;
 	const status = terminalLine(agentId, result);
-	const body =
-		result.status === 'success'
-			? (result.output || '(no output)').slice(0, REPLY_LIMIT_CHARS)
-			: (result.error || '(no detail)').slice(0, REPLY_LIMIT_CHARS);
-
-	// If the body fits inside a single edit (status + body together under
-	// the cap), morph the original message and we're done. Otherwise
-	// settle the original to a short status line and ship the body as a
-	// fresh follow-up message.
-	const combined = `${status}\n\n${body}`;
-	if (progressMessageId && combined.length <= REPLY_LIMIT_CHARS) {
-		try {
-			await workerSend(worker, { to: jid, editId: progressMessageId, text: combined });
-		} catch (err) {
-			console.error(
-				`[orchestrator] settle-edit failed for ${jid}: ${(err as Error).message}`,
-			);
-			// Fall back to a fresh message so the user still sees something.
-			try {
-				await workerSend(worker, { to: jid, text: combined });
-			} catch (err2) {
-				console.error(
-					`[orchestrator] settle-fallback also failed for ${jid}: ${(err2 as Error).message}`,
-				);
-			}
-		}
-		return;
-	}
 
 	if (progressMessageId) {
 		try {
@@ -135,13 +128,41 @@ async function settleRun(args: {
 				`[orchestrator] settle-status-edit failed for ${jid}: ${(err as Error).message}`,
 			);
 		}
+	} else {
+		try {
+			await workerSend(worker, { to: jid, text: status });
+		} catch (err) {
+			console.error(
+				`[orchestrator] settle-status-send failed for ${jid}: ${(err as Error).message}`,
+			);
+		}
 	}
-	try {
-		await workerSend(worker, { to: jid, text: body });
-	} catch (err) {
-		console.error(
-			`[orchestrator] settle-body-send failed for ${jid}: ${(err as Error).message}`,
-		);
+
+	const body = settleBody(result);
+	if (body && body.length > 0) {
+		try {
+			await workerSend(worker, { to: jid, text: body });
+		} catch (err) {
+			console.error(
+				`[orchestrator] settle-body-send failed for ${jid}: ${(err as Error).message}`,
+			);
+		}
+	}
+
+	// Best-effort vault link. Heuristic Phase 1.5a — Phase 1.5b will pull
+	// it from the structured trailer once agents emit one.
+	if (result.status === 'success' && result.output) {
+		const path = extractVaultPath(result.output);
+		const url = path ? vaultUrl(path) : null;
+		if (url) {
+			try {
+				await workerSend(worker, { to: jid, text: `📄 Full report: ${url}` });
+			} catch (err) {
+				console.warn(
+					`[orchestrator] vault-link send failed for ${jid}: ${(err as Error).message}`,
+				);
+			}
+		}
 	}
 }
 
@@ -149,33 +170,28 @@ async function settleRun(args: {
  *  swallowed and surfaced as a failure message to the chat — never
  *  thrown back to the caller's request loop. */
 export function runInBackground(args: RunInBackgroundArgs): void {
-	const { jid, agentId, task, sourceMessage, worker, progressMessageId } = args;
+	const { jid, agentId, task, sourceMessage, worker, progressMessageId, conversationKey, agentContext } = args;
 
 	const controller = new AbortController();
 	const startedAt = Date.now();
-	let stepCount = 0;
-	let backend: string | undefined;
-	let lastEditAt = 0;
-	let lastStatusLine = '';
+	let registered = false;
+	let registeredRunId = '';
+	let terminated = false;
 
-	const editProgress = async (force = false): Promise<void> => {
-		if (!progressMessageId) return;
-		const now = Date.now();
-		if (!force && now - lastEditAt < EDIT_THROTTLE_MS) return;
-		const line = progressLine(agentId, startedAt, stepCount, backend).slice(0, STATUS_LINE_MAX);
-		if (line === lastStatusLine) return;
-		lastEditAt = now;
-		lastStatusLine = line;
-		try {
-			await workerSend(worker, { to: jid, editId: progressMessageId, text: line });
-		} catch (err) {
-			// Edit failed (rare) — drop the throttle so subsequent edits
-			// retry, but don't surface the error to the user. Best-effort.
+	// Single 60s check-in. Sent as a separate message so the user notices
+	// it; previous design edited the ack every 8s and produced a wall of
+	// pings. After this fires once, silence until terminal.
+	const checkInTimer = setTimeout(() => {
+		if (terminated) return;
+		void workerSend(worker, {
+			to: jid,
+			text: `Still working on *${agentId}* — 60s in. Reply *cancel* to stop, or wait — I'll send the summary here.`,
+		}).catch((err) => {
 			console.warn(
-				`[orchestrator] progress edit failed for ${jid}: ${(err as Error).message}`,
+				`[orchestrator] 60s check-in failed for ${jid}: ${(err as Error).message}`,
 			);
-		}
-	};
+		});
+	}, STILL_RUNNING_CHECKIN_MS);
 
 	void (async () => {
 		const generator = dispatchAgent(agentId, task, {
@@ -183,6 +199,7 @@ export function runInBackground(args: RunInBackgroundArgs): void {
 			sourceMessage,
 			signal: controller.signal,
 			mode: 'production',
+			context: agentContext,
 		});
 
 		let runId = '';
@@ -194,17 +211,12 @@ export function runInBackground(args: RunInBackgroundArgs): void {
 				const event = next.value as DispatchEvent;
 				if (event.type === 'started') {
 					runId = event.runId;
-					backend = event.backend;
-					setActive(jid, { runId, agentId, startedAt, abortController: controller });
-				} else if (event.type === 'step') {
-					stepCount = event.n;
-					// Step events are inherently milestoned — bypass throttle.
-					await editProgress(true);
-				} else if (event.type === 'output') {
-					// Output chunks are too noisy to act on; just refresh
-					// the elapsed-time line if the throttle window is up.
-					await editProgress(false);
+					registeredRunId = runId;
+					setActive({ runId, agentId, jid, startedAt, abortController: controller });
+					registered = true;
 				}
+				// Other events (`step`, `output`, `tool_call`, etc.) intentionally
+				// no-op here — Phase 1.5a removed mid-run progress edits.
 				next = await generator.next();
 			}
 			result = next.value;
@@ -221,9 +233,32 @@ export function runInBackground(args: RunInBackgroundArgs): void {
 				error: (err as Error).message,
 			};
 		} finally {
-			clearActive(jid);
+			terminated = true;
+			clearTimeout(checkInTimer);
+			if (registered) clearActive(registeredRunId);
 		}
 
 		await settleRun({ jid, agentId, worker, progressMessageId, result });
+
+		// Phase 5 — write the assistant turn to chat_history so the next
+		// conversational turn (orchestrator or vault-chat) sees the gist of
+		// what this agent produced. The raw output already lives in
+		// `agent_runs.output`; this is a thin anchor for anaphora resolution.
+		// Best-effort: a write failure must not break the dispatch path.
+		if (conversationKey) {
+			try {
+				const summary = summarizeAgentResultForHistory(
+					agentId,
+					result.output,
+					result.error,
+					result.status,
+				);
+				saveTurn(conversationKey, 'assistant', summary);
+			} catch (err) {
+				console.warn(
+					`[orchestrator] chat_history writeback failed for ${conversationKey}: ${(err as Error).message}`,
+				);
+			}
+		}
 	})();
 }

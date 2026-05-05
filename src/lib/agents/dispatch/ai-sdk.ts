@@ -116,7 +116,7 @@ export const aiSdkDispatcher: BackendDispatcher = {
 	): AsyncGenerator<DispatchEvent, DispatchResult, void> {
 		const runId = crypto.randomUUID().slice(0, 8);
 		const started = Date.now();
-		const budget = resolveBudget(opts.mode);
+		const budget = resolveBudget(opts.mode, agent.budget);
 
 		const provider = agent.provider;
 		const modelId = agent.model;
@@ -142,9 +142,12 @@ export const aiSdkDispatcher: BackendDispatcher = {
 		opts.signal?.addEventListener('abort', onAbort);
 		const timer = setTimeout(() => ac.abort(), budget.timeout_ms);
 
+		const ctx = opts.context?.trim();
 		const agentRunner = new ToolLoopAgent({
 			model: resolved.model,
-			instructions: composeInstructions(agent),
+			instructions: ctx
+				? `${composeInstructions(agent)}\n\n---\n\n${ctx}`
+				: composeInstructions(agent),
 			tools: {},
 			stopWhen: stepCountIs(budget.max_turns),
 		});

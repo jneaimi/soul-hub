@@ -35,6 +35,10 @@ export interface DispatchAgentOptions {
 	/** WhatsApp orchestrator (ADR-005) populates these — UI/API dispatches leave undefined. */
 	jid?: string;
 	sourceMessage?: string;
+	/** Phase 5 — orchestrator-built conversation brief inlined into the agent's
+	 *  task prompt so dispatched agents see the prior topic + recent agent
+	 *  output gist. Bounded ~600 chars upstream by `buildAgentContextBrief`. */
+	context?: string;
 }
 
 /** Run an agent. Streams events; the generator's return value is the final
@@ -91,6 +95,7 @@ export async function* dispatchAgent(
 		mode,
 		task,
 		signal: opts.signal,
+		context: opts.context,
 	});
 
 	persistRun(result, agent, mode, task, startedAt, opts);

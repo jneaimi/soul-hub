@@ -35,11 +35,14 @@ import { dispatchVaultChat } from '$lib/vault-chat/index.js';
 import {
 	decide as orchestratorDecide,
 	runInBackground as orchestratorDispatch,
-	getActiveByJid as getActiveOrchestratorRun,
-	cancelByJid as cancelOrchestratorRun,
+	listActiveByJid as listActiveOrchestratorRuns,
+	cancelByJid as cancelOrchestratorRuns,
+	checkCapacity as checkDispatchCapacity,
+	formatCapacityRejection,
 } from '$lib/orchestrator/index.js';
 import { workerSend as workerSendForOrchestrator } from '$lib/channels/whatsapp/worker-client.js';
-import { isResetCommand, resetConversation } from '$lib/vault-chat/history.js';
+import { isResetCommand, resetConversation, saveTurn } from '$lib/vault-chat/history.js';
+import { getConversationContext, buildAgentContextBrief } from '$lib/conversation/index.js';
 import {
 	isHeartbeatMetaCommand,
 	handleHeartbeatMetaCommand,
@@ -274,43 +277,78 @@ export const POST: RequestHandler = async ({ request }) => {
 		// Slash commands (/img, /save, /brain*, /heartbeat etc.) are
 		// resolved by `resolveIntent` above and bypass this entirely.
 		if (intent.route === 'vault-chat' && !envelope.media) {
-			const active = getActiveOrchestratorRun(envelope.chatJid);
-			if (active) {
-				const lower = workingBody.trim().toLowerCase();
-				if (lower === 'cancel' || lower === 'stop') {
-					const cancelled = cancelOrchestratorRun(envelope.chatJid);
-					return json({
-						ok: true,
-						action: 'reply',
-						text: cancelled
-							? `🛑 Cancelled \`${cancelled.agentId}\`.`
-							: 'Nothing to cancel.',
-					});
+			// Phase 1.5a — `cancel` / `stop` short-circuits when ANY runs
+			// are active for this JID. Cancels every active run on the JID
+			// (per-jid cap = 2 means there can be up to two). Other messages
+			// fall through to normal classification below — the user can
+			// continue chatting while a delegate runs.
+			const lower = workingBody.trim().toLowerCase();
+			if (lower === 'cancel' || lower === 'stop') {
+				const active = listActiveOrchestratorRuns(envelope.chatJid);
+				if (active.length > 0) {
+					const cancelled = cancelOrchestratorRuns(envelope.chatJid);
+					const text =
+						cancelled.length === 1
+							? `🛑 Cancelled *${cancelled[0].agentId}*.`
+							: `🛑 Cancelled ${cancelled.length} runs: ${cancelled.map((r) => `*${r.agentId}*`).join(', ')}.`;
+					return json({ ok: true, action: 'reply', text });
 				}
-				const elapsedSec = Math.round((Date.now() - active.startedAt) / 1000);
-				return json({
-					ok: true,
-					action: 'reply',
-					text: `Still working on \`${active.agentId}\` (${elapsedSec}s in). Reply \`cancel\` to stop, or wait — I'll send the result here.`,
-				});
+				return json({ ok: true, action: 'reply', text: 'Nothing to cancel.' });
 			}
 
-			const orch = await orchestratorDecide(workingBody);
+			// Phase 5 — load unified conversation context BEFORE deciding.
+			// Snapshot the prior turns and recent dispatches so anaphoric
+			// follow-ups ("tell me more", "advice on this") resolve. The
+			// new user turn is saved AFTER decide() returns, so the snapshot
+			// excludes the message we're currently classifying.
+			const ctx = getConversationContext(conversationKey, { jid: envelope.chatJid });
+
+			const orch = await orchestratorDecide(workingBody, { history: ctx.history });
 			if (!orch.fellThrough) {
 				const decision = orch.decision;
+				// `chat_history` PK is (conversation_key, ts); user + assistant
+				// turns saved in the same handler must use distinct timestamps
+				// or the second insert collides on the same millisecond.
+				const turnNow = Date.now();
 				if (decision.action === 'reply' && decision.reply) {
 					replyText = decision.reply;
-					// Skip the vault-chat call below — we already have a reply.
+					// Persist the conversational round so the next turn
+					// (orchestrator or vault-chat) can see it.
+					saveTurn(conversationKey, 'user', workingBody, turnNow);
+					saveTurn(conversationKey, 'assistant', replyText, turnNow + 1);
 				} else if (decision.action === 'clarify' && decision.reply) {
-					return json({ ok: true, action: 'reply', text: decision.reply });
+					// Phase 5 — clarify-fallthrough: when we have prior history,
+					// vault-chat (which is anaphora-aware via buildRetrievalInput)
+					// gets a shot at the follow-up before we admit defeat. Cold
+					// conversations (no history) still return the clarify text
+					// directly — there's nothing to anchor against.
+					if (ctx.history.length > 0) {
+						replyText = '';
+						// fall through to vault-chat block below
+					} else {
+						saveTurn(conversationKey, 'user', workingBody, turnNow);
+						saveTurn(conversationKey, 'assistant', decision.reply, turnNow + 1);
+						return json({ ok: true, action: 'reply', text: decision.reply });
+					}
 				} else if (decision.action === 'dispatch' && decision.agent && decision.task) {
-					// ADR-005 Phase 2 — own the status message ourselves so
-					// we can edit it via Baileys as the run progresses. We
-					// send the initial "🟡 Working…" synchronously here,
-					// capture its messageId, kick off the background run
-					// passing the id forward, and return action='drop' so
-					// the worker process doesn't double-send.
-					const ackText = `🟡 Working on \`${decision.agent}\`… reply \`cancel\` to stop.`;
+					// Phase 1.5a — concurrency cap check. Per-jid cap allows
+					// one long research + one quick task in parallel; global
+					// cap is the backstop against runaway dispatch. When the
+					// cap rejects, surface the running list so the user can
+					// see what's blocking the slot.
+					const capacity = checkDispatchCapacity(envelope.chatJid);
+					if (!capacity.ok) {
+						saveTurn(conversationKey, 'user', workingBody, turnNow);
+						const rejection = formatCapacityRejection(capacity);
+						saveTurn(conversationKey, 'assistant', rejection, turnNow + 1);
+						return json({ ok: true, action: 'reply', text: rejection });
+					}
+
+					// Conversational ack — captures the message id so the
+					// worker can settle it on terminal status. We return
+					// `action: 'drop'` so the worker process doesn't
+					// double-send.
+					const ackText = `On it — delegating to *${decision.agent}*. I'll send the summary here when it's ready (you can keep chatting; reply *cancel* to stop).`;
 					let progressMessageId: string | undefined;
 					try {
 						const sendResult = await workerSendForOrchestrator(cfg.worker, {
@@ -322,9 +360,16 @@ export const POST: RequestHandler = async ({ request }) => {
 						}
 					} catch (err) {
 						console.warn(
-							`[orchestrator] initial ack send failed (${(err as Error).message}); continuing without progress edits`,
+							`[orchestrator] initial ack send failed (${(err as Error).message}); continuing without it`,
 						);
 					}
+					// Phase 5 — persist the user turn now (worker will write the
+					// agent-result summary on settle, with its own ts so PK
+					// collision is impossible). Build the curated agent brief
+					// from the conversation context so the dispatched agent
+					// sees the prior topic.
+					saveTurn(conversationKey, 'user', workingBody, turnNow);
+					const agentContext = buildAgentContextBrief(ctx);
 					orchestratorDispatch({
 						jid: envelope.chatJid,
 						agentId: decision.agent,
@@ -332,6 +377,8 @@ export const POST: RequestHandler = async ({ request }) => {
 						sourceMessage: workingBody,
 						worker: cfg.worker,
 						progressMessageId,
+						conversationKey,
+						agentContext,
 					});
 					return json({ ok: true, action: 'drop' });
 				} else {

@@ -37,7 +37,7 @@ export const claudeCliFlagDispatcher: BackendDispatcher = {
 	): AsyncGenerator<DispatchEvent, DispatchResult, void> {
 		const runId = crypto.randomUUID().slice(0, 8);
 		const started = Date.now();
-		const budget = resolveBudget(opts.mode);
+		const budget = resolveBudget(opts.mode, agent.budget);
 
 		const claudeBinary = config.resolved.claudeBinary;
 		if (!existsSync(claudeBinary)) {
@@ -48,8 +48,11 @@ export const claudeCliFlagDispatcher: BackendDispatcher = {
 
 		yield { type: 'started', backend: 'claude-cli-flag', model: agent.model, runId, ts: started };
 
+		const promptArg = opts.context?.trim()
+			? `${opts.context.trim()}\n\n---\n\n# Task\n\n${opts.task}`
+			: opts.task;
 		const args = [
-			'-p', opts.task,
+			'-p', promptArg,
 			'--agent', agent.id,
 			'--output-format', 'json',
 			'--dangerously-skip-permissions',

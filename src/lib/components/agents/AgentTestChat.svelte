@@ -9,7 +9,13 @@
 		backend: Backend;
 		model?: string;
 		provider?: string;
+		budget?: { max_usd?: number; max_turns?: number; timeout_sec?: number };
 	}
+
+	// Production defaults — must stay in sync with `PRODUCTION_DEFAULTS` in
+	// src/lib/agents/dispatch/budget.ts. Used to render the production-budget
+	// hint when the agent has no per-agent override.
+	const PRODUCTION_DEFAULTS = { max_usd: 0.5, max_turns: 25, timeout_sec: 180 };
 
 	interface DispatchResult {
 		runId: string;
@@ -45,6 +51,14 @@
 	let running = $state(false);
 	let abortController: AbortController | null = null;
 	let chatEl: HTMLDivElement | null = $state(null);
+
+	// Production budget hints — derived once per agent change.
+	const prodMaxUsd = $derived(agent.budget?.max_usd ?? PRODUCTION_DEFAULTS.max_usd);
+	const prodMaxTurns = $derived(agent.budget?.max_turns ?? PRODUCTION_DEFAULTS.max_turns);
+	const prodTimeout = $derived(agent.budget?.timeout_sec ?? PRODUCTION_DEFAULTS.timeout_sec);
+	const prodIsCustom = $derived(
+		!!(agent.budget?.max_usd || agent.budget?.max_turns || agent.budget?.timeout_sec),
+	);
 
 	const examples: Record<Backend, string[]> = {
 		'claude-pty': [
@@ -249,7 +263,9 @@
 		</div>
 		<p class="text-[10px] text-hub-dim mt-1.5">
 			Test runs use hard caps: <span class="text-hub-warning">max $0.10 · 5 turns · 60s timeout</span>.
-			Production dispatches respect the agent's full budget.
+			Production dispatches use
+			<span class="text-hub-text">max ${prodMaxUsd.toFixed(2)} · {prodMaxTurns} turns · {prodTimeout}s timeout</span>
+			{#if prodIsCustom}<span class="text-hub-muted">(per-agent override)</span>{:else}<span class="text-hub-muted">(default)</span>{/if}.
 		</p>
 	</div>
 
