@@ -297,6 +297,8 @@ export const TYPE_COLORS: Record<string, string> = {
 	'miner-report': '#14b8a6',
 	'signal-report': '#14b8a6',
 	'strategist-prep': '#14b8a6',
+	'action-list': '#0d9488',       // teal-600 — Strategist outputs
+	'weekly-review': '#0d9488',
 	// Project types
 	project: '#6366f1',      // indigo
 	output: '#3b82f6',       // blue
@@ -354,6 +356,11 @@ export const TYPE_CHIP_CLASSES: Record<string, string> = {
 	'media-asset': 'bg-violet-500/20 text-violet-400',
 	'miner-report': 'bg-teal-500/20 text-teal-400',
 	'signal-report': 'bg-teal-500/20 text-teal-400',
+	'strategist-prep': 'bg-teal-500/20 text-teal-300',
+	'action-list': 'bg-teal-600/20 text-teal-300',
+	'weekly-review': 'bg-teal-600/20 text-teal-300',
+	'data-pack': 'bg-cyan-500/20 text-cyan-400',
+	'content-prep': 'bg-violet-500/20 text-violet-300',
 	// Project
 	project: 'bg-indigo-500/20 text-indigo-400',
 	output: 'bg-blue-500/20 text-blue-400',
