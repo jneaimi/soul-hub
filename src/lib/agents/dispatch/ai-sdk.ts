@@ -195,7 +195,13 @@ export const aiSdkDispatcher: BackendDispatcher = {
 			}
 
 			const usage = await result.usage;
-			const cost = estimateCost(provider, modelId, usage);
+			let providerMetadata: OpenRouterProviderMetadata | undefined;
+			try {
+				providerMetadata = (await result.providerMetadata) as OpenRouterProviderMetadata | undefined;
+			} catch {
+				providerMetadata = undefined;
+			}
+			const cost = resolveCost(provider, modelId, usage, providerMetadata);
 
 			return finish(runId, agent, started, 'success', finalText, cost, totalSteps);
 		} catch (err) {
@@ -214,9 +220,43 @@ interface UsageLike {
 	totalTokens?: number;
 }
 
-/** Best-effort cost estimate. Real per-model pricing is in flux; v1 keeps a
- *  conservative table and returns 0 for unknown (provider, model) pairs so
- *  downstream consumers don't surface false numbers. */
+interface OpenRouterProviderMetadata {
+	openrouter?: {
+		usage?: {
+			cost?: number;
+		};
+	};
+}
+
+let warnedMissingOrCost = false;
+
+/** Resolve dispatch cost. OpenRouter responses carry the real cost in
+ *  `providerMetadata.openrouter.usage.cost` (USD, 1:1 with credits per OR
+ *  docs); read it directly. Anthropic + Google fall through to the static
+ *  estimator since neither provider returns cost in-band. */
+function resolveCost(
+	provider: string,
+	modelId: string,
+	usage: UsageLike | undefined,
+	providerMetadata: OpenRouterProviderMetadata | undefined,
+): number {
+	if (provider === 'openrouter') {
+		const orCost = providerMetadata?.openrouter?.usage?.cost;
+		if (typeof orCost === 'number') return orCost;
+		if (!warnedMissingOrCost) {
+			console.warn(
+				'[ai-sdk] OpenRouter usage.cost missing from providerMetadata — falling back to estimator (will return 0)',
+			);
+			warnedMissingOrCost = true;
+		}
+	}
+	return estimateCost(provider, modelId, usage);
+}
+
+/** Best-effort cost estimate for providers that don't return cost in-band
+ *  (Anthropic, Google). Per-model pricing is in flux; v1 keeps a conservative
+ *  table and returns 0 for unknown (provider, model) pairs so downstream
+ *  consumers don't surface false numbers. */
 function estimateCost(provider: string, modelId: string, usage?: UsageLike): number {
 	if (!usage?.inputTokens || !usage?.outputTokens) return 0;
 	const inK = usage.inputTokens / 1000;
