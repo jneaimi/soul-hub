@@ -1,5 +1,19 @@
 # Installation Guide
 
+## Quick Start
+
+For most users, the bootstrap script handles every setup step:
+
+```bash
+git clone https://github.com/jneaimi/soul-hub.git
+cd soul-hub
+npm run setup        # runs scripts/bootstrap.sh
+npm run doctor       # verify everything is wired up
+npm run dev          # http://localhost:5173
+```
+
+The bootstrap is **idempotent** — safe to re-run after pulling updates. It will not overwrite an existing `~/.soul-hub/settings.json` or `~/.soul-hub/.env`.
+
 ## Prerequisites
 
 | Requirement | Version | Required | Install |
@@ -13,38 +27,135 @@
 
 ### Supported Platforms
 
-- **macOS** (Intel + Apple Silicon)
-- **Linux** (Ubuntu 20.04+, Debian 11+, Fedora 38+)
+- **macOS** (Intel + Apple Silicon) — runs natively
+- **Linux** (Ubuntu 20.04+, Debian 11+, Fedora 38+) — runs natively
+- **Windows 10/11** — runs inside **WSL2 (Ubuntu)**. See the [Windows section](#windows-via-wsl2) below.
 
-Windows is not currently supported due to PTY and shell dependencies.
+## Platform Setup
 
-## Step 1: Clone and Install
+### macOS
 
 ```bash
+xcode-select --install                          # build tools (one-time)
 git clone https://github.com/jneaimi/soul-hub.git
 cd soul-hub
+npm run setup
+npm run dev
+```
+
+### Linux (Debian / Ubuntu)
+
+```bash
+sudo apt install -y build-essential python3 git curl
+git clone https://github.com/jneaimi/soul-hub.git
+cd soul-hub
+npm run setup
+npm run dev
+```
+
+For Fedora: `sudo dnf groupinstall "Development Tools" && sudo dnf install python3 git`.
+
+### Windows (via WSL2)
+
+Soul Hub spawns POSIX shells, native PTY sessions, and assumes a Unix filesystem. **Don't try to run it natively on Windows** — use WSL2 instead. From a Windows perspective it still feels like one tool: localhost in your Windows browser, files in Windows Explorer (under `\\wsl$\Ubuntu\home\<you>\soul-hub`).
+
+1. **Install WSL2 + Ubuntu** (one-time, in PowerShell as Administrator):
+
+   ```powershell
+   wsl --install -d Ubuntu
+   ```
+
+   Restart Windows when prompted, then open the Ubuntu app and finish first-run setup (set a username + password).
+
+2. **Install build tools inside Ubuntu** (one-time):
+
+   ```bash
+   sudo apt update
+   sudo apt install -y build-essential python3 git curl
+   curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+   sudo apt install -y nodejs
+   ```
+
+3. **Clone into your Linux home** — **not** under `/mnt/c/`. Crossing the WSL/Windows filesystem boundary breaks file watchers and is 5–10× slower:
+
+   ```bash
+   cd ~
+   git clone https://github.com/jneaimi/soul-hub.git
+   cd soul-hub
+   npm run setup
+   npm run dev
+   ```
+
+4. **Open the browser on Windows.** WSL2 forwards `localhost` automatically — go to `http://localhost:5173`. No extra config.
+
+5. **Install Claude Code inside WSL** (it must be on the same side as Soul Hub). Follow the official install instructions from inside the Ubuntu shell, then re-run `npm run doctor`.
+
+> Optional: from a Windows PowerShell prompt you can run `powershell -ExecutionPolicy Bypass -File scripts/bootstrap.ps1` — it just confirms WSL2 is installed and prints the steps above.
+
+> Don't store the repo on `/mnt/c/Users/...` even if it works. Chokidar misses events, `npm install` is sluggish, and `node-pty`'s native binary crosses a filesystem boundary on every spawn.
+
+## What `npm run setup` Does
+
+The bootstrap script (`scripts/bootstrap.sh`) is a thin shell script that:
+
+1. Verifies Node ≥ 20 and reports the path of `claude` if it's on PATH.
+2. Runs `npm install` (which rebuilds `node-pty` natively).
+3. Verifies `node-pty` actually loads — fails loudly with the right install hint if your build tools are missing.
+4. Creates `~/.soul-hub/`, `~/.soul-hub/data/`, `~/.soul-hub/logs/`, `~/vault/`, `~/dev/`.
+5. Copies `settings.example.json` → `~/.soul-hub/settings.json` (skipped if it already exists). If it found `claude` on PATH at a non-default location, it patches `paths.claudeBinary` for you.
+6. Creates `~/.soul-hub/.env` with a freshly generated `SOUL_HUB_SECRET` (only if the file is missing or the key isn't set). Sets the file mode to `0600`.
+7. Injects a managed block into `~/.claude/CLAUDE.md` between `<!-- soul-hub:start -->` / `<!-- soul-hub:end -->` markers. The block tells Claude Code (in any directory) to query the local vault API at `http://localhost:2400/api/vault/notes` before non-trivial work. The block is idempotent — re-running bootstrap replaces it in place and never duplicates. Existing content in your `CLAUDE.md` is preserved.
+
+It does **not**:
+- Initialize the SQLite databases. Those auto-migrate on the first server start (`getInboxDb()` and `getHeartbeatDb()` create + version their schemas in-process).
+- Seed any data. There is no seed step in Soul Hub — every store self-initializes from migrations.
+- Configure Claude Code. Install + log in to Claude Code yourself; the doctor will then find it.
+
+## Verifying the Install (`npm run doctor`)
+
+`npm run doctor` runs `scripts/doctor.mjs` — a read-only health check. It validates:
+
+| Check | Pass condition |
+|------|----------------|
+| Node.js | version ≥ 20 |
+| node-pty | `require('node-pty')` succeeds |
+| better-sqlite3 | opens an in-memory database |
+| `~/.soul-hub/` | exists and is writable |
+| `settings.json` | parses as valid JSON |
+| `SOUL_HUB_SECRET` | present (warns if missing — only required for Unified Inbox) |
+| Vault dir | `paths.vaultDir` from settings exists and is writable |
+| Claude CLI | `paths.claudeBinary` from settings, or `claude` on PATH, resolves |
+| Platform | macOS / Linux / WSL2 — fails on native Windows |
+
+Exit code is non-zero if any check fails, so you can wire it into CI.
+
+## Manual Setup (no bootstrap script)
+
+If you want to avoid `npm run setup` and do everything by hand, the equivalent steps are:
+
+```bash
+# 1. Install dependencies
 npm install
+
+# 2. Create user dirs
+mkdir -p ~/.soul-hub/data ~/.soul-hub/logs ~/vault ~/dev
+
+# 3. Settings
+cp settings.example.json ~/.soul-hub/settings.json
+# (edit paths.claudeBinary if `which claude` differs from ~/.local/bin/claude)
+
+# 4. Secret
+touch ~/.soul-hub/.env && chmod 600 ~/.soul-hub/.env
+echo "SOUL_HUB_SECRET=$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')" >> ~/.soul-hub/.env
 ```
 
-> **Note:** `npm install` will compile the `node-pty` native module. This requires build tools:
-> - **macOS**: Xcode Command Line Tools (`xcode-select --install`)
-> - **Linux**: `sudo apt install build-essential python3` (Debian/Ubuntu) or `sudo dnf groupinstall "Development Tools"` (Fedora)
+## Optional: Project-root `.env`
 
-## Step 2: Configure Environment
+`.env` in the repo root is also loaded, but `~/.soul-hub/.env` wins on conflict. Most users don't need a project `.env` — leave it for development overrides.
 
 ```bash
-cp .env.example .env
+cp .env.example .env       # only if you want repo-local env overrides
 ```
-
-Most variables in `.env` are optional — core features work without them. The one exception is `SOUL_HUB_SECRET`, which is required if you plan to use the **Unified Inbox** (the email aggregator encrypts stored credentials with this key).
-
-Generate one and append it to `.env`:
-
-```bash
-echo "SOUL_HUB_SECRET=$(node -e 'console.log(require(\"crypto\").randomBytes(32).toString(\"hex\"))')" >> .env
-```
-
-> Keep this value safe — losing it makes any existing encrypted inbox credentials unrecoverable.
 
 Edit `.env` to add any API keys you need (Gemini, ElevenLabs, Telegram, etc.). Pipelines that require a specific key will fail gracefully if it's missing.
 
@@ -111,35 +222,11 @@ Settings → **Routes** lists every configured route (primary + failover chain +
 
 Settings → **WhatsApp** carries the full lifecycle: a Link button that triggers `/login` and renders the QR inline (polling for refresh while pairing), allowlist editor, intent map editor (slash commands → routes), and the worker-mode toggle for the crash-isolated PM2 app. Status updates poll fast (1.5s) while pairing and slow (8s) while idle.
 
-## Step 3: Initialize the Vault
+## Running
 
-Create the vault directory where your knowledge will be stored:
+Soul Hub stores all user state outside the repo under `~/.soul-hub/` (settings, secrets, runtime data, logs). Override the location by exporting `SOUL_HUB_HOME`. All paths support `~` expansion.
 
-```bash
-mkdir -p ~/vault
-```
-
-The vault will auto-initialize with governance files and templates on first access.
-
-## Step 4: Find Your Claude Binary
-
-Soul Hub needs to know where Claude Code is installed:
-
-```bash
-which claude
-```
-
-If the path is different from the default (`~/.local/bin/claude`), copy the provided example settings to your Soul Hub home directory and edit:
-
-```bash
-mkdir -p ~/.soul-hub
-cp settings.example.json ~/.soul-hub/settings.json
-# Then edit ~/.soul-hub/settings.json and update paths.claudeBinary to match `which claude`
-```
-
-Soul Hub stores all user state outside the repo under `~/.soul-hub/` (settings, secrets, runtime data, logs). Override the location by exporting `SOUL_HUB_HOME` if you need to. All paths support `~` expansion.
-
-## Step 5: Run
+The vault auto-initializes with governance files and templates on first access — there is nothing to seed manually.
 
 ### Development Mode
 

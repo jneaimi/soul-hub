@@ -10,6 +10,8 @@
 	},
 	"type": "module",
 	"scripts": {
+		"setup": "bash scripts/bootstrap.sh",
+		"doctor": "node scripts/doctor.mjs",
 		"dev": "vite dev",
 		"build": "vite build && node scripts/build-worker.mjs",
 		"build:worker": "node scripts/build-worker.mjs",
