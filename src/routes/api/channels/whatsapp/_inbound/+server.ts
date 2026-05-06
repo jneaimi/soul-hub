@@ -426,6 +426,62 @@ export const POST: RequestHandler = async ({ request }) => {
 					// here; vault-chat's reply persists below.
 					saveTurn(conversationKey, 'user', workingBody, turnNow);
 					replyText = '';
+				} else if (decision.action === 'generate-image') {
+					// ADR-006 Phase 1 — natural-language image request.
+					// Reuses the same `dispatchImg` + cap + cache flow as the
+					// `/img` slash command (see the `intent.route === 'img'`
+					// branch below). Always text-to-image: the orchestrator
+					// only fires when `!envelope.media`, so there's never an
+					// inbound image to use as edit input here.
+					saveTurn(conversationKey, 'user', workingBody, turnNow);
+					const imgCfg = cfg.img;
+					if (!imgCfg.enabled) {
+						const text =
+							'Image generation is disabled in settings. Toggle it on under WhatsApp → Image generation.';
+						saveTurn(conversationKey, 'assistant', text, turnNow + 1);
+						return json({ ok: true, action: 'reply', text });
+					}
+					const tzForDay = cfg.heartbeat?.activeHours?.timezone ?? 'Asia/Dubai';
+					const today = ymdInTimezone(tzForDay);
+					const count = getImgCount(envelope.senderNumber, today);
+					if (count >= imgCfg.maxPerDay) {
+						const text = `You've hit today's image budget (${imgCfg.maxPerDay}/day) — resets midnight ${tzForDay}.`;
+						saveTurn(conversationKey, 'assistant', text, turnNow + 1);
+						return json({ ok: true, action: 'reply', text });
+					}
+					const imagePrompt = decision.imagePrompt ?? workingBody;
+					const imgResult = await dispatchImg({
+						prompt: imagePrompt,
+						conversationKey,
+						account: cfg.account,
+						systemPromptPath: imgCfg.systemPromptPath,
+						model: imgCfg.model,
+					});
+					if (imgResult.error) {
+						saveTurn(conversationKey, 'assistant', imgResult.error, turnNow + 1);
+						return json({ ok: true, action: 'reply', text: imgResult.error });
+					}
+					incrementImgCount(envelope.senderNumber, today);
+					rememberLastImage(conversationKey, {
+						buffer: imgResult.buffer,
+						mimetype: imgResult.mimetype,
+						prompt: imgResult.prompt,
+					});
+					// Persist a short assistant turn so future history shows the
+					// image was produced. The actual bytes don't go in chat_history.
+					saveTurn(
+						conversationKey,
+						'assistant',
+						`[image] ${imagePrompt.slice(0, 120)}`,
+						turnNow + 1,
+					);
+					return json({
+						ok: true,
+						action: 'reply',
+						attachPath: imgResult.path,
+						kind: 'image',
+						caption: imgResult.caption,
+					});
 				} else if (
 					decision.action === 'propose-dispatch' &&
 					decision.agent &&

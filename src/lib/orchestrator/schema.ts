@@ -15,7 +15,10 @@ import { listAgents } from '$lib/agents/store.js';
 import type { AgentSummary } from '$lib/agents/types.js';
 
 export interface OrchestratorSchemaContext {
-	schema: z.ZodSchema;
+	/** A `z.ZodObject` (loosely-typed return so the union of agent enums
+	 *  doesn't leak into every caller). `decide.ts` uses this with AI
+	 *  SDK's `Output.object({schema})`. */
+	schema: z.ZodObject<z.ZodRawShape>;
 	agents: AgentSummary[];
 }
 
@@ -34,6 +37,7 @@ export function buildOrchestratorSchema(): OrchestratorSchemaContext {
 			'reply',
 			'web-search',
 			'vault-search',
+			'generate-image',
 			'propose-dispatch',
 			'dispatch',
 			'clarify',
@@ -43,6 +47,10 @@ export function buildOrchestratorSchema(): OrchestratorSchemaContext {
 		task: z.string().min(20).max(2000).optional(),
 		proposalLabel: z.string().max(120).optional(),
 		webQuery: z.string().max(500).optional(),
+		// `imagePrompt` for the generate-image action. Cap mirrors
+		// `~/.soul-hub/data/whatsapp/<acct>/img.ts`'s 4000-char input cap;
+		// 1500 here is plenty for natural-language requests.
+		imagePrompt: z.string().max(1500).optional(),
 		confidence: z.number().min(0).max(1),
 		// Reasoning is audit-only (logs); Gemini sometimes packs verbose
 		// chain-of-thought in here, so don't reject the whole payload over

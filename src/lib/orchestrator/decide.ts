@@ -1,31 +1,42 @@
 /**
- * Orchestrator classifier — single Gemini Flash call via the routes layer.
+ * Orchestrator classifier — single Gemini Flash call with AI SDK
+ * structured output (Output.object), bypassing the routes layer.
  *
- * Flow:
- *   1. Build the schema (agent enum from `listAgents()`).
- *   2. Build the system prompt with agent inventory.
- *   3. `dispatchRoute('orchestrator', …)` — gets failover for free.
- *   4. Strip optional code fences, JSON.parse, Zod-validate.
- *   5. Apply confidence gates + cross-field validation.
+ * Why direct (not dispatchRoute): Gemini Flash empirically refuses some
+ * safety-sensitive prompts (image generation, real-time data) by emitting
+ * a prose refusal even when instructed to output JSON only. AI SDK's
+ * `Output.object({schema})` constrains the response at the API level
+ * (Google's controlled-generation), so prose refusals are no longer
+ * possible — the model MUST return schema-conforming JSON. This is the
+ * same pattern the vault-chat selector uses (see `vault-chat/selector.ts`).
  *
- * Falls through (`fellThrough: true`) on any failure — the caller drops
+ * The trade-off is no automatic OpenRouter failover — we lose the routes
+ * layer. Acceptable here because the orchestrator is a fast,
+ * cheap, non-essential lookup; on Gemini failure we fall through to
+ * vault-chat just like before.
+ *
+ * Falls through (`fellThrough: true`) on any failure (no key, network
+ * error, NoOutputGeneratedError, schema validation) — the caller drops
  * back to vault-chat. Never throws to the inbound handler.
  *
- * 2026-05-06: rewritten for the 6-action model. Key gates:
+ * 2026-05-06: rewritten for the 7-action model (added generate-image).
+ * Per-action validation:
  *   - `dispatch` requires confidence ≥0.85; below that → downgrade to
  *     `propose-dispatch` (review-before-execute, per ADR-006).
  *   - `propose-dispatch` requires agent + task + proposalLabel.
- *   - `web-search` requires webQuery.
- *   - `clarify` is the last-resort fallback when anything else fails.
+ *   - `web-search` requires webQuery (defaults to userMessage).
+ *   - `generate-image` requires imagePrompt (defaults to userMessage).
+ *   - `clarify` is the last-resort fallback.
  */
 
-import { dispatchRoute } from '$lib/routes/index.js';
+import { generateText, Output, NoOutputGeneratedError } from 'ai';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { buildOrchestratorSchema } from './schema.js';
 import { buildSystemPrompt } from './prompt.js';
 import type { DecideResult, OrchestratorDecision } from './types.js';
 import type { ChatMessage } from '$lib/llm/types.js';
 
-const ORCHESTRATOR_ROUTE = 'orchestrator';
+const MODEL = 'gemini-2.5-flash';
 /** Direct dispatch requires high confidence. Below this → downgrade to
  *  propose-dispatch so the user sees the proposal and can confirm. */
 const DISPATCH_CONFIDENCE_THRESHOLD = 0.85;
@@ -33,22 +44,13 @@ const DISPATCH_CONFIDENCE_THRESHOLD = 0.85;
  *  given up and ask the user to rephrase. */
 const CONFIDENCE_FLOOR = 0.4;
 const ABSTAIN_REPLY = "I'm not sure what you want me to do — can you rephrase?";
-
-function extractJsonBlock(raw: string): string | null {
-	const trimmed = raw.trim();
-	const start = trimmed.indexOf('{');
-	if (start === -1) return null;
-	let depth = 0;
-	for (let i = start; i < trimmed.length; i++) {
-		const ch = trimmed[i];
-		if (ch === '{') depth++;
-		else if (ch === '}') {
-			depth--;
-			if (depth === 0) return trimmed.slice(start, i + 1);
-		}
-	}
-	return null;
-}
+/** Cap on the structured-output JSON itself. The schema is small (~12
+ *  fields, mostly optional strings); 800 is plenty even with a long
+ *  task description. Gemini Flash with thinkingBudget=0 won't pad. */
+const MAX_OUTPUT_TOKENS = 800;
+/** Keep the LLM call short — the inbound handler has its own timeout, but
+ *  if Gemini hangs we'd rather fall through to vault-chat than block. */
+const TIMEOUT_MS = 8_000;
 
 export interface DecideOptions {
 	signal?: AbortSignal;
@@ -66,58 +68,66 @@ export async function decide(userMessage: string, opts: DecideOptions = {}): Pro
 		};
 	}
 
+	const apiKey = process.env.GEMINI_API_KEY;
+	if (!apiKey) {
+		return {
+			decision: { action: 'clarify', reply: ABSTAIN_REPLY, confidence: 0 },
+			fellThrough: true,
+			note: 'GEMINI_API_KEY not set',
+		};
+	}
+
 	const system = buildSystemPrompt(agents);
 	const history = opts.history ?? [];
 	const messages: ChatMessage[] = [...history, { role: 'user', content: userMessage }];
-	let rawText = '';
+
+	const ctrl = new AbortController();
+	const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+	const userSignal = opts.signal;
+	const onUserAbort = () => ctrl.abort();
+	if (userSignal) userSignal.addEventListener('abort', onUserAbort, { once: true });
+
+	let parsed: unknown;
 	try {
-		const result = await dispatchRoute(ORCHESTRATOR_ROUTE, {
+		const client = createGoogleGenerativeAI({ apiKey });
+		const result = await generateText({
+			model: client(MODEL),
+			// `output: Output.object({schema})` binds Gemini's controlled-
+			// generation feature so the response MUST conform to the schema.
+			// No more prose refusals slipping through.
+			output: Output.object({ schema }),
 			system,
 			messages,
-			// 800 leaves headroom for the JSON payload after Gemini reserves
-			// thinking tokens (even with thinkingBudget=0, Flash still emits
-			// short reasoning preambles occasionally). 500 was empirically
-			// too tight — orchestrator fell through to vault-chat with
-			// "non-JSON output" on real WhatsApp messages 2026-05-06.
-			maxOutputTokens: 800,
-			signal: opts.signal,
-			// Disable thinking on Gemini Flash for the classifier — we want
-			// fast structured JSON, not extended reasoning. See feedback
-			// `gemini_thinking_budget`. Ignored by the OpenRouter primary
-			// (per-AI-SDK-spec), so safe across the whole failover chain.
+			maxOutputTokens: MAX_OUTPUT_TOKENS,
+			abortSignal: ctrl.signal,
 			providerOptions: {
 				google: { thinkingConfig: { thinkingBudget: 0 } },
 			},
 		});
-		rawText = result.text ?? '';
+		parsed = result.output;
 	} catch (err) {
+		clearTimeout(timer);
+		if (userSignal) userSignal.removeEventListener('abort', onUserAbort);
+		if (err instanceof NoOutputGeneratedError) {
+			return {
+				decision: { action: 'clarify', reply: ABSTAIN_REPLY, confidence: 0 },
+				fellThrough: true,
+				note: 'NoOutputGeneratedError — Gemini produced no schema-conforming output',
+			};
+		}
 		return {
 			decision: { action: 'clarify', reply: ABSTAIN_REPLY, confidence: 0 },
 			fellThrough: true,
-			note: `dispatchRoute failed: ${(err as Error).message}`,
+			note: `generateText failed: ${(err as Error).message}`,
 		};
+	} finally {
+		clearTimeout(timer);
+		if (userSignal) userSignal.removeEventListener('abort', onUserAbort);
 	}
 
-	const jsonBlock = extractJsonBlock(rawText);
-	if (!jsonBlock) {
-		return {
-			decision: { action: 'clarify', reply: ABSTAIN_REPLY, confidence: 0 },
-			fellThrough: true,
-			note: 'orchestrator returned non-JSON output',
-		};
-	}
-
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(jsonBlock);
-	} catch (err) {
-		return {
-			decision: { action: 'clarify', reply: ABSTAIN_REPLY, confidence: 0 },
-			fellThrough: true,
-			note: `JSON parse failed: ${(err as Error).message}`,
-		};
-	}
-
+	// Defensive: AI SDK already validated against the schema, but a stale
+	// schema cache between requests could in theory let through fields the
+	// new schema rejects. Cheap to re-validate.
 	const validated = schema.safeParse(parsed);
 	if (!validated.success) {
 		return {
@@ -127,7 +137,7 @@ export async function decide(userMessage: string, opts: DecideOptions = {}): Pro
 		};
 	}
 
-	const decision = validated.data as OrchestratorDecision;
+	const decision = validated.data as unknown as OrchestratorDecision;
 
 	if (decision.confidence < CONFIDENCE_FLOOR) {
 		return {
@@ -153,10 +163,20 @@ export async function decide(userMessage: string, opts: DecideOptions = {}): Pro
 
 	if (decision.action === 'web-search') {
 		if (!decision.webQuery) {
-			// Fall back to using the user's raw message as the query — better
-			// than failing.
+			// Fall back to using the user's raw message as the query.
 			decision.webQuery = userMessage;
 		}
+	}
+
+	if (decision.action === 'generate-image') {
+		if (!decision.imagePrompt) {
+			// Fall back to the raw message — `dispatchImg` will still produce
+			// something usable; better than asking the user to retry.
+			decision.imagePrompt = userMessage;
+		}
+		// Defensive: clear any stale agent/task that might have leaked through.
+		decision.agent = undefined;
+		decision.task = undefined;
 	}
 
 	if (decision.action === 'vault-search') {

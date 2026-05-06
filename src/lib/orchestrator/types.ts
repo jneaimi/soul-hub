@@ -3,13 +3,19 @@
  *
  * Per WhatsApp ADR-005 + ADR-006 (2026-05-06 redesign): a Gemini Flash
  * classifier sits above the vault-chat fallthrough. It returns one of
- * SIX actions, with a hard bias toward conversation over execution.
+ * SEVEN actions, with a hard bias toward conversation over execution.
  *
  *   - reply           — answer directly with training-data knowledge or chat
  *   - web-search      — quick Gemini-grounded Google Search (current facts,
  *                       weather, news, single-fact lookups)
  *   - vault-search    — defer to vault-chat for existing-knowledge lookups
  *                       ("do we have…", "what did we save…")
+ *   - generate-image  — text-to-image via the existing `/img` route
+ *                       (Gemini Nano Banana). For natural-language image
+ *                       requests like "make me a picture of X". Cheap path.
+ *                       The heavy media-generator agent (carousel/video/
+ *                       voice/Arabic-overlay) lands as Phase 2 via
+ *                       `propose-dispatch`.
  *   - propose-dispatch — proposes a heavy agent dispatch and waits for
  *                       confirmation (the new default for any topic-shaped
  *                       message that doesn't carry an explicit command verb)
@@ -34,6 +40,7 @@ export type OrchestratorAction =
 	| 'reply'
 	| 'web-search'
 	| 'vault-search'
+	| 'generate-image'
 	| 'propose-dispatch'
 	| 'dispatch'
 	| 'clarify';
@@ -55,6 +62,12 @@ export interface OrchestratorDecision {
 	/** For `web-search`: the grounded query string. Often identical to the
 	 *  user message but may be tightened (e.g. add location context). */
 	webQuery?: string;
+	/** For `generate-image`: the cleaned image prompt (description of the
+	 *  image to produce, with the leading verb stripped — e.g. user says
+	 *  "generate an image of a person fishing in the UAE", model returns
+	 *  "a person fishing in the UAE"). Falls back to userMessage when the
+	 *  model omits it. */
+	imagePrompt?: string;
 	confidence: number;
 	reasoning?: string;
 }
