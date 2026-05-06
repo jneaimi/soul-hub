@@ -58,7 +58,8 @@ function db(): Database {
 /** True when the user typed a reset command. Pre-empts the LLM call so a
  *  reset is instant + free, and so the wipe can happen at the dispatch
  *  layer before the orchestrator runs. */
-export function isResetCommand(text: string): boolean {
+export function isResetCommand(text: string | null | undefined): boolean {
+	if (typeof text !== 'string') return false;
 	return RESET_COMMANDS.has(text.trim().toLowerCase());
 }
 
