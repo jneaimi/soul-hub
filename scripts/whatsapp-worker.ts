@@ -252,7 +252,7 @@ async function main(): Promise<void> {
 				action?: 'reply' | 'help' | 'drop';
 				text?: string;
 				attachPath?: string;
-				kind?: 'image' | 'video' | 'audio' | 'document';
+				kind?: 'image' | 'video' | 'audio' | 'voice' | 'document';
 				caption?: string;
 				error?: string;
 			};
@@ -275,13 +275,17 @@ async function main(): Promise<void> {
 			// as a follow-up message instead.
 			if (dispatch.attachPath) {
 				const kind = dispatch.kind ?? kindFromPath(dispatch.attachPath);
-				const cap = dispatch.caption ?? (kind === 'audio' ? undefined : dispatch.text);
+				// Audio + voice notes don't take captions; the text rides as a
+				// separate message after the media. Image/video/document
+				// accept captions inline.
+				const noCaption = kind === 'audio' || kind === 'voice';
+				const cap = dispatch.caption ?? (noCaption ? undefined : dispatch.text);
 				await sendMedia(sock, envelope.chatJid, {
 					kind,
 					path: dispatch.attachPath,
-					caption: kind === 'audio' ? undefined : cap,
+					caption: noCaption ? undefined : cap,
 				});
-				if (kind === 'audio' && dispatch.text) {
+				if (noCaption && dispatch.text) {
 					await sendText(sock, envelope.chatJid, dispatch.text, cfg.delivery);
 				}
 			} else if (dispatch.text) {
@@ -335,7 +339,7 @@ async function main(): Promise<void> {
 					to: string;
 					text?: string;
 					attachPath?: string;
-					kind?: 'image' | 'video' | 'audio' | 'document';
+					kind?: 'image' | 'video' | 'audio' | 'voice' | 'document';
 					caption?: string;
 					/** ADR-005 Phase 2 — when present, edit the previously sent
 					 *  message identified by `editId` instead of sending a new

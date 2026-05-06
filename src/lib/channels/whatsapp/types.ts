@@ -80,9 +80,13 @@ export interface MediaPayload {
 
 /** Outbound media payload — passed to `sendMedia()` from the channel
  *  registry's `send(message, attachPath)` and from any future route step
- *  that wants to attach a file. The path is local to the Soul Hub host. */
+ *  that wants to attach a file. The path is local to the Soul Hub host.
+ *
+ *  `voice` (ADR-006 Phase 2) sends as `audio + ptt: true` so WhatsApp
+ *  renders the voice-note bubble. `sticker` is not implemented in
+ *  `sendMedia` yet — callers should not pass it. */
 export interface OutboundMedia {
-	kind: 'image' | 'video' | 'audio' | 'document';
+	kind: 'image' | 'video' | 'audio' | 'voice' | 'document' | 'sticker';
 	path: string;
 	caption?: string;
 	/** Optional override; otherwise inferred from extension. */

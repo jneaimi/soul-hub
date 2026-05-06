@@ -127,10 +127,17 @@ export async function reactTo(
 }
 
 /** Send media from a local file. Reads the bytes synchronously since
- *  WhatsApp's per-message size limit is bounded (~16MB audio, ~100MB
- *  video) — small enough that streaming complexity isn't justified yet.
- *  Documents preserve their on-disk filename unless the caller passes
- *  an override. */
+ *  WhatsApp's per-message size limit is bounded (~16MB audio, ~64MB
+ *  video, ~100MB document) — small enough that streaming complexity
+ *  isn't justified yet. Documents preserve their on-disk filename unless
+ *  the caller passes an override.
+ *
+ *  `voice` (ADR-006 Phase 2) is the same wire shape as `audio` but with
+ *  `ptt: true` — WhatsApp renders it as a voice-note bubble with the
+ *  mic icon and waveform instead of the music-file UI. The agent's
+ *  `media-generator voice` command emits voice files with a sidecar
+ *  `type: "voice"` that the orchestrator's media-output extractor flips
+ *  to this kind. Captions are not supported on voice/audio shapes. */
 export async function sendMedia(
 	sock: WASocket,
 	chatJid: string,
@@ -170,6 +177,13 @@ export async function sendMedia(
 					mimetype,
 				});
 				break;
+			case 'voice':
+				result = await sock.sendMessage(chatJid, {
+					audio: buffer,
+					mimetype,
+					ptt: true,
+				});
+				break;
 			case 'document':
 				result = await sock.sendMessage(chatJid, {
 					document: buffer,
@@ -178,6 +192,12 @@ export async function sendMedia(
 					caption,
 				});
 				break;
+			case 'sticker':
+				// Not used by the orchestrator path yet; included so the
+				// switch is exhaustive. Bail early — caller shouldn't pass
+				// stickers without the WithDimensions metadata Baileys
+				// requires for animated stickers.
+				return { ok: false, error: 'sticker kind not implemented' };
 		}
 		return { ok: true, messageId: result?.key?.id ?? undefined };
 	} catch (err) {

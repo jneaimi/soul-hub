@@ -397,6 +397,12 @@ export const POST: RequestHandler = async ({ request }) => {
 			const orch = await orchestratorDecide(workingBody, { history: ctx.history });
 			if (!orch.fellThrough) {
 				const decision = orch.decision;
+				// Compact one-line decision log for ongoing observability — used
+				// by the operations dashboard's "recent decisions" view, plus
+				// a useful debug breadcrumb when a real-world chat misroutes.
+				console.log(
+					`[orchestrator] action=${decision.action} confidence=${decision.confidence.toFixed(2)}${decision.agent ? ` agent=${decision.agent}` : ''}`,
+				);
 				// `chat_history` PK is (conversation_key, ts); user + assistant
 				// turns saved in the same handler must use distinct timestamps
 				// or the second insert collides on the same millisecond.

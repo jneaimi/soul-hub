@@ -13,7 +13,7 @@ interface WorkerSendBody {
 	to: string;
 	text?: string;
 	attachPath?: string;
-	kind?: 'image' | 'video' | 'audio' | 'document';
+	kind?: 'image' | 'video' | 'audio' | 'voice' | 'document';
 	caption?: string;
 	/** ADR-005 Phase 2 — edit the previously sent message in place. The
 	 *  worker reconstructs the WAMessageKey from `{id: editId, remoteJid:

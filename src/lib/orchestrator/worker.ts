@@ -33,6 +33,11 @@ import {
 	extractVaultPath,
 } from '$lib/conversation/index.js';
 import { setActive, clearActive, listActiveByJid } from './active-runs.js';
+import {
+	extractMediaArtefacts,
+	pickCaptionTarget,
+	CAPTION_LIMIT_CHARS,
+} from './media-output.js';
 
 export interface RunInBackgroundArgs {
 	jid: string;
@@ -142,6 +147,49 @@ async function settleRun(args: {
 	}
 
 	const body = settleBody(result);
+
+	// ADR-006 Phase 2 — media-aware settle. When the agent produced media
+	// artefacts (image / video / audio / voice notes), deliver them as
+	// Baileys media instead of (or in addition to) the text body. The
+	// chat-trailer summary becomes a caption on the first image/video, or
+	// a leading text message when the artefacts are audio-only. The vault
+	// link is suppressed because the artefacts ARE the deliverables.
+	const artefacts =
+		result.status === 'success' && result.output ? extractMediaArtefacts(result.output) : [];
+
+	if (artefacts.length > 0) {
+		const captionIdx = pickCaptionTarget(artefacts);
+		const captionFits = body.length > 0 && body.length <= CAPTION_LIMIT_CHARS;
+		// If the body is too long for a caption OR there's no image/video
+		// to attach the caption to, send the body as a separate text first.
+		if (body.length > 0 && (!captionFits || captionIdx === -1)) {
+			try {
+				await workerSend(worker, { to: jid, text: body });
+			} catch (err) {
+				console.error(
+					`[orchestrator] settle-body-send failed for ${jid}: ${(err as Error).message}`,
+				);
+			}
+		}
+		for (let i = 0; i < artefacts.length; i++) {
+			const a = artefacts[i];
+			const useCaption = i === captionIdx && captionFits && captionIdx !== -1;
+			try {
+				await workerSend(worker, {
+					to: jid,
+					attachPath: a.path,
+					kind: a.kind,
+					caption: useCaption ? body : undefined,
+				});
+			} catch (err) {
+				console.error(
+					`[orchestrator] media-send failed for ${jid} (${a.kind}): ${(err as Error).message}`,
+				);
+			}
+		}
+		return;
+	}
+
 	if (body && body.length > 0) {
 		try {
 			await workerSend(worker, { to: jid, text: body });
@@ -153,7 +201,8 @@ async function settleRun(args: {
 	}
 
 	// Best-effort vault link. Heuristic Phase 1.5a — Phase 1.5b will pull
-	// it from the structured trailer once agents emit one.
+	// it from the structured trailer once agents emit one. Skipped on the
+	// media-artefact path above (the artefacts are the deliverables).
 	if (result.status === 'success' && result.output) {
 		const path = extractVaultPath(result.output);
 		const url = path ? vaultUrl(path) : null;

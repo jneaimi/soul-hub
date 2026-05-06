@@ -37,6 +37,10 @@ import type { DecideResult, OrchestratorDecision } from './types.js';
 import type { ChatMessage } from '$lib/llm/types.js';
 
 const MODEL = 'gemini-2.5-flash';
+/** Heavy media agent — used by the pre-LLM regex shortcut below and by
+ *  any LLM-emitted propose-dispatch for video/voice/carousel/Arabic-
+ *  overlay. The agent is set chat_dispatchable in its frontmatter. */
+const MEDIA_AGENT = 'media-generator';
 /** Direct dispatch requires high confidence. Below this → downgrade to
  *  propose-dispatch so the user sees the proposal and can confirm. */
 const DISPATCH_CONFIDENCE_THRESHOLD = 0.85;
@@ -57,6 +61,76 @@ export interface DecideOptions {
 	history?: ChatMessage[];
 }
 
+/** Pre-LLM shortcut for unambiguous heavy-media requests. Gemini Flash
+ *  empirically hits `NoOutputGeneratedError` on safety-sensitive media
+ *  prompts (video / voice / Arabic poster) even with `Output.object`,
+ *  because the safety classifier refuses to engage at all. We detect
+ *  those patterns deterministically and route to propose-dispatch
+ *  without consulting the LLM — same outcome the prompt asks for, but
+ *  with zero tokens and zero refusal risk.
+ *
+ *  Order matters: video before image-with-overlay before carousel before
+ *  voice. The first match wins. Returns null when no pattern matches,
+ *  in which case the LLM classifier runs normally. */
+function shortcutMediaIntent(userMessage: string): {
+	taskShape: 'video' | 'voice' | 'carousel' | 'overlay';
+	label: string;
+} | null {
+	const m = userMessage.toLowerCase();
+
+	// Video — "make/create/generate/produce a video", or N-second video
+	if (/\b(?:\d+[-\s]?second(?:s)?\s+)?video\b|\bvideo\s+(?:of|about|showing)/.test(m)) {
+		const seconds = m.match(/\b(\d+)[-\s]?second/);
+		const sub = userMessage.replace(/^[^a-z0-9]*(?:make|create|generate|produce|do)\s+(?:me\s+)?(?:a\s+)?/i, '').slice(0, 80);
+		return {
+			taskShape: 'video',
+			label: seconds ? `${seconds[1]}-second video — ${sub}` : `Video — ${sub}`,
+		};
+	}
+
+	// Voiceover — "voice this", "narrate", "voiceover", "audio of script"
+	if (/\b(?:voice|voiceover|narrate|narration|read\s+(?:this|aloud)|audio\s+(?:of|for))\b/.test(m)) {
+		const sub = userMessage.slice(0, 80);
+		return { taskShape: 'voice', label: `Voiceover — ${sub}` };
+	}
+
+	// Carousel — "N images of X", "carousel of N", "N pictures"
+	if (/\b(?:\d+\s+(?:images?|pictures?|carousel)|carousel\s+of|set\s+of\s+\d+\s+images?)\b/.test(m)) {
+		const sub = userMessage.slice(0, 80);
+		return { taskShape: 'carousel', label: `Carousel — ${sub}` };
+	}
+
+	// Image with Arabic text overlay (Gemini can't render Arabic — must overlay)
+	if (
+		/\barabic\b/.test(m) &&
+		/\b(?:image|picture|poster|banner|graphic|design|cover)\b/.test(m)
+	) {
+		const sub = userMessage.slice(0, 80);
+		return { taskShape: 'overlay', label: `Image with Arabic overlay — ${sub}` };
+	}
+
+	// Poster / banner / cover — usually implies multi-step (background + text overlay)
+	if (/\b(?:poster|banner|flyer|cover\s+art|book\s+cover|album\s+cover)\b/.test(m)) {
+		const sub = userMessage.slice(0, 80);
+		return { taskShape: 'overlay', label: `Poster — ${sub}` };
+	}
+
+	return null;
+}
+
+function buildMediaTask(userMessage: string, shape: string): string {
+	// 20-char minimum for AgentDraftSchema task field; 800-char practical max.
+	const verb =
+		shape === 'video'
+			? 'Generate a video clip'
+			: shape === 'voice'
+				? 'Generate a voiceover'
+				: shape === 'carousel'
+					? 'Generate a carousel of images'
+					: 'Generate an image with text overlay';
+	return `${verb} for the user's request: ${userMessage.slice(0, 700)}`;
+}
+
 export async function decide(userMessage: string, opts: DecideOptions = {}): Promise<DecideResult> {
 	const { schema, agents } = buildOrchestratorSchema();
 
@@ -65,6 +139,26 @@ export async function decide(userMessage: string, opts: DecideOptions = {}): Pro
 			decision: { action: 'clarify', reply: ABSTAIN_REPLY, confidence: 0 },
 			fellThrough: true,
 			note: 'no chat-dispatchable agents in registry',
+		};
+	}
+
+	// Pre-LLM media shortcut — bypasses Gemini's safety refusals on
+	// video / voice / carousel / Arabic-overlay requests. Only fires when
+	// `media-generator` is in the dispatchable inventory (so disabling it
+	// disables the shortcut automatically).
+	const mediaIntent = shortcutMediaIntent(userMessage);
+	if (mediaIntent && agents.some((a) => a.id === MEDIA_AGENT)) {
+		return {
+			decision: {
+				action: 'propose-dispatch',
+				agent: MEDIA_AGENT,
+				task: buildMediaTask(userMessage, mediaIntent.taskShape),
+				proposalLabel: mediaIntent.label,
+				confidence: 0.95,
+				reasoning: `pre-LLM media shortcut (${mediaIntent.taskShape})`,
+			},
+			fellThrough: false,
+			note: `media shortcut: ${mediaIntent.taskShape}`,
 		};
 	}
 
