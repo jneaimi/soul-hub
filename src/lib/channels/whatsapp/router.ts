@@ -29,7 +29,10 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { z } from 'zod';
 import type { ResolvedIntent, WhatsAppIntentMap } from './types.js';
 
-const ROUTER_MODEL = 'gemini-2.5-flash';
+/** Same env knob as the orchestrator classifier (ADR-007 Gap 5) so a single
+ *  flip swaps both layers in lockstep — preventing read-route vs decide
+ *  mismatch when comparing latency/leakage on a candidate model. */
+const ROUTER_MODEL = process.env.GEMINI_ORCHESTRATOR_MODEL ?? 'gemini-2.5-flash';
 const ROUTER_TIMEOUT_MS = 4500;
 const DECISION_BUFFER_MAX = 20;
 const SAFE_DEFAULT = 'vault-chat';
@@ -93,11 +96,19 @@ function regexPreFilter(message: string): { route: string; reason: string } | nu
 		return { route: 'brain-recent', reason: 'recency marker' };
 	}
 
-	// Find / search markers — explicit search verbs.
+	// Find / search markers — explicit search verbs with personal-vault scope.
+	//
+	// 2026-05-06 fix: the "where is X" pattern previously matched
+	// `(?:my|the|that)` which produced a false positive on follow-up
+	// references to JUST-SENT content ("where is the image", "where is the
+	// file"). Restricted to "my" only — the LLM-side prompt says explicit
+	// personal scope is required, the regex now mirrors that. "Where is the
+	// X" without a possessive falls through to the LLM, which routes to
+	// vault-chat for topical / conversational follow-ups.
 	if (
-		/\b(find|search|look\s+up|lookup|grep|locate)\b/.test(lower) ||
+		/\b(find|search|look\s+up|lookup|grep|locate)\s+(?:my|the\s+(?:notes?|adr|decision|drafts?|saves?|writeups?|entries?))\b/.test(lower) ||
 		/\b(do\s+i\s+have|have\s+i\s+saved|did\s+i\s+(?:save|write|note))\b/.test(lower) ||
-		/\bwhere(?:'s|\s+is|\s+was)\s+(?:my|the|that)\s+\w+/.test(lower)
+		/\bwhere(?:'s|\s+is|\s+was)\s+my\s+\w+/.test(lower)
 	) {
 		return { route: 'brain-find', reason: 'search marker' };
 	}

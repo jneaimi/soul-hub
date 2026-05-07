@@ -1,0 +1,104 @@
+/**
+ * Tool-using orchestrator (ADR-009) — public types.
+ *
+ * Phase 1 mapped tool calls back to v1 `OrchestratorDecision` action surface
+ * so the inbound handler stayed unchanged. Phase 2 adds `V2Output` — when
+ * tools actually execute side effects (proposal write, image generation,
+ * web/vault search), decide-v2 returns the ready-to-send payload here so
+ * the inbound handler short-circuits and doesn't re-dispatch.
+ *
+ * Phase 7 (after the A/B picks a winner) can drop the `decision` shim
+ * entirely and consume `v2Output` directly.
+ */
+
+import type { OrchestratorDecision, DecideResult } from '../orchestrator/types.js';
+
+/** Re-export for callers that don't want to know about the v1/v2 split. */
+export type { OrchestratorDecision, DecideResult };
+
+export interface DecideV2Options {
+	signal?: AbortSignal;
+	history?: { role: 'user' | 'assistant' | 'system'; content: string }[];
+	conversationKey?: string;
+	/** Sender phone number (for per-user image quota counters). */
+	senderNumber?: string;
+	/** Image-generation config snapshot — gates whether `generateImage`
+	 *  fires and how the daily cap is enforced. Optional so non-WhatsApp
+	 *  callers (tests, debug routes) can omit it. */
+	imgConfig?: ImgConfigSlice;
+	/** Account name from the WhatsApp config — scopes the image output dir. */
+	account?: string;
+	/** Timezone for the daily image-quota window (defaults Asia/Dubai). */
+	timezone?: string;
+}
+
+/** Subset of `cfg.img` that the orchestrator needs. Decoupled from the
+ *  full settings shape so tests can construct it without loading config. */
+export interface ImgConfigSlice {
+	enabled: boolean;
+	maxPerDay: number;
+	systemPromptPath: string;
+	model?: string;
+}
+
+/** What a v2 tool actually produced — used by the inbound handler to
+ *  decide what to send back over WhatsApp. Only set when at least one
+ *  tool with a side effect ran. */
+export type V2Output =
+	| {
+			kind: 'text';
+			/** Final assistant text to send. Either the LLM's wrap-up message
+			 *  or, when the LLM didn't speak, the last tool's formatted text
+			 *  (web-search citation, vault-chat answer, raw `reply` text). */
+			text: string;
+	  }
+	| {
+			kind: 'image';
+			/** Absolute path to the generated PNG (already written to disk). */
+			attachPath: string;
+			/** Optional caption — currently always `undefined` from `dispatchImg`
+			 *  but reserved for future IMG.md prompt revisions. */
+			caption?: string;
+			/** Original image prompt — saved into `chat_history` so future
+			 *  history can show "[image] <prompt>". */
+			imagePrompt: string;
+			/** Final assistant text from the LLM (if any) — sent as a separate
+			 *  text turn before the image when present. Most of the time the
+			 *  IMG.md prompt suppresses any text and this is empty. */
+			text?: string;
+	  }
+	| {
+			kind: 'proposal';
+			/** Pre-formatted proposal message ("Confirm I should run *X*…"). */
+			text: string;
+	  }
+	| {
+			kind: 'dispatch';
+			/** Confirmed agent dispatch — the inbound handler runs the same
+			 *  capacity-check + worker-ack + `runInBackground` path as the v1
+			 *  `action: dispatch` branch. The orchestrator tool only signals
+			 *  the intent because the dispatch needs `envelope.chatJid`,
+			 *  `worker`, and conversation `ctx` that live one layer up. */
+			agentId: string;
+			task: string;
+	  }
+	| {
+			kind: 'error';
+			/** User-facing error text from a failed tool execution. */
+			text: string;
+	  };
+
+/** Per-call telemetry surfaced to the inbound handler for analytics. */
+export interface DecideV2Telemetry {
+	/** OpenRouter model id (e.g. `z-ai/glm-4.6`). */
+	model: string;
+	/** ADR-009 Phase 5 — A/B branch label (`glm-4.6` / `sonnet-4.6` /
+	 *  `minimax-m2` / `fixed-override`). */
+	modelBranch: string;
+	stepsUsed: number;
+	toolCalls: { name: string; argSummary: string }[];
+	inputTokens?: number;
+	outputTokens?: number;
+	costUsd?: number;
+	durationMs: number;
+}

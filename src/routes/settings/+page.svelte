@@ -5,6 +5,7 @@
 	import ExplorerRootsSection from '$lib/components/settings/ExplorerRootsSection.svelte';
 	import RoutesSection from '$lib/components/settings/RoutesSection.svelte';
 	import WhatsAppSection from '$lib/components/settings/WhatsAppSection.svelte';
+	import TelegramSection from '$lib/components/settings/TelegramSection.svelte';
 
 	type ChannelAction = 'send' | 'prompt' | 'listen';
 
@@ -194,9 +195,19 @@
 	 *  pairing controls can edit one slice at a time without clobbering the
 	 *  rest. We deep-merge the patch into the current `whatsapp` config. */
 	function handleWhatsAppPatch(patch: Record<string, unknown>) {
-		const current = (channelConfigs.whatsapp as Record<string, unknown>) ?? {
+		channelConfigs = { ...channelConfigs, whatsapp: deepMergeChannelPatch('whatsapp', 'WhatsApp', patch) };
+		markDirty();
+	}
+
+	function handleTelegramPatch(patch: Record<string, unknown>) {
+		channelConfigs = { ...channelConfigs, telegram: deepMergeChannelPatch('telegram', 'Telegram', patch) };
+		markDirty();
+	}
+
+	function deepMergeChannelPatch(id: string, defaultLabel: string, patch: Record<string, unknown>): ChannelConfigItem {
+		const current = (channelConfigs[id] as Record<string, unknown>) ?? {
 			enabled: false,
-			label: 'WhatsApp',
+			label: defaultLabel,
 			defaultFor: [],
 		};
 		const next: Record<string, unknown> = { ...current };
@@ -213,8 +224,7 @@
 				next[key] = value;
 			}
 		}
-		channelConfigs = { ...channelConfigs, whatsapp: next as ChannelConfigItem };
-		markDirty();
+		return next as ChannelConfigItem;
 	}
 
 	function resetToDefaults() {
@@ -494,7 +504,7 @@
 					<h2 class="text-xs font-medium text-hub-dim uppercase tracking-wider px-1">Channels</h2>
 				</div>
 				<div class="space-y-3">
-					{#each channelMetas.filter((m) => m.id !== 'whatsapp') as meta (meta.id)}
+					{#each channelMetas.filter((m) => m.id !== 'whatsapp' && m.id !== 'telegram') as meta (meta.id)}
 						<ChannelCard
 							{meta}
 							config={channelConfigs[meta.id] || { enabled: false, label: meta.name, defaultFor: [] }}
@@ -513,6 +523,18 @@
 						defaultFor: [],
 					}}
 					onchange={handleWhatsAppPatch}
+				/>
+			{/if}
+
+			<!-- Telegram: bot identity, webhook, allowlist, intent map. -->
+			{#if channelMetas.some((m) => m.id === 'telegram')}
+				<TelegramSection
+					config={(channelConfigs.telegram as Record<string, unknown>) ?? {
+						enabled: false,
+						label: 'Telegram',
+						defaultFor: ['send'],
+					}}
+					onchange={handleTelegramPatch}
 				/>
 			{/if}
 

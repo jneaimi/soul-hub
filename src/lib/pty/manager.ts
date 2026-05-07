@@ -32,6 +32,14 @@ export interface PtySessionOptions {
 	shell?: boolean;
 	/** Extra CLI args to pass to Claude Code */
 	extraArgs?: string[];
+	/** Claude Code agent profile id — translated to `--agent <id>`. When set,
+	 *  Claude Code loads the system prompt from `~/.claude/agents/<id>.md`
+	 *  itself, so callers MUST NOT pre-paste the agent's system_prompt into
+	 *  `prompt`. Pasting >100 lines of input into the TUI fragments into
+	 *  multiple `[Pasted text #N]` preview blocks that never auto-confirm —
+	 *  the canonical fix is to keep typed input short and let `--agent` do
+	 *  its job. See `2026-05-06-pty-paste-stall-and-agent-flag` learning. */
+	agentId?: string;
 }
 
 export interface PtySession {
@@ -102,6 +110,9 @@ export function spawnSession(opts: PtySessionOptions): PtySession {
 		}
 		if (opts.model) {
 			args.push('--model', opts.model);
+		}
+		if (opts.agentId) {
+			args.push('--agent', opts.agentId);
 		}
 		if (opts.extraArgs) {
 			args.push(...opts.extraArgs);

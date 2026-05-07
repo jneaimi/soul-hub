@@ -1,11 +1,20 @@
 /**
  * Lane A1 dispatcher — interactive Claude Code session over a PTY.
  *
- * Reuses the existing `src/lib/pty/manager.ts` (`spawnSession`/`killSession`),
- * which already handles workspace-trust prompts, prompt injection, and ANSI
- * stripping. We add:
- *   - Stall detection: ~30s of silence after first activity is treated as
- *     "agent is done" — same heuristic as the orchestration engine.
+ * Reuses `src/lib/pty/manager.ts` (`spawnSession`/`killSession`), which
+ * handles workspace-trust prompts, prompt injection, and ANSI stripping.
+ * On top of that we add:
+ *   - **`--agent <id>` profile loading** so Claude Code pulls
+ *     `system_prompt` from `~/.claude/agents/<id>.md` itself. Pre-pasting
+ *     a >100-line system prompt as user input fragments into multiple
+ *     `[Pasted text #N]` preview blocks that never auto-confirm — the
+ *     agent stalls in the splash and never executes (see learning
+ *     `2026-05-06-pty-paste-stall-and-agent-flag`). Typed input now
+ *     stays short: just conversation context + the task.
+ *   - **Adaptive stall detection** — `STALL_MS_DEFAULT` (30s) is fine for
+ *     chat-shaped agents but too tight for tool-call-heavy work (image
+ *     gen, web fetch). `resolveStallMs(budget)` scales to `timeout_ms/8`
+ *     up to `STALL_MS_MAX` (120s).
  *   - Hard timeout from the resolved budget.
  *   - MCP isolation flags so the agent can't trip user-scoped auth prompts.
  *
@@ -27,8 +36,21 @@ import type { BackendDispatcher, DispatchEvent, DispatchOptions, DispatchResult 
 import { resolveBudget } from './budget.js';
 import { claudeCliFlagDispatcher } from './claude-cli-flag.js';
 
-const STALL_MS = 30_000;
+/** Default silence-after-activity threshold before treating the session as
+ *  done. 30s is fine for chat-shaped agents that emit progress text every
+ *  few seconds; tool-call-heavy agents (image gen, web fetch) can sit idle
+ *  for 30-60s on a single API call. Scaled per-agent below by
+ *  `resolveStallMs(budget)` so a 600s-budget agent gets 75s before stall. */
+const STALL_MS_DEFAULT = 30_000;
+/** Cap on the scaled stall — past this, stall starts overlapping the hard
+ *  timeout and we'd never preempt a genuinely stuck session. */
+const STALL_MS_MAX = 120_000;
 const ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]/g;
+
+function resolveStallMs(timeoutMs: number): number {
+	const scaled = Math.floor(timeoutMs / 8);
+	return Math.min(STALL_MS_MAX, Math.max(STALL_MS_DEFAULT, scaled));
+}
 
 export const claudePtyDispatcher: BackendDispatcher = {
 	id: 'claude-pty',
@@ -48,14 +70,16 @@ export const claudePtyDispatcher: BackendDispatcher = {
 		const runId = crypto.randomUUID().slice(0, 8);
 		const started = Date.now();
 		const budget = resolveBudget(opts.mode, agent.budget);
+		const stallMs = resolveStallMs(budget.timeout_ms);
 
-		const prompt = composePrompt(agent, opts.task, opts.context);
+		const prompt = composePrompt(opts.task, opts.context);
 		const model = agent.model || 'sonnet';
 
 		let session;
 		try {
 			session = spawnSession({
 				prompt,
+				agentId: agent.id, // Claude Code loads system_prompt from ~/.claude/agents/<id>.md
 				cwd: config.resolved.vaultDir,
 				shell: false,
 				model,
@@ -118,7 +142,7 @@ export const claudePtyDispatcher: BackendDispatcher = {
 					killSession(session.id);
 					break;
 				}
-				if (promptInjected && idle >= STALL_MS) {
+				if (promptInjected && idle >= stallMs) {
 					stalled = true;
 					killSession(session.id);
 					break;
@@ -166,14 +190,19 @@ export const claudePtyDispatcher: BackendDispatcher = {
 	},
 };
 
-function composePrompt(agent: AgentSummary, task: string, context?: string): string {
-	const sys = agent.system_prompt?.trim();
+/** Compose the user-message-shaped prompt that gets typed into Claude Code's
+ *  TUI. The agent's `system_prompt` is loaded by Claude Code from
+ *  `~/.claude/agents/<id>.md` via the `--agent <id>` flag — DO NOT
+ *  pre-paste it here. Pasting >100 lines fragments into multiple
+ *  `[Pasted text #N]` preview blocks that never auto-confirm and the
+ *  agent stalls until the idle timer kicks in.
+ *
+ *  Keep this short: just the conversational context (when present) and
+ *  the task instruction. ~600-1000 chars typical. */
+function composePrompt(task: string, context?: string): string {
 	const ctx = context?.trim();
-	const sections: string[] = [];
-	if (sys) sections.push(sys);
-	if (ctx) sections.push(ctx);
-	sections.push(`# Task\n\n${task}`);
-	return sections.length === 1 ? task : sections.join('\n\n---\n\n');
+	if (!ctx) return task;
+	return `${ctx}\n\n---\n\n# Task\n\n${task}`;
 }
 
 function stripAnsi(s: string): string {

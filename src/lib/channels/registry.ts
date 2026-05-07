@@ -6,7 +6,7 @@ import type {
 	SendResult,
 	TestResult,
 } from './types.js';
-import { adapter as telegramAdapter } from './telegram.js';
+import { adapter as telegramAdapter, bootstrap as telegramBootstrap } from './telegram/index.js';
 import { adapter as whatsappAdapter, bootstrap as whatsappBootstrap } from './whatsapp/index.js';
 
 /** All registered channel adapters */
@@ -19,6 +19,12 @@ adapters.set('whatsapp', whatsappAdapter);
 // Wire the WhatsApp inbound dispatcher and auto-start when settings has
 // `channels.whatsapp.enabled: true` + creds on disk. Safe no-op otherwise.
 whatsappBootstrap();
+
+// Cache Telegram bot identity at startup so the inbound mention detector
+// is ready for the first message. Webhook setup is user-driven via
+// /api/channels/telegram/setup so it runs once when the user wires the
+// channel up — not on every restart.
+telegramBootstrap();
 
 /** Get all registered adapter metadata (for settings UI) */
 export function getAllChannelMeta(): ChannelMeta[] {

@@ -32,18 +32,19 @@ import {
 } from '$lib/channels/whatsapp/index.js';
 import { dispatchRoute, RouteNotFoundError } from '$lib/routes/index.js';
 import { dispatchVaultChat } from '$lib/vault-chat/index.js';
+import { decideV2 } from '$lib/orchestrator-v2/index.js';
+import { flagWrongDispatch } from '$lib/orchestrator/proposal-history.js';
+import { notifyWrongDispatch } from '$lib/orchestrator-v2/alerts.js';
 import {
-	decide as orchestratorDecide,
 	runInBackground as orchestratorDispatch,
 	listActiveByJid as listActiveOrchestratorRuns,
 	cancelByJid as cancelOrchestratorRuns,
 	checkCapacity as checkDispatchCapacity,
 	formatCapacityRejection,
-	setPending as setPendingProposal,
 	getPending as getPendingProposal,
-	clearPending as clearPendingProposal,
+	resolvePending as resolvePendingProposal,
 	classifyProposalReply,
-	formatProposal,
+	formatExpiredPrompt,
 } from '$lib/orchestrator/index.js';
 import { dispatchWebSearch, formatWebSearchForChat } from '$lib/web-search/index.js';
 import { workerSend as workerSendForOrchestrator } from '$lib/channels/whatsapp/worker-client.js';
@@ -232,6 +233,32 @@ export const POST: RequestHandler = async ({ request }) => {
 		// No recent voice surface → user is just saying "done" / "skip" /
 		// "later" in conversation. Fall through to vault-chat below.
 	}
+
+	// ADR-009 Phase 6 — `/wrong` flags the most recent confirmed dispatch
+	// on this conversation as wrong-agent. Triggers the falsifier (any
+	// wrong dispatch in 14 days kills the branch) + fires a Telegram alert
+	// so the user has a paper trail when picking the winner in Phase 7.
+	if (trimmedLower === '/wrong' || trimmedLower === 'wrong agent' || trimmedLower === 'wrong dispatch') {
+		const flagResult = flagWrongDispatch(conversationKey);
+		if (!flagResult.flagged) {
+			return json({
+				ok: true,
+				action: 'reply',
+				text: "Nothing to flag — no recent confirmed dispatch on this conversation.",
+			});
+		}
+		void notifyWrongDispatch({
+			branchName: flagResult.modelBranch ?? '(unknown)',
+			agentId: flagResult.agentId ?? '(unknown)',
+			conversationKey,
+			task: flagResult.task ?? '',
+		});
+		return json({
+			ok: true,
+			action: 'reply',
+			text: `Flagged dispatch #${flagResult.historyId} (${flagResult.agentId}, branch ${flagResult.modelBranch ?? 'unknown'}) as wrong-agent. Logged for the A/B falsifier.`,
+		});
+	}
 	if (trimmedLower === 'more') {
 		const recent = getRecentVoiceSurface();
 		if (recent.length > 0) {
@@ -291,7 +318,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			if (lower === 'cancel' || lower === 'stop') {
 				const active = listActiveOrchestratorRuns(envelope.chatJid);
 				const hadPending = !!getPendingProposal(conversationKey);
-				if (hadPending) clearPendingProposal(conversationKey);
+				if (hadPending) resolvePendingProposal(conversationKey, 'cancelled');
 				if (active.length > 0) {
 					const cancelled = cancelOrchestratorRuns(envelope.chatJid);
 					const text =
@@ -306,19 +333,107 @@ export const POST: RequestHandler = async ({ request }) => {
 				return json({ ok: true, action: 'reply', text: 'Nothing to cancel.' });
 			}
 
+			// Explicit-reset regex. Catches softer reset signals than the
+			// `cancel`/`stop` exact match above: "never mind", "nvm", "forget
+			// it/that", "start over/fresh/again", "scratch that", "scrap
+			// that". Drops any pending proposal (resolution: decline). Distinct
+			// from cancel/stop above which ALSO kills active runs — these
+			// phrases are gentler and shouldn't preempt a long-running agent.
+			const RESET_RE = /^(?:never\s*mind|nvm|forget\s+(?:it|that)|start\s+(?:over|fresh|again)|scratch\s+that|scrap\s+that)\.?$/i;
+			if (RESET_RE.test(workingBody.trim())) {
+				const turnNow = Date.now();
+				const hadPending = !!getPendingProposal(conversationKey);
+				if (hadPending) resolvePendingProposal(conversationKey, 'decline');
+				saveTurn(conversationKey, 'user', workingBody, turnNow);
+				const text = hadPending
+					? 'Got it — dropped that. Fresh start. What would you like to do?'
+					: 'Fresh start. What would you like to do?';
+				saveTurn(conversationKey, 'assistant', text, turnNow + 1);
+				return json({ ok: true, action: 'reply', text });
+			}
+
 			// ADR-006 — pending-proposal interception. Runs BEFORE the
 			// classifier. If a proposal is alive on this conversation, the
 			// next message is read as a confirm/decline/switch-to-web/
 			// unrelated reply. "Unrelated" drops the proposal and falls
 			// through to normal classification (the user moved on).
+			//
+			// ADR-007 Gap 2 — expired-but-within-grace proposals (24h TTL +
+			// 6h grace) are surfaced with `expired: true`. We send a one-off
+			// "your proposal expired Xm ago" prompt and accept a fresh
+			// confirm; anything else drops the row and falls through.
 			const pending = getPendingProposal(conversationKey);
+			if (pending?.expired) {
+				const turnNow = Date.now();
+				const replyKind = classifyProposalReply(workingBody);
+
+				if (replyKind === 'confirm') {
+					// User confirmed late — execute via the same path as the
+					// fresh-confirm branch below. Resolve the proposal as
+					// confirm so proposal_history's audit trail stays in sync
+					// with the live row deletion.
+					resolvePendingProposal(conversationKey, 'confirm');
+					const capacity = checkDispatchCapacity(envelope.chatJid);
+					if (!capacity.ok) {
+						saveTurn(conversationKey, 'user', workingBody, turnNow);
+						const rejection = formatCapacityRejection(capacity);
+						saveTurn(conversationKey, 'assistant', rejection, turnNow + 1);
+						return json({ ok: true, action: 'reply', text: rejection });
+					}
+
+					const ackText = `On it — running *${pending.agentId}* (revived from your earlier proposal). I'll send the summary here when it's ready (reply *cancel* to stop).`;
+					let progressMessageId: string | undefined;
+					try {
+						const sendResult = await workerSendForOrchestrator(cfg.worker, {
+							to: envelope.chatJid,
+							text: ackText,
+						});
+						if (sendResult.ok && sendResult.messageId) {
+							progressMessageId = sendResult.messageId;
+						}
+					} catch (err) {
+						console.warn(
+							`[orchestrator] revive-ack send failed (${(err as Error).message}); continuing without it`,
+						);
+					}
+					saveTurn(conversationKey, 'user', workingBody, turnNow);
+					const ctxConfirmed = getConversationContext(conversationKey, {
+						jid: envelope.chatJid,
+					});
+					const agentContext = buildAgentContextBrief(ctxConfirmed);
+					orchestratorDispatch({
+						jid: envelope.chatJid,
+						agentId: pending.agentId,
+						task: pending.task,
+						sourceMessage: workingBody,
+						worker: cfg.worker,
+						progressMessageId,
+						conversationKey,
+						agentContext,
+					});
+					return json({ ok: true, action: 'drop' });
+				}
+
+				// Anything else on an expired proposal — show the grace
+				// prompt and clear the row so the next message classifies
+				// fresh. This is the user-visible difference vs the silent
+				// pre-ADR-007 drop.
+				resolvePendingProposal(conversationKey, 'expired');
+				saveTurn(conversationKey, 'user', workingBody, turnNow);
+				const text = formatExpiredPrompt(pending);
+				saveTurn(conversationKey, 'assistant', text, turnNow + 1);
+				return json({ ok: true, action: 'reply', text });
+			}
+
 			if (pending) {
 				const turnNow = Date.now();
 				const replyKind = classifyProposalReply(workingBody);
 
 				if (replyKind === 'confirm') {
 					// Execute the stored proposal — same path as direct dispatch.
-					clearPendingProposal(conversationKey);
+					// Resolve the proposal as `confirm` so the audit row updates
+					// alongside the live `pending_proposals` delete.
+					resolvePendingProposal(conversationKey, 'confirm');
 					const capacity = checkDispatchCapacity(envelope.chatJid);
 					if (!capacity.ok) {
 						saveTurn(conversationKey, 'user', workingBody, turnNow);
@@ -361,7 +476,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				}
 
 				if (replyKind === 'decline') {
-					clearPendingProposal(conversationKey);
+					resolvePendingProposal(conversationKey, 'decline');
 					saveTurn(conversationKey, 'user', workingBody, turnNow);
 					const text = 'Got it — dropped that. What would you like instead?';
 					saveTurn(conversationKey, 'assistant', text, turnNow + 1);
@@ -372,7 +487,7 @@ export const POST: RequestHandler = async ({ request }) => {
 					// User wants the quick web-search alternative on the same
 					// topic. We use the proposal's label as the search query
 					// (it's a one-line description of what they wanted).
-					clearPendingProposal(conversationKey);
+					resolvePendingProposal(conversationKey, 'switch-to-web');
 					saveTurn(conversationKey, 'user', workingBody, turnNow);
 					try {
 						const r = await dispatchWebSearch(pending.label);
@@ -388,149 +503,88 @@ export const POST: RequestHandler = async ({ request }) => {
 
 				// 'unrelated' — drop the proposal and fall through to normal
 				// classification on the new message.
-				clearPendingProposal(conversationKey);
+				resolvePendingProposal(conversationKey, 'unrelated');
 			}
 
-			// Phase 5 — load unified conversation context BEFORE deciding.
+			// ADR-007 Gap 4 — re-confirm guard. Catches duplicate "yes" hits
+			// from poor connectivity or impatience: first confirm consumed
+			// the proposal + fired dispatch, second one would otherwise be
+			// classified as a chat ack with a confusing reply. If a recent
+			// (<30s) orchestrator run is alive on this JID and the message
+			// is a strict-confirm token, surface the active run instead of
+			// re-classifying.
+			const stripped = workingBody.trim().toLowerCase();
+			if (/^(yes|y|go|ok|👍|✅)\.?$/.test(stripped)) {
+				const recent = listActiveOrchestratorRuns(envelope.chatJid).filter(
+					(r) => Date.now() - r.startedAt < 30_000,
+				);
+				if (recent.length > 0) {
+					const turnNow = Date.now();
+					saveTurn(conversationKey, 'user', workingBody, turnNow);
+					const text = `Already on it — *${recent[0].agentId}* is running.`;
+					saveTurn(conversationKey, 'assistant', text, turnNow + 1);
+					return json({ ok: true, action: 'reply', text });
+				}
+			}
+
+			// Load unified conversation context BEFORE deciding so the
+			// orchestrator (and any agent it dispatches) sees the last few
+			// turns + recent agent runs on this jid.
 			const ctx = getConversationContext(conversationKey, { jid: envelope.chatJid });
 
-			const orch = await orchestratorDecide(workingBody, { history: ctx.history });
-			if (!orch.fellThrough) {
+			const orch = await decideV2(workingBody, {
+				history: ctx.history,
+				conversationKey,
+				senderNumber: envelope.senderNumber,
+				account: cfg.account,
+				timezone: cfg.heartbeat?.activeHours?.timezone ?? 'Asia/Dubai',
+				imgConfig: {
+					enabled: cfg.img.enabled,
+					maxPerDay: cfg.img.maxPerDay,
+					systemPromptPath: cfg.img.systemPromptPath,
+					model: cfg.img.model,
+				},
+			});
+
+			if (!orch.fellThrough && orch.v2Output) {
+				const out = orch.v2Output;
 				const decision = orch.decision;
-				// Compact one-line decision log for ongoing observability — used
-				// by the operations dashboard's "recent decisions" view, plus
-				// a useful debug breadcrumb when a real-world chat misroutes.
-				console.log(
-					`[orchestrator] action=${decision.action} confidence=${decision.confidence.toFixed(2)}${decision.agent ? ` agent=${decision.agent}` : ''}`,
-				);
-				// `chat_history` PK is (conversation_key, ts); user + assistant
-				// turns saved in the same handler must use distinct timestamps
-				// or the second insert collides on the same millisecond.
 				const turnNow = Date.now();
-				if (decision.action === 'reply' && decision.reply) {
-					replyText = decision.reply;
-					saveTurn(conversationKey, 'user', workingBody, turnNow);
-					saveTurn(conversationKey, 'assistant', replyText, turnNow + 1);
-				} else if (decision.action === 'web-search') {
-					// Quick Gemini-grounded lookup. Cheap, fast, conversational
-					// reply with a citation. No agent dispatch, no PTY. The
-					// user turn was not yet saved — save it here so vault-chat
-					// can see it on the next turn.
-					saveTurn(conversationKey, 'user', workingBody, turnNow);
-					try {
-						const r = await dispatchWebSearch(decision.webQuery ?? workingBody);
-						const text = formatWebSearchForChat(r);
-						saveTurn(conversationKey, 'assistant', text, turnNow + 1);
-						return json({ ok: true, action: 'reply', text });
-					} catch (err) {
-						const text = `Couldn't run a web search: ${(err as Error).message}`;
-						saveTurn(conversationKey, 'assistant', text, turnNow + 1);
-						return json({ ok: true, action: 'reply', text });
-					}
-				} else if (decision.action === 'vault-search') {
-					// Defer the lookup to vault-chat. Persist the user turn
-					// here; vault-chat's reply persists below.
-					saveTurn(conversationKey, 'user', workingBody, turnNow);
-					replyText = '';
-				} else if (decision.action === 'generate-image') {
-					// ADR-006 Phase 1 — natural-language image request.
-					// Reuses the same `dispatchImg` + cap + cache flow as the
-					// `/img` slash command (see the `intent.route === 'img'`
-					// branch below). Always text-to-image: the orchestrator
-					// only fires when `!envelope.media`, so there's never an
-					// inbound image to use as edit input here.
-					saveTurn(conversationKey, 'user', workingBody, turnNow);
-					const imgCfg = cfg.img;
-					if (!imgCfg.enabled) {
-						const text =
-							'Image generation is disabled in settings. Toggle it on under WhatsApp → Image generation.';
-						saveTurn(conversationKey, 'assistant', text, turnNow + 1);
-						return json({ ok: true, action: 'reply', text });
-					}
-					const tzForDay = cfg.heartbeat?.activeHours?.timezone ?? 'Asia/Dubai';
-					const today = ymdInTimezone(tzForDay);
-					const count = getImgCount(envelope.senderNumber, today);
-					if (count >= imgCfg.maxPerDay) {
-						const text = `You've hit today's image budget (${imgCfg.maxPerDay}/day) — resets midnight ${tzForDay}.`;
-						saveTurn(conversationKey, 'assistant', text, turnNow + 1);
-						return json({ ok: true, action: 'reply', text });
-					}
-					const imagePrompt = decision.imagePrompt ?? workingBody;
-					const imgResult = await dispatchImg({
-						prompt: imagePrompt,
-						conversationKey,
-						account: cfg.account,
-						systemPromptPath: imgCfg.systemPromptPath,
-						model: imgCfg.model,
-					});
-					if (imgResult.error) {
-						saveTurn(conversationKey, 'assistant', imgResult.error, turnNow + 1);
-						return json({ ok: true, action: 'reply', text: imgResult.error });
-					}
-					incrementImgCount(envelope.senderNumber, today);
-					rememberLastImage(conversationKey, {
-						buffer: imgResult.buffer,
-						mimetype: imgResult.mimetype,
-						prompt: imgResult.prompt,
-					});
-					// Persist a short assistant turn so future history shows the
-					// image was produced. The actual bytes don't go in chat_history.
+				saveTurn(conversationKey, 'user', workingBody, turnNow);
+				// Compact one-line decision log used by the operations
+				// dashboard's "recent decisions" view + as a debug breadcrumb
+				// when a real-world chat misroutes.
+				console.log(
+					`[orchestrator] v2 action=${decision.action} v2Output=${out.kind} confidence=${decision.confidence.toFixed(2)}${decision.agent ? ` agent=${decision.agent}` : ''}`,
+				);
+				if (out.kind === 'image') {
 					saveTurn(
 						conversationKey,
 						'assistant',
-						`[image] ${imagePrompt.slice(0, 120)}`,
+						`[image] ${out.imagePrompt.slice(0, 120)}`,
 						turnNow + 1,
 					);
 					return json({
 						ok: true,
 						action: 'reply',
-						attachPath: imgResult.path,
+						attachPath: out.attachPath,
 						kind: 'image',
-						caption: imgResult.caption,
+						caption: out.caption,
 					});
-				} else if (
-					decision.action === 'propose-dispatch' &&
-					decision.agent &&
-					decision.task &&
-					decision.proposalLabel
-				) {
-					// ADR-006 — propose-then-confirm. Stash the proposal,
-					// render the confirmation prompt deterministically, wait
-					// for the user's next reply.
-					const proposal = setPendingProposal({
-						conversationKey,
-						agentId: decision.agent,
-						task: decision.task,
-						label: decision.proposalLabel,
-					});
-					saveTurn(conversationKey, 'user', workingBody, turnNow);
-					const text = formatProposal(proposal);
-					saveTurn(conversationKey, 'assistant', text, turnNow + 1);
-					return json({ ok: true, action: 'reply', text });
-				} else if (decision.action === 'clarify' && decision.reply) {
-					// Phase 5 — clarify-fallthrough: when we have prior history,
-					// vault-chat gets a shot at the follow-up before we admit
-					// defeat. Cold conversations return the clarify text directly.
-					if (ctx.history.length > 0) {
-						replyText = '';
-					} else {
-						saveTurn(conversationKey, 'user', workingBody, turnNow);
-						saveTurn(conversationKey, 'assistant', decision.reply, turnNow + 1);
-						return json({ ok: true, action: 'reply', text: decision.reply });
-					}
-				} else if (decision.action === 'dispatch' && decision.agent && decision.task) {
-					// Direct dispatch — only fires when the model returned
-					// `action: dispatch` with confidence ≥0.85 (otherwise
-					// decide.ts downgrades to propose-dispatch).
+				}
+				if (out.kind === 'dispatch') {
+					// Confirmed agent dispatch: capacity gate → worker ack
+					// (capture messageId for progress edits) → fire-and-forget
+					// `runInBackground` with `agentContext` from the
+					// conversation context → return `drop` so the worker
+					// doesn't double-respond.
 					const capacity = checkDispatchCapacity(envelope.chatJid);
 					if (!capacity.ok) {
-						saveTurn(conversationKey, 'user', workingBody, turnNow);
 						const rejection = formatCapacityRejection(capacity);
 						saveTurn(conversationKey, 'assistant', rejection, turnNow + 1);
 						return json({ ok: true, action: 'reply', text: rejection });
 					}
-
-					const ackText = `On it — running *${decision.agent}*. I'll send the summary here when it's ready (reply *cancel* to stop).`;
+					const ackText = `On it — running *${out.agentId}*. I'll send the summary here when it's ready (reply *cancel* to stop).`;
 					let progressMessageId: string | undefined;
 					try {
 						const sendResult = await workerSendForOrchestrator(cfg.worker, {
@@ -542,15 +596,14 @@ export const POST: RequestHandler = async ({ request }) => {
 						}
 					} catch (err) {
 						console.warn(
-							`[orchestrator] initial ack send failed (${(err as Error).message}); continuing without it`,
+							`[orchestrator-v2] initial ack send failed (${(err as Error).message}); continuing without it`,
 						);
 					}
-					saveTurn(conversationKey, 'user', workingBody, turnNow);
 					const agentContext = buildAgentContextBrief(ctx);
 					orchestratorDispatch({
 						jid: envelope.chatJid,
-						agentId: decision.agent,
-						task: decision.task,
+						agentId: out.agentId,
+						task: out.task,
 						sourceMessage: workingBody,
 						worker: cfg.worker,
 						progressMessageId,
@@ -558,14 +611,18 @@ export const POST: RequestHandler = async ({ request }) => {
 						agentContext,
 					});
 					return json({ ok: true, action: 'drop' });
-				} else {
-					replyText = '';
 				}
-			} else {
-				replyText = '';
-				if (orch.note) {
-					console.warn(`[orchestrator] fell through: ${orch.note}`);
-				}
+				// `text` / `proposal` / `error` — all carry `out.text` as the
+				// pre-formatted user-facing string.
+				saveTurn(conversationKey, 'assistant', out.text, turnNow + 1);
+				return json({ ok: true, action: 'reply', text: out.text });
+			}
+
+			// No usable v2 output (timeout, model abstain, etc.) — fall through
+			// to vault-chat below so the user gets *something*.
+			replyText = '';
+			if (orch.note) {
+				console.warn(`[orchestrator] fell through: ${orch.note}`);
 			}
 		} else {
 			replyText = '';

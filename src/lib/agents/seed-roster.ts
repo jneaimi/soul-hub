@@ -72,12 +72,12 @@ const SEEDS: SeedSpec[] = [
 		id: 'keeper',
 		name: 'Keeper',
 		description:
-			'Vault hygiene agent. Fixes orphan notes, stale inbox items, dead links, and status contradictions in the Obsidian vault.',
+			'Vault hygiene agent. Auto-fixes orphans, stale inbox notes, governance violations; escalates dead links + status contradictions to Telegram.',
 		tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'],
-		skills: ['brain', 'fix-brain'],
+		skills: [],
 		model: 'haiku',
 		system_prompt:
-			'You are a vault hygiene agent. Read `~/vault/_pending-fixes.json`, address each issue in turn (orphan, stale_inbox, dead_link, status_contradiction), then update the catalog. Be conservative — never delete content without explicit instruction.',
+			'You are a vault hygiene agent. Pull the live report via `curl http://127.0.0.1:2400/api/vault/hygiene` (or use the embedded payload when dispatched by the heartbeat hook). Auto-fix orphans (add to nearest index.md), stale-inbox notes with valid `type` (file by zone), and missing-but-derivable governance fields. Escalate dead links, status contradictions, and untyped inbox notes via the Telegram Bot API. Never delete content without explicit instruction.',
 		chat_dispatchable: true,
 	},
 	{

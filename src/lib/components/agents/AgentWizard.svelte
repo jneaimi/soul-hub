@@ -77,6 +77,7 @@
 
 	onMount(() => {
 		loadSkillCatalogue();
+		loadCredentials();
 	});
 
 	function toggleSkill(id: string) {
@@ -109,6 +110,70 @@
 		seed.backend === 'ai-sdk' ? (seed.model ?? '') : '',
 	);
 	let provider = $state<Provider>(seed.provider ?? 'anthropic');
+
+	// ─── credential availability (ADR-001 Phase 3) ─────────────────────────
+	// Fetched once on mount from `/api/secrets`. Drives:
+	//   1. Auto-pre-select on create: Lane A if CLAUDE_CODE_OAUTH_TOKEN set,
+	//      else first AI SDK provider with a key, else stay on claude-pty
+	//      with a banner pointing to Settings.
+	//   2. Provider dropdown: disabled options for providers with no key.
+	const PROVIDER_TO_KEY: Record<Provider, string> = {
+		anthropic: 'ANTHROPIC_API_KEY',
+		openai: 'OPENAI_API_KEY',
+		openrouter: 'OPENROUTER_API_KEY',
+		google: 'GEMINI_API_KEY',
+		mistral: 'MISTRAL_API_KEY',
+	};
+	const CLAUDE_CODE_KEY = 'CLAUDE_CODE_OAUTH_TOKEN';
+
+	let credLoaded = $state(false);
+	let credSet = $state<Record<string, boolean>>({});
+
+	const claudeCodeAvailable = $derived(credSet[CLAUDE_CODE_KEY] === true);
+	const anyAiSdkAvailable = $derived(
+		(['anthropic', 'openai', 'openrouter', 'google', 'mistral'] as Provider[]).some(
+			(p) => credSet[PROVIDER_TO_KEY[p]] === true,
+		),
+	);
+	const noBackendAvailable = $derived(credLoaded && !claudeCodeAvailable && !anyAiSdkAvailable);
+
+	// Plain function (not $derived) so each invocation reads the reactive
+	// `credSet` directly. $derived returning a function is brittle in Svelte 5.
+	function providerAvailable(p: Provider): boolean {
+		return credSet[PROVIDER_TO_KEY[p]] === true;
+	}
+
+	async function loadCredentials() {
+		try {
+			const res = await fetch('/api/secrets');
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			const data = (await res.json()) as Array<{ key: string; set: boolean }>;
+			const map: Record<string, boolean> = {};
+			for (const s of data) map[s.key] = s.set;
+			credSet = map;
+		} catch {
+			// Silent: credentials view degrades to "show all, no hints" — the
+			// dispatcher will still error helpfully if the user picks an
+			// unavailable provider. UI just loses the proactive cue.
+		} finally {
+			credLoaded = true;
+			// Auto-pre-select on create, only when the seed didn't pin a backend.
+			if (!isEdit && !seed.backend) {
+				if (claudeCodeAvailable) {
+					backend = 'claude-pty';
+				} else if (anyAiSdkAvailable) {
+					backend = 'ai-sdk';
+					// Pick the first provider that has a key.
+					const firstWithKey = (
+						['anthropic', 'openrouter', 'google', 'openai', 'mistral'] as Provider[]
+					).find((p) => credSet[PROVIDER_TO_KEY[p]] === true);
+					if (firstWithKey) provider = firstWithKey;
+				}
+				// else: stay on claude-pty default; the noBackendAvailable
+				// banner below points the user to Settings.
+			}
+		}
+	}
 
 	// PTY-specific
 	let worktreeIsolated = $state(seed.worktree_isolated ?? true);
@@ -264,8 +329,18 @@
 				<span class="text-[10px] text-hub-warning">⚠ changing backend rewrites the agent in a new lane</span>
 			{/if}
 		</div>
+		{#if noBackendAvailable}
+			<div class="bg-hub-warning/10 border border-hub-warning/40 rounded-lg p-3 text-xs text-hub-warning">
+				No Claude Code OAuth token or AI SDK provider key configured. Add at least one in
+				<a href="/settings" class="underline">Settings</a>
+				before creating an agent.
+			</div>
+		{/if}
 		<div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
 			{#each backendCards as card (card.id)}
+				{@const cardAvailable =
+					card.id === 'ai-sdk' ? anyAiSdkAvailable : claudeCodeAvailable}
+				{@const showHint = credLoaded && !cardAvailable}
 				<button
 					type="button"
 					onclick={() => (backend = card.id)}
@@ -274,10 +349,23 @@
 							? card.colorActive
 							: 'border-hub-border bg-hub-bg text-hub-muted hover:text-hub-text hover:border-hub-border/80'}"
 				>
-					<div class="text-sm font-semibold mb-1">{card.label}</div>
+					<div class="text-sm font-semibold mb-1 flex items-center gap-1.5">
+						{card.label}
+						{#if credLoaded && cardAvailable}
+							<span class="text-hub-cta text-[10px]" title="Credential available">✓</span>
+						{/if}
+					</div>
 					<div class="text-[11px] text-hub-muted leading-snug">{card.oneLine}</div>
 					{#if card.risk}
 						<div class="text-[10px] text-hub-warning mt-1.5">{card.risk}</div>
+					{/if}
+					{#if showHint}
+						<div class="text-[10px] text-hub-dim mt-1.5">
+							{card.id === 'ai-sdk'
+								? 'No provider keys set'
+								: 'No Claude Code OAuth'}
+							— <a href="/settings" class="underline" onclick={(e) => e.stopPropagation()}>Add in Settings</a>
+						</div>
 					{/if}
 				</button>
 			{/each}
@@ -585,9 +673,18 @@
 							class="w-full px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-sm text-hub-text focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50"
 						>
 							{#each providers as p (p)}
-								<option value={p}>{p}</option>
+								{@const has = providerAvailable(p)}
+								<option value={p}>
+									{p}{credLoaded ? (has ? ' ✓' : ' (no key)') : ''}
+								</option>
 							{/each}
 						</select>
+						{#if credLoaded && !providerAvailable(provider)}
+							<p class="text-[11px] text-hub-warning mt-1">
+								No <code class="font-mono">{PROVIDER_TO_KEY[provider]}</code> set.
+								<a href="/settings" class="underline">Add in Settings →</a>
+							</p>
+						{/if}
 					</div>
 					<div>
 						<label for="ai-model" class="block text-xs text-hub-muted mb-1">Model</label>

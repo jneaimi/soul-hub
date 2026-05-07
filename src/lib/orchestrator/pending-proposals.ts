@@ -19,15 +19,29 @@
  * Storage: same SQLite handle as `chat_history` (~/.soul-hub/data/inbox.db).
  * Schema is created lazily on first access. Stale rows pruned on each save.
  *
- * TTL: 10 minutes — long enough for a phone-side reply, short enough that
- * an old proposal can't fire surprise dispatches when the user comes back
- * an hour later with an unrelated message.
+ * TTL: configurable via `setPending`'s `ttl_ms` option, default 24h (ADR-007).
+ * The previous 10-minute default silently dropped proposals when the user
+ * deferred their reply through a meal/meeting; 24h covers natural delays
+ * and the 6h grace window (see `getPending`) catches genuinely-late "yes".
  */
 
 import type { Database } from 'better-sqlite3';
 import { getInboxDb } from '../inbox/db.js';
+import {
+	recordProposal,
+	resolveByConversation,
+	type ProposalResolution,
+	type ProposalOrigin,
+} from './proposal-history.js';
 
-const TTL_MS = 10 * 60 * 1000;
+/** Default TTL — 24h. Covers natural reply delays (sleep, meetings, travel).
+ *  Per-call override via `setPending({ttl_ms})` for shorter-lived proposals. */
+const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
+/** Grace window after expiry where `getPending` still returns the row with
+ *  `expired: true`. Lets the inbound handler surface "your proposal expired
+ *  Xm ago — say yes within 5 min to run anyway" instead of silently dropping
+ *  a delayed confirm. ADR-007 Gap 2. */
+const GRACE_MS = 6 * 60 * 60 * 1000;
 
 export interface PendingProposal {
 	conversationKey: string;
@@ -38,6 +52,10 @@ export interface PendingProposal {
 	/** Short label rendered into the proposal text (e.g. "Full research dive
 	 *  on hydroponics"). Bounded ~80 chars by upstream classifier. */
 	label: string;
+	/** ADR-007 Gap 2 — true when the proposal is past `expiresAt` but still
+	 *  within the 6h grace window. Inbound handler renders a "your proposal
+	 *  expired Xm ago" prompt and accepts a fresh confirm within 5 min. */
+	expired?: boolean;
 }
 
 let schemaReady = false;
@@ -68,18 +86,31 @@ function db(): Database {
 
 /** Stash a fresh proposal. Replaces any existing proposal on the same key
  *  — only the latest one is honoured, since the orchestrator can re-evaluate
- *  the user's intent on every turn. */
+ *  the user's intent on every turn.
+ *
+ *  `ttl_ms` overrides the 24h default (ADR-007 Gap 1). Use shorter TTLs for
+ *  transient proposals (e.g. web-search alternatives), longer for heavy
+ *  multi-day research dispatches. */
 export function setPending(input: {
 	conversationKey: string;
 	agentId: string;
 	task: string;
 	label: string;
+	ttl_ms?: number;
+	/** ADR-008 Phase 8 — proposal source for analytics. Forwarded to
+	 *  `recordProposal` so the audit row is tagged at write time. */
+	origin?: ProposalOrigin;
+	/** ADR-009 Phase 5 — A/B branch that decided this proposal. Forwarded
+	 *  to `recordProposal` so analytics queries can group by branch.
+	 *  Pass `null`/undefined for v1 (Gemini-classifier) callers. */
+	modelBranch?: string | null;
 }): PendingProposal {
 	const now = Date.now();
+	const ttl = input.ttl_ms ?? DEFAULT_TTL_MS;
 	const proposal: PendingProposal = {
 		conversationKey: input.conversationKey,
 		createdAt: now,
-		expiresAt: now + TTL_MS,
+		expiresAt: now + ttl,
 		agentId: input.agentId,
 		task: input.task,
 		label: input.label,
@@ -103,11 +134,29 @@ export function setPending(input: {
 			proposal.label,
 		);
 
+	// ADR-007 Gap 3 — record an audit-trail row alongside the live state.
+	// `recordProposal` also resolves any prior unresolved row on this
+	// conversation as `superseded`, so the live `INSERT OR REPLACE` above
+	// stays in sync with the history view.
+	recordProposal({
+		conversationKey: proposal.conversationKey,
+		agentId: proposal.agentId,
+		task: proposal.task,
+		label: proposal.label,
+		shownText: formatProposal(proposal),
+		expiresAt: proposal.expiresAt,
+		origin: input.origin,
+		modelBranch: input.modelBranch,
+	});
+
 	return proposal;
 }
 
 /** Read the live proposal for a key. Returns undefined when nothing is
- *  pending or the row has expired (expired rows are dropped on read). */
+ *  pending or the row is past the grace window. Rows in the grace window
+ *  (`expires_at < now < expires_at + GRACE_MS`) are returned with
+ *  `expired: true` so the inbound handler can surface a "your proposal
+ *  expired Xm ago" prompt instead of dropping silently (ADR-007 Gap 2). */
 export function getPending(conversationKey: string): PendingProposal | undefined {
 	const handle = db();
 	const now = Date.now();
@@ -131,10 +180,13 @@ export function getPending(conversationKey: string): PendingProposal | undefined
 
 	if (!row) return undefined;
 
-	if (row.expires_at < now) {
+	// Past the grace window — clean up + nothing to show.
+	if (row.expires_at + GRACE_MS < now) {
 		clearPending(conversationKey);
 		return undefined;
 	}
+
+	const expired = row.expires_at < now;
 
 	return {
 		conversationKey: row.conversation_key,
@@ -143,16 +195,36 @@ export function getPending(conversationKey: string): PendingProposal | undefined
 		agentId: row.agent_id,
 		task: row.task,
 		label: row.label,
+		expired,
 	};
 }
 
-/** Drop a proposal — used when user confirmed (post-dispatch) or declined. */
+/** Drop a proposal — used when user confirmed (post-dispatch) or declined.
+ *  Prefer `resolvePending(key, kind)` when the resolution kind is known so
+ *  the audit trail captures it; this raw form is for defensive cleanup
+ *  (e.g. cancel paths where no proposal may exist). */
 export function clearPending(conversationKey: string): void {
 	db().prepare(`DELETE FROM pending_proposals WHERE conversation_key = ?`).run(conversationKey);
 }
 
+/** Resolve a pending proposal: record the resolution kind in
+ *  `proposal_history` AND drop the live state row. Use this from every
+ *  user-driven path (confirm / decline / switch-to-web / unrelated /
+ *  expired / cancelled). ADR-007 Gap 3. */
+export function resolvePending(
+	conversationKey: string,
+	resolution: ProposalResolution,
+): void {
+	resolveByConversation(conversationKey, resolution);
+	clearPending(conversationKey);
+}
+
+/** Prune rows past the 6h grace window. Anything within the grace window
+ *  remains so `getPending` can surface it as `expired: true`. */
 function pruneExpired(handle: Database, now: number): void {
-	handle.prepare(`DELETE FROM pending_proposals WHERE expires_at < ?`).run(now);
+	handle
+		.prepare(`DELETE FROM pending_proposals WHERE expires_at + ? < ?`)
+		.run(GRACE_MS, now);
 }
 
 /** Classify a user reply against a live proposal. Pure string analysis;
@@ -190,6 +262,20 @@ export function classifyProposalReply(message: string): ProposalReplyKind {
 	}
 
 	return 'unrelated';
+}
+
+/** Render the grace-window prompt for a proposal that's past its TTL but
+ *  within the 6h grace window (ADR-007 Gap 2). The user sees how stale the
+ *  proposal is and can confirm afresh — anything other than `confirm` drops
+ *  the row and falls through to normal classification. */
+export function formatExpiredPrompt(proposal: PendingProposal): string {
+	const ageMin = Math.round((Date.now() - proposal.expiresAt) / 60_000);
+	const ageDisplay = ageMin >= 60 ? `${Math.round(ageMin / 60)}h` : `${ageMin}m`;
+	return [
+		`Your earlier proposal (*${proposal.label}*) expired ${ageDisplay} ago.`,
+		``,
+		`Reply *yes* in the next 5 min to run *${proposal.agentId}* anyway, or describe what you'd like fresh.`,
+	].join('\n');
 }
 
 /** Render the proposal text the orchestrator sends to the user. Templated

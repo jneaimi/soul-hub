@@ -20,6 +20,19 @@ module.exports = {
       env: {
         PORT: 2400,
         NODE_ENV: 'production',
+        // ADR-009 Phase 8 (2026-05-07) — v1 dead code deleted. The
+        // orchestrator is now v2-only; no env switch needed.
+        // ADR-009 Phase 6 / decision-log 2026-05-06 — manual weekly rotation
+        // for the 3-way A/B. Sticky-per-conversationKey would have pinned
+        // the single user to one branch for the full 14 days, defeating
+        // the test. Set to one of `glm-4.6` / `sonnet-4.6` / `minimax-m2`;
+        // rotate weekly via:
+        //   pm2 reload ecosystem.config.cjs --update-env
+        // after editing this line. Telemetry rows already track the active
+        // branch, so analytics queries remain valid across rotations.
+        // Week 1 (2026-05-06 → 2026-05-13): glm-4.6 (cheapest; validates
+        // cost projections first).
+        ORCHESTRATOR_V2_BRANCH_OVERRIDE: 'glm-4.6',
         // SvelteKit Node adapter caps request bodies at 512KB by default.
         // Lift to 30MB so our 25MB-per-file upload cap (in /api/files) works
         // through the browser; multipart overhead needs the extra headroom.

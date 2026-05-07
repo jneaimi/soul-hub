@@ -221,6 +221,86 @@ export const WhatsAppImgSchema = z.object({
 	systemPromptPath: z.string().default('operations/whatsapp/IMG.md'),
 });
 
+/** Telegram-specific config — extends the generic ChannelConfig with the
+ *  fields the Bot API adapter needs (allowlist, intent map, webhook).
+ *  Telegram chat IDs are integers (positive for DMs, negative for groups);
+ *  we store them as numeric strings for JSON-friendliness. */
+const TG_USER_ID = z.string().regex(/^\d+$/, 'Expected a positive integer Telegram user_id');
+const TG_CHAT_ID = z.string().regex(/^-?\d+$/, 'Expected a Telegram chat_id (positive int for DM, negative for group)');
+
+export const TelegramAccessSchema = z
+	.object({
+		dmPolicy: z.enum(['allowlist', 'open', 'disabled']).default('allowlist'),
+		/** Telegram numeric user_ids that may DM the bot. `'*'` opens DMs. */
+		allowFrom: z.array(z.union([TG_USER_ID, z.literal('*')])).default([]),
+		groupPolicy: z.enum(['allowlist', 'open', 'disabled']).default('allowlist'),
+		/** Group chat_ids (negative integers, `-100xxx` for supergroups). */
+		groupAllowFrom: z.array(TG_CHAT_ID).default([]),
+		groups: z
+			.record(
+				z.string(),
+				z.object({ requireMention: z.boolean().default(true) }),
+			)
+			.default({}),
+	})
+	.refine((d) => d.dmPolicy !== 'open' || d.allowFrom.includes('*'), {
+		message: '`dmPolicy: "open"` requires `allowFrom` to include "*".',
+	});
+
+export const TelegramIntentMapSchema = z.record(
+	z.string(),
+	z.object({
+		route: z.string(),
+		description: z.string().optional(),
+		dynamic: z.boolean().optional(),
+	}),
+);
+
+export const TelegramDeliverySchema = z.object({
+	textChunkLimit: z.number().int().min(500).max(4096).default(4000),
+	chunkMode: z.enum(['newline', 'hard']).default('newline'),
+	/** Telegram has no inbound-ack reaction primitive that doesn't pollute the
+	 *  group; leave empty by default. Set to a string (e.g. 👀) to send a
+	 *  `setMessageReaction` ack on every accepted inbound message. */
+	ackEmoji: z.string().default(''),
+	/** Drop inbound media that exceeds this size. Telegram's Bot API caps
+	 *  download at 20MB; default 20 matches that. */
+	maxMediaSizeMB: z.number().int().min(1).max(50).default(20),
+	transcribeVoiceNotes: z.boolean().default(true),
+	transcribeProvider: z
+		.string()
+		.regex(/^gemini:.+$/)
+		.default('gemini:gemini-2.5-flash'),
+	/** Outbound parse_mode for sendMessage. Markdown is the legacy mode and
+	 *  forgiving about lone `*`/`_`; switch to MarkdownV2 if you need full
+	 *  inline-formatting fidelity at the cost of stricter escaping. */
+	parseMode: z.enum(['Markdown', 'MarkdownV2', 'HTML', 'none']).default('Markdown'),
+});
+
+export const TelegramWebhookSchema = z.object({
+	/** Public URL Telegram pushes updates to — typically your Cloudflare
+	 *  tunnel host + `/api/channels/telegram/_webhook`. Required to use
+	 *  webhook delivery; if absent, the bot is a one-way speaker. */
+	url: z.string().url().optional(),
+	/** Optional shared secret. When set, we register it via `setWebhook`
+	 *  and reject any inbound POST whose `X-Telegram-Bot-Api-Secret-Token`
+	 *  header doesn't match. Strongly recommended. */
+	secretToken: z.string().min(1).max(256).optional(),
+});
+
+export const TelegramChannelSchema = ChannelConfigSchema.extend({
+	access: TelegramAccessSchema.prefault({}),
+	delivery: TelegramDeliverySchema.prefault({}),
+	webhook: TelegramWebhookSchema.prefault({}),
+	intentMap: TelegramIntentMapSchema.default({
+		'/save': { route: 'brain-save', description: 'Capture a note (text/image/voice/video) into the vault inbox.' },
+		'/find': { route: 'brain-find', description: 'Search the vault — top 5 matches.' },
+		'/recent': { route: 'brain-recent', description: 'List the 5 most-recently-touched notes.' },
+		'/img': { route: 'img', description: 'Generate an image (no attachment) or edit one (attach the source).' },
+		default: { route: 'vault-chat', dynamic: false },
+	}),
+});
+
 export const WhatsAppChannelSchema = ChannelConfigSchema.extend({
 	account: z.string().default('personal'),
 	accounts: z
@@ -293,7 +373,35 @@ export const ConfigSchema = z.object({
 	// flow through; each adapter Zod-validates its own slice on read (e.g.
 	// WhatsAppChannelSchema for the `whatsapp` entry).
 	channels: z.record(z.string(), ChannelConfigSchema.passthrough()).prefault({
-		telegram: { enabled: false, label: 'Telegram', defaultFor: ['send'] },
+		telegram: {
+			enabled: false,
+			label: 'Telegram',
+			defaultFor: ['send'],
+			access: {
+				dmPolicy: 'allowlist',
+				allowFrom: [],
+				groupPolicy: 'allowlist',
+				groupAllowFrom: [],
+				groups: {},
+			},
+			delivery: {
+				textChunkLimit: 4000,
+				chunkMode: 'newline',
+				ackEmoji: '',
+				maxMediaSizeMB: 20,
+				transcribeVoiceNotes: true,
+				transcribeProvider: 'gemini:gemini-2.5-flash',
+				parseMode: 'Markdown',
+			},
+			webhook: {},
+			intentMap: {
+				'/save': { route: 'brain-save', description: 'Capture a note (text/image/voice/video) into the vault inbox.' },
+				'/find': { route: 'brain-find', description: 'Search the vault — top 5 matches.' },
+				'/recent': { route: 'brain-recent', description: 'List the 5 most-recently-touched notes.' },
+				'/img': { route: 'img', description: 'Generate an image (no attachment) or edit one (attach the source).' },
+				default: { route: 'vault-chat', dynamic: false },
+			},
+		},
 		whatsapp: {
 			enabled: false,
 			label: 'WhatsApp',

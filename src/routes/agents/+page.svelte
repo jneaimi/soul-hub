@@ -253,9 +253,9 @@
 				Orchestrator
 			</a>
 			<a
-				href="/agents/skills"
+				href="/skills"
 				class="px-3 py-1.5 rounded-lg text-sm text-hub-muted hover:text-hub-text hover:bg-hub-card transition-colors cursor-pointer"
-				title="Manage installed skills"
+				title="Skills hub — chat overlay + install/manage"
 			>
 				Skills
 			</a>

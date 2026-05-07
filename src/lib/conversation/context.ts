@@ -114,8 +114,83 @@ function alphaWordCount(s: string): number {
 // version + model name like this).
 const CC_BANNER_RE = /Claude\s*Code\s*v\d|ClaudeCode\s*v\d|Claude\s*Max|·\s*Claude\s*Max/i;
 
+// 2026-05-06: in-session TUI status indicators that survive ANSI stripping
+// AND have ≥3 alpha words (so the alphaWordCount filter doesn't drop
+// them). Real examples from leaked PTY transcripts:
+//   "vault Sonnet 4.6 high · /effort"
+//   "⏵⏵ bypass permissions on (shift+tab to cycle)"
+//   "ctx 14% 2k/200k Create plane image with text overlay"
+//   "117 skill descriptions dropped · /doctor for details"
+//   "100 tokens · thought for 9s"
+//   "Welcome back Jasem!"
+//   "Fixed VSCode extension failing to activate on Windows"
+//   'Added `--plugin-url <url>` flag to fetch a plugin `.zip` archive'
+//   "/release-notes for more"
+//   '❯ Try "refactor <filepath>"'
+//   "[Pasted text #1 +14 lines]"
+//   "paste again to expand"
+//   "Sonnet 4.6 · Claude Max · Jasem Al Neaimi"
+// Each pattern is tight enough that real prose can't false-positive.
+const CC_STATUS_RE_LIST: RegExp[] = [
+	// Model identity tokens
+	/^Sonnet\s*4\.6|^Opus\s*4\.6|^Haiku\s*4\.5|·\s*Sonnet\s*4\.6|·\s*Claude\s*Max/i,
+	// Session control hints
+	/bypass\s+permissions\s+on/i,
+	/shift\+tab\s+to\s+cycle/i,
+	/^ctx\s+\d+%\s+\d/i,
+	/skill\s+descriptions\s+dropped/i,
+	/\d+\s+tokens?\s+·\s+thought\s+for\s+\d+s/i,
+	/^⏵⏵|^⎿|^⏺|❯\s*vault\s|^❯\s*Try\s/i,
+	/\/effort\s|\s\/effort$|·\s*\/effort/i,
+	// Welcome / splash panel content
+	/Welcome\s+back\s+\w+/i,
+	/What['']s\s+new/i,
+	/release[-\s]?notes\s+for\s+more/i,
+	// Release-note ticker bullets — `Added \`--<flag> <arg>\`` etc.
+	/Added\s+`?--[\w-]+\s+<[^>]+>`?\s+flag/i,
+	/Fixed\s+(?:VSCode|Mantle|Windows|Linux|macOS)\b/i,
+	/failing\s+to\s+activate/i,
+	// Paste-content elision markers
+	/\[Pasted\s+text\s+#\d+\s+\+\d+\s+lines?\]/i,
+	/paste\s+again\s+to\s+expand/i,
+	// Try-prompt suggestions
+	/^["“]?Try\s+["“]refactor\s+<[^>]+>/i,
+];
+
 function looksLikeClaudeCodeBanner(s: string): boolean {
-	return CC_BANNER_RE.test(s);
+	if (CC_BANNER_RE.test(s)) return true;
+	for (const re of CC_STATUS_RE_LIST) if (re.test(s)) return true;
+	return false;
+}
+
+// 2026-05-06: section headings that ONLY appear in agent system prompts
+// (output-shape spec, pipeline integration spec, failure handling spec).
+// When an agent runs short on real content and dumps its own prompt, these
+// headings appear in the captured output. Truncate at the first match —
+// everything below is system-prompt echo, not real work.
+const PROMPT_ECHO_MARKERS: RegExp[] = [
+	/^\s*(?:###?\s+)?Trailer\s+rules\b/im,
+	/^\s*(?:###?\s+)?Machine-style\b/im,
+	/^\s*(?:###?\s+)?Failure\s*\/\s*partial\s+output\b/im,
+	/^\s*(?:###?\s+)?Composable\s+Pipeline\b/im,
+	/^\s*##\s+Recent\s+agent\s+runs\s*$/im,
+	/^\s*\*\*assistant:\*\*/m,
+	/^\s*\*\*user:\*\*/m,
+];
+
+/** Locate the earliest "this output starts echoing the agent's system
+ *  prompt" marker. Returns the index of the start of the offending line,
+ *  or -1 when no echo signature is present. */
+function firstPromptEchoIndex(s: string): number {
+	let earliest = -1;
+	for (const re of PROMPT_ECHO_MARKERS) {
+		const m = re.exec(s);
+		if (m) {
+			const i = m.index;
+			if (earliest === -1 || i < earliest) earliest = i;
+		}
+	}
+	return earliest;
 }
 
 /** One-line writeback to `chat_history` after an agent finishes, so the next
@@ -150,7 +225,43 @@ export function summarizeAgentResultForHistory(
 // only some agents emit it; we fall back to whole-output cleaning for the
 // rest. Marker check is exact-line + case-sensitive to keep false-positive
 // rate near zero (vault notes occasionally contain `---` separators).
-const CHAT_TRAILER_RE = /^[ \t]*---CHAT---[ \t]*$/m;
+//
+// 2026-05-06 hardening: when an agent echoes its own system prompt (e.g.
+// because it stopped to ask for clarification rather than producing real
+// output), the prompt's EXAMPLE trailer was getting picked up as if it
+// were the agent's actual trailer — leaking the example body + the
+// surrounding rule prose into the chat reply. Two guards: (a) ignore
+// any `---CHAT---` line inside a fenced code block, (b) prefer the LAST
+// surviving occurrence (the real trailer is always at the end).
+const CHAT_TRAILER_RE = /^[ \t]*---CHAT---[ \t]*$/gm;
+const CODE_FENCE_BLOCK_RE = /```[\s\S]*?```/g;
+
+interface TrailerSplit {
+	body: string;
+	matched: boolean;
+}
+
+/** Find the agent's real `---CHAT---` trailer, ignoring any occurrences
+ *  inside fenced code blocks (those are typically echoed system-prompt
+ *  examples). Returns the body AFTER the last surviving marker, or the
+ *  whole output unchanged when no real marker is present. */
+function splitChatTrailer(output: string): TrailerSplit {
+	const masked = output.replace(CODE_FENCE_BLOCK_RE, (block) =>
+		// Replace fence content with same-length spaces so line offsets stay
+		// aligned. We only need to defeat the regex inside fences.
+		block.replace(/[^\n]/g, ' '),
+	);
+	let lastIdx = -1;
+	let lastLen = 0;
+	let m: RegExpExecArray | null;
+	while ((m = CHAT_TRAILER_RE.exec(masked)) !== null) {
+		lastIdx = m.index;
+		lastLen = m[0].length;
+	}
+	CHAT_TRAILER_RE.lastIndex = 0;
+	if (lastIdx < 0) return { body: output, matched: false };
+	return { body: output.slice(lastIdx + lastLen), matched: true };
+}
 
 // Heuristic vault-path detection. Three real shapes observed in agent
 // outputs: explicit "Saved to: <path>", a bare path like
@@ -159,6 +270,17 @@ const CHAT_TRAILER_RE = /^[ \t]*---CHAT---[ \t]*$/m;
 const VAULT_LABEL_RE = /(?:Saved to|Vault path|Saved|Wrote to)[:\s]+([~]?\/?(?:Users\/[^\s]+\/vault\/|vault\/)[^\s`'")]+\.md)/i;
 const VAULT_RAW_PATH_RE = /([~]?\/?(?:Users\/[^\s]+\/vault\/|vault\/)[^\s`'")]+\.md)/;
 const WIKILINK_RE = /\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]/;
+
+// 2026-05-06: reject paths that are obviously prompt-template placeholders.
+// A real-world bug: agent dumped its system prompt frontmatter example which
+// contained `<zone>/<…>.md`-style placeholders, the extractor matched the
+// wikilink, and the user got a broken Soul Hub URL. Any path containing
+// angle-brackets or curly braces is template scaffolding, not a real file.
+const PLACEHOLDER_RE = /[<>{}]|…|\.\.\./;
+
+function isPlaceholderPath(path: string): boolean {
+	return PLACEHOLDER_RE.test(path);
+}
 
 /** Best-effort vault-path extraction from agent output. Returns the relative
  *  path under `~/vault/` so the caller can render a `https://soul-hub…/vault/notes/<path>`
@@ -170,7 +292,7 @@ export function extractVaultPath(output: string | undefined): string | null {
 	if (!output) return null;
 	const labeled = output.match(VAULT_LABEL_RE);
 	const raw = labeled ? labeled[1] : output.match(VAULT_RAW_PATH_RE)?.[1];
-	if (raw) {
+	if (raw && !isPlaceholderPath(raw)) {
 		// Normalise to vault-relative path (strip ~/, /Users/<user>/vault/, vault/).
 		return raw
 			.replace(/^~\//, '')
@@ -181,6 +303,7 @@ export function extractVaultPath(output: string | undefined): string | null {
 	const wiki = output.match(WIKILINK_RE);
 	if (wiki) {
 		const target = wiki[1].trim();
+		if (isPlaceholderPath(target)) return null;
 		// Only accept wikilinks that look like a path (contain "/" or end in
 		// .md). Display aliases for entities ([[OpenAI]]) shouldn't get linked.
 		if (target.includes('/') || /\.md$/i.test(target)) {
@@ -201,10 +324,13 @@ export function extractVaultPath(output: string | undefined): string | null {
  *  clean the whole output. */
 export function cleanAgentOutputForChat(output: string | undefined, maxLen = 3500): string {
 	if (!output || !output.trim()) return '';
-	const trailerMatch = output.match(CHAT_TRAILER_RE);
-	const source = trailerMatch
-		? output.slice((trailerMatch.index ?? 0) + trailerMatch[0].length)
-		: output;
+	const split = splitChatTrailer(output);
+	let source = split.body;
+	// Truncate at the first sign of system-prompt echo. The agent has clearly
+	// run out of real work to report by that point; everything below is
+	// scaffolding leaking through.
+	const echoIdx = firstPromptEchoIndex(source);
+	if (echoIdx > 0) source = source.slice(0, echoIdx);
 
 	const kept: string[] = [];
 	for (const line of source.split('\n')) {

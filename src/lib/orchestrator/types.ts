@@ -1,39 +1,19 @@
 /**
- * Orchestrator types.
+ * Orchestrator decision shape — shared between the v2 classifier
+ * (`src/lib/orchestrator-v2/decide-v2.ts`) and downstream consumers (inbound
+ * handler, metrics dashboard). v2 emits `OrchestratorDecision` via the
+ * `mapToolCallsToDecision` shim so analytics rows stay in the same shape
+ * the v1 path used; the actual user-facing payload is the richer
+ * `V2Output` (in `orchestrator-v2/types.ts`).
  *
- * Per WhatsApp ADR-005 + ADR-006 (2026-05-06 redesign): a Gemini Flash
- * classifier sits above the vault-chat fallthrough. It returns one of
- * SEVEN actions, with a hard bias toward conversation over execution.
- *
- *   - reply           — answer directly with training-data knowledge or chat
- *   - web-search      — quick Gemini-grounded Google Search (current facts,
- *                       weather, news, single-fact lookups)
- *   - vault-search    — defer to vault-chat for existing-knowledge lookups
- *                       ("do we have…", "what did we save…")
+ * Seven actions:
+ *   - reply           — plain chat reply
+ *   - web-search      — quick Gemini-grounded Google Search citation
+ *   - vault-search    — defer to vault-chat for personal-note lookups
  *   - generate-image  — text-to-image via the existing `/img` route
- *                       (Gemini Nano Banana). For natural-language image
- *                       requests like "make me a picture of X". Cheap path.
- *                       The heavy media-generator agent (carousel/video/
- *                       voice/Arabic-overlay) lands as Phase 2 via
- *                       `propose-dispatch`.
- *   - propose-dispatch — proposes a heavy agent dispatch and waits for
- *                       confirmation (the new default for any topic-shaped
- *                       message that doesn't carry an explicit command verb)
- *   - dispatch        — fire the specialist agent NOW. Reserved for messages
- *                       with unambiguous command verbs ("research X for me",
- *                       "draft Y", "review Z code") OR for the
- *                       confirm-pending-proposal path.
- *   - clarify         — genuinely ambiguous; ask the user to rephrase.
- *
- * The redesign was driven by a 2026-05-06 chat test where the previous
- * 3-action model auto-dispatched `researcher` on "how is the weather in
- * the UAE" (should have been web-search) and "do we have any research on
- * agriculture" (should have been vault-search). Adding `web-search` and
- * `vault-search` as first-class actions plus the propose-confirm pattern
- * brings the orchestrator in line with how Claude Code / Cursor / Codex
- * "plan mode" handles intent-uncertainty (review before execute).
- *
- * `confidence` gates the high-cost actions — see `decide.ts`.
+ *   - propose-dispatch — propose a heavy agent dispatch + wait for confirm
+ *   - dispatch        — fire the specialist agent now (explicit command)
+ *   - clarify         — ambiguous; ask the user to rephrase
  */
 
 export type OrchestratorAction =
@@ -47,7 +27,7 @@ export type OrchestratorAction =
 
 export interface OrchestratorDecision {
 	action: OrchestratorAction;
-	/** For `reply` and `clarify`: the text the user will see. For
+	/** For `reply` and `clarify`: the text the user sees. For
 	 *  `propose-dispatch`: optional one-line preface (the proposal text
 	 *  itself is rendered deterministically by the inbound handler). */
 	reply?: string;
@@ -62,15 +42,14 @@ export interface OrchestratorDecision {
 	/** For `web-search`: the grounded query string. Often identical to the
 	 *  user message but may be tightened (e.g. add location context). */
 	webQuery?: string;
-	/** For `generate-image`: the cleaned image prompt (description of the
-	 *  image to produce, with the leading verb stripped — e.g. user says
-	 *  "generate an image of a person fishing in the UAE", model returns
-	 *  "a person fishing in the UAE"). Falls back to userMessage when the
-	 *  model omits it. */
+	/** For `generate-image`: the cleaned image prompt. Falls back to the
+	 *  user message when the model omits it. */
 	imagePrompt?: string;
 	confidence: number;
 	reasoning?: string;
 }
+
+import type { ProposalOrigin } from './proposal-history.js';
 
 export interface DecideResult {
 	decision: OrchestratorDecision;
@@ -79,4 +58,9 @@ export interface DecideResult {
 	fellThrough: boolean;
 	/** Human-readable note for logs — never shown to user. */
 	note?: string;
+	/** Proposal source for analytics. Set when the decision is
+	 *  `propose-dispatch`: `'force-commit'`, `'confidence-downgrade'`, or
+	 *  omitted (caller treats undefined as `'natural'`). The inbound handler
+	 *  forwards this to `setPending` so `proposal_history.origin` records it. */
+	proposalOrigin?: ProposalOrigin;
 }

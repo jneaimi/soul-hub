@@ -733,6 +733,28 @@
 							{/if}
 						</div>
 
+						<!-- Skills -->
+						<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
+							<div class="flex items-center justify-between mb-3">
+								<div class="flex items-center gap-2">
+									<h3 class="text-sm font-semibold text-hub-text">Skills</h3>
+								</div>
+								<div class="flex items-center gap-2">
+									<a href="/skills/install" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer" title="Install / uninstall skills from ~/.claude/skills/">Install</a>
+									<span class="text-hub-dim text-[11px]">·</span>
+									<a href="/skills" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer" title="Configure which skills the WhatsApp orchestrator can invoke (ADR-009 §7)">View all</a>
+								</div>
+							</div>
+							<a
+								href="/skills"
+								class="block py-2 text-center text-xs text-hub-muted hover:text-hub-text hover:bg-hub-bg/50 rounded-lg transition-colors cursor-pointer"
+								title="Configure which skills the WhatsApp orchestrator can invoke"
+							>
+								💬 Chat-invokable skills
+								<div class="text-[10px] text-hub-dim mt-0.5">arabic · draft · think — 3 seeded</div>
+							</a>
+						</div>
+
 						<!-- Scheduler -->
 						<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
 							<div class="flex items-center justify-between mb-3">

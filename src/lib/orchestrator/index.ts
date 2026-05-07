@@ -1,10 +1,11 @@
 /**
- * Orchestrator public surface — the WhatsApp inbound handler imports
- * from here. See WhatsApp ADR-005.
+ * Orchestrator public surface — the WhatsApp inbound handler imports from
+ * here. The classifier itself lives in `src/lib/orchestrator-v2/` (ADR-009);
+ * this module owns the shared infrastructure both v2 and the inbound flow
+ * use: dispatch worker, active-run registry, capacity caps, pending
+ * proposals + audit history, and metrics.
  */
 
-export { decide } from './decide.js';
-export type { DecideOptions } from './decide.js';
 export { runInBackground } from './worker.js';
 export type { RunInBackgroundArgs } from './worker.js';
 export {
@@ -24,7 +25,19 @@ export {
 	setPending,
 	getPending,
 	clearPending,
+	resolvePending,
 	classifyProposalReply,
 	formatProposal,
+	formatExpiredPrompt,
 } from './pending-proposals.js';
 export type { PendingProposal, ProposalReplyKind } from './pending-proposals.js';
+export {
+	recentProposals,
+	statsByAgent,
+} from './proposal-history.js';
+export type {
+	ProposalResolution,
+	ProposalOrigin,
+	ProposalHistoryRow,
+	ProposalStats,
+} from './proposal-history.js';

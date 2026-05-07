@@ -1,0 +1,498 @@
+/** Inbound dispatcher — wires the Telegram envelope through access
+ *  control → optional voice transcription → pending-proposal classifier
+ *  → orchestrator-v2 (decideV2) → routes layer → outbound reply.
+ *
+ *  Mirrors `whatsapp/_inbound/+server.ts` semantically (the WhatsApp
+ *  worker-mode code path) — the orchestrator-v2 layer is channel-blind
+ *  by design (per ADR-011) and produces structured `V2Output` payloads
+ *  that we render channel-natively (text, image, proposal-with-buttons,
+ *  agent dispatch). When orchestrator-v2 falls through (no usable
+ *  output, model abstain, etc.) we fall back to the lexical vault-chat
+ *  pipeline so the user always gets *something*.
+ *
+ *  Conversation key prefix: `tg:<chatJid|senderNumber>` so it never
+ *  collides with WhatsApp's namespace. */
+
+import { dispatchRoute, RouteNotFoundError } from '../../routes/index.js';
+import { dispatchVaultChat } from '../../vault-chat/index.js';
+import { dispatchBrainSave, dispatchBrainFind, dispatchBrainRecent } from '../../brain/index.js';
+import { isResetCommand, resetConversation } from '../../vault-chat/history.js';
+import { decideV2 } from '../../orchestrator-v2/index.js';
+import { config as soulHubConfig } from '../../config.js';
+import { WhatsAppChannelSchema } from '../../config.schema.js';
+import {
+	getPending,
+	setPending,
+	resolvePending,
+	classifyProposalReply,
+	formatProposal,
+	formatExpiredPrompt,
+} from '../../orchestrator/pending-proposals.js';
+import { getConversationContext, buildAgentContextBrief } from '../../conversation/index.js';
+import { dispatchWebSearch, formatWebSearchForChat } from '../../web-search/index.js';
+import { saveTurn } from '../../vault-chat/history.js';
+import { checkAccess } from './access.js';
+import { resolveIntent } from './intent.js';
+import { sendText, sendMedia } from './outbound.js';
+import { downloadMedia, saveMediaToDisk } from './media.js';
+import { transcribeVoiceNote } from './transcribe.js';
+import { setMessageReaction } from './client.js';
+import { buildProposalKeyboard, rememberProposalButtons } from './callback.js';
+import { runInBackground } from './orchestrator-dispatch.js';
+import type {
+	InboundEnvelope,
+	TelegramChannelConfig,
+	TelegramMediaPayload,
+} from './types.js';
+
+const HELP_PREFIX = 'I do not recognise that command. Available:';
+const PROPOSAL_TTL_MS = 10 * 60 * 1000; // 10 min — matches WhatsApp's default
+
+function helpReply(intentMap: TelegramChannelConfig['intentMap']): string {
+	const lines: string[] = [HELP_PREFIX];
+	for (const [token, mapping] of Object.entries(intentMap)) {
+		if (token === 'default') continue;
+		const description = mapping.description ? ` — ${mapping.description}` : '';
+		lines.push(`  ${token} → ${mapping.route}${description}`);
+	}
+	lines.push('');
+	lines.push('Free-form messages route to `default`.');
+	lines.push('Voice notes are auto-transcribed when transcription is enabled.');
+	return lines.join('\n');
+}
+
+/** Build the channel-blind conversationKey downstream layers consume.
+ *  Always prefixed with `tg:` so it can never collide with a WhatsApp
+ *  E.164 number or chat JID. */
+export function conversationKeyFor(envelope: InboundEnvelope): string {
+	const stem = envelope.isGroup ? envelope.chatJid : envelope.senderNumber;
+	return `tg:${stem}`;
+}
+
+async function transcribeIfVoice(
+	envelope: InboundEnvelope,
+	config: TelegramChannelConfig,
+	account: string,
+): Promise<{ text?: string; buffer?: Buffer; error?: string }> {
+	const media = envelope.media;
+	if (!media || media.kind !== 'voice') return { text: undefined };
+	if (!config.delivery.transcribeVoiceNotes) return { text: undefined };
+
+	const maxBytes = config.delivery.maxMediaSizeMB * 1024 * 1024;
+	if (media.fileSize && media.fileSize > maxBytes) {
+		return {
+			error: `Voice note exceeds ${config.delivery.maxMediaSizeMB}MB cap (was ${(media.fileSize / 1024 / 1024).toFixed(1)}MB) — not transcribing.`,
+		};
+	}
+
+	let buffer: Buffer;
+	let mimetype: string;
+	try {
+		const downloaded = await downloadMedia(media);
+		buffer = downloaded.buffer;
+		mimetype = downloaded.mimetype;
+	} catch (err) {
+		return { error: `Couldn't download voice note: ${(err as Error).message}` };
+	}
+
+	try {
+		saveMediaToDisk({
+			account,
+			messageId: envelope.messageId || `inbound-${Date.now()}`,
+			payload: media,
+			buffer,
+		});
+	} catch {
+		/* archival is optional */
+	}
+
+	try {
+		const result = await transcribeVoiceNote({
+			audio: buffer,
+			mimetype,
+			providerRef: config.delivery.transcribeProvider,
+		});
+		return { text: result.text, buffer };
+	} catch (err) {
+		return { error: `Couldn't transcribe voice note: ${(err as Error).message}` };
+	}
+}
+
+/** Dispatch one inbound Telegram envelope through the channel-blind
+ *  upper layers. */
+export async function dispatchInbound(
+	envelope: InboundEnvelope,
+	config: TelegramChannelConfig,
+	account = 'personal',
+): Promise<void> {
+	const access = checkAccess(envelope, config.access);
+	if (!access.allow) return;
+
+	if (config.delivery.ackEmoji) {
+		try {
+			await setMessageReaction({
+				chat_id: envelope.chatJid,
+				message_id: Number(envelope.messageId),
+				reaction: [{ type: 'emoji', emoji: config.delivery.ackEmoji }],
+			});
+		} catch {
+			/* swallow */
+		}
+	}
+
+	let workingBody = envelope.body;
+	const transcription = await transcribeIfVoice(envelope, config, account);
+	if (transcription.error) {
+		await sendText(envelope.chatJid, transcription.error, config.delivery);
+		return;
+	}
+	if (transcription.text !== undefined) {
+		workingBody = transcription.text;
+	}
+
+	const conversationKey = conversationKeyFor(envelope);
+
+	if (envelope.media && envelope.media.kind !== 'voice' && !workingBody.trim()) {
+		const hint =
+			envelope.media.kind === 'image'
+				? `I got your image. Add a caption or send a follow-up message describing what you want me to do — or send \`/save\` to capture it to the vault.`
+				: `I got your ${envelope.media.kind}. Tell me what you want to do with it — ask a question, describe it, or send \`/save\` to capture it to the vault.`;
+		await sendText(envelope.chatJid, hint, config.delivery);
+		return;
+	}
+
+	if (isResetCommand(workingBody)) {
+		const cleared = resetConversation(conversationKey);
+		const replyText = cleared > 0
+			? "Conversation reset. What's on your mind?"
+			: 'Already a fresh slate.';
+		await sendText(envelope.chatJid, replyText, config.delivery);
+		return;
+	}
+
+	const intent = resolveIntent(workingBody, config.intentMap);
+
+	if (intent.route === 'unknown' || intent.route === 'help') {
+		await sendText(envelope.chatJid, helpReply(config.intentMap), config.delivery);
+		return;
+	}
+
+	// vault-chat / default route → orchestrator-v2 path with proposal +
+	// agent-dispatch + image support. Slash-commands (/save, /find,
+	// /recent, /img) bypass the orchestrator and go to their dedicated
+	// handlers — same as WhatsApp.
+	if (intent.route === 'vault-chat') {
+		await dispatchOrchestrated(
+			envelope,
+			workingBody,
+			conversationKey,
+			config,
+			transcription.buffer,
+		);
+		return;
+	}
+
+	try {
+		const userText = intent.body || '(empty message)';
+		const brainText = intent.body;
+		let replyText: string;
+
+		if (intent.route === 'brain-save') {
+			let buffer: Buffer | undefined;
+			let mimetype: string | undefined;
+			let mediaKind: TelegramMediaPayload['kind'] | undefined;
+			if (envelope.media?.kind === 'voice' && transcription.buffer) {
+				buffer = transcription.buffer;
+				mimetype = envelope.media.mimetype;
+				mediaKind = 'voice';
+			} else if (envelope.media && envelope.media.kind !== 'sticker') {
+				try {
+					const dl = await downloadMedia(envelope.media);
+					buffer = dl.buffer;
+					mimetype = dl.mimetype;
+					mediaKind = envelope.media.kind;
+				} catch (err) {
+					await sendText(
+						envelope.chatJid,
+						`Couldn't fetch the ${envelope.media.kind} for /save: ${(err as Error).message}`,
+						config.delivery,
+					);
+					return;
+				}
+			}
+			const saveResult = await dispatchBrainSave({
+				envelope: {
+					jid: envelope.chatJid,
+					isGroup: envelope.isGroup,
+					chatJid: envelope.chatJid,
+					senderNumber: envelope.senderNumber,
+					botMentioned: envelope.botMentioned,
+					body: workingBody,
+					messageId: envelope.messageId,
+				},
+				workingBody: brainText,
+				mediaBuffer: buffer,
+				mimetype,
+				mediaKind,
+			});
+			replyText = saveResult.text;
+		} else if (intent.route === 'brain-find') {
+			const findResult = await dispatchBrainFind(brainText);
+			replyText = findResult.text;
+		} else if (intent.route === 'brain-recent') {
+			const recentResult = await dispatchBrainRecent();
+			replyText = recentResult.text;
+		} else {
+			const result = await dispatchRoute(intent.route, {
+				messages: [{ role: 'user', content: userText }],
+				maxOutputTokens: 800,
+			});
+			replyText = result.text || '(no reply)';
+		}
+		await sendText(envelope.chatJid, replyText, config.delivery);
+	} catch (err) {
+		const message =
+			err instanceof RouteNotFoundError
+				? `Route "${intent.route}" is not configured. Edit settings.json or remove this command from intentMap.`
+				: `Sorry, I hit an error: ${(err as Error).message}`;
+		await sendText(envelope.chatJid, message, config.delivery);
+	}
+}
+
+/** Orchestrator-v2 path for the default route. Mirrors the WhatsApp
+ *  `_inbound/+server.ts` flow: pending-proposal classification → decideV2
+ *  → render `V2Output` → fall back to vault-chat on no usable output. */
+async function dispatchOrchestrated(
+	envelope: InboundEnvelope,
+	workingBody: string,
+	conversationKey: string,
+	config: TelegramChannelConfig,
+	transcriptionBuffer: Buffer | undefined,
+): Promise<void> {
+	const turnNow = Date.now();
+
+	// 1. Pending-proposal classifier — if the user has an open proposal
+	//    and this message is a confirm/decline/web-switch, resolve here
+	//    without invoking decideV2 (saves a model call + matches WhatsApp).
+	const pending = getPending(conversationKey);
+	if (pending) {
+		// Past TTL but inside grace window → re-prompt with expired text.
+		if (pending.expired) {
+			const replyKind = classifyProposalReply(workingBody);
+			if (replyKind !== 'confirm') {
+				resolvePending(conversationKey, 'expired');
+				await sendText(
+					envelope.chatJid,
+					formatExpiredPrompt(pending),
+					config.delivery,
+				);
+				return;
+			}
+			// 'confirm' inside grace → fall through to confirm handler.
+		}
+
+		const replyKind = classifyProposalReply(workingBody);
+		if (replyKind === 'confirm') {
+			resolvePending(conversationKey, 'confirm');
+			saveTurn(conversationKey, 'user', workingBody, turnNow);
+			const ctx = getConversationContext(conversationKey, {
+				jid: envelope.chatJid,
+			});
+			const agentContext = buildAgentContextBrief(ctx);
+			runInBackground({
+				chatId: envelope.chatJid,
+				agentId: pending.agentId,
+				task: pending.task,
+				sourceMessage: workingBody,
+				conversationKey,
+				delivery: config.delivery,
+				agentContext,
+			});
+			return;
+		}
+		if (replyKind === 'decline') {
+			resolvePending(conversationKey, 'decline');
+			saveTurn(conversationKey, 'user', workingBody, turnNow);
+			const text = 'Got it — dropped that. What would you like instead?';
+			saveTurn(conversationKey, 'assistant', text, turnNow + 1);
+			await sendText(envelope.chatJid, text, config.delivery);
+			return;
+		}
+		if (replyKind === 'switch-to-web') {
+			resolvePending(conversationKey, 'switch-to-web');
+			saveTurn(conversationKey, 'user', workingBody, turnNow);
+			try {
+				const r = await dispatchWebSearch(pending.label);
+				const text = formatWebSearchForChat(r);
+				saveTurn(conversationKey, 'assistant', text, turnNow + 1);
+				await sendText(envelope.chatJid, text, config.delivery);
+			} catch (err) {
+				const text = `Couldn't run a web search: ${(err as Error).message}`;
+				saveTurn(conversationKey, 'assistant', text, turnNow + 1);
+				await sendText(envelope.chatJid, text, config.delivery);
+			}
+			return;
+		}
+		// 'unrelated' — drop the proposal and fall through to fresh classification.
+		resolvePending(conversationKey, 'unrelated');
+	}
+
+	// 2. Run orchestrator-v2.
+	const ctx = getConversationContext(conversationKey, { jid: envelope.chatJid });
+	let orch: Awaited<ReturnType<typeof decideV2>>;
+	try {
+		// Image-generation config currently lives under WhatsApp in the
+		// schema — promote-to-shared is on the backlog. Until then, Telegram
+		// reads the same slice (parsed through the schema for typed access)
+		// so `generateImage` works on both channels.
+		const waParsed = WhatsAppChannelSchema.safeParse(
+			soulHubConfig.channels?.whatsapp ?? {},
+		);
+		const imgCfg = waParsed.success ? waParsed.data.img : undefined;
+		orch = await decideV2(workingBody, {
+			history: ctx.history,
+			conversationKey,
+			senderNumber: envelope.senderNumber,
+			account: 'personal',
+			timezone: 'Asia/Dubai',
+			imgConfig: imgCfg
+				? {
+						enabled: imgCfg.enabled,
+						maxPerDay: imgCfg.maxPerDay,
+						systemPromptPath: imgCfg.systemPromptPath,
+						model: imgCfg.model,
+					}
+				: undefined,
+		});
+	} catch (err) {
+		console.warn(`[telegram] decideV2 threw: ${(err as Error).message}`);
+		await fallbackToVaultChat(envelope, workingBody, conversationKey, config, transcriptionBuffer);
+		return;
+	}
+
+	if (!orch.fellThrough && orch.v2Output) {
+		const out = orch.v2Output;
+		const decision = orch.decision;
+		saveTurn(conversationKey, 'user', workingBody, turnNow);
+		console.log(
+			`[telegram/orchestrator] v2 action=${decision.action} v2Output=${out.kind} confidence=${decision.confidence.toFixed(2)}${decision.agent ? ` agent=${decision.agent}` : ''}`,
+		);
+
+		if (out.kind === 'image') {
+			if (out.text && out.text.trim()) {
+				await sendText(envelope.chatJid, out.text, config.delivery);
+			}
+			await sendMedia(envelope.chatJid, {
+				kind: 'image',
+				path: out.attachPath,
+				caption: out.caption,
+			});
+			saveTurn(
+				conversationKey,
+				'assistant',
+				`[image] ${out.imagePrompt.slice(0, 120)}`,
+				turnNow + 1,
+			);
+			return;
+		}
+
+		if (out.kind === 'dispatch') {
+			const agentContext = buildAgentContextBrief(ctx);
+			runInBackground({
+				chatId: envelope.chatJid,
+				agentId: out.agentId,
+				task: out.task,
+				sourceMessage: workingBody,
+				conversationKey,
+				delivery: config.delivery,
+				agentContext,
+			});
+			return;
+		}
+
+		if (out.kind === 'proposal') {
+			// The orchestrator already wrote `setPending` via its tool exec;
+			// re-rendering with buttons here means we don't need to touch
+			// the orchestrator-v2 tool surface. Look up the live row to
+			// recover the structured fields the keyboard handler needs.
+			const proposal = getPending(conversationKey);
+			if (proposal) {
+				saveTurn(conversationKey, 'assistant', formatProposal(proposal), turnNow + 1);
+				const messageResult = await sendText(
+					envelope.chatJid,
+					out.text,
+					config.delivery,
+					{ replyMarkup: buildProposalKeyboard(conversationKey) },
+				);
+				if (messageResult.ok && messageResult.messageIds.length > 0) {
+					const last = messageResult.messageIds[messageResult.messageIds.length - 1];
+					rememberProposalButtons(conversationKey, envelope.chatJid, last);
+				}
+			} else {
+				// Unexpected — orchestrator emitted proposal kind without a
+				// row. Send the text plain so the user still sees it.
+				saveTurn(conversationKey, 'assistant', out.text, turnNow + 1);
+				await sendText(envelope.chatJid, out.text, config.delivery);
+			}
+			return;
+		}
+
+		// kind: 'text' | 'error' — already-formatted text payload.
+		saveTurn(conversationKey, 'assistant', out.text, turnNow + 1);
+		await sendText(envelope.chatJid, out.text, config.delivery);
+		return;
+	}
+
+	if (orch.note) {
+		console.warn(`[telegram/orchestrator] fell through: ${orch.note}`);
+	}
+
+	// 3. Fall through to lexical vault-chat — orchestrator abstained or
+	//    didn't produce a usable v2 output.
+	await fallbackToVaultChat(envelope, workingBody, conversationKey, config, transcriptionBuffer);
+}
+
+async function fallbackToVaultChat(
+	envelope: InboundEnvelope,
+	workingBody: string,
+	conversationKey: string,
+	config: TelegramChannelConfig,
+	_transcriptionBuffer: Buffer | undefined,
+): Promise<void> {
+	const userText = workingBody || '(empty message)';
+	let chatMedia:
+		| { buffer: Buffer; mimetype: string; kind: TelegramMediaPayload['kind'] }
+		| undefined;
+	if (
+		envelope.media &&
+		envelope.media.kind !== 'voice' &&
+		envelope.media.kind !== 'sticker'
+	) {
+		try {
+			const dl = await downloadMedia(envelope.media);
+			chatMedia = {
+				buffer: dl.buffer,
+				mimetype: dl.mimetype,
+				kind: envelope.media.kind,
+			};
+		} catch (err) {
+			console.warn(
+				`[telegram] media download for vault-chat failed: ${(err as Error).message}`,
+			);
+		}
+	}
+	try {
+		const result = await dispatchVaultChat(userText, conversationKey, chatMedia);
+		await sendText(envelope.chatJid, result.text || '(no reply)', config.delivery);
+	} catch (err) {
+		await sendText(
+			envelope.chatJid,
+			`Sorry, I hit an error: ${(err as Error).message}`,
+			config.delivery,
+		);
+	}
+}
+
+/** Convenience for outbound media (re-exported for callers that import
+ *  via `dispatch.js` rather than `outbound.js`). */
+export { sendMedia };

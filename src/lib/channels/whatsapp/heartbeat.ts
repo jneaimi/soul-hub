@@ -37,6 +37,7 @@ import {
 	type HeartbeatStatus,
 } from './heartbeat-state.js';
 import { getEligibleVoiceItems, type VoiceQueueItem } from '../../vault/voice-queue.js';
+import { tickVaultHygiene } from '../../vault-hygiene/index.js';
 import type { WhatsAppChannelConfig } from './types.js';
 
 type HeartbeatConfig = WhatsAppChannelConfig['heartbeat'];
@@ -447,6 +448,14 @@ export function initHeartbeat(): void {
 	const tick = () => {
 		void runHeartbeatOnce('scheduled').catch((err) => {
 			console.warn('[whatsapp/heartbeat] tick failed:', (err as Error).message);
+		});
+		// ADR-010 — vault hygiene runs on the same cadence but
+		// independently. Active-hours/mute don't gate it: keeper auto-fixes
+		// silently, and only escalates when there's something the user
+		// must see. We don't await — the LLM heartbeat shouldn't be
+		// blocked by an indexing scan or an agent dispatch.
+		void tickVaultHygiene().catch((err) => {
+			console.warn('[vault-hygiene/tick] failed:', (err as Error).message);
 		});
 	};
 
