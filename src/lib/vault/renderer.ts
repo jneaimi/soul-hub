@@ -123,6 +123,53 @@ function rehypeAutoDir() {
 	};
 }
 
+/**
+ * Render an inline color swatch next to any `<code>` element whose entire
+ * content is a CSS hex literal (`#abc`, `#abcdef`, or `#abcdef12`). The swatch
+ * makes color tokens scannable when reading design palettes inline — picking
+ * the colors visually rather than mentally parsing hex.
+ *
+ * Runs *before* rehype-pretty-code so we see un-tokenized text. Skips any
+ * code element that isn't a single text child (e.g., already-highlighted
+ * tokens) to avoid clobbering existing structure.
+ */
+function rehypeHexSwatches() {
+	const HEX = /^#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3})$/;
+	return (tree: any) => {
+		visit(tree, 'element', (node: any) => {
+			if (node.tagName !== 'code') return;
+			if (!Array.isArray(node.children) || node.children.length !== 1) return;
+			const only = node.children[0];
+			if (only.type !== 'text' || typeof only.value !== 'string') return;
+			const text = only.value.trim();
+			if (!HEX.test(text)) return;
+
+			const existingClasses = Array.isArray(node.properties?.className)
+				? node.properties.className
+				: node.properties?.className
+					? [node.properties.className]
+					: [];
+			node.properties = {
+				...(node.properties || {}),
+				className: [...existingClasses, 'hex-code'],
+			};
+			node.children = [
+				{
+					type: 'element',
+					tagName: 'span',
+					properties: {
+						className: ['hex-swatch'],
+						style: `background-color: ${text}`,
+						'aria-hidden': 'true',
+					},
+					children: [],
+				},
+				{ type: 'text', value: text },
+			];
+		});
+	};
+}
+
 function rehypeCodeCopyButton() {
 	return (tree: any) => {
 		visit(tree, 'element', (node: any, index: number | undefined, parent: any) => {
@@ -199,6 +246,7 @@ export async function renderMarkdown(
 		.use(remarkFrontmatter, ['yaml'])
 		.use(remarkGfm)
 		.use(remarkRehype, { allowDangerousHtml: true })
+		.use(rehypeHexSwatches)
 		.use(rehypePrettyCode, { theme: 'github-dark-default', keepBackground: true })
 		.use(rehypeCodeCopyButton)
 		.use(rehypeMediaResolver, options)

@@ -388,6 +388,26 @@
 		color: #6EE7B7;
 		border-bottom-style: solid;
 	}
+	/* Inline color swatches — rendered next to any `<code>` whose entire
+	   content is a CSS hex literal. Picked up by the renderer's
+	   rehypeHexSwatches plugin. Squared, subtly bordered so light values
+	   stay visible on light surfaces and dark values on dark. */
+	:global(.vault-prose code.hex-code) {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4em;
+		padding: 0.05em 0.4em 0.05em 0.3em;
+	}
+	:global(.vault-prose code.hex-code .hex-swatch) {
+		display: inline-block;
+		width: 0.95em;
+		height: 0.95em;
+		border-radius: 3px;
+		border: 1px solid rgba(148, 163, 184, 0.35);
+		box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.1);
+		flex: 0 0 auto;
+	}
+
 	:global(.vault-attachment-link::before) {
 		content: '📎 ';
 		font-size: 0.85em;
