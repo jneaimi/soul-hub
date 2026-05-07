@@ -269,7 +269,7 @@
 				saving = false;
 				return;
 			}
-			goto('/agents');
+			goto('/orchestration/agents');
 		} catch (err) {
 			saveError = (err as Error).message;
 			saving = false;
@@ -277,7 +277,7 @@
 	}
 
 	function cancel() {
-		goto('/agents');
+		goto('/orchestration/agents');
 	}
 
 	// ─── backend cards ──────────────────────────────────────────────────────
@@ -487,7 +487,7 @@
 					Skills <span class="text-hub-dim">— pick from installed</span>
 				</label>
 				<a
-					href="/agents/skills"
+					href="/orchestration/skills"
 					target="_blank"
 					rel="noopener"
 					class="text-[11px] text-hub-info hover:text-hub-text"
@@ -564,7 +564,7 @@
 			{/if}
 			{#if orphanSkills.length > 0}
 				<p class="text-[11px] text-hub-warning mt-1">
-					⚠ Selected but not installed: {orphanSkills.join(', ')} — install via <a href="/agents/skills" class="underline">/agents/skills</a> or remove.
+					⚠ Selected but not installed: {orphanSkills.join(', ')} — install via <a href="/orchestration/skills" class="underline">/orchestration/skills</a> or remove.
 				</p>
 			{/if}
 		</div>

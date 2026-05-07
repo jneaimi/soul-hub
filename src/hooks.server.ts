@@ -214,6 +214,35 @@ function checkFileApiAccess(request: Request): { ok: true } | { ok: false; reaso
 	return { ok: true };
 }
 
+/**
+ * ADR-016 — map old top-level orchestration URLs to their new
+ * `/orchestration/*` equivalents. Returns the new path+search if a
+ * redirect is needed, or null otherwise. Order is significant: the
+ * `/agents/orchestrator` exact match wins before the `/agents` prefix.
+ *
+ * API routes (`/api/agents`, `/api/skills`) are NOT redirected — only
+ * page URLs moved.
+ */
+function redirectOrchestration(pathname: string, search: string): string | null {
+	// Exact rewrite: /agents/orchestrator → /orchestration/metrics
+	if (pathname === '/agents/orchestrator') {
+		return '/orchestration/metrics' + search;
+	}
+	// Prefix rewrite: /agents → /orchestration/agents (covers /, /new, /[id]/runs, etc.)
+	if (pathname === '/agents' || pathname.startsWith('/agents/')) {
+		return '/orchestration' + pathname + search;
+	}
+	// Prefix rewrite: /skills → /orchestration/skills (covers /, /install)
+	if (pathname === '/skills' || pathname.startsWith('/skills/')) {
+		return '/orchestration' + pathname + search;
+	}
+	// Exact + prefix rewrite: /orchestrator/tools → /orchestration/tools
+	if (pathname === '/orchestrator/tools' || pathname.startsWith('/orchestrator/tools/')) {
+		return '/orchestration/tools' + pathname.slice('/orchestrator/tools'.length) + search;
+	}
+	return null;
+}
+
 // Dev port proxy — intercept pXXXX.soul-hub.jneaimi.com before SvelteKit router
 export const handle: Handle = async ({ event, resolve: svelteResolve }) => {
 	const hostname = event.request.headers.get('host') || '';
@@ -229,6 +258,14 @@ export const handle: Handle = async ({ event, resolve: svelteResolve }) => {
 	}
 
 	const pathname = event.url.pathname;
+
+	// ADR-016 — 301 redirects for the old orchestration cluster URLs.
+	// Order matters: more-specific prefixes first so `/agents/orchestrator`
+	// doesn't get rewritten to `/orchestration/agents/orchestrator`.
+	const orchestrationRedirect = redirectOrchestration(pathname, event.url.search);
+	if (orchestrationRedirect) {
+		return new Response(null, { status: 301, headers: { location: orchestrationRedirect } });
+	}
 
 	// First-run gate: if ~/.soul-hub/settings.json is missing, redirect HTML
 	// page loads to /setup. API requests and asset fetches pass through so the

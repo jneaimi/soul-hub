@@ -265,19 +265,10 @@
 	<title>Scheduler · Soul Hub</title>
 </svelte:head>
 
-<div class="flex flex-col h-screen bg-hub-bg" data-scheduler>
+<div class="flex flex-col h-full bg-hub-bg" data-scheduler>
 	<!-- Header -->
 	<header class="flex-shrink-0 px-4 sm:px-6 py-4 border-b border-hub-border">
 		<div class="flex items-center gap-3 max-w-6xl mx-auto w-full">
-			<a
-				href="/"
-				class="p-1.5 rounded-lg hover:bg-hub-card transition-colors text-hub-muted hover:text-hub-text cursor-pointer"
-				aria-label="Back to home"
-			>
-				<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-					<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
-				</svg>
-			</a>
 			<div class="flex items-center gap-2">
 				<svg class="w-5 h-5 text-hub-cta" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 					<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>

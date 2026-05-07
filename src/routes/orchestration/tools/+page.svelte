@@ -124,34 +124,14 @@
 	<title>Tools · Soul Hub</title>
 </svelte:head>
 
-<div class="flex flex-col h-screen bg-hub-bg">
-	<header class="flex-shrink-0 px-4 sm:px-6 py-4 border-b border-hub-border">
-		<div class="flex items-center gap-3 max-w-6xl mx-auto w-full">
-			<a
-				href="/"
-				class="p-1.5 rounded-lg hover:bg-hub-card transition-colors text-hub-muted hover:text-hub-text cursor-pointer"
-				aria-label="Back to home"
-			>
-				<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
-				</svg>
-			</a>
-			<div class="flex-1">
-				<h1 class="text-lg font-semibold text-hub-text">Orchestrator Tools</h1>
-				<p class="text-xs text-hub-muted">
-					Tools the orchestrator-v2 LLM can pick from each turn. Read-only registry — tools are
-					always-on. Per-item config knobs link out to settings panels where they exist.
-				</p>
-			</div>
-			<nav class="flex items-center gap-2 text-xs text-hub-muted">
-				<a class="hover:text-hub-text" href="/agents">Agents</a>
-				<span>·</span>
-				<a class="hover:text-hub-text" href="/skills">Skills</a>
-				<span>·</span>
-				<span class="text-hub-text">Tools</span>
-				<span>·</span>
-				<a class="hover:text-hub-text" href="/agents/orchestrator">Metrics</a>
-			</nav>
+<div class="flex flex-col h-full bg-hub-bg">
+	<header class="flex-shrink-0 px-4 sm:px-6 py-3 border-b border-hub-border">
+		<div class="max-w-6xl mx-auto w-full">
+			<h1 class="text-lg font-semibold text-hub-text">Tools</h1>
+			<p class="text-xs text-hub-muted mt-0.5">
+				Tools the orchestrator-v2 LLM can pick from each turn. Read-only registry — tools are
+				always-on. Per-item config knobs link out to settings panels where they exist.
+			</p>
 		</div>
 	</header>
 
@@ -292,9 +272,9 @@
 												{#each t.live_skills as s}
 													<li class="text-xs flex items-baseline gap-2">
 														<a
-															href="/skills"
+															href="/orchestration/skills"
 															class="font-mono text-hub-text hover:text-blue-300 underline-offset-2 hover:underline"
-															title="Edit skill overlay on /skills"
+															title="Edit skill overlay on /orchestration/skills"
 														>
 															{s.name}
 														</a>
@@ -309,7 +289,7 @@
 												Live skills
 											</div>
 											<p class="text-xs text-hub-muted">
-												No chat-invokable skills enabled. <a href="/skills" class="text-blue-300 hover:underline">Configure on /skills</a>.
+												No chat-invokable skills enabled. <a href="/orchestration/skills" class="text-blue-300 hover:underline">Configure on /orchestration/skills</a>.
 											</p>
 										</div>
 									{/if}
@@ -339,7 +319,7 @@
 												Live agents
 											</div>
 											<p class="text-xs text-hub-muted">
-												No chat-dispatchable + ready agents. <a href="/agents" class="text-blue-300 hover:underline">Configure on /agents</a>.
+												No chat-dispatchable + ready agents. <a href="/orchestration/agents" class="text-blue-300 hover:underline">Configure on /orchestration/agents</a>.
 											</p>
 										</div>
 									{/if}

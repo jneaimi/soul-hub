@@ -97,7 +97,6 @@
 					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
 				</svg>
 			</a>
-			<img src="/logo.png" alt="Soul Hub" class="w-6 h-6" />
 			<span class="text-xs text-hub-dim">Playbooks</span>
 			{#if config}
 				<h1 class="text-lg font-semibold text-hub-text truncate">{config.name}</h1>

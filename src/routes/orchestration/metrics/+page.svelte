@@ -200,25 +200,16 @@
 	<title>Orchestrator · Soul Hub</title>
 </svelte:head>
 
-<div class="flex flex-col h-screen bg-hub-bg" data-agents>
+<div class="flex flex-col h-full bg-hub-bg" data-agents>
 	<!-- Header -->
 	<header class="flex-shrink-0 px-4 sm:px-6 py-4 border-b border-hub-border">
 		<div class="flex items-center gap-3 max-w-6xl mx-auto w-full">
-			<a
-				href="/agents"
-				class="p-1.5 rounded-lg hover:bg-hub-card transition-colors text-hub-muted hover:text-hub-text cursor-pointer"
-				aria-label="Back to agents"
-			>
-				<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-					<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
-				</svg>
-			</a>
 			<div class="flex items-center gap-2 flex-1">
 				<svg class="w-5 h-5 text-hub-cta" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 					<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2"/><circle cx="9" cy="14" r="1"/><circle cx="15" cy="14" r="1"/>
 				</svg>
-				<h1 class="text-lg font-semibold text-hub-text">Orchestrator</h1>
-				<span class="text-xs text-hub-dim">WhatsApp ADR-005 falsifier dashboard</span>
+				<h1 class="text-lg font-semibold text-hub-text">Metrics</h1>
+				<span class="text-xs text-hub-dim">ADR-005 falsifier dashboard</span>
 			</div>
 			<!-- Period selector -->
 			<div class="flex items-center gap-1 text-xs">
@@ -345,7 +336,7 @@
 						<div class="space-y-1">
 							{#each metrics.byAgent as a (a.agentId)}
 								<a
-									href="/agents/{encodeURIComponent(a.agentId)}/runs"
+									href="/orchestration/agents/{encodeURIComponent(a.agentId)}/runs"
 									class="flex items-center gap-3 px-2 py-1.5 rounded hover:bg-hub-bg text-xs cursor-pointer"
 								>
 									<span class="font-mono text-hub-text min-w-[160px] truncate">{a.agentId}</span>
@@ -370,7 +361,7 @@
 								<div class="flex items-start gap-3 px-2 py-1.5 rounded hover:bg-hub-bg text-xs">
 									<span class="font-mono {statusColor[r.status]} min-w-[80px]">{r.status}</span>
 									<a
-										href="/agents/{encodeURIComponent(r.agentId)}/runs"
+										href="/orchestration/agents/{encodeURIComponent(r.agentId)}/runs"
 										class="font-mono text-hub-text min-w-[140px] truncate hover:text-hub-cta cursor-pointer"
 									>
 										{r.agentId}

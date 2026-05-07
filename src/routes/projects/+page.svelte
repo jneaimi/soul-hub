@@ -91,18 +91,10 @@
 	<header class="flex-shrink-0 px-4 sm:px-6 py-4 border-b border-hub-border">
 		<div class="max-w-3xl mx-auto flex items-center justify-between">
 			<div class="flex items-center gap-3">
-				<a href="/" class="p-1.5 rounded-lg hover:bg-hub-card transition-colors text-hub-muted hover:text-hub-text cursor-pointer" aria-label="Back to home">
-					<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-						<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
-					</svg>
-				</a>
-				<div class="flex items-center gap-2">
-					<img src="/logo.png" alt="Soul Hub" class="w-5 h-5" />
-					<h1 class="text-lg font-semibold text-hub-text">Projects</h1>
-					{#if projects.length > 0}
-						<span class="text-hub-dim font-normal text-sm ml-1">({projects.length})</span>
-					{/if}
-				</div>
+				<h1 class="text-lg font-semibold text-hub-text">Projects</h1>
+				{#if projects.length > 0}
+					<span class="text-hub-dim font-normal text-sm">({projects.length})</span>
+				{/if}
 			</div>
 			<div class="flex items-center gap-2">
 				{#if suggestions.length > 0}

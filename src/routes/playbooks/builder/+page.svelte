@@ -227,7 +227,6 @@ Step 4: VALIDATE (mandatory before finishing)
 				<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
 			</svg>
 		</a>
-		<img src="/logo.png" alt="Soul Hub" class="w-6 h-6" />
 		<span class="text-xs text-hub-dim">Playbooks</span>
 		<h1 class="text-base font-semibold text-hub-text">{label}</h1>
 

@@ -73,12 +73,6 @@
 	<!-- Header -->
 	<header class="flex-shrink-0 px-4 sm:px-6 py-4 border-b border-hub-border">
 		<div class="max-w-5xl mx-auto flex items-center gap-3">
-			<a href="/" class="p-1.5 rounded-lg hover:bg-hub-card transition-colors cursor-pointer">
-				<svg class="w-4 h-4 text-hub-dim" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
-				</svg>
-			</a>
-			<img src="/logo.png" alt="Soul Hub" class="w-6 h-6" />
 			<h1 class="text-lg font-semibold text-hub-text">Playbooks</h1>
 			<a href="/playbooks/builder" class="ml-auto px-3 py-1.5 rounded-lg text-xs font-medium bg-hub-cta text-black hover:bg-hub-cta-hover transition-colors cursor-pointer">
 				New Playbook

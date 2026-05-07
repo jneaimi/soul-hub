@@ -226,6 +226,8 @@
 	let toolsByCategory = $state<{ read: number; write: number; agent: number; skill: number; reply: number }>({
 		read: 0, write: 0, agent: 0, skill: 0, reply: 0,
 	});
+	let recentToolCalls = $state(0);
+	let skillCount = $state(0);
 
 	async function loadAgents() {
 		try {
@@ -257,6 +259,17 @@
 					skill: list.filter((t) => t.category === 'skill').length,
 					reply: list.filter((t) => t.category === 'reply').length,
 				};
+				recentToolCalls = (data.recent_calls ?? []).length;
+			}
+		} catch { /* silent */ }
+	}
+
+	async function loadSkills() {
+		try {
+			const res = await fetch('/api/skills');
+			if (res.ok) {
+				const data = await res.json();
+				skillCount = (data.skills ?? []).length;
 			}
 		} catch { /* silent */ }
 	}
@@ -270,6 +283,7 @@
 		loadScheduler();
 		loadAgents();
 		loadTools();
+		loadSkills();
 	}
 
 	onMount(() => {
@@ -344,68 +358,25 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="h-full flex flex-col" onclick={handleClickOutside}>
-	<!-- Header -->
-	<header class="flex-shrink-0 px-4 sm:px-6 py-4 border-b border-hub-border">
-		<div class="max-w-3xl mx-auto flex items-center justify-between">
-			<div class="flex items-center gap-2">
-				<img src="/logo.png" alt="Soul Hub" class="w-6 h-6" />
-				<h1 class="text-lg font-bold text-hub-text tracking-tight">Soul Hub</h1>
-			</div>
-			<div class="flex items-center gap-2">
-				<a
-					href="/inbox"
-					class="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-hub-muted text-sm hover:text-hub-text hover:bg-hub-card transition-colors"
+	<!-- Header — global nav lives in AppHeader (root layout). Homepage keeps only its own actions. -->
+	<header class="flex-shrink-0 px-4 sm:px-6 py-3 border-b border-hub-border">
+		<div class="max-w-3xl mx-auto flex items-center justify-end gap-2">
+			{#if suggestions.length > 0}
+				<button
+					onclick={() => { showAddModal = true; }}
+					class="hidden sm:inline-flex px-3 py-1.5 rounded-lg border border-hub-border text-hub-muted text-sm hover:text-hub-text hover:border-hub-dim transition-colors cursor-pointer"
 				>
-					Inbox
-				</a>
-				<a
-					href="/vault"
-					class="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-hub-muted text-sm hover:text-hub-text hover:bg-hub-card transition-colors"
-				>
-					Vault
-				</a>
-				<a
-					href="/sessions"
-					class="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-hub-muted text-sm hover:text-hub-text hover:bg-hub-card transition-colors"
-					title="Unified session timeline"
-				>
-					Sessions
-				</a>
-				<a
-					href="/terminal"
-					class="p-2 rounded-lg text-hub-dim hover:text-hub-muted hover:bg-hub-card transition-colors cursor-pointer"
-					aria-label="Terminal"
-				>
-					<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-						<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
-					</svg>
-				</a>
-				<a
-					href="/settings"
-					class="p-2 rounded-lg text-hub-dim hover:text-hub-muted hover:bg-hub-card transition-colors cursor-pointer"
-					aria-label="Settings"
-				>
-					<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-						<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>
-					</svg>
-				</a>
-				{#if suggestions.length > 0}
-					<button
-						onclick={() => { showAddModal = true; }}
-						class="hidden sm:inline-flex px-3 py-1.5 rounded-lg border border-hub-border text-hub-muted text-sm hover:text-hub-text hover:border-hub-dim transition-colors cursor-pointer"
-					>
-						Link project
-					</button>
-				{/if}
-				<a
-					href="/new"
-					class="px-3 py-1.5 rounded-lg bg-hub-cta text-black font-medium text-sm hover:bg-hub-cta-hover transition-colors cursor-pointer inline-flex items-center gap-1"
-					aria-label="Create new project"
-				>
-					<span class="sm:hidden" aria-hidden="true">+</span>
-					<span class="hidden sm:inline">+ New project</span>
-				</a>
-			</div>
+					Link project
+				</button>
+			{/if}
+			<a
+				href="/new"
+				class="px-3 py-1.5 rounded-lg bg-hub-cta text-black font-medium text-sm hover:bg-hub-cta-hover transition-colors cursor-pointer inline-flex items-center gap-1"
+				aria-label="Create new project"
+			>
+				<span class="sm:hidden" aria-hidden="true">+</span>
+				<span class="hidden sm:inline">+ New project</span>
+			</a>
 		</div>
 	</header>
 
@@ -721,102 +692,43 @@
 							</div>
 						</div>
 
-						<!-- Agents -->
+						<!-- Orchestration (ADR-016 — Agents · Skills · Tools · Metrics consolidated) -->
 						<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
 							<div class="flex items-center justify-between mb-3">
 								<div class="flex items-center gap-2">
-									<h3 class="text-sm font-semibold text-hub-text">Agents</h3>
-									{#if agentCount > 0}
-										<span class="text-[11px] text-hub-dim bg-hub-bg px-1.5 py-0.5 rounded">{agentCount}</span>
-									{/if}
+									<h3 class="text-sm font-semibold text-hub-text">Orchestration</h3>
 								</div>
 								<div class="flex items-center gap-2">
-									<a href="/agents" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">View all</a>
-								</div>
-							</div>
-							{#if agentCount === 0}
-								<p class="text-xs text-hub-dim py-3 text-center">No agents found</p>
-							{:else}
-								<div class="flex items-center justify-around py-2">
-									<div class="text-center">
-										<div class="text-lg font-semibold text-hub-purple">{agentsByBackend.pty}</div>
-										<div class="text-[10px] text-hub-dim font-mono">PTY</div>
-									</div>
-									<div class="text-center">
-										<div class="text-lg font-semibold text-hub-warning">{agentsByBackend.cli}</div>
-										<div class="text-[10px] text-hub-dim font-mono">CLI</div>
-									</div>
-									<div class="text-center">
-										<div class="text-lg font-semibold text-hub-info">{agentsByBackend.ai}</div>
-										<div class="text-[10px] text-hub-dim font-mono">AI SDK</div>
-									</div>
-								</div>
-								<div class="mt-2 pt-2 border-t border-hub-border/50 text-[10px] text-hub-dim text-center">
-									Read-only · Phase 1
-								</div>
-							{/if}
-						</div>
-
-						<!-- Skills -->
-						<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
-							<div class="flex items-center justify-between mb-3">
-								<div class="flex items-center gap-2">
-									<h3 class="text-sm font-semibold text-hub-text">Skills</h3>
-								</div>
-								<div class="flex items-center gap-2">
-									<a href="/skills/install" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer" title="Install / uninstall skills from ~/.claude/skills/">Install</a>
-									<span class="text-hub-dim text-[11px]">·</span>
-									<a href="/skills" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer" title="Configure which skills the WhatsApp orchestrator can invoke (ADR-009 §7)">View all</a>
+									<a href="/orchestration" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer" title="Agents · Skills · Tools · Metrics — all dispatchable layers (ADR-016)">Open</a>
 								</div>
 							</div>
 							<a
-								href="/skills"
-								class="block py-2 text-center text-xs text-hub-muted hover:text-hub-text hover:bg-hub-bg/50 rounded-lg transition-colors cursor-pointer"
-								title="Configure which skills the WhatsApp orchestrator can invoke"
+								href="/orchestration"
+								class="block group"
+								title="Agents · Skills · Tools · Metrics"
 							>
-								💬 Chat-invokable skills
-								<div class="text-[10px] text-hub-dim mt-0.5">arabic · draft · think — 3 seeded</div>
-							</a>
-						</div>
-
-						<!-- Tools (ADR-015) -->
-						<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
-							<div class="flex items-center justify-between mb-3">
-								<div class="flex items-center gap-2">
-									<h3 class="text-sm font-semibold text-hub-text">Tools</h3>
-									{#if toolCount > 0}
-										<span class="text-[11px] text-hub-dim bg-hub-bg px-1.5 py-0.5 rounded">{toolCount}</span>
-									{/if}
-								</div>
-								<div class="flex items-center gap-2">
-									<a href="/orchestrator/tools" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer" title="Tools the orchestrator-v2 LLM can pick from each turn (ADR-015)">View all</a>
-								</div>
-							</div>
-							{#if toolCount === 0}
-								<p class="text-xs text-hub-dim py-3 text-center">No tools registered</p>
-							{:else}
 								<div class="flex items-center justify-around py-2">
 									<div class="text-center">
-										<div class="text-lg font-semibold text-hub-info">{toolsByCategory.read}</div>
-										<div class="text-[10px] text-hub-dim font-mono">READ</div>
+										<div class="text-lg font-semibold text-hub-purple group-hover:text-hub-info transition-colors">{agentCount}</div>
+										<div class="text-[10px] text-hub-dim font-mono">AGENTS</div>
 									</div>
 									<div class="text-center">
-										<div class="text-lg font-semibold text-emerald-400">{toolsByCategory.write}</div>
-										<div class="text-[10px] text-hub-dim font-mono">WRITE</div>
+										<div class="text-lg font-semibold text-hub-warning group-hover:text-hub-info transition-colors">{skillCount}</div>
+										<div class="text-[10px] text-hub-dim font-mono">SKILLS</div>
 									</div>
 									<div class="text-center">
-										<div class="text-lg font-semibold text-hub-purple">{toolsByCategory.agent}</div>
-										<div class="text-[10px] text-hub-dim font-mono">AGENT</div>
+										<div class="text-lg font-semibold text-emerald-400 group-hover:text-hub-info transition-colors">{toolCount}</div>
+										<div class="text-[10px] text-hub-dim font-mono">TOOLS</div>
 									</div>
 									<div class="text-center">
-										<div class="text-lg font-semibold text-hub-warning">{toolsByCategory.skill}</div>
-										<div class="text-[10px] text-hub-dim font-mono">SKILL</div>
+										<div class="text-lg font-semibold text-hub-info">{recentToolCalls}</div>
+										<div class="text-[10px] text-hub-dim font-mono">RECENT</div>
 									</div>
 								</div>
 								<div class="mt-2 pt-2 border-t border-hub-border/50 text-[10px] text-hub-dim text-center">
-									Always-on · Read-only
+									All dispatchable layers
 								</div>
-							{/if}
+							</a>
 						</div>
 
 						<!-- Scheduler -->

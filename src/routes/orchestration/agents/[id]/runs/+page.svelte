@@ -129,12 +129,12 @@
 	<title>Runs · {agentName || id} · Soul Hub</title>
 </svelte:head>
 
-<div class="flex flex-col h-screen bg-hub-bg" data-agents>
+<div class="flex flex-col h-full bg-hub-bg" data-agents>
 	<!-- Header -->
 	<header class="flex-shrink-0 px-4 sm:px-6 py-4 border-b border-hub-border">
 		<div class="flex items-center gap-3 max-w-6xl mx-auto w-full">
 			<a
-				href="/agents"
+				href="/orchestration/agents"
 				class="p-1.5 rounded-lg hover:bg-hub-card transition-colors text-hub-muted hover:text-hub-text cursor-pointer"
 				aria-label="Back to agents"
 			>
@@ -152,13 +152,13 @@
 			</div>
 			<div class="flex-1"></div>
 			<a
-				href="/agents/{encodeURIComponent(id)}/test"
+				href="/orchestration/agents/{encodeURIComponent(id)}/test"
 				class="px-3 py-1.5 rounded-lg text-sm text-hub-info hover:text-hub-text hover:bg-hub-info/10 transition-colors cursor-pointer"
 			>
 				▶ Test
 			</a>
 			<a
-				href="/agents/{encodeURIComponent(id)}/edit"
+				href="/orchestration/agents/{encodeURIComponent(id)}/edit"
 				class="px-3 py-1.5 rounded-lg text-sm text-hub-muted hover:text-hub-text hover:bg-hub-card transition-colors cursor-pointer"
 			>
 				✎ Edit
@@ -221,7 +221,7 @@
 				<div class="bg-hub-card rounded-xl border border-hub-border p-8 text-center">
 					<p class="text-sm text-hub-muted">No runs yet for this agent.</p>
 					<a
-						href="/agents/{encodeURIComponent(id)}/test"
+						href="/orchestration/agents/{encodeURIComponent(id)}/test"
 						class="inline-block mt-3 px-3 py-1.5 rounded-lg bg-hub-cta text-black font-medium text-sm hover:bg-hub-cta/90 transition-colors cursor-pointer"
 					>
 						Run a test →

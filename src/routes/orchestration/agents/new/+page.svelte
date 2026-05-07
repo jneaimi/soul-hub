@@ -6,12 +6,12 @@
 	<title>New agent · Soul Hub</title>
 </svelte:head>
 
-<div class="flex flex-col h-screen bg-hub-bg" data-agents>
+<div class="flex flex-col h-full bg-hub-bg" data-agents>
 	<!-- Header -->
 	<header class="flex-shrink-0 px-4 sm:px-6 py-4 border-b border-hub-border">
 		<div class="flex items-center gap-3 max-w-4xl mx-auto w-full">
 			<a
-				href="/agents"
+				href="/orchestration/agents"
 				class="p-1.5 rounded-lg hover:bg-hub-card transition-colors text-hub-muted hover:text-hub-text cursor-pointer"
 				aria-label="Back to agents"
 			>

@@ -397,9 +397,6 @@
 
 <div class="h-full flex flex-col">
   <header class="flex-shrink-0 px-4 py-3 border-b border-hub-border bg-hub-surface/50 flex items-center gap-3">
-    <a href="/" class="text-hub-muted hover:text-hub-text transition-colors">
-      <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
-    </a>
     <h1 class="text-lg font-semibold text-hub-text">Vault</h1>
 
     {#if store.stats}

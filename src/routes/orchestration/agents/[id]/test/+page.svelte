@@ -27,7 +27,7 @@
 		try {
 			const res = await fetch(`/api/agents/${encodeURIComponent(id)}`);
 			if (res.status === 404) {
-				goto('/agents');
+				goto('/orchestration/agents');
 				return;
 			}
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -48,12 +48,12 @@
 	<title>{agent?.name ? `Test ${agent.name}` : 'Test agent'} · Soul Hub</title>
 </svelte:head>
 
-<div class="flex flex-col h-screen bg-hub-bg" data-agents>
+<div class="flex flex-col h-full bg-hub-bg" data-agents>
 	<!-- Header -->
 	<header class="flex-shrink-0 px-4 sm:px-6 py-4 border-b border-hub-border">
 		<div class="flex items-center gap-3 max-w-5xl mx-auto w-full">
 			<a
-				href="/agents"
+				href="/orchestration/agents"
 				class="p-1.5 rounded-lg hover:bg-hub-card transition-colors text-hub-muted hover:text-hub-text cursor-pointer"
 				aria-label="Back to agents"
 			>
@@ -71,7 +71,7 @@
 			</div>
 			<div class="flex-1"></div>
 			<a
-				href="/agents/{encodeURIComponent(id)}/edit"
+				href="/orchestration/agents/{encodeURIComponent(id)}/edit"
 				class="px-3 py-1.5 rounded-lg text-sm text-hub-muted hover:text-hub-text hover:bg-hub-card transition-colors cursor-pointer"
 			>
 				✎ Edit

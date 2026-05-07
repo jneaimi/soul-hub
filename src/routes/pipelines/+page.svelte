@@ -1159,15 +1159,7 @@
 					</button>
 				{/if}
 			{:else}
-				<a href="/" class="p-1.5 rounded-lg hover:bg-hub-card transition-colors text-hub-muted hover:text-hub-text cursor-pointer" aria-label="Back to home">
-					<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-						<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
-					</svg>
-				</a>
-				<div class="flex items-center gap-2">
-					<img src="/logo.png" alt="Soul Hub" class="w-5 h-5" />
-					<h1 class="text-lg font-semibold text-hub-text">Pipelines</h1>
-				</div>
+				<h1 class="text-lg font-semibold text-hub-text">Pipelines</h1>
 				<div class="flex-1"></div>
 				<a
 					href="/pipelines/builder?type=pipeline"

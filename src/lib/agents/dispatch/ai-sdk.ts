@@ -101,7 +101,7 @@ function composeInstructions(agent: AgentSummary): string {
 	}
 	if (missing.length > 0) {
 		parts.push(
-			`Note: skill(s) referenced but not installed — ${missing.join(', ')}. Install via /agents/skills.`,
+			`Note: skill(s) referenced but not installed — ${missing.join(', ')}. Install via /orchestration/skills.`,
 		);
 	}
 	return parts.join('\n\n---\n\n');

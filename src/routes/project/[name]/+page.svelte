@@ -181,7 +181,7 @@
 	<!-- Header -->
 	<header class="flex-shrink-0 px-4 py-3 border-b border-hub-border bg-hub-surface/50">
 		<div class="flex items-center gap-3">
-			<a href="/" class="p-1.5 rounded-lg hover:bg-hub-card transition-colors text-hub-muted hover:text-hub-text">
+			<a href="/projects" class="p-1.5 rounded-lg hover:bg-hub-card transition-colors text-hub-muted hover:text-hub-text" aria-label="Back to projects">
 				<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 					<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
 				</svg>

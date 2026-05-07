@@ -154,7 +154,7 @@
 
 		<!-- Lifetime stats -->
 		<a
-			href="/agents/{encodeURIComponent(agent.id)}/runs"
+			href="/orchestration/agents/{encodeURIComponent(agent.id)}/runs"
 			class="text-[11px] text-hub-muted hover:text-hub-text min-w-[110px] block group cursor-pointer"
 			title="Open run history"
 		>
@@ -179,21 +179,21 @@
 		<!-- Actions -->
 		<div class="flex items-center gap-1.5 flex-shrink-0">
 			<a
-				href="/agents/{encodeURIComponent(agent.id)}/test"
+				href="/orchestration/agents/{encodeURIComponent(agent.id)}/test"
 				class="px-2 py-1 rounded-md text-[11px] font-medium text-hub-info hover:text-hub-text hover:bg-hub-info/10 transition-colors cursor-pointer"
 				title="Test in chat"
 			>
 				▶ Test
 			</a>
 			<a
-				href="/agents/{encodeURIComponent(agent.id)}/runs"
+				href="/orchestration/agents/{encodeURIComponent(agent.id)}/runs"
 				class="px-2 py-1 rounded-md text-[11px] font-medium text-hub-muted hover:text-hub-text hover:bg-hub-bg transition-colors cursor-pointer"
 				title="Run history"
 			>
 				⏱ Runs
 			</a>
 			<a
-				href="/agents/{encodeURIComponent(agent.id)}/edit"
+				href="/orchestration/agents/{encodeURIComponent(agent.id)}/edit"
 				class="px-2 py-1 rounded-md text-[11px] font-medium text-hub-muted hover:text-hub-text hover:bg-hub-bg transition-colors cursor-pointer"
 				title="Edit agent"
 			>

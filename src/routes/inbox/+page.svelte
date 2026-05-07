@@ -275,9 +275,6 @@
 	<header class="flex-shrink-0 px-4 sm:px-6 py-4 border-b border-hub-border">
 		<div class="max-w-5xl mx-auto flex items-center justify-between">
 			<div class="flex items-center gap-3">
-				<a href="/" class="text-hub-dim hover:text-hub-muted transition-colors">
-					<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-				</a>
 				<!-- Mobile sidebar toggle -->
 				<button
 					onclick={() => { showSidebar = !showSidebar; }}
