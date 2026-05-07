@@ -26,6 +26,7 @@ import { dispatchVaultChat } from '../../vault-chat/index.js';
 import { dispatchImg, rememberLastImage } from '../../img/index.js';
 import { fetchYoutube } from '../../youtube/index.js';
 import { dispatchVaultSave } from '../../vault-save/index.js';
+import { recordToolCall, assertManifestParity } from './registry.js';
 import { setPending, formatProposal } from '../../orchestrator/pending-proposals.js';
 import {
 	getImgCount,
@@ -101,8 +102,18 @@ export type ToolResult =
 	| { kind: 'vault-save-error'; error: string; title: string };
 
 /** Build the tool dictionary for an Agent. Returns a stable object so the
- *  AI SDK can produce its tool schema. */
+ *  AI SDK can produce its tool schema.
+ *
+ *  ADR-015 — checks manifest parity once per process. Warns (doesn't
+ *  throw) when the live tool keys diverge from the static manifest, so
+ *  the dev sees the drift in PM2 logs without breaking dispatch. */
 export function buildOrchestratorTools(deps: ToolDeps) {
+	const tools = buildOrchestratorToolsImpl(deps);
+	assertManifestParity(Object.keys(tools));
+	return tools;
+}
+
+function buildOrchestratorToolsImpl(deps: ToolDeps) {
 	const agentIdEnum =
 		deps.dispatchableAgentIds.length > 0
 			? z.enum(deps.dispatchableAgentIds as [string, ...string[]])
@@ -522,7 +533,10 @@ export function buildOrchestratorTools(deps: ToolDeps) {
 }
 
 function logToolCall(name: string, payload: Record<string, unknown>): void {
-	console.log(`[orchestrator-v2] tool:${name}`, JSON.stringify(payload));
+	const argPreview = JSON.stringify(payload);
+	console.log(`[orchestrator-v2] tool:${name}`, argPreview);
+	// ADR-015 — feed the in-memory ring buffer that powers /orchestrator/tools.
+	recordToolCall(name, argPreview.slice(0, 240));
 }
 
 /** Build the `invokeSkill` tool description dynamically from the registry.

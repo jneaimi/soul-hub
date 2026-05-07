@@ -222,6 +222,11 @@
 	let agentCount = $state(0);
 	let agentsByBackend = $state<{ pty: number; cli: number; ai: number }>({ pty: 0, cli: 0, ai: 0 });
 
+	let toolCount = $state(0);
+	let toolsByCategory = $state<{ read: number; write: number; agent: number; skill: number; reply: number }>({
+		read: 0, write: 0, agent: 0, skill: 0, reply: 0,
+	});
+
 	async function loadAgents() {
 		try {
 			const res = await fetch('/api/agents');
@@ -238,6 +243,24 @@
 		} catch { /* silent */ }
 	}
 
+	async function loadTools() {
+		try {
+			const res = await fetch('/api/orchestrator/tools');
+			if (res.ok) {
+				const data = await res.json();
+				const list = (data.tools ?? []) as { category: 'read' | 'write' | 'agent' | 'skill' | 'reply' }[];
+				toolCount = list.length;
+				toolsByCategory = {
+					read: list.filter((t) => t.category === 'read').length,
+					write: list.filter((t) => t.category === 'write').length,
+					agent: list.filter((t) => t.category === 'agent').length,
+					skill: list.filter((t) => t.category === 'skill').length,
+					reply: list.filter((t) => t.category === 'reply').length,
+				};
+			}
+		} catch { /* silent */ }
+	}
+
 	function refreshVolatile() {
 		// Fires on tab focus, SSE reindex, or explicit user action.
 		loadVault();
@@ -246,6 +269,7 @@
 		loadExplorerRoots();
 		loadScheduler();
 		loadAgents();
+		loadTools();
 	}
 
 	onMount(() => {
@@ -753,6 +777,46 @@
 								💬 Chat-invokable skills
 								<div class="text-[10px] text-hub-dim mt-0.5">arabic · draft · think — 3 seeded</div>
 							</a>
+						</div>
+
+						<!-- Tools (ADR-015) -->
+						<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
+							<div class="flex items-center justify-between mb-3">
+								<div class="flex items-center gap-2">
+									<h3 class="text-sm font-semibold text-hub-text">Tools</h3>
+									{#if toolCount > 0}
+										<span class="text-[11px] text-hub-dim bg-hub-bg px-1.5 py-0.5 rounded">{toolCount}</span>
+									{/if}
+								</div>
+								<div class="flex items-center gap-2">
+									<a href="/orchestrator/tools" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer" title="Tools the orchestrator-v2 LLM can pick from each turn (ADR-015)">View all</a>
+								</div>
+							</div>
+							{#if toolCount === 0}
+								<p class="text-xs text-hub-dim py-3 text-center">No tools registered</p>
+							{:else}
+								<div class="flex items-center justify-around py-2">
+									<div class="text-center">
+										<div class="text-lg font-semibold text-hub-info">{toolsByCategory.read}</div>
+										<div class="text-[10px] text-hub-dim font-mono">READ</div>
+									</div>
+									<div class="text-center">
+										<div class="text-lg font-semibold text-emerald-400">{toolsByCategory.write}</div>
+										<div class="text-[10px] text-hub-dim font-mono">WRITE</div>
+									</div>
+									<div class="text-center">
+										<div class="text-lg font-semibold text-hub-purple">{toolsByCategory.agent}</div>
+										<div class="text-[10px] text-hub-dim font-mono">AGENT</div>
+									</div>
+									<div class="text-center">
+										<div class="text-lg font-semibold text-hub-warning">{toolsByCategory.skill}</div>
+										<div class="text-[10px] text-hub-dim font-mono">SKILL</div>
+									</div>
+								</div>
+								<div class="mt-2 pt-2 border-t border-hub-border/50 text-[10px] text-hub-dim text-center">
+									Always-on · Read-only
+								</div>
+							{/if}
 						</div>
 
 						<!-- Scheduler -->
