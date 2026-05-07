@@ -200,6 +200,88 @@ If you need programmatic access (webhooks, API calls):
    CF-Access-Client-Secret: <your-client-secret>
    ```
 
+> **Service tokens only work when the calling service can send custom HTTP
+> headers.** Third-party webhooks (Telegram, Stripe, GitHub, Twilio, …)
+> cannot — they POST to your URL with their own headers and don't follow
+> SSO redirects. For those, use the **Webhook Bypass Policy** pattern below.
+
+### Webhooks behind Access (Bypass Policy)
+
+When your host (e.g. `soul-hub.yourdomain.com`) is protected by Cloudflare
+Access, every path under it inherits the SSO gate by default. A webhook
+provider trying to POST to your URL gets back HTTP `302` to the Cloudflare
+login page, which it cannot follow. The webhook fails silently and the
+provider records something like:
+
+```json
+{ "last_error_message": "Wrong response from the webhook: 302 Found" }
+```
+
+The fix is a *separate* Access application scoped to just the webhook path,
+with a **Bypass** policy. Cloudflare evaluates path-specific apps before
+the broad host app, so this carves out the webhook URL without weakening
+your dashboard auth.
+
+**Pattern:**
+
+1. Go to **Zero Trust** > **Access** > **Applications** > **Add an application**
+2. Type: **Self-hosted**
+3. Application URL — **path must match the actual webhook route exactly**:
+   ```
+   soul-hub.yourdomain.com/api/channels/telegram/_webhook
+   ```
+   Do not omit the `/api/` prefix or any path segment — Cloudflare matches
+   literally. A typo here means the broad host app catches the request
+   and returns 302.
+4. Add a policy:
+   - **Name:** `<provider> webhook bypass` (e.g. `Telegram webhook bypass`)
+   - **Action:** `Bypass`
+   - **Include rule:** required — without one the policy matches no one
+     and falls through to deny.
+     - **Loose option:** Selector `Everyone` (relies entirely on the
+       provider's signing secret as your auth boundary)
+     - **Tight option (recommended):** Selector `IP ranges`, with the
+       provider's published webhook CIDRs as the value. For Telegram:
+       ```
+       149.154.160.0/20, 91.108.4.0/22
+       ```
+5. Save the application.
+
+**Validation:**
+
+```bash
+# 1. From your laptop with IP-range filter — expect 403 from Access
+#    (your IP isn't in the provider's CIDR set). This is CORRECT.
+curl -i -X POST https://soul-hub.yourdomain.com/api/channels/telegram/_webhook \
+  -H 'Content-Type: application/json' -d '{}'
+
+# 2. Force the provider to retry (Telegram example) — drops backlog +
+#    clears any cached error.
+curl -s "https://api.telegram.org/bot${TOKEN}/setWebhook" \
+  --data-urlencode "url=https://soul-hub.yourdomain.com/api/channels/telegram/_webhook" \
+  --data-urlencode "secret_token=${SECRET}" \
+  --data-urlencode "drop_pending_updates=true"
+
+# 3. Confirm clean state on the provider's side.
+curl -s "https://api.telegram.org/bot${TOKEN}/getWebhookInfo" \
+  | jq '.result | {pending_update_count, last_error_message}'
+# Expect: pending=0, last_error_message=null
+```
+
+**Common pitfalls:**
+
+| Symptom | Likely cause |
+|---|---|
+| `HTTP/2 302` to `cloudflareaccess.com/cdn-cgi/access/login/...` | Bypass app path doesn't match the webhook URL; broad host app caught it |
+| `HTTP/2 403` with HTML body and `cf-version` header | Bypass policy saved with empty Include rule, or your IP isn't in the configured CIDRs |
+| `HTTP/2 401` with JSON body | ✓ Correct — Access let it through, your app rejected the unauthenticated request. Real webhooks carry the secret token and get 200. |
+
+**Defence-in-depth:** the IP-range filter is *not* a replacement for verifying the provider's signing secret in your handler. Always check both:
+- Cloudflare Access bypass restricts *who* can reach the endpoint (provider's CIDRs only)
+- Your handler verifies *that the request actually came from the provider* (matching `X-Telegram-Bot-Api-Secret-Token`, Stripe `Stripe-Signature`, GitHub `X-Hub-Signature-256`, etc.)
+
+If the IP-range list ever gets stale (provider adds new edge nodes) you'll see fresh delivery failures — switch the Include to `Everyone` temporarily while you update the CIDRs.
+
 ## Troubleshooting
 
 ### Tunnel shows "Inactive"
