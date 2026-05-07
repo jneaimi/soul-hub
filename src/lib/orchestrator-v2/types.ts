@@ -63,6 +63,16 @@ export type V2Output =
 			 *  or, when the LLM didn't speak, the last tool's formatted text
 			 *  (web-search citation, vault-chat answer, raw `reply` text). */
 			text: string;
+			/** ADR-014 — when the LLM's reply was composed from a youtubeFetch
+			 *  result with a summary, surface the structured fields so a
+			 *  channel adapter can render follow-up action buttons (Save /
+			 *  Full transcript / Skip). Channel adapters that don't support
+			 *  inline buttons (e.g. WhatsApp via Baileys) ignore this field. */
+			youtubeContext?: {
+				videoUrl: string;
+				title: string;
+				summary: string;
+			};
 	  }
 	| {
 			kind: 'image';

@@ -441,7 +441,25 @@ function buildV2Output(
 	// the result), fall back to the raw tool output if the LLM didn't speak
 	// usefully. Junk-short finalText (1-char fallthrough) is treated as
 	// silence so the tool's own text wins.
-	if (usefulFinal) return { kind: 'text', text: usefulFinal };
+	//
+	// ADR-014 — when a youtubeFetch result with a summary participated in
+	// this turn, attach `youtubeContext` to the text V2Output so channel
+	// adapters can render follow-up action buttons. The model's `usefulFinal`
+	// is the user-facing text; the structured fields are pinned separately
+	// so we don't have to parse them back out of the prose.
+	const ytForButtons = results.find(
+		(r): r is Extract<ToolResult, { kind: 'youtube' }> =>
+			r.kind === 'youtube' && typeof r.summary === 'string' && r.summary.length > 0,
+	);
+	const youtubeContext = ytForButtons
+		? {
+				videoUrl: ytForButtons.url,
+				title: ytForButtons.title,
+				summary: ytForButtons.summary as string,
+			}
+		: undefined;
+
+	if (usefulFinal) return { kind: 'text', text: usefulFinal, youtubeContext };
 
 	const replyResult = results.find((r) => r.kind === 'reply');
 	if (replyResult && replyResult.kind === 'reply') {
@@ -458,9 +476,23 @@ function buildV2Output(
 	// YouTube fallback — the LLM is expected to compose a reply from the
 	// structured fields. When it didn't (junk-short finalText), render a
 	// minimal text reply ourselves so the user still gets the metadata.
+	// Attach `youtubeContext` so the channel adapter can still render the
+	// follow-up action buttons even on the fallback path.
 	const ytResult = results.find((r) => r.kind === 'youtube');
 	if (ytResult && ytResult.kind === 'youtube') {
-		return { kind: 'text', text: formatYoutubeFallback(ytResult) };
+		const fbContext =
+			typeof ytResult.summary === 'string' && ytResult.summary.length > 0
+				? {
+						videoUrl: ytResult.url,
+						title: ytResult.title,
+						summary: ytResult.summary,
+					}
+				: undefined;
+		return {
+			kind: 'text',
+			text: formatYoutubeFallback(ytResult),
+			youtubeContext: fbContext,
+		};
 	}
 	// vault-save fallback — same pattern. Model usually composes a "Saved as
 	// [[...]]" reply, but if it doesn't, give the user the link directly.

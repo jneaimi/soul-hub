@@ -37,7 +37,12 @@ import { sendText, sendMedia } from './outbound.js';
 import { downloadMedia, saveMediaToDisk } from './media.js';
 import { transcribeVoiceNote } from './transcribe.js';
 import { setMessageReaction } from './client.js';
-import { buildProposalKeyboard, rememberProposalButtons } from './callback.js';
+import {
+	buildProposalKeyboard,
+	rememberProposalButtons,
+	buildYoutubeKeyboard,
+	rememberYoutubeButtons,
+} from './callback.js';
 import { runInBackground } from './orchestrator-dispatch.js';
 import type {
 	InboundEnvelope,
@@ -446,8 +451,27 @@ async function dispatchOrchestrated(
 		}
 
 		// kind: 'text' | 'error' — already-formatted text payload.
+		// ADR-014: when a youtubeFetch turn produced a summary, attach a
+		// follow-up keyboard (Save / Full transcript / Skip). The
+		// orchestrator-v2 only sets `youtubeContext` on `kind: 'text'`, not
+		// `error`, so the type narrowing falls out naturally.
+		const ytCtx = out.kind === 'text' ? out.youtubeContext : undefined;
 		saveTurn(conversationKey, 'assistant', out.text, turnNow + 1);
-		await sendText(envelope.chatJid, out.text, config.delivery);
+		const sendResult = await sendText(envelope.chatJid, out.text, config.delivery, {
+			replyMarkup: ytCtx ? buildYoutubeKeyboard(conversationKey) : undefined,
+		});
+		if (ytCtx && sendResult.ok && sendResult.messageIds.length > 0) {
+			const last = sendResult.messageIds[sendResult.messageIds.length - 1];
+			rememberYoutubeButtons({
+				conversationKey,
+				chatJid: envelope.chatJid,
+				senderId: envelope.senderNumber,
+				messageId: last,
+				videoUrl: ytCtx.videoUrl,
+				title: ytCtx.title,
+				summary: ytCtx.summary,
+			});
+		}
 		return;
 	}
 
