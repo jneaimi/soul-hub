@@ -25,6 +25,7 @@ import { dispatchWebSearch, formatWebSearchForChat } from '../../web-search/inde
 import { dispatchVaultChat } from '../../vault-chat/index.js';
 import { dispatchImg, rememberLastImage } from '../../img/index.js';
 import { fetchYoutube } from '../../youtube/index.js';
+import { dispatchVaultSave } from '../../vault-save/index.js';
 import { setPending, formatProposal } from '../../orchestrator/pending-proposals.js';
 import {
 	getImgCount,
@@ -95,7 +96,9 @@ export type ToolResult =
 				| 'gemini-failed'
 				| 'gemini-not-configured';
 	  }
-	| { kind: 'youtube-error'; url: string; error: string; tier: 'oembed' | 'gemini' | 'url' };
+	| { kind: 'youtube-error'; url: string; error: string; tier: 'oembed' | 'gemini' | 'url' }
+	| { kind: 'vault-save'; path: string; openUrl: string; title: string }
+	| { kind: 'vault-save-error'; error: string; title: string };
 
 /** Build the tool dictionary for an Agent. Returns a stable object so the
  *  AI SDK can produce its tool schema. */
@@ -401,6 +404,74 @@ export function buildOrchestratorTools(deps: ToolDeps) {
 					transcriptSource: r.transcriptSource,
 					costUsd: r.costUsd,
 					note: r.note,
+				};
+			},
+		}),
+
+		vaultSave: tool({
+			description:
+				"Save composed content to the user's Obsidian vault as a markdown note. " +
+				"Use ONLY when the user explicitly asks to save / capture / remember / add to notes / write down / store. " +
+				"NEVER call this for discussion-only requests. " +
+				"For multi-step flows (e.g. user asks to save a YouTube video), call the upstream tool first (youtubeFetch with mode=summary), then synthesize a clean note body, THEN call vaultSave with the synthesized title + body. " +
+				"Always writes to the inbox zone — the user curates from there. After it returns, include the openUrl in your reply so the user can open the note.",
+			inputSchema: z.object({
+				title: z
+					.string()
+					.min(2)
+					.max(120)
+					.describe(
+						'Short specific title (≤ 12 words). Used for the filename slug and as the H1.',
+					),
+				content: z
+					.string()
+					.min(1)
+					.max(50_000)
+					.describe(
+						'Markdown body of the note. Pre-synthesized — include any context (summary, key points, source link) the user will want when reading later. Do not include the title as an H1; the vault renderer adds it.',
+					),
+				type: z
+					.enum(['draft', 'reference', 'learning', 'idea'])
+					.describe(
+						'Note type. "draft" for general captures, "reference" for material to revisit, "learning" for things learned, "idea" for sparks/concepts. Default to "draft" when unsure.',
+					),
+				tags: z
+					.array(z.string().min(1).max(40))
+					.max(8)
+					.describe(
+						'Up to 8 short kebab-case tags (no leading "#"). Pick from the content topic, source, and intent.',
+					),
+				sourceUrl: z
+					.string()
+					.url()
+					.optional()
+					.describe(
+						'When the saved content was derived from a URL (YouTube, article), pass it here so the note can back-link.',
+					),
+			}),
+			execute: async ({ title, content, type, tags, sourceUrl }): Promise<ToolResult> => {
+				logToolCall('vaultSave', {
+					title: title.slice(0, 60),
+					type,
+					tagCount: tags.length,
+					hasSource: !!sourceUrl,
+					contentChars: content.length,
+				});
+				const outcome = await dispatchVaultSave({
+					title,
+					content,
+					type,
+					tags,
+					sourceUrl,
+				});
+				if (!outcome.ok) {
+					return { kind: 'vault-save-error', error: outcome.error, title: outcome.title };
+				}
+				return {
+					kind: 'vault-save',
+					path: outcome.path,
+					openUrl: outcome.openUrl,
+					title: outcome.title,
 				};
 			},
 		}),

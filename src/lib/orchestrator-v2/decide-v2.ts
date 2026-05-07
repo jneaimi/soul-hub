@@ -429,6 +429,13 @@ function buildV2Output(
 			text: ytErrorReply(ytErr.tier, ytErr.error),
 		};
 	}
+	const vsaveErr = results.find((r) => r.kind === 'vault-save-error');
+	if (vsaveErr && vsaveErr.kind === 'vault-save-error') {
+		return {
+			kind: 'error',
+			text: `Couldn't save "${vsaveErr.title}": ${vsaveErr.error}`,
+		};
+	}
 
 	// Text-shaped tool results — prefer LLM's final text (it synthesises
 	// the result), fall back to the raw tool output if the LLM didn't speak
@@ -454,6 +461,15 @@ function buildV2Output(
 	const ytResult = results.find((r) => r.kind === 'youtube');
 	if (ytResult && ytResult.kind === 'youtube') {
 		return { kind: 'text', text: formatYoutubeFallback(ytResult) };
+	}
+	// vault-save fallback — same pattern. Model usually composes a "Saved as
+	// [[...]]" reply, but if it doesn't, give the user the link directly.
+	const vsaveResult = results.find((r) => r.kind === 'vault-save');
+	if (vsaveResult && vsaveResult.kind === 'vault-save') {
+		return {
+			kind: 'text',
+			text: `Saved *${vsaveResult.title}* — ${vsaveResult.openUrl}`,
+		};
 	}
 
 	return undefined;
@@ -515,6 +531,8 @@ function mapToolCallsToDecision(
 			return { action: 'reply', reply: finalText, confidence: 0.8 };
 		case 'youtubeFetch':
 			return { action: 'reply', reply: finalText, confidence: 0.85 };
+		case 'vaultSave':
+			return { action: 'reply', reply: finalText, confidence: 0.9 };
 		default:
 			return { action: 'reply', reply: finalText, confidence: 0.7 };
 	}
@@ -549,6 +567,8 @@ function toolErrorFallback(errors: readonly ToolError[]): string {
 			return 'I tried to search but the query was too short — give me a few words to look for.';
 		case 'youtubeFetch':
 			return 'I tried to fetch the YouTube video but the link looks off — can you paste the full URL?';
+		case 'vaultSave':
+			return "I tried to save that but the title or content didn't pass — can you say what you want me to save?";
 		default:
 			return GENERIC_RETRY;
 	}
