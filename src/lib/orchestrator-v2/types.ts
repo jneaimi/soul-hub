@@ -26,6 +26,10 @@ export interface DecideV2Options {
 	 *  fires and how the daily cap is enforced. Optional so non-WhatsApp
 	 *  callers (tests, debug routes) can omit it. */
 	imgConfig?: ImgConfigSlice;
+	/** YouTube fetch config snapshot (ADR-012) — gates whether `youtubeFetch`
+	 *  fires the Gemini transcript tier and how the daily cap is enforced.
+	 *  Tier A (oEmbed metadata) runs regardless. */
+	youtubeConfig?: YoutubeConfigSlice;
 	/** Account name from the WhatsApp config — scopes the image output dir. */
 	account?: string;
 	/** Timezone for the daily image-quota window (defaults Asia/Dubai). */
@@ -38,6 +42,14 @@ export interface ImgConfigSlice {
 	enabled: boolean;
 	maxPerDay: number;
 	systemPromptPath: string;
+	model?: string;
+}
+
+/** Subset of `cfg.youtube` (ADR-012) that the orchestrator needs.
+ *  Mirrors `ImgConfigSlice`. */
+export interface YoutubeConfigSlice {
+	enabled: boolean;
+	maxPerDay: number;
 	model?: string;
 }
 

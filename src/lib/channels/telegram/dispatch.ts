@@ -349,6 +349,7 @@ async function dispatchOrchestrated(
 			soulHubConfig.channels?.whatsapp ?? {},
 		);
 		const imgCfg = waParsed.success ? waParsed.data.img : undefined;
+		const ytCfg = waParsed.success ? waParsed.data.youtube : undefined;
 		orch = await decideV2(workingBody, {
 			history: ctx.history,
 			conversationKey,
@@ -361,6 +362,13 @@ async function dispatchOrchestrated(
 						maxPerDay: imgCfg.maxPerDay,
 						systemPromptPath: imgCfg.systemPromptPath,
 						model: imgCfg.model,
+					}
+				: undefined,
+			youtubeConfig: ytCfg
+				? {
+						enabled: ytCfg.enabled,
+						maxPerDay: ytCfg.maxPerDay,
+						model: ytCfg.model,
 					}
 				: undefined,
 		});

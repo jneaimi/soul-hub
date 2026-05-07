@@ -221,6 +221,21 @@ export const WhatsAppImgSchema = z.object({
 	systemPromptPath: z.string().default('operations/whatsapp/IMG.md'),
 });
 
+/** ADR-012 — `youtubeFetch` tool config. Tier A (oEmbed metadata) always
+ *  runs and is free. Tier B (Gemini multimodal) is the only reliable
+ *  transcript path from server IPs — capped per-target so share-spam
+ *  can't burn the budget. */
+export const WhatsAppYoutubeSchema = z.object({
+	enabled: z.boolean().default(true),
+	/** Per-target soft cap. Hit cap → tool returns metadata-only with a
+	 *  `note: transcript-quota-exceeded` hint, no Gemini call. Ceiling
+	 *  caps a runaway at ~$1/day on Flash. */
+	maxPerDay: z.number().int().min(1).max(50).default(5),
+	/** Default Gemini model for video understanding. Flash is the cost-
+	 *  effective default; swap to `gemini-2.5-pro` for richer summaries. */
+	model: z.string().default('gemini-2.5-flash'),
+});
+
 /** Telegram-specific config — extends the generic ChannelConfig with the
  *  fields the Bot API adapter needs (allowlist, intent map, webhook).
  *  Telegram chat IDs are integers (positive for DMs, negative for groups);
@@ -312,6 +327,7 @@ export const WhatsAppChannelSchema = ChannelConfigSchema.extend({
 	heartbeat: WhatsAppHeartbeatSchema.prefault({}),
 	commitments: WhatsAppCommitmentsSchema.prefault({}),
 	img: WhatsAppImgSchema.prefault({}),
+	youtube: WhatsAppYoutubeSchema.prefault({}),
 	intentMap: WhatsAppIntentMapSchema.default({
 		'/save': { route: 'brain-save', description: 'Capture a note (text/image/voice/video) into the vault inbox.' },
 		'/find': { route: 'brain-find', description: 'Search the vault — top 5 matches.' },

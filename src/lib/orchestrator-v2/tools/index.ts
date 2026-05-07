@@ -24,15 +24,18 @@ import { z } from 'zod';
 import { dispatchWebSearch, formatWebSearchForChat } from '../../web-search/index.js';
 import { dispatchVaultChat } from '../../vault-chat/index.js';
 import { dispatchImg, rememberLastImage } from '../../img/index.js';
+import { fetchYoutube } from '../../youtube/index.js';
 import { setPending, formatProposal } from '../../orchestrator/pending-proposals.js';
 import {
 	getImgCount,
 	incrementImgCount,
+	getYoutubeCount,
+	incrementYoutubeCount,
 	ymdInTimezone,
 } from '../../channels/whatsapp/heartbeat-state.js';
 import { runSkill } from '../../skills/index.js';
 import type { ChatSkillEntry } from '../../skills/index.js';
-import type { ImgConfigSlice } from '../types.js';
+import type { ImgConfigSlice, YoutubeConfigSlice } from '../types.js';
 
 export interface ToolDeps {
 	conversationKey?: string;
@@ -44,6 +47,11 @@ export interface ToolDeps {
 	 *  description warns the model not to invoke it. */
 	chatSkills: readonly ChatSkillEntry[];
 	imgConfig?: ImgConfigSlice;
+	/** ADR-012 — YouTube fetch config. When undefined or `enabled: false`,
+	 *  `youtubeFetch` still runs Tier A (oEmbed metadata) but skips the
+	 *  Gemini transcript tier and surfaces a `note: 'transcript-disabled'`
+	 *  hint in the result. */
+	youtubeConfig?: YoutubeConfigSlice;
 	account?: string;
 	timezone?: string;
 	/** ADR-009 Phase 5 — A/B branch label that decided this turn. Forwarded
@@ -67,7 +75,27 @@ export type ToolResult =
 	| { kind: 'dispatch'; agentId: string; task: string }
 	| { kind: 'dispatch-error'; error: string; agentId: string; task: string }
 	| { kind: 'invoke-skill'; skillName: string; output: string; durationMs: number }
-	| { kind: 'invoke-skill-error'; skillName: string; error: string; durationMs: number };
+	| { kind: 'invoke-skill-error'; skillName: string; error: string; durationMs: number }
+	| {
+			kind: 'youtube';
+			url: string;
+			videoId: string;
+			title: string;
+			channel: string;
+			thumbnailUrl: string;
+			durationSec?: number;
+			description?: string;
+			summary?: string;
+			transcript?: string;
+			transcriptSource: 'gemini' | 'none';
+			costUsd?: number;
+			note?:
+				| 'transcript-quota-exceeded'
+				| 'transcript-disabled'
+				| 'gemini-failed'
+				| 'gemini-not-configured';
+	  }
+	| { kind: 'youtube-error'; url: string; error: string; tier: 'oembed' | 'gemini' | 'url' };
 
 /** Build the tool dictionary for an Agent. Returns a stable object so the
  *  AI SDK can produce its tool schema. */
@@ -286,6 +314,93 @@ export function buildOrchestratorTools(deps: ToolDeps) {
 					agentId: args.agentId,
 					task: args.task,
 					label,
+				};
+			},
+		}),
+
+		youtubeFetch: tool({
+			description:
+				'Fetch a YouTube video — title, channel, duration, thumbnail, and (when needed) transcript or summary. ' +
+				'Use whenever the user shares a YouTube URL (youtube.com, youtu.be, share.google/...) — ' +
+				'whether they want to save it, review it, summarize it, quote it, or ask a question about its content. ' +
+				'Modes: "metadata" = title/channel/thumbnail only (instant, free, for save-shaped intents); ' +
+				'"summary" = adds a 2-3 paragraph summary via Gemini (~10-25s, costs cents — for review/summarize/quote intents); ' +
+				'"transcript" = adds the full transcript text (~25s, costs cents — for "what does he say about X" intents); ' +
+				'"full" = metadata + summary + transcript in one call. ' +
+				'After the tool returns, compose your reply from the structured fields. ' +
+				'If the result has note="transcript-quota-exceeded" or note="gemini-failed", tell the user we have the title and thumbnail but couldn\'t analyze the video this turn.',
+			inputSchema: z.object({
+				url: z.string().min(1).describe('Full YouTube URL or share link'),
+				mode: z
+					.enum(['metadata', 'summary', 'transcript', 'full'])
+					.describe(
+						'metadata = instant + free; summary = +2-3 paragraph summary; transcript = +full transcript; full = both. Default to "summary" for review/summarize phrasing, "metadata" for save phrasing, "transcript" for quote/extract phrasing.',
+					),
+			}),
+			execute: async ({ url, mode }): Promise<ToolResult> => {
+				logToolCall('youtubeFetch', { url, mode });
+
+				// Per-target Gemini quota check happens BEFORE the call so we
+				// short-circuit to metadata-only when the cap is hit. Increments
+				// happen AFTER a successful Gemini turn (failures don't burn
+				// the cap).
+				let transcriptQuotaExceeded = false;
+				const willCallGemini =
+					mode !== 'metadata' &&
+					(deps.youtubeConfig?.enabled ?? false) &&
+					!!deps.senderNumber;
+				if (willCallGemini && deps.youtubeConfig && deps.senderNumber) {
+					const tz = deps.timezone ?? 'Asia/Dubai';
+					const today = ymdInTimezone(tz);
+					const count = getYoutubeCount(deps.senderNumber, today);
+					if (count >= deps.youtubeConfig.maxPerDay) {
+						transcriptQuotaExceeded = true;
+					}
+				}
+
+				const outcome = await fetchYoutube(url, {
+					mode,
+					youtubeConfig: deps.youtubeConfig,
+					transcriptQuotaExceeded,
+				});
+
+				if (!outcome.ok) {
+					return {
+						kind: 'youtube-error',
+						url: outcome.error.url,
+						error: outcome.error.error,
+						tier: outcome.error.tier,
+					};
+				}
+
+				const r = outcome.result;
+				// Increment quota only when Gemini actually produced content.
+				// `transcriptSource === 'gemini'` is the truthful signal — covers
+				// both summary and transcript modes (any mode that hit Tier B).
+				if (
+					r.transcriptSource === 'gemini' &&
+					deps.senderNumber &&
+					deps.youtubeConfig &&
+					!transcriptQuotaExceeded
+				) {
+					const tz = deps.timezone ?? 'Asia/Dubai';
+					incrementYoutubeCount(deps.senderNumber, ymdInTimezone(tz));
+				}
+
+				return {
+					kind: 'youtube',
+					url: r.url,
+					videoId: r.videoId,
+					title: r.metadata.title,
+					channel: r.metadata.channel,
+					thumbnailUrl: r.metadata.thumbnailUrl,
+					durationSec: r.metadata.durationSec,
+					description: r.metadata.description,
+					summary: r.summary,
+					transcript: r.transcript,
+					transcriptSource: r.transcriptSource,
+					costUsd: r.costUsd,
+					note: r.note,
 				};
 			},
 		}),

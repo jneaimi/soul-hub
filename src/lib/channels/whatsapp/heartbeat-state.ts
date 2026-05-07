@@ -254,6 +254,23 @@ function migrate(db: Database.Database): void {
 		`);
 		db.pragma('user_version = 8');
 	}
+
+	if (version < 9) {
+		// ADR-012 — `youtubeFetch` per-target daily cap for the Gemini
+		// transcript tier. Free transcript paths from server IPs are
+		// 429-blocked (validated 2026-05-07), so Gemini is the only
+		// reliable path. Per-target cap so one user's share-spam can't
+		// burn the global budget.
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS youtube_daily_counter (
+				target  TEXT NOT NULL,
+				ymd     TEXT NOT NULL,
+				count   INTEGER NOT NULL DEFAULT 0,
+				PRIMARY KEY (target, ymd)
+			);
+		`);
+		db.pragma('user_version = 9');
+	}
 }
 
 /** Heartbeat run statuses logged to `proactive_log`. */
@@ -345,6 +362,26 @@ export function incrementImgCount(target: string, ymd: string): void {
 	getHeartbeatDb()
 		.prepare(
 			`INSERT INTO img_daily_counter (target, ymd, count) VALUES (?, ?, 1)
+			 ON CONFLICT(target, ymd) DO UPDATE SET count = count + 1`,
+		)
+		.run(target, ymd);
+}
+
+/** Per-target `youtubeFetch` Gemini-tier count for the current day (in the
+ *  user's wall-clock timezone). Distinct from `img_daily_counter` so the
+ *  two budgets don't collide — a heavy image-gen day shouldn't lock out
+ *  YouTube transcripts and vice versa. */
+export function getYoutubeCount(target: string, ymd: string): number {
+	const row = getHeartbeatDb()
+		.prepare('SELECT count FROM youtube_daily_counter WHERE target = ? AND ymd = ?')
+		.get(target, ymd) as { count: number } | undefined;
+	return row?.count ?? 0;
+}
+
+export function incrementYoutubeCount(target: string, ymd: string): void {
+	getHeartbeatDb()
+		.prepare(
+			`INSERT INTO youtube_daily_counter (target, ymd, count) VALUES (?, ?, 1)
 			 ON CONFLICT(target, ymd) DO UPDATE SET count = count + 1`,
 		)
 		.run(target, ymd);

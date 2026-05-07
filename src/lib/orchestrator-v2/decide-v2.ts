@@ -47,7 +47,16 @@ import type {
  *  the branch from `pickBranchForKey()` instead. */
 const FIXED_MODEL_OVERRIDE = process.env.ORCHESTRATOR_V2_MODEL;
 const MAX_STEPS = 5;
-const TIMEOUT_MS = 25_000;
+// 100s — must accommodate the slowest tool, which is `youtubeFetch` Tier B
+// (Gemini multimodal video ingestion, 15-90s depending on length). The
+// previous 25s aborted youtube turns mid-Gemini-call and surfaced a generic
+// "I'm not sure what you want" reply instead of the summary.
+//
+// Per-tool internal timeouts (e.g. gemini.ts at 90s) must stay strictly
+// LESS than this so the tool fails first with a graceful degrade rather
+// than the orchestrator's nuclear abort. The ~10s buffer lets the model
+// wrap a final reply after the tool returns or fails.
+const TIMEOUT_MS = 100_000;
 
 /** Public surface — same name semantics as v1's `decide()` so the inbound
  *  handler can env-flag swap. Returns the same `DecideResult` shape plus
@@ -107,6 +116,7 @@ export async function decideV2(
 		dispatchableAgentIds,
 		chatSkills,
 		imgConfig: opts.imgConfig,
+		youtubeConfig: opts.youtubeConfig,
 		account: opts.account,
 		timezone: opts.timezone,
 		modelBranch: branch.name,
@@ -412,6 +422,13 @@ function buildV2Output(
 			text: `Couldn't run skill "${skillErr.skillName}": ${skillErr.error}`,
 		};
 	}
+	const ytErr = results.find((r) => r.kind === 'youtube-error');
+	if (ytErr && ytErr.kind === 'youtube-error') {
+		return {
+			kind: 'error',
+			text: ytErrorReply(ytErr.tier, ytErr.error),
+		};
+	}
 
 	// Text-shaped tool results — prefer LLM's final text (it synthesises
 	// the result), fall back to the raw tool output if the LLM didn't speak
@@ -430,6 +447,13 @@ function buildV2Output(
 	const vsResult = results.find((r) => r.kind === 'vault-search');
 	if (vsResult && vsResult.kind === 'vault-search') {
 		return { kind: 'text', text: vsResult.text };
+	}
+	// YouTube fallback — the LLM is expected to compose a reply from the
+	// structured fields. When it didn't (junk-short finalText), render a
+	// minimal text reply ourselves so the user still gets the metadata.
+	const ytResult = results.find((r) => r.kind === 'youtube');
+	if (ytResult && ytResult.kind === 'youtube') {
+		return { kind: 'text', text: formatYoutubeFallback(ytResult) };
 	}
 
 	return undefined;
@@ -489,6 +513,8 @@ function mapToolCallsToDecision(
 		}
 		case 'invokeSkill':
 			return { action: 'reply', reply: finalText, confidence: 0.8 };
+		case 'youtubeFetch':
+			return { action: 'reply', reply: finalText, confidence: 0.85 };
 		default:
 			return { action: 'reply', reply: finalText, confidence: 0.7 };
 	}
@@ -521,7 +547,65 @@ function toolErrorFallback(errors: readonly ToolError[]): string {
 		case 'webSearch':
 		case 'vaultSearch':
 			return 'I tried to search but the query was too short — give me a few words to look for.';
+		case 'youtubeFetch':
+			return 'I tried to fetch the YouTube video but the link looks off — can you paste the full URL?';
 		default:
 			return GENERIC_RETRY;
 	}
+}
+
+/** Format a graceful error reply when the YouTube fetch failed entirely.
+ *  Tier-aware so the user knows whether the link itself was bad or whether
+ *  YouTube/Gemini misbehaved. */
+function ytErrorReply(tier: 'oembed' | 'gemini' | 'url', error: string): string {
+	switch (tier) {
+		case 'url':
+			return `That doesn't look like a YouTube link I can read. Could you paste the full URL?`;
+		case 'oembed':
+			return `Couldn't pull that YouTube video — it might be private or the link is wrong (${error.slice(0, 80)}).`;
+		case 'gemini':
+			return `Got the video info, but couldn't analyze it this turn (${error.slice(0, 80)}). Try again, or share a different video.`;
+	}
+}
+
+/** Render a minimal text reply from a youtube tool result when the LLM
+ *  didn't compose one itself. The model is *supposed* to write the reply
+ *  using the structured fields; this is the safety net for short/empty
+ *  finalText. */
+function formatYoutubeFallback(r: {
+	url: string;
+	title: string;
+	channel: string;
+	durationSec?: number;
+	summary?: string;
+	transcript?: string;
+	transcriptSource: 'gemini' | 'none';
+	note?: string;
+}): string {
+	const lines = [`*${r.title}* — ${r.channel}`];
+	if (r.durationSec !== undefined) {
+		lines.push(`Duration: ${formatDuration(r.durationSec)}`);
+	}
+	if (r.summary) {
+		lines.push('', r.summary);
+	} else if (r.transcript) {
+		lines.push('', r.transcript.slice(0, 2_000));
+	}
+	if (r.note === 'transcript-quota-exceeded') {
+		lines.push('', `(Hit today's transcript budget — only saved title and link.)`);
+	} else if (r.note === 'gemini-failed') {
+		lines.push('', `(Couldn't analyze the video this turn — only got title and link.)`);
+	} else if (r.note === 'transcript-disabled') {
+		lines.push('', `(Transcript fetch is disabled — only got title and link.)`);
+	}
+	lines.push('', r.url);
+	return lines.join('\n');
+}
+
+function formatDuration(sec: number): string {
+	const h = Math.floor(sec / 3600);
+	const m = Math.floor((sec % 3600) / 60);
+	const s = sec % 60;
+	if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+	return `${m}:${String(s).padStart(2, '0')}`;
 }

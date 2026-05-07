@@ -544,6 +544,11 @@ export const POST: RequestHandler = async ({ request }) => {
 					systemPromptPath: cfg.img.systemPromptPath,
 					model: cfg.img.model,
 				},
+				youtubeConfig: {
+					enabled: cfg.youtube.enabled,
+					maxPerDay: cfg.youtube.maxPerDay,
+					model: cfg.youtube.model,
+				},
 			});
 
 			if (!orch.fellThrough && orch.v2Output) {
