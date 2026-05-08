@@ -29,7 +29,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve as resolvePath } from 'node:path';
 
-export type MediaKind = 'image' | 'video' | 'audio' | 'voice';
+export type MediaKind = 'image' | 'video' | 'audio' | 'voice' | 'document';
 
 export interface MediaArtefact {
 	kind: MediaKind;
@@ -41,21 +41,28 @@ const MAX_ARTEFACTS = 5;
 const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 60 * 1024 * 1024;
 const MAX_AUDIO_BYTES = 15 * 1024 * 1024;
+const MAX_DOCUMENT_BYTES = 60 * 1024 * 1024; // WhatsApp doc cap is ~95MB; leave headroom
 
 const IMAGE_EXT = /\.(png|jpe?g|webp|gif)$/i;
 const VIDEO_EXT = /\.(mp4|mov|webm|m4v)$/i;
 const AUDIO_EXT = /\.(mp3|m4a|wav|ogg|opus|aac|flac)$/i;
+const DOCUMENT_EXT = /\.(pdf|docx?|xlsx?|pptx?|odt|epub)$/i;
 
 /** `Saved to:` recognises both vault-relative ("knowledge/research/…")
  *  and absolute ("/Users/…") paths; we normalise below. */
 const SAVED_TO_RE = /^[\s>*-]*Saved\s*to:\s*([^\s].*?)\s*$/gim;
+
+/** `PDF: <abs-path>` recognises katib document outputs (the author agent
+ *  emits one or two of these per render). Author's contract is documented
+ *  in `~/.claude/agents/author.md`. */
+const PDF_LABEL_RE = /^[\s>*-]*PDF\s*(?:\([^)]*\))?\s*:\s*([^\s].*?\.pdf)\s*$/gim;
 
 /** Standalone path detection — for cases where the agent emits a path
  *  on its own line (e.g. `~/generated_media/foo.png` in a markdown
  *  bullet). Anchored to known media root prefixes only, to avoid
  *  swallowing arbitrary file references in agent prose. */
 const KNOWN_PATH_RE = new RegExp(
-	String.raw`(?:^|\s)((?:~|/Users/[^/\s]+|/home/[^/\s]+)?(?:/?generated_media/|/?vault/operations/claude-soul/media-library/)[^\s]+\.[a-z0-9]{2,5})`,
+	String.raw`(?:^|\s)((?:~|/Users/[^/\s]+|/home/[^/\s]+)?(?:/?generated_media/|/?vault/operations/claude-soul/media-library/|/?Documents/katib/)[^\s]+\.[a-z0-9]{2,5})`,
 	'gmi',
 );
 
@@ -67,6 +74,7 @@ function expandHome(path: string): string {
 function classifyKind(path: string): MediaKind | null {
 	if (IMAGE_EXT.test(path)) return 'image';
 	if (VIDEO_EXT.test(path)) return 'video';
+	if (DOCUMENT_EXT.test(path)) return 'document';
 	if (!AUDIO_EXT.test(path)) return null;
 	// Audio: peek at the sidecar to distinguish music-style audio from
 	// voice notes. media-generator's `voice` command writes `type: "voice"`
@@ -90,6 +98,8 @@ function withinSizeCap(kind: MediaKind, bytes: number): boolean {
 		case 'audio':
 		case 'voice':
 			return bytes <= MAX_AUDIO_BYTES;
+		case 'document':
+			return bytes <= MAX_DOCUMENT_BYTES;
 	}
 }
 
@@ -103,6 +113,9 @@ export function extractMediaArtefacts(rawOutput: string): MediaArtefact[] {
 
 	const candidates: string[] = [];
 	for (const m of rawOutput.matchAll(SAVED_TO_RE)) {
+		if (m[1]) candidates.push(m[1]);
+	}
+	for (const m of rawOutput.matchAll(PDF_LABEL_RE)) {
 		if (m[1]) candidates.push(m[1]);
 	}
 	for (const m of rawOutput.matchAll(KNOWN_PATH_RE)) {
@@ -131,11 +144,13 @@ export function extractMediaArtefacts(rawOutput: string): MediaArtefact[] {
 }
 
 /** Pick which artefact (if any) should carry the chat-trailer summary
- *  as a caption. Captions only render on image / video — audio shapes
- *  don't accept them. Returns `-1` when no caption target exists, in
- *  which case the caller sends the body as a separate text message. */
+ *  as a caption. Captions render on image / video / document — audio
+ *  shapes don't accept them. Returns `-1` when no caption target exists,
+ *  in which case the caller sends the body as a separate text message. */
 export function pickCaptionTarget(artefacts: MediaArtefact[]): number {
-	return artefacts.findIndex((a) => a.kind === 'image' || a.kind === 'video');
+	return artefacts.findIndex(
+		(a) => a.kind === 'image' || a.kind === 'video' || a.kind === 'document',
+	);
 }
 
 /** WhatsApp caption length cap (varies by client; 1024 is the

@@ -61,6 +61,7 @@ export function buildOrchestratorSystemPrompt(ctx: PromptContext): string {
 You can call multiple tools per turn when the user's request implies a chain:
 - "Find recent posts about hydroponics and save the top 3 to my vault" → \`invokeSkill(research)\` → \`invokeSkill(brain, "save …")\` → \`reply\` summarising.
 - "Weather in Dubai then make an image with it" → \`webSearch\` → \`dispatchAgent(media-generator, confirmed: false)\` (the agent task carries the prior weather text).
+- "Create a report / one-pager / PDF / brief on this note: <vault URL>" → \`vaultSearch\` (load the note as source material) → \`dispatchAgent(author, confirmed: true)\` with the note content embedded in the agent's task. The verb "create / produce / draft / write a report (or doc, PDF, brief, one-pager)" is unambiguous — set \`confirmed: true\`. A vault URL in the request is source material, NOT a signal to summarize-and-stop.
 
 ## Anaphora
 The history shows prior turns. When the user says "the info", "the result", "what you said", "make it bigger", "and in Arabic" — that points at the most recent assistant turn. Use that content directly in tool args.

@@ -236,6 +236,16 @@ export function summarizeAgentResultForHistory(
 const CHAT_TRAILER_RE = /^[ \t]*---CHAT---[ \t]*$/gm;
 const CODE_FENCE_BLOCK_RE = /```[\s\S]*?```/g;
 
+// Dispatcher-metadata lines the agent emits inside its trailer for the
+// dispatcher to consume — `Saved to:` (vault path → URL), `PDF:` (artefact
+// path → Baileys document attach), `Vault path:` / `Wrote to:` (legacy
+// aliases). Already harvested upstream by `extractVaultPath` and
+// `extractMediaArtefacts`, which scan the FULL `result.output` independently
+// of trailer slicing — stripping them from the user-facing trailer body
+// keeps captions clean.
+const TRAILER_METADATA_LINE_RE =
+	/^[ \t]*(?:Saved\s*to|Vault\s*path|Wrote\s*to|PDF(?:\s*\([^)]*\))?)\s*:\s*\S.*$/gim;
+
 interface TrailerSplit {
 	body: string;
 	matched: boolean;
@@ -244,7 +254,8 @@ interface TrailerSplit {
 /** Find the agent's real `---CHAT---` trailer, ignoring any occurrences
  *  inside fenced code blocks (those are typically echoed system-prompt
  *  examples). Returns the body AFTER the last surviving marker, or the
- *  whole output unchanged when no real marker is present. */
+ *  whole output unchanged when no real marker is present. The body has
+ *  dispatcher-metadata lines stripped (see TRAILER_METADATA_LINE_RE). */
 function splitChatTrailer(output: string): TrailerSplit {
 	const masked = output.replace(CODE_FENCE_BLOCK_RE, (block) =>
 		// Replace fence content with same-length spaces so line offsets stay
@@ -260,15 +271,41 @@ function splitChatTrailer(output: string): TrailerSplit {
 	}
 	CHAT_TRAILER_RE.lastIndex = 0;
 	if (lastIdx < 0) return { body: output, matched: false };
-	return { body: output.slice(lastIdx + lastLen), matched: true };
+	const rawBody = output.slice(lastIdx + lastLen);
+	return { body: rawBody.replace(TRAILER_METADATA_LINE_RE, '').trimEnd(), matched: true };
+}
+
+/** Predicate: does this output carry a real `---CHAT---` trailer marker?
+ *  Used by the WhatsApp settle path to decide between sending the cleaned
+ *  body and suppressing it entirely (when artefacts exist and the agent
+ *  forgot the marker, the cleaned body is a leaky transcript dump — better
+ *  to attach the file silently than to show that). Mirrors the fence-aware
+ *  detection in `splitChatTrailer` so the two stay in sync. */
+export function hasChatTrailer(output: string | undefined): boolean {
+	if (!output) return false;
+	const masked = output.replace(CODE_FENCE_BLOCK_RE, (block) =>
+		block.replace(/[^\n]/g, ' '),
+	);
+	const matched = CHAT_TRAILER_RE.test(masked);
+	CHAT_TRAILER_RE.lastIndex = 0;
+	return matched;
 }
 
 // Heuristic vault-path detection. Three real shapes observed in agent
 // outputs: explicit "Saved to: <path>", a bare path like
 // "~/vault/<…>.md" or "vault/<…>.md", and an Obsidian wikilink at the end.
 // Stops at the first match — agents only report one final landing place.
-const VAULT_LABEL_RE = /(?:Saved to|Vault path|Saved|Wrote to)[:\s]+([~]?\/?(?:Users\/[^\s]+\/vault\/|vault\/)[^\s`'")]+\.md)/i;
-const VAULT_RAW_PATH_RE = /([~]?\/?(?:Users\/[^\s]+\/vault\/|vault\/)[^\s`'")]+\.md)/;
+//
+// LABEL form is permissive: once "Saved to:" announces a path, we trust
+// the path shape and let the strip chain normalize it (vault-relative
+// paths like "knowledge/ai/X.md" are valid and do not need a vault/ prefix).
+//
+// RAW form requires a recognizable vault prefix to avoid false positives
+// in arbitrary prose. The negative lookbehind `(?<!api\/)` skips matches
+// inside `/api/vault/notes/...` URLs that agents leak via curl examples
+// in their bash output.
+const VAULT_LABEL_RE = /(?:Saved to|Vault path|Saved|Wrote to)[:\s]+([^\s`'")]+\.md)/i;
+const VAULT_RAW_PATH_RE = /([~]?\/?(?:Users\/[^\s]+\/vault\/|(?<!api\/)vault\/)[^\s`'")]+\.md)/;
 const WIKILINK_RE = /\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]/;
 
 // 2026-05-06: reject paths that are obviously prompt-template placeholders.
@@ -293,12 +330,15 @@ export function extractVaultPath(output: string | undefined): string | null {
 	const labeled = output.match(VAULT_LABEL_RE);
 	const raw = labeled ? labeled[1] : output.match(VAULT_RAW_PATH_RE)?.[1];
 	if (raw && !isPlaceholderPath(raw)) {
-		// Normalise to vault-relative path (strip ~/, /Users/<user>/vault/, vault/).
+		// Normalise to vault-relative path. Strip order matters: leading
+		// slash strips BEFORE the bare `vault/` strip so that absolute
+		// paths like "/vault/notes/X.md" (from a leaky URL match) don't
+		// keep their `vault/` prefix.
 		return raw
 			.replace(/^~\//, '')
 			.replace(/^\/Users\/[^/]+\/vault\//, '')
-			.replace(/^vault\//, '')
-			.replace(/^\/+/, '');
+			.replace(/^\/+/, '')
+			.replace(/^vault\//, '');
 	}
 	const wiki = output.match(WIKILINK_RE);
 	if (wiki) {

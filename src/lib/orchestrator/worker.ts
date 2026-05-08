@@ -31,6 +31,7 @@ import {
 	summarizeAgentResultForHistory,
 	cleanAgentOutputForChat,
 	extractVaultPath,
+	hasChatTrailer,
 } from '$lib/conversation/index.js';
 import { setActive, clearActive, listActiveByJid } from './active-runs.js';
 import {
@@ -137,12 +138,19 @@ function looksLikeSplashOnly(cleaned: string): boolean {
  *
  *  ADR-006 post-ship: when status=success but the agent has no artefacts
  *  AND the cleaned body is empty or looks like a clarification stop,
- *  surface a friendly retry prompt instead of the leaked dump. */
+ *  surface a friendly retry prompt instead of the leaked dump.
+ *
+ *  ADR-018 follow-up (2026-05-08): when an artefact was produced but the
+ *  agent forgot the `---CHAT---` trailer (common with the heavier author
+ *  agent on multi-turn katib runs), `cleanAgentOutputForChat` falls back
+ *  to whole-output cleaning — which leaks the full PTY transcript into
+ *  chat. The artefact + status edit + vault link already tell the full
+ *  story; suppress the body entirely in that case. */
 function settleBody(result: DispatchResult, artefactCount: number): string {
 	if (result.status === 'success') {
 		const cleaned = cleanAgentOutputForChat(result.output, REPLY_LIMIT_CHARS);
 		if (artefactCount > 0) {
-			// Real artefacts produced — even an empty body is fine, the file IS the deliverable.
+			if (!hasChatTrailer(result.output)) return '';
 			return cleaned;
 		}
 		if (!cleaned || cleaned.length < 30) {
