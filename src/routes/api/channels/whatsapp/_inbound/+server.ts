@@ -48,6 +48,7 @@ import {
 } from '$lib/orchestrator/index.js';
 import { dispatchWebSearch, formatWebSearchForChat } from '$lib/web-search/index.js';
 import { workerSend as workerSendForOrchestrator } from '$lib/channels/whatsapp/worker-client.js';
+import { isFocusQuery, placeholderTextForRoute } from '$lib/channels/_shared/placeholder.js';
 import { isResetCommand, resetConversation, saveTurn } from '$lib/vault-chat/history.js';
 import { getConversationContext, buildAgentContextBrief } from '$lib/conversation/index.js';
 import {
@@ -658,8 +659,59 @@ export const POST: RequestHandler = async ({ request }) => {
 					console.warn(`[_inbound] mediaBase64 decode for vault-chat failed: ${(err as Error).message}`);
 				}
 			}
+			// Per ADR-022 Layer B (worker-mode parallel of dispatch.ts): send a
+			// placeholder bubble via workerSend, capture the messageId, run the
+			// slow LLM call, then edit the bubble in place. Return action='drop'
+			// when the edit lands so the worker doesn't double-send the answer
+			// as a fresh message. If anything in the placeholder/edit chain
+			// fails, fall through to the normal action='reply' path so the
+			// user always gets the answer.
+			const placeholderText = placeholderTextForRoute('vault-chat', {
+				isFocusQuery: isFocusQuery(userText),
+				hasMedia: chatMedia !== undefined,
+			});
+			let placeholderId: string | undefined;
+			try {
+				const sendPlaceholder = await workerSendForOrchestrator(cfg.worker, {
+					to: envelope.chatJid,
+					text: placeholderText,
+				});
+				if (sendPlaceholder.ok && sendPlaceholder.messageId) {
+					placeholderId = sendPlaceholder.messageId;
+				}
+			} catch (err) {
+				console.warn(
+					`[_inbound] vault-chat placeholder send failed (${(err as Error).message}); falling back to plain reply`,
+				);
+			}
+
 			const result = await dispatchVaultChat(userText, conversationKey, chatMedia);
 			replyText = result.text || '(no reply)';
+
+			// Edit-in-place path. Baileys edit takes one text payload; if the
+			// reply is too long for a single message, this returns an error
+			// and we fall through to the normal chunked sendText path (the
+			// placeholder bubble lingers as cosmetic noise — acceptable
+			// trade-off for the v0 simplicity).
+			if (placeholderId && replyText && replyText !== '(no reply)') {
+				try {
+					const edit = await workerSendForOrchestrator(cfg.worker, {
+						to: envelope.chatJid,
+						text: replyText,
+						editId: placeholderId,
+					});
+					if (edit.ok) {
+						return json({ ok: true, action: 'drop' });
+					}
+					console.warn(
+						`[_inbound] vault-chat edit failed (${edit.error ?? 'unknown'}); falling back to plain reply`,
+					);
+				} catch (err) {
+					console.warn(
+						`[_inbound] vault-chat edit threw (${(err as Error).message}); falling back to plain reply`,
+					);
+				}
+			}
 		} else if (intent.route === 'brain-save') {
 			// Worker-mode binary plumbing: the worker piggybacks media bytes
 			// as base64 in `body.mediaBase64` (Slice 0). Decode here and pass

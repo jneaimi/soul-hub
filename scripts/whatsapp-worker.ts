@@ -35,7 +35,8 @@ import {
 } from '../src/lib/channels/whatsapp/connection.ts';
 import { resolveSenderLid, seedLidMappingsForAllowlist } from '../src/lib/channels/whatsapp/lid-resolve.ts';
 import { collectMentionedJids } from '../src/lib/channels/whatsapp/inbound.ts';
-import { sendMedia, sendText, reactTo, editText } from '../src/lib/channels/whatsapp/outbound.ts';
+import { sendMedia, sendText, reactTo, editText, sendTypingIndicator } from '../src/lib/channels/whatsapp/outbound.ts';
+import { startTypingLoop } from '../src/lib/channels/_shared/typing.ts';
 import { kindFromPath, downloadMedia, saveMediaToDisk } from '../src/lib/channels/whatsapp/media.ts';
 import { transcribeVoiceNote } from '../src/lib/channels/whatsapp/transcribe.ts';
 import { checkAccess } from '../src/lib/channels/whatsapp/access-control.ts';
@@ -169,6 +170,16 @@ async function main(): Promise<void> {
 			}
 			console.log(`[whatsapp-worker] inbound from ${senderTag}: ${envelope.body?.slice(0, 80) ?? `[${envelope.media?.kind ?? 'unknown'}]`}`);
 
+			// Per ADR-022 Layer A: start "typing…" presence updates as soon
+			// as we accept the message. Re-fires every 4s; cleared by the
+			// `finally` below regardless of outcome (transcription error,
+			// dispatch failure, success). The in-process dispatch.ts had the
+			// same wiring but worker mode bypasses it — this is the parallel
+			// implementation. Fire-and-forget; presence failures never block
+			// the reply path.
+			const stopTyping = startTypingLoop(() => sendTypingIndicator(sock, envelope.chatJid));
+			try {
+
 			// Ack reaction first.
 			if (cfg.delivery.ackEmoji) {
 				await reactTo(sock, envelope.chatJid, envelope.messageId, cfg.delivery.ackEmoji);
@@ -290,6 +301,14 @@ async function main(): Promise<void> {
 				}
 			} else if (dispatch.text) {
 				await sendText(sock, envelope.chatJid, dispatch.text, cfg.delivery);
+			}
+			} finally {
+				// Stop the typing loop. The reply has either landed (above)
+				// or one of the early-return paths fired (transcription error,
+				// dispatch failure, action='drop'). All of those need the
+				// indicator cleared so it doesn't keep firing for the
+				// channel's auto-clear window after delivery.
+				stopTyping();
 			}
 		} catch (err) {
 			console.error('[whatsapp-worker] inbound handler error:', (err as Error).message);
