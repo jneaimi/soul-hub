@@ -18,6 +18,8 @@ import { dispatchVaultChat } from '../../vault-chat/index.js';
 import { dispatchBrainSave, dispatchBrainFind, dispatchBrainRecent } from '../../brain/index.js';
 import { isResetCommand, resetConversation } from '../../vault-chat/history.js';
 import { decideV2 } from '../../orchestrator-v2/index.js';
+import { writeIntentDecision } from '../../intent/log.js';
+import { normalizeSignature } from '../../intent/normalize.js';
 import { config as soulHubConfig } from '../../config.js';
 import { WhatsAppChannelSchema } from '../../config.schema.js';
 import {
@@ -370,6 +372,7 @@ async function dispatchOrchestrated(
 		);
 		const imgCfg = waParsed.success ? waParsed.data.img : undefined;
 		const ytCfg = waParsed.success ? waParsed.data.youtube : undefined;
+		const decideStart = Date.now();
 		orch = await decideV2(workingBody, {
 			history: ctx.history,
 			conversationKey,
@@ -392,6 +395,24 @@ async function dispatchOrchestrated(
 					}
 				: undefined,
 		});
+		// Per ADR-023 Phase 1: persist orchestrator-v2's routing decision so
+		// the future Claude analyst can mine patterns alongside the WhatsApp
+		// router decisions. `decision.action` is the orchestrator's chosen
+		// sub-action (web-search / vault-chat / dispatch / image / proposal /
+		// reply). `fellThrough=true` is logged inside fallbackToVaultChat
+		// with source='fallback'.
+		if (!orch.fellThrough) {
+			writeIntentDecision({
+				ts: Date.now(),
+				conversationKey,
+				rawMessage: workingBody,
+				normalizedSignature: normalizeSignature(workingBody),
+				pickedRoute: orch.decision.action,
+				source: 'llm',
+				confidence: orch.decision.confidence,
+				latencyMs: Date.now() - decideStart,
+			});
+		}
 	} catch (err) {
 		console.warn(`[telegram] decideV2 threw: ${(err as Error).message}`);
 		await fallbackToVaultChat(envelope, workingBody, conversationKey, config, transcriptionBuffer);
@@ -507,6 +528,18 @@ async function fallbackToVaultChat(
 	_transcriptionBuffer: Buffer | undefined,
 ): Promise<void> {
 	const userText = workingBody || '(empty message)';
+	// Per ADR-023 Phase 1: log the abstain → vault-chat fallback as a
+	// distinct decision source so the analyst can later weigh how often
+	// orchestrator-v2 abstains for which kinds of inputs.
+	writeIntentDecision({
+		ts: Date.now(),
+		conversationKey,
+		rawMessage: workingBody,
+		normalizedSignature: normalizeSignature(workingBody),
+		pickedRoute: 'vault-chat',
+		source: 'fallback',
+		latencyMs: 0,
+	});
 	let chatMedia:
 		| { buffer: Buffer; mimetype: string; kind: TelegramMediaPayload['kind'] }
 		| undefined;

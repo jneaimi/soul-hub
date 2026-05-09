@@ -245,7 +245,7 @@ export async function dispatchInbound(
 	let placeholderId: string | null = null;
 	try {
 	const baseIntent = resolveIntent(workingBody, config.intentMap);
-	const intent = await maybeApplyRouter(baseIntent, config.intentMap);
+	const intent = await maybeApplyRouter(baseIntent, config.intentMap, conversationKey);
 
 	if (intent.route === 'unknown') {
 		await sendText(sock, envelope.chatJid, helpReply(config.intentMap), config.delivery);

@@ -28,6 +28,8 @@ import { generateText, Output, NoOutputGeneratedError } from 'ai';
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { z } from 'zod';
 import type { ResolvedIntent, WhatsAppIntentMap } from './types.js';
+import { writeIntentDecision } from '../../intent/log.js';
+import { normalizeSignature } from '../../intent/normalize.js';
 
 /** Migrated to GLM-4.6 via OpenRouter (per ADR-009 direction). Override
  *  via env if needed for staged rollout / debug. Falls back to vault-chat
@@ -217,10 +219,32 @@ async function llmRoute(
  *  a route name; logs the decision to the in-process ring buffer.
  *
  *  Order: regex (free) → LLM (~150ms + ~$0.0001) → safe-default fallback.
- *  Confidence below the per-route threshold also collapses to vault-chat. */
-export async function routeFreeForm(message: string): Promise<RouterDecision> {
+ *  Confidence below the per-route threshold also collapses to vault-chat.
+ *
+ *  Per ADR-023 Phase 1: when `conversationKey` is supplied, every decision
+ *  also lands in the persistent `intent_log` table for the offline pattern
+ *  miner. The ring buffer (in-memory, lost on restart) stays for the
+ *  status endpoint's `recentRouterDecisions[]` view. */
+export async function routeFreeForm(
+	message: string,
+	conversationKey?: string,
+): Promise<RouterDecision> {
 	const ts = Date.now();
 	const inputPreview = message.length > 80 ? message.slice(0, 77) + '…' : message;
+
+	const persistDecision = (decision: RouterDecision) => {
+		if (!conversationKey) return;
+		writeIntentDecision({
+			ts: decision.ts,
+			conversationKey,
+			rawMessage: message,
+			normalizedSignature: normalizeSignature(message),
+			pickedRoute: decision.route,
+			source: decision.source,
+			confidence: decision.confidence,
+			latencyMs: Date.now() - ts,
+		});
+	};
 
 	const regexHit = regexPreFilter(message);
 	if (regexHit) {
@@ -233,6 +257,7 @@ export async function routeFreeForm(message: string): Promise<RouterDecision> {
 			ts,
 		};
 		logDecision(decision);
+		persistDecision(decision);
 		return decision;
 	}
 
@@ -247,6 +272,7 @@ export async function routeFreeForm(message: string): Promise<RouterDecision> {
 			ts,
 		};
 		logDecision(decision);
+		persistDecision(decision);
 		return decision;
 	}
 
@@ -261,6 +287,7 @@ export async function routeFreeForm(message: string): Promise<RouterDecision> {
 			ts,
 		};
 		logDecision(decision);
+		persistDecision(decision);
 		return decision;
 	}
 
@@ -273,6 +300,7 @@ export async function routeFreeForm(message: string): Promise<RouterDecision> {
 		ts,
 	};
 	logDecision(decision);
+	persistDecision(decision);
 	return decision;
 }
 
@@ -284,13 +312,14 @@ export async function routeFreeForm(message: string): Promise<RouterDecision> {
 export async function maybeApplyRouter(
 	intent: ResolvedIntent,
 	intentMap: WhatsAppIntentMap,
+	conversationKey?: string,
 ): Promise<ResolvedIntent> {
 	if (intent.command) return intent; // explicit slash — never overridden
 	if (!intentMap.default?.dynamic) return intent; // feature off
 	const trimmed = intent.body.trim();
 	if (!trimmed) return intent; // nothing to route on
 
-	const decision = await routeFreeForm(trimmed);
+	const decision = await routeFreeForm(trimmed, conversationKey);
 	if (decision.route === intent.route) return intent;
 	return { ...intent, route: decision.route };
 }

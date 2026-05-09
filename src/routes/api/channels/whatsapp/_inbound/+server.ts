@@ -292,7 +292,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	// is off (the default), preserving legacy behaviour for users who
 	// haven't opted in.
 	const baseIntent = resolveIntent(workingBody, cfg.intentMap);
-	const intent = await maybeApplyRouter(baseIntent, cfg.intentMap);
+	const intent = await maybeApplyRouter(baseIntent, cfg.intentMap, conversationKey);
 
 	if (intent.route === 'unknown' || intent.route === 'help') {
 		return json({ ok: true, action: 'help', text: helpReply(cfg.intentMap) });
