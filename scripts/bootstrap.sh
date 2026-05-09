@@ -93,7 +93,15 @@ SETTINGS_FILE="$SOUL_HUB_HOME/settings.json"
 if [ -f "$SETTINGS_FILE" ]; then
   ok "$SETTINGS_FILE (already exists — left untouched)"
 else
-  cp "$REPO_ROOT/settings.example.json" "$SETTINGS_FILE"
+  # Substitute <REPO_ROOT> placeholder so seeded scheduler tasks (e.g.
+  # vault-backup-daily) point at the correct on-disk repo location.
+  # sed -i works portably on macOS + Linux with this in-place form.
+  node - "$REPO_ROOT/settings.example.json" "$SETTINGS_FILE" "$REPO_ROOT" <<'NODE'
+const fs = require('fs');
+const [, , src, dst, repoRoot] = process.argv;
+const txt = fs.readFileSync(src, 'utf8').replace(/<REPO_ROOT>/g, repoRoot);
+fs.writeFileSync(dst, txt);
+NODE
   ok "Wrote $SETTINGS_FILE from settings.example.json"
 
   # Patch claudeBinary if we found one and it's not the default location
@@ -192,7 +200,59 @@ case "$ACTION" in
   *)         warn "Could not patch $CLAUDE_MD (action: ${ACTION:-unknown})" ;;
 esac
 
-# ── 8. Final summary ─────────────────────────────────────────────
+# ── 8. Vault git history (ADR-019) ───────────────────────────────
+step "Initializing vault git repo"
+if [ -d "$VAULT_DIR_DEFAULT/.git" ]; then
+  ok "$VAULT_DIR_DEFAULT/.git (already initialized)"
+else
+  # Write .gitignore first — six rules cover the whole vault.
+  cat > "$VAULT_DIR_DEFAULT/.gitignore" <<'GITIGNORE'
+# Soul Hub vault metadata — regenerated, machine-local
+.vault/mtime-cache.json
+
+# macOS noise
+.DS_Store
+**/.DS_Store
+
+# Vault trash zone — already-deleted notes
+.trash/
+
+# Retired Obsidian workspace (defensive — kept ignored in case of re-install)
+.obsidian/
+
+# SQLite runtime artifacts (write-active DBs in project subfolders)
+*.db
+*.db-wal
+*.db-shm
+GITIGNORE
+
+  git -C "$VAULT_DIR_DEFAULT" init -b main >/dev/null 2>&1 || \
+    git -C "$VAULT_DIR_DEFAULT" init >/dev/null
+
+  # Mirror global git identity into the vault repo if available, so the
+  # initial commit (and event-driven commits from src/lib/vault/committer.ts)
+  # don't fail with "please tell me who you are".
+  GLOBAL_NAME=$(git config --global --get user.name 2>/dev/null || true)
+  GLOBAL_EMAIL=$(git config --global --get user.email 2>/dev/null || true)
+
+  if [ -n "$GLOBAL_NAME" ] && [ -n "$GLOBAL_EMAIL" ]; then
+    git -C "$VAULT_DIR_DEFAULT" config user.name "$GLOBAL_NAME"
+    git -C "$VAULT_DIR_DEFAULT" config user.email "$GLOBAL_EMAIL"
+    git -C "$VAULT_DIR_DEFAULT" add -A
+    if ! git -C "$VAULT_DIR_DEFAULT" diff --cached --quiet ; then
+      git -C "$VAULT_DIR_DEFAULT" commit -m "vault: initial commit" >/dev/null
+      ok "$VAULT_DIR_DEFAULT/.git (initialized + initial commit)"
+    else
+      ok "$VAULT_DIR_DEFAULT/.git (initialized — empty vault, no initial commit)"
+    fi
+  else
+    warn "$VAULT_DIR_DEFAULT/.git initialized but global git identity is unset"
+    warn "Set: git config --global user.name '...' && git config --global user.email '...'"
+    warn "Then re-run this script — the initial commit will be created."
+  fi
+fi
+
+# ── 9. Final summary ─────────────────────────────────────────────
 echo
 printf "%sBootstrap complete.%s\n\n" "$GRN$BOLD" "$RST"
 printf "Next steps:\n"

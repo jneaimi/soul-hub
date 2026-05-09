@@ -105,6 +105,7 @@ The bootstrap script (`scripts/bootstrap.sh`) is a thin shell script that:
 5. Copies `settings.example.json` → `~/.soul-hub/settings.json` (skipped if it already exists). If it found `claude` on PATH at a non-default location, it patches `paths.claudeBinary` for you.
 6. Creates `~/.soul-hub/.env` with a freshly generated `SOUL_HUB_SECRET` (only if the file is missing or the key isn't set). Sets the file mode to `0600`.
 7. Injects a managed block into `~/.claude/CLAUDE.md` between `<!-- soul-hub:start -->` / `<!-- soul-hub:end -->` markers. The block tells Claude Code (in any directory) to query the local vault API at `http://localhost:2400/api/vault/notes` before non-trivial work. The block is idempotent — re-running bootstrap replaces it in place and never duplicates. Existing content in your `CLAUDE.md` is preserved.
+8. Initializes a local git repo at `~/vault/.git/` per [ADR-019](https://github.com/jneaimi/soul-hub/blob/main/CONTRIBUTING.md#adr-019). Writes `~/vault/.gitignore`, runs `git init -b main`, and creates an initial commit if your global `git config user.{name,email}` is set (otherwise warns and skips the commit so you can fix and re-run). The repo is local-only (no remote) and is the version-history layer underneath the vault writer module — every successful write through the engine produces a labelled commit, and the seeded `vault-backup-daily` scheduler task captures direct filesystem edits as a daily safety net.
 
 It does **not**:
 - Initialize the SQLite databases. Those auto-migrate on the first server start (`getInboxDb()` and `getHeartbeatDb()` create + version their schemas in-process).
@@ -125,6 +126,8 @@ It does **not**:
 | `SOUL_HUB_SECRET` | present (warns if missing — only required for Unified Inbox) |
 | Vault dir | `paths.vaultDir` from settings exists and is writable |
 | Claude CLI | `paths.claudeBinary` from settings, or `claude` on PATH, resolves |
+| Vault git | `~/vault/.git/` exists and has at least 1 commit (warn-level — local history is recommended, not required) |
+| `vault-backup-daily` task | scheduler task is registered in `settings.json` (warn-level) |
 | Platform | macOS / Linux / WSL2 — fails on native Windows |
 
 Exit code is non-zero if any check fails, so you can wire it into CI.

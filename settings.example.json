@@ -35,5 +35,23 @@
     "maxIterationsPerWorker": 8,
     "worktreeDir": ".worktrees",
     "depInstaller": "auto"
+  },
+  "scheduler": {
+    "tasks": [
+      {
+        "id": "vault-backup-daily",
+        "type": "shell-script",
+        "cron": "0 23 * * *",
+        "timezone": "Asia/Dubai",
+        "enabled": true,
+        "noOverlap": true,
+        "description": "Daily vault git snapshot — safety net under event-driven commits (ADR-019)",
+        "params": {
+          "command": ["bash", "scripts/vault-backup-daily.sh"],
+          "cwd": "<REPO_ROOT>",
+          "timeoutMs": 60000
+        }
+      }
+    ]
   }
 }

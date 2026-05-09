@@ -143,7 +143,36 @@ try {
   }
 }
 
-// ── 10. Platform sanity ────────────────────────────────────────
+// ── 10. Vault git history (ADR-019) ────────────────────────────
+{
+  const expand = (p) => (p?.startsWith('~/') ? join(HOME, p.slice(2)) : p);
+  const vaultDir = expand(settings?.paths?.vaultDir) || join(HOME, 'vault');
+  const gitDir = join(vaultDir, '.git');
+  if (!existsSync(vaultDir)) {
+    add('vault git', 'warn', 'vault dir missing — run: bash scripts/bootstrap.sh');
+  } else if (!existsSync(gitDir)) {
+    add('vault git', 'warn', `${gitDir} missing — run: bash scripts/bootstrap.sh (re-run is idempotent)`);
+  } else {
+    try {
+      const sha = execSync(`git -C "${vaultDir}" rev-parse HEAD`, {
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).toString().trim();
+      add('vault git', 'ok', `HEAD ${sha.slice(0, 7)}`);
+    } catch {
+      add('vault git', 'warn', 'repo initialized but no commits — set git config user.{name,email} and re-run setup');
+    }
+  }
+}
+
+// ── 11. vault-backup-daily scheduler task (ADR-019) ────────────
+{
+  const tasks = settings?.scheduler?.tasks ?? [];
+  const found = Array.isArray(tasks) && tasks.some((t) => t?.id === 'vault-backup-daily');
+  if (found) add('vault-backup task', 'ok', 'scheduler task registered');
+  else add('vault-backup task', 'warn', 'not in settings.json — re-run: bash scripts/bootstrap.sh, or copy from settings.example.json');
+}
+
+// ── 12. Platform sanity ────────────────────────────────────────
 if (platform() === 'win32') {
   add('platform', 'fail', 'native Windows is unsupported. Use WSL2 (Ubuntu). See INSTALL.md.');
 } else if (platform() === 'linux') {

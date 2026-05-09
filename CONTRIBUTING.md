@@ -117,6 +117,21 @@ catalog/                 # Shared blocks and agents
 - Prefer editing existing files over creating new ones
 - Keep error handling at system boundaries, not internal code
 
+## Install Completeness Checklist (ADR-020)
+
+Every PR that introduces **persistent infrastructure** — anything outside the running process, including a directory, a script, a scheduled job, a runtime file invariant, or a config field — must tick the items below before being merged. The checklist exists because ADR-019 shipped real infrastructure (a vault git repo, a daily backup script, a scheduler task) without wiring any of it into the install path. A new machine running `npm run setup` would silently get zero version history. ADR-020 is the retroactive fix and this checklist is the discipline that prevents the same class of bug for future ADRs.
+
+| Check | Required if your PR introduces… |
+|------|--------------------------------|
+| Script lives in `scripts/` (not `~/.claude/scripts/` or any other out-of-repo location) | a new shell / node / python script |
+| Bootstrap step added to `scripts/bootstrap.sh` | a new directory, file, or system-state assumption |
+| Seed added to `settings.example.json` | a new scheduler task, channel, route, or default config field |
+| Check added to `scripts/doctor.mjs` | a new runtime invariant (file exists, repo is git-tracked, env var present) |
+| Step documented in the "What `npm run setup` Does" section of `INSTALL.md` | any user-visible install change |
+| Re-running `bash scripts/bootstrap.sh` against an existing install is a no-op | every bootstrap step (idempotency is non-negotiable) |
+
+For ADRs filed in the vault (`~/vault/projects/soul-hub-whatsapp/adr-NNN-*.md`), the checklist is a precondition for `status: shipped`.
+
 ## Reporting Issues
 
 Open an issue on GitHub with:
