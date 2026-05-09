@@ -14,6 +14,7 @@ import { VaultGraph } from './graph.js';
 import { VaultWatcher } from './watcher.js';
 import { GovernanceResolver } from './governance.js';
 import { TemplateLoader } from './templates.js';
+import { VaultCommitter } from './committer.js';
 import { emitReindex } from './events.js';
 
 let engine: VaultEngine | null = null;
@@ -25,6 +26,7 @@ export class VaultEngine {
 	private watcher: VaultWatcher;
 	private governance: GovernanceResolver;
 	private templates: TemplateLoader;
+	private committer: VaultCommitter;
 	private config: VaultConfig;
 	private pruneInterval: ReturnType<typeof setInterval> | null = null;
 	private writeLog: WriteLogEntry[] = [];
@@ -55,6 +57,7 @@ export class VaultEngine {
 		this.watcher = new VaultWatcher();
 		this.governance = new GovernanceResolver();
 		this.templates = new TemplateLoader();
+		this.committer = new VaultCommitter(config.rootDir);
 	}
 
 	/** Absolute path to the vault root directory — exposed for renderer/media link resolution. */
@@ -432,6 +435,15 @@ export class VaultEngine {
 			success: true,
 		});
 
+		this.committer.enqueue({
+			action: 'create',
+			path: relPath,
+			zone: req.zone.split('/')[0],
+			type: req.meta.type as string | undefined,
+			agent: req.meta.source_agent as string | undefined,
+			context: req.meta.source_context as string | undefined,
+		});
+
 		return { success: true, path: relPath };
 	}
 
@@ -541,6 +553,15 @@ export class VaultEngine {
 			success: true,
 		});
 
+		this.committer.enqueue({
+			action: 'create-asset',
+			path: relPath,
+			zone: req.zone.split('/')[0],
+			type: req.mimetype,
+			agent: req.agent,
+			context: req.context,
+		});
+
 		return { success: true, path: relPath };
 	}
 
@@ -600,6 +621,15 @@ export class VaultEngine {
 			success: true,
 		});
 
+		this.committer.enqueue({
+			action: 'update',
+			path,
+			zone: path.split('/')[0],
+			type: existing.meta.type as string | undefined,
+			agent: existing.meta.source_agent as string | undefined,
+			context: existing.meta.source_context as string | undefined,
+		});
+
 		return { success: true, path };
 	}
 
@@ -647,6 +677,16 @@ export class VaultEngine {
 			zone: 'archive',
 			type: existing.meta.type as string | undefined,
 			success: true,
+		});
+
+		this.committer.enqueue({
+			action: 'archive',
+			path: archivePath,
+			previousPath: path,
+			zone: 'archive',
+			type: existing.meta.type as string | undefined,
+			agent: existing.meta.source_agent as string | undefined,
+			context: existing.meta.source_context as string | undefined,
 		});
 
 		return { success: true, path: archivePath };
@@ -704,6 +744,16 @@ export class VaultEngine {
 			success: true,
 		});
 
+		this.committer.enqueue({
+			action: 'move',
+			path: newPath,
+			previousPath: path,
+			zone: targetZone.split('/')[0],
+			type: existing.meta.type as string | undefined,
+			agent: existing.meta.source_agent as string | undefined,
+			context: existing.meta.source_context as string | undefined,
+		});
+
 		return { success: true, path: newPath };
 	}
 
@@ -742,6 +792,14 @@ export class VaultEngine {
 						zone,
 						type: note.meta.type as string | undefined,
 						success: true,
+					});
+					this.committer.enqueue({
+						action: 'delete',
+						path: note.path,
+						zone,
+						type: note.meta.type as string | undefined,
+						agent: note.meta.source_agent as string | undefined,
+						context: note.meta.source_context as string | undefined,
 					});
 				} catch {
 					// file may already be gone
