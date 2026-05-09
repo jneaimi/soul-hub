@@ -99,8 +99,9 @@ Soul Hub spawns POSIX shells, native PTY sessions, and assumes a Unix filesystem
 The bootstrap script (`scripts/bootstrap.sh`) is a thin shell script that:
 
 1. Verifies Node ≥ 20 and reports the path of `claude` if it's on PATH.
-2. Runs `npm install` (which rebuilds `node-pty` natively).
-3. Verifies both native modules (`node-pty` + `better-sqlite3`) actually load. If either fails — commonly because you upgraded Node since the last install and the cached binaries target the old ABI — runs `npm rebuild` to recompile against the current Node version, then re-verifies. Only fails loudly with the build-tools install hint if the rebuild itself can't compile.
+2. If `nvm` is installed and the project has a `.nvmrc`, switches to the pinned Node version before any install or rebuild. The project pins Node 24 (current LTS). This guarantees `npm install` and `npm rebuild` build native modules against the same Node version PM2 uses — the alternative (shell on a different Node than PM2) silently breaks the long-running process even though `npm run doctor` reports green from the shell.
+3. Runs `npm install` (which rebuilds `node-pty` natively).
+4. Verifies both native modules (`node-pty` + `better-sqlite3`) actually load. If either fails — commonly because you upgraded Node since the last install and the cached binaries target the old ABI — runs `npm rebuild` to recompile against the current Node version, then re-verifies. Only fails loudly with the build-tools install hint if the rebuild itself can't compile.
 4. Creates `~/.soul-hub/`, `~/.soul-hub/data/`, `~/.soul-hub/logs/`, `~/vault/`, `~/dev/`.
 5. Copies `settings.example.json` → `~/.soul-hub/settings.json` (skipped if it already exists). If it found `claude` on PATH at a non-default location, it patches `paths.claudeBinary` for you.
 6. Creates `~/.soul-hub/.env` with a freshly generated `SOUL_HUB_SECRET` (only if the file is missing or the key isn't set). Sets the file mode to `0600`.
@@ -128,6 +129,7 @@ It does **not**:
 | Claude CLI | `paths.claudeBinary` from settings, or `claude` on PATH, resolves |
 | Vault git | `~/vault/.git/` exists and has at least 1 commit (warn-level — local history is recommended, not required) |
 | `vault-backup-daily` task | scheduler task is registered in `settings.json` (warn-level) |
+| Node ABI parity | shell Node major matches the running PM2 process's Node major (fail-level — drift here means the next `npm rebuild` will silently break PM2; align via `nvm use` before rebuilding) |
 | Platform | macOS / Linux / WSL2 — fails on native Windows |
 
 Exit code is non-zero if any check fails, so you can wire it into CI.

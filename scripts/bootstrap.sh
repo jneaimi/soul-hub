@@ -52,6 +52,37 @@ else
   warn "You can finish bootstrap now and configure paths.claudeBinary later."
 fi
 
+# ── 2b. Honor .nvmrc if nvm is available ─────────────────────────
+# Native modules (better-sqlite3, node-pty) compile against ONE Node
+# major version. PM2 runs the project under whatever Node it was
+# launched with. If the user's shell drifted (brew updated Node, or
+# they're on a different nvm version), `npm install`/`npm rebuild`
+# below would build for the wrong ABI and silently break PM2's
+# running process. `nvm use` (when nvm is present) aligns the shell
+# to .nvmrc before any install/rebuild.
+step "Aligning Node version to .nvmrc"
+if [ -f "$REPO_ROOT/.nvmrc" ]; then
+  PINNED_NODE=$(tr -d '[:space:]' < "$REPO_ROOT/.nvmrc")
+  if [ -s "$HOME/.nvm/nvm.sh" ]; then
+    # shellcheck disable=SC1091
+    \. "$HOME/.nvm/nvm.sh"
+    if nvm use --silent >/dev/null 2>&1 ; then
+      ok "nvm switched to $(node -v) (pinned: $PINNED_NODE)"
+    else
+      warn "nvm couldn't activate Node $PINNED_NODE — try: nvm install $PINNED_NODE"
+    fi
+  else
+    SHELL_MAJOR=$(node -p "process.versions.node.split('.')[0]" 2>/dev/null || echo "?")
+    if [ "$SHELL_MAJOR" = "$PINNED_NODE" ]; then
+      ok "shell Node v$SHELL_MAJOR matches .nvmrc"
+    else
+      warn "shell Node v$SHELL_MAJOR differs from .nvmrc ($PINNED_NODE) — install nvm or switch Node manually"
+    fi
+  fi
+else
+  ok "no .nvmrc — skipping pin"
+fi
+
 # ── 3. npm install ────────────────────────────────────────────────
 step "Installing npm dependencies (this also rebuilds node-pty)"
 npm install --no-audit --no-fund

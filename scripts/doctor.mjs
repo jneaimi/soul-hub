@@ -172,7 +172,55 @@ try {
   else add('vault-backup task', 'warn', 'not in settings.json — re-run: bash scripts/bootstrap.sh, or copy from settings.example.json');
 }
 
-// ── 12. Platform sanity ────────────────────────────────────────
+// ── 12. Node ABI parity between shell and running PM2 process ─
+// Native modules (better-sqlite3, node-pty) compile against ONE
+// Node major. If the shell's Node differs from PM2's Node, the
+// next `npm rebuild` will fix one and silently break the other.
+// Catch the drift before it causes a runtime 500.
+{
+  try {
+    const pmPid = execSync('pgrep -f "node.*soul-hub/server.js" 2>/dev/null | head -1', {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      shell: '/bin/bash',
+    })
+      .toString()
+      .trim();
+    if (!pmPid) {
+      add('Node ABI parity', 'warn', 'soul-hub not running — no PM2 process to compare against');
+    } else {
+      const pmNodeBin = execSync(
+        `lsof -p ${pmPid} 2>/dev/null | awk '$NF ~ /node$/ && $4=="txt" {print $NF; exit}'`,
+        { stdio: ['ignore', 'pipe', 'ignore'], shell: '/bin/bash' },
+      )
+        .toString()
+        .trim();
+      if (!pmNodeBin) {
+        add('Node ABI parity', 'warn', 'unable to detect PM2 Node binary via lsof');
+      } else {
+        const pmVersion = execSync(`"${pmNodeBin}" -v`, {
+          stdio: ['ignore', 'pipe', 'ignore'],
+        })
+          .toString()
+          .trim();
+        const shellVersion = `v${process.versions.node}`;
+        const sameMajor = pmVersion.split('.')[0] === shellVersion.split('.')[0];
+        if (sameMajor) {
+          add('Node ABI parity', 'ok', `shell ${shellVersion} + PM2 ${pmVersion} on same major`);
+        } else {
+          add(
+            'Node ABI parity',
+            'fail',
+            `shell ${shellVersion} ≠ PM2 ${pmVersion} — DO NOT rebuild from this shell. See feedback_node_version_alignment.md`,
+          );
+        }
+      }
+    }
+  } catch {
+    add('Node ABI parity', 'warn', 'parity check skipped (pgrep/lsof unavailable)');
+  }
+}
+
+// ── 13. Platform sanity ────────────────────────────────────────
 if (platform() === 'win32') {
   add('platform', 'fail', 'native Windows is unsupported. Use WSL2 (Ubuntu). See INSTALL.md.');
 } else if (platform() === 'linux') {
