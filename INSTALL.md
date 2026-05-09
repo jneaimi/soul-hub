@@ -154,6 +154,30 @@ touch ~/.soul-hub/.env && chmod 600 ~/.soul-hub/.env
 echo "SOUL_HUB_SECRET=$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')" >> ~/.soul-hub/.env
 ```
 
+## Optional: Auto-switch Node via nvm on `cd`
+
+The project pins Node 24 (current LTS) in `.nvmrc`. The bootstrap and CI tooling honor it automatically, but your shell does not — by default, `cd ~/dev/soul-hub` keeps whatever Node version your shell was already on. If that drifts (e.g. brew updates global Node behind your back), the next `npm rebuild` you run from this directory builds native modules against the wrong Node ABI and breaks the PM2 process. The doctor's "Node ABI parity" check will catch it after the fact, but the cleanest fix is to never let drift happen in the first place.
+
+Add this hook to `~/.zshrc` (zsh — the default macOS shell). It auto-runs `nvm use` whenever you enter a directory that has a `.nvmrc`:
+
+```bash
+# soul-hub-nvm-hook:start
+# Auto-switch Node via nvm when entering a directory with .nvmrc.
+autoload -U add-zsh-hook
+_soul_hub_load_nvmrc() {
+  if [[ -f .nvmrc ]] && command -v nvm >/dev/null 2>&1 ; then
+    nvm use --silent >/dev/null 2>&1
+  fi
+}
+add-zsh-hook chpwd _soul_hub_load_nvmrc
+_soul_hub_load_nvmrc
+# soul-hub-nvm-hook:end
+```
+
+After adding, open a new terminal (or `source ~/.zshrc`) and verify with `cd ~/dev/soul-hub && node -v` — it should now report the version pinned in `.nvmrc`.
+
+For bash users, the equivalent uses a `PROMPT_COMMAND` hook; see [nvm's deeper-shell-integration docs](https://github.com/nvm-sh/nvm#deeper-shell-integration). For fish, see [nvm.fish](https://github.com/jorgebucaran/nvm.fish).
+
 ## Optional: Project-root `.env`
 
 `.env` in the repo root is also loaded, but `~/.soul-hub/.env` wins on conflict. Most users don't need a project `.env` — leave it for development overrides.
