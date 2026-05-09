@@ -32,5 +32,6 @@ export const POST: RequestHandler = async () => {
 		bot: result.bot,
 		webhook: result.webhook,
 		commands: result.commands,
+		menuButton: result.menuButton,
 	});
 };

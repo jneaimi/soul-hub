@@ -296,6 +296,32 @@ export function sendChatAction(params: {
 	return call<true>('sendChatAction', params);
 }
 
+/** Telegram Web App descriptor used by `MenuButtonWebApp`. URL must be
+ *  HTTPS — Telegram rejects http/local URLs at registration time. */
+export interface WebAppInfo {
+	url: string;
+}
+
+/** Subset of Telegram's `MenuButton` union. We only use `web_app` (open
+ *  a page inside Telegram) and `default` (revert to the built-in
+ *  commands menu). `commands` is also valid but redundant — it's the
+ *  default behaviour when no custom button is set. */
+export type MenuButton =
+	| { type: 'web_app'; text: string; web_app: WebAppInfo }
+	| { type: 'commands' }
+	| { type: 'default' };
+
+export function setChatMenuButton(params: {
+	chat_id?: number;
+	menu_button: MenuButton;
+}) {
+	return call<true>('setChatMenuButton', params);
+}
+
+export function getChatMenuButton(params?: { chat_id?: number }) {
+	return call<MenuButton>('getChatMenuButton', params ?? {});
+}
+
 export interface BotIdentity {
 	user: TgUser;
 }

@@ -5,11 +5,14 @@
  *  can detect mentions without re-calling `getMe` per message. */
 
 import {
+	getChatMenuButton,
 	getMe,
 	getMyCommands,
 	getWebhookInfo,
+	setChatMenuButton,
 	setMyCommands,
 	setWebhook,
+	type MenuButton,
 	type WebhookInfo,
 	type BotCommand,
 } from './client.js';
@@ -40,6 +43,7 @@ export interface SetupResult {
 	bot?: BotInfo;
 	webhook?: WebhookInfo;
 	commands?: BotCommand[];
+	menuButton?: MenuButton;
 	error?: string;
 }
 
@@ -76,13 +80,23 @@ export async function setupTelegram(
 		}
 	}
 
+	const menuButton = buildMenuButton(config);
+	if (menuButton) {
+		const mb = await setChatMenuButton({ menu_button: menuButton });
+		if (!mb.ok) {
+			console.warn(`[telegram] setChatMenuButton failed: ${mb.error}`);
+		}
+	}
+
 	const info = await getWebhookInfo();
 	const live = await getMyCommands();
+	const liveButton = await getChatMenuButton();
 	return {
 		ok: true,
 		bot: me,
 		webhook: info.ok ? info.result : undefined,
 		commands: live.ok ? live.result : commands,
+		menuButton: liveButton.ok ? liveButton.result : menuButton ?? undefined,
 	};
 }
 
@@ -90,6 +104,27 @@ export async function setupTelegram(
  *  only register slash commands that have a `description` (the `default`
  *  pseudo-entry is excluded). Telegram caps descriptions at 256 chars
  *  and the command itself at 32 — we truncate defensively. */
+/** Derive the persistent menu button (left of the input) from the
+ *  webhook origin. Opens `<origin>/orchestration` as a Telegram Web App.
+ *  Returns null if no webhook URL is configured (can't host a Web App
+ *  without HTTPS) — falls back to the default commands menu. */
+function buildMenuButton(config: TelegramChannelConfig): MenuButton | null {
+	const webhookUrl = config.webhook.url;
+	if (!webhookUrl) return null;
+	let origin: string;
+	try {
+		origin = new URL(webhookUrl).origin;
+	} catch {
+		return null;
+	}
+	if (!origin.startsWith('https://')) return null;
+	return {
+		type: 'web_app',
+		text: 'Orchestration',
+		web_app: { url: `${origin}/orchestration` },
+	};
+}
+
 function buildBotCommands(config: TelegramChannelConfig): BotCommand[] {
 	const out: BotCommand[] = [];
 	for (const [token, mapping] of Object.entries(config.intentMap)) {
