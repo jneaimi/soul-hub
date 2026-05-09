@@ -4,8 +4,15 @@
 
 import type { HydratedNote } from './retrieval.js';
 
-const MAX_CONTEXT_BYTES = 3500; // ~875 tokens of context max
-const PER_NOTE_BUDGET = 500; // each note gets a chunk this big before truncation
+const MAX_CONTEXT_BYTES = 4000; // ~1000 tokens of context max
+const PER_NOTE_BUDGET_OVERVIEW = 500; // multi-note overview — short excerpts
+const PER_NOTE_BUDGET_FOCUS = 3000; // single-note focus — almost-full body for analysis intent
+/** Switch to "focus" mode when the selector retrieved 1–2 notes — that's a
+ *  strong signal the user wants depth on a specific note (e.g. "analyze the
+ *  latest draft") rather than a list scan. Multi-note retrievals stay in
+ *  short-excerpt mode so a wide query doesn't burn the entire budget on
+ *  the first result. */
+const FOCUS_MAX_NOTES = 2;
 
 const PUBLIC_URL = process.env.SOUL_HUB_PUBLIC_URL || 'https://soul-hub.jneaimi.com';
 
@@ -47,15 +54,42 @@ function formatNote(note: HydratedNote, idx: number, budget: number): string {
 	return [header, metaLine, path, open, '', excerpt].filter(Boolean).join('\n');
 }
 
-export function formatContextBlock(notes: HydratedNote[]): string {
+/** Detect "I want to discuss/analyze the top result" intent in the user
+ *  message. Same regex family as router.ts's analysis-intent disqualifier
+ *  — kept duplicated here (rather than imported) so format.ts has no
+ *  dependency on the WhatsApp channel module. Two regex hits is the
+ *  rule, not one. */
+function hasAnalysisIntent(message: string): boolean {
+	const lower = message.toLowerCase();
+	return (
+		/\b(analy[sz]e|analy[sz]ing|critique|evaluate|assess|review)\b/.test(lower) ||
+		/\bhow\s+(?:does|do|is)\b/.test(lower) ||
+		/\bwhat\s+do\s+you\s+(?:think|make)\b/.test(lower)
+	);
+}
+
+export function formatContextBlock(notes: HydratedNote[], userMessage?: string): string {
 	if (notes.length === 0) return '';
+
+	// Focus mode triggers on EITHER signal: a small retrieval (selector
+	// already narrowed to 1–2 notes) OR an explicit analysis-intent in the
+	// user message (e.g. "analyze the latest draft" — the selector may
+	// over-retrieve, but the user's intent is depth on the top result).
+	// In focus mode, the top result gets a near-full body, downstream
+	// notes still get short excerpts for cross-reference.
+	const focus =
+		notes.length <= FOCUS_MAX_NOTES ||
+		(userMessage !== undefined && hasAnalysisIntent(userMessage));
 
 	const blocks: string[] = [];
 	let used = 0;
 	for (let i = 0; i < notes.length; i++) {
 		const remaining = MAX_CONTEXT_BYTES - used;
 		if (remaining < 200) break;
-		const budget = Math.min(PER_NOTE_BUDGET, remaining);
+		const budget = Math.min(
+			focus && i === 0 ? PER_NOTE_BUDGET_FOCUS : PER_NOTE_BUDGET_OVERVIEW,
+			remaining,
+		);
 		const block = formatNote(notes[i], i, budget);
 		blocks.push(block);
 		used += block.length + 2; // +2 for the joining newlines
@@ -72,6 +106,7 @@ Rules:
 - Be concise. WhatsApp messages must fit comfortably in a phone screen — aim for a short paragraph or a tight bullet list, not a full report.
 - If the context is empty or irrelevant, say so honestly and suggest the user refine the question (mention a project, a tag, or a date).
 - **You cannot save notes.** If the user asks you to save / capture / remember something, do not pretend to do it. Discuss the idea with them, then tell them to send \`/save <text>\` (or \`/save\` as the caption on an image/voice/video) when they're ready to capture it. The same applies to attachments: ask what they want to do with the image/voice/video; only \`/save\` writes to the vault.
+- **When the user asks about "the latest"/"the newest"/"my latest" something and the context contains exactly ONE note in focus mode, treat that note AS the one they mean.** Don't ask for clarification — the retrieval already narrowed to the most recently modified match. Just analyze/discuss it directly.
 - Reply in the same language the user wrote in (English or Arabic).`;
 
 export function buildSystemPrompt(contextBlock: string): string {

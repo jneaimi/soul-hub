@@ -85,6 +85,18 @@ export function getRouterDecisions(): RouterDecision[] {
 function regexPreFilter(message: string): { route: string; reason: string } | null {
 	const lower = message.toLowerCase();
 
+	// Analysis-intent disqualifier — if the user is asking for opinion,
+	// quality assessment, or critique of content, defer to the LLM router
+	// regardless of any keywords below. The LLM's prompt correctly routes
+	// these to vault-chat. Caught a real production false positive on
+	// 2026-05-09: "How does the latest draft read can you analyse it"
+	// matched the recency regex (latest + draft), got dumped into /recent.
+	const hasAnalysisIntent =
+		/\b(analy[sz]e|analy[sz]ing|critique|evaluate|assess)\b/.test(lower) ||
+		/\bhow\s+(?:does|do|is)\b/.test(lower) ||
+		/\bwhat\s+do\s+you\s+(?:think|make)\b/.test(lower);
+	if (hasAnalysisIntent) return null;
+
 	// Recency markers — "what did I", "what's recent/latest/new", "show me
 	// recent". Tight enough that a vague "what's new with you" still misses.
 	if (

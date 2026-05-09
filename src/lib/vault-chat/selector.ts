@@ -80,17 +80,56 @@ Available tools:
 ${TOOL_CATALOG.map((t) => `- ${t.name}: ${t.description}`).join('\n')}
 
 Rules:
-- Always include "fulltext" with a focused query unless the question is purely structural ("show recent decisions" → byType only is fine).
+- **Focus queries — single specific note.** When the user asks about THE LATEST / THE NEWEST / THE LAST / THE MOST RECENT / MY LATEST [singular noun] (e.g. "the latest draft", "my newest decision", "review my most recent post", "analyze the latest writeup"), use ONLY "recent" with limit:1–3. **Do NOT include fulltext** — the natural-language query contains generic keywords ("draft", "post", "note") that match dozens of old notes via MiniSearch and outrank the actual latest one. This is the most common selector mistake; the focus mode in the formatter only gives the top-1 note its full body, so polluting the top-K with high-scoring-but-old fulltext hits silently breaks the response.
+- **Overview queries — multiple notes.** Default to including "fulltext" with a focused 2–6 keyword query.
 - Prefer "byProject" over "fulltext" when the user names a project explicitly (kebab-case like "soul-hub-whatsapp" or natural-language like "the WhatsApp project").
-- Use "recent" only for time-shaped queries ("latest", "this week", "what did I do today").
+- Use "recent" for time-shaped queries. Limits: 1–3 for "the latest" (singular focus); 5–10 for "what's new" (overview).
 - Use "byTag" only when the user explicitly names a tag word.
 - "backlinks" requires an exact note path — almost never selected on the first turn.
-- Keep limits modest (5–10). The retrieval merger picks top-K across all tools.`;
+- Keep limits modest (5–10 for overview, 1–3 for focus). The retrieval merger picks top-K across all tools.`;
 
 export interface SelectorOutput {
 	tools: ToolCall[];
 	source: 'gemini' | 'heuristic';
 	reason?: string;
+}
+
+/** Detect "focus" queries — user wants ONE specific note (the most recent
+ *  one), not a list. For these, fulltext on natural-language phrases like
+ *  "the latest draft" surfaces dozens of old notes containing those
+ *  keywords and outranks the actual latest one in the merger. We strip
+ *  fulltext entirely and pin recent to a small limit so the formatter's
+ *  focus mode gets the full body of the top result.
+ *
+ *  Pattern: "the/my/this/that" + "latest/newest/most recent/last" +
+ *  singular content noun ("draft", "post", "note", "decision", etc.). */
+function isFocusQuery(message: string): boolean {
+	const lower = message.toLowerCase();
+	return /\b(?:the|my|that|this)\s+(?:latest|newest|most\s+recent|last)\s+(?:draft|post|note|decision|writeup|writup|adr|entry|capture|save|article|reference|learning|debug|debugging|research|recipe|pattern|snippet)\b/.test(
+		lower,
+	);
+}
+
+/** Apply the focus-query override. If the message is a focus query, drop
+ *  fulltext and any byType call (they over-recall), force `recent` to be
+ *  present with limit:1, and return the cleaned list. Otherwise return
+ *  unchanged. Mirrors the selector prompt's "Focus queries" rule but
+ *  enforces it deterministically — Gemini Flash's instruction-following
+ *  is too unreliable to trust on this. */
+function applyFocusOverride(tools: ToolCall[], userMessage: string): ToolCall[] {
+	if (!isFocusQuery(userMessage)) return tools;
+	const filtered = tools.filter((t) => t.name !== 'fulltext' && t.name !== 'byType');
+	const hasRecent = filtered.some((t) => t.name === 'recent');
+	if (!hasRecent) {
+		filtered.unshift({ name: 'recent', args: { limit: 1 } });
+	} else {
+		// Pin limit to 1 so the merger doesn't have multiple candidates to
+		// rerank — focus mode wants the single most-recently-modified note.
+		filtered.forEach((t) => {
+			if (t.name === 'recent') t.args = { ...t.args, limit: 1 };
+		});
+	}
+	return filtered;
 }
 
 /** Heuristic fallback — pattern-matches the message text. Conservative on
@@ -158,15 +197,20 @@ export async function selectTools(userMessage: string): Promise<SelectorOutput> 
 		// Name is enum-validated by the schema; args is a generic record.
 		// `runTool()` performs the per-tool arg shape coercion and falls
 		// back to `[]` if a required field is missing — see tools.ts.
-		const tools: ToolCall[] = result.output.tools.map((t) => ({
+		let tools: ToolCall[] = result.output.tools.map((t) => ({
 			name: t.name,
 			args: t.args,
 		}));
 
-		// Always guarantee a fulltext call so we have a topical baseline,
-		// even if the selector picked only structural tools.
-		const hasFulltext = tools.some((t) => t.name === 'fulltext');
-		if (!hasFulltext) {
+		// Focus override — applied BEFORE fulltext auto-fill so we don't
+		// re-introduce the very call we just stripped. See applyFocusOverride
+		// for the rationale.
+		tools = applyFocusOverride(tools, userMessage);
+
+		// Default-overview path: guarantee a fulltext baseline so structural-
+		// only selections still have topical retrieval. Skipped for focus
+		// queries (intentionally — fulltext is what dilutes them).
+		if (!isFocusQuery(userMessage) && !tools.some((t) => t.name === 'fulltext')) {
 			tools.push({
 				name: 'fulltext',
 				args: { q: userMessage.trim().slice(0, 200), limit: 6 },
@@ -185,6 +229,7 @@ export async function selectTools(userMessage: string): Promise<SelectorOutput> 
 				: err instanceof Error
 					? `selector failed: ${err.message}`
 					: 'selector failed: unknown error';
-		return { ...heuristicSelect(userMessage), reason };
+		const fallback = heuristicSelect(userMessage);
+		return { ...fallback, tools: applyFocusOverride(fallback.tools, userMessage), reason };
 	}
 }

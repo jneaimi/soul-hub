@@ -72,7 +72,7 @@ export async function dispatchVaultChat(
 
 	const selection = await selectTools(retrievalInput);
 	const outcome = retrieve(selection.tools);
-	const contextBlock = formatContextBlock(outcome.notes);
+	const contextBlock = formatContextBlock(outcome.notes, userMessage);
 	// Pick the system prompt up-front based on whether we'll go multimodal.
 	// The text-only "ground every claim in the context" rule reads as
 	// "refuse to look at the image" when an attachment is present.
