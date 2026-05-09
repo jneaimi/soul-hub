@@ -56,19 +56,33 @@ fi
 step "Installing npm dependencies (this also rebuilds node-pty)"
 npm install --no-audit --no-fund
 
-# Verify node-pty actually loads (the postinstall swallows errors)
-if ! node -e "require('node-pty')" 2>/dev/null; then
-  err "node-pty failed to load after install."
-  if [ "$(uname -s)" = "Darwin" ]; then
-    err "Run: xcode-select --install   (then re-run this script)"
-  elif grep -qi microsoft /proc/version 2>/dev/null; then
-    err "On WSL: sudo apt install -y build-essential python3"
+# Verify both native modules load. If either fails (commonly because
+# the lockfile-cached binaries were built against a different Node
+# major version — e.g. user upgraded from Node 22 to Node 25), run
+# `npm rebuild` to recompile against the current Node ABI, then
+# re-verify. Only surface the build-tools-missing error if the
+# rebuild itself fails.
+verify_native() {
+  node -e "require('node-pty'); require('better-sqlite3')" 2>/dev/null
+}
+
+if ! verify_native ; then
+  warn "Native module ABI mismatch detected — running 'npm rebuild' (Node $(node -v) ABI)"
+  if npm rebuild --no-audit --no-fund >/dev/null 2>&1 && verify_native ; then
+    ok "Rebuilt native modules against $(node -v)"
   else
-    err "On Linux: sudo apt install -y build-essential python3   (or your distro equivalent)"
+    err "Native modules failed to load after rebuild."
+    if [ "$(uname -s)" = "Darwin" ]; then
+      err "Run: xcode-select --install   (then re-run this script)"
+    elif grep -qi microsoft /proc/version 2>/dev/null; then
+      err "On WSL: sudo apt install -y build-essential python3"
+    else
+      err "On Linux: sudo apt install -y build-essential python3   (or your distro equivalent)"
+    fi
+    exit 1
   fi
-  exit 1
 fi
-ok "node-pty loads"
+ok "node-pty + better-sqlite3 load"
 
 # ── 4. ~/.soul-hub and ~/vault ────────────────────────────────────
 step "Preparing user directories"

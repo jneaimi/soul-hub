@@ -100,7 +100,7 @@ The bootstrap script (`scripts/bootstrap.sh`) is a thin shell script that:
 
 1. Verifies Node ≥ 20 and reports the path of `claude` if it's on PATH.
 2. Runs `npm install` (which rebuilds `node-pty` natively).
-3. Verifies `node-pty` actually loads — fails loudly with the right install hint if your build tools are missing.
+3. Verifies both native modules (`node-pty` + `better-sqlite3`) actually load. If either fails — commonly because you upgraded Node since the last install and the cached binaries target the old ABI — runs `npm rebuild` to recompile against the current Node version, then re-verifies. Only fails loudly with the build-tools install hint if the rebuild itself can't compile.
 4. Creates `~/.soul-hub/`, `~/.soul-hub/data/`, `~/.soul-hub/logs/`, `~/vault/`, `~/dev/`.
 5. Copies `settings.example.json` → `~/.soul-hub/settings.json` (skipped if it already exists). If it found `claude` on PATH at a non-default location, it patches `paths.claudeBinary` for you.
 6. Creates `~/.soul-hub/.env` with a freshly generated `SOUL_HUB_SECRET` (only if the file is missing or the key isn't set). Sets the file mode to `0600`.
