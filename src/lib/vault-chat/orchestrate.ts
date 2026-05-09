@@ -35,7 +35,7 @@ export interface VaultChatMedia {
 }
 
 export interface VaultChatTrace {
-	selectorSource: 'gemini' | 'heuristic';
+	selectorSource: 'llm' | 'heuristic';
 	selectorReason?: string;
 	toolsRun: { name: string; args: Record<string, unknown> }[];
 	notesSurfaced: number;

@@ -487,9 +487,9 @@ export const ConfigSchema = z.object({
 	routes: RoutesSchema.prefault({
 		'vault-chat': {
 			description: 'Free-form chat against the vault — primary intent for WhatsApp DMs.',
-			default: 'openrouter:google/gemini-2.5-flash',
-			failover: ['gemini:gemini-2.5-flash'],
-			timeoutMs: 8000,
+			default: 'openrouter:z-ai/glm-4.6',
+			failover: ['gemini:gemini-flash-latest'],
+			timeoutMs: 12000,
 			retries: 1,
 			onError: ['timeout', '5xx', 'rate_limit', 'network'],
 		},

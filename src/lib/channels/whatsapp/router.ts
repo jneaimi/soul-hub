@@ -25,15 +25,15 @@
  *  watch the regex-vs-LLM split and tune patterns over time.  */
 
 import { generateText, Output, NoOutputGeneratedError } from 'ai';
-import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { z } from 'zod';
 import type { ResolvedIntent, WhatsAppIntentMap } from './types.js';
 
-/** Same env knob as the orchestrator classifier (ADR-007 Gap 5) so a single
- *  flip swaps both layers in lockstep — preventing read-route vs decide
- *  mismatch when comparing latency/leakage on a candidate model. */
-const ROUTER_MODEL = process.env.GEMINI_ORCHESTRATOR_MODEL ?? 'gemini-2.5-flash';
-const ROUTER_TIMEOUT_MS = 4500;
+/** Migrated to GLM-4.6 via OpenRouter (per ADR-009 direction). Override
+ *  via env if needed for staged rollout / debug. Falls back to vault-chat
+ *  (the safe default) on any failure — reach, schema, timeout, etc. */
+const ROUTER_MODEL = process.env.WHATSAPP_ROUTER_MODEL ?? 'z-ai/glm-4.6';
+const ROUTER_TIMEOUT_MS = 8000;
 const DECISION_BUFFER_MAX = 20;
 const SAFE_DEFAULT = 'vault-chat';
 
@@ -181,26 +181,21 @@ When in doubt, vault-chat. Topical retrieval is NOT brain-find. Discussion is al
 async function llmRoute(
 	message: string,
 ): Promise<{ route: string; confidence: number; reason?: string } | null> {
-	const apiKey = process.env.GEMINI_API_KEY;
+	const apiKey = process.env.OPENROUTER_API_KEY;
 	if (!apiKey) return null;
 
 	const ctrl = new AbortController();
 	const timer = setTimeout(() => ctrl.abort(), ROUTER_TIMEOUT_MS);
 
 	try {
-		const client = createGoogleGenerativeAI({ apiKey });
+		const openrouter = createOpenRouter({ apiKey });
 		const result = await generateText({
-			model: client(ROUTER_MODEL),
+			model: openrouter(ROUTER_MODEL),
 			output: Output.object({ schema: RouterDecisionSchema }),
 			system: ROUTER_SYSTEM_PROMPT,
 			messages: [{ role: 'user', content: message }],
 			maxOutputTokens: 200,
 			abortSignal: ctrl.signal,
-			providerOptions: {
-				google: {
-					thinkingConfig: { thinkingBudget: 0 },
-				},
-			},
 		});
 		clearTimeout(timer);
 		return {

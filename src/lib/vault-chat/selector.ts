@@ -15,13 +15,16 @@
  *  can't reach Gemini still answers, just with simpler retrieval. */
 
 import { generateText, Output, NoOutputGeneratedError } from 'ai';
-import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { z } from 'zod';
 import type { ToolCall } from './tools.js';
 import { TOOL_CATALOG } from './tools.js';
 
-const SELECTOR_MODEL = 'gemini-2.5-flash';
-const SELECTOR_TIMEOUT_MS = 4500;
+// Migrated to GLM-4.6 via OpenRouter (per ADR-009 direction). Gemini Flash
+// kept as the failover at the routes layer; this selector falls back to
+// `heuristicSelect` if GLM is unreachable.
+const SELECTOR_MODEL = 'z-ai/glm-4.6';
+const SELECTOR_TIMEOUT_MS = 8000;
 
 /** Zod schema for the selector's structured output.
  *
@@ -90,7 +93,7 @@ Rules:
 
 export interface SelectorOutput {
 	tools: ToolCall[];
-	source: 'gemini' | 'heuristic';
+	source: 'llm' | 'heuristic';
 	reason?: string;
 }
 
@@ -176,16 +179,16 @@ export function heuristicSelect(userMessage: string): SelectorOutput {
 }
 
 export async function selectTools(userMessage: string): Promise<SelectorOutput> {
-	const apiKey = process.env.GEMINI_API_KEY;
+	const apiKey = process.env.OPENROUTER_API_KEY;
 	if (!apiKey) return heuristicSelect(userMessage);
 
 	const ctrl = new AbortController();
 	const timer = setTimeout(() => ctrl.abort(), SELECTOR_TIMEOUT_MS);
 
 	try {
-		const client = createGoogleGenerativeAI({ apiKey });
+		const openrouter = createOpenRouter({ apiKey });
 		const result = await generateText({
-			model: client(SELECTOR_MODEL),
+			model: openrouter(SELECTOR_MODEL),
 			output: Output.object({ schema: SelectionSchema }),
 			system: SYSTEM_PROMPT,
 			messages: [{ role: 'user', content: userMessage }],
@@ -217,7 +220,7 @@ export async function selectTools(userMessage: string): Promise<SelectorOutput> 
 			});
 		}
 
-		return { tools, source: 'gemini' };
+		return { tools, source: 'llm' };
 	} catch (err) {
 		clearTimeout(timer);
 		// Graceful fallback for any failure path: AbortController timeout,
