@@ -105,6 +105,21 @@ export async function editText(
 	}
 }
 
+/** Show "typing…" under our contact name in the recipient's chat. Per
+ *  ADR-022 Layer A. Auto-clears on the recipient side after ~10s, which
+ *  is why callers re-fire on a ~4s cadence via `keepTypingUntil`.
+ *  Best-effort — presence failures must never block the reply path. */
+export async function sendTypingIndicator(
+	sock: WASocket,
+	chatJid: string,
+): Promise<void> {
+	try {
+		await sock.sendPresenceUpdate('composing', chatJid);
+	} catch {
+		/* swallow — decorative only */
+	}
+}
+
 /** React to an inbound message (e.g. the 👀 ack emoji). Best-effort —
  *  reaction failures don't break the reply path. */
 export async function reactTo(

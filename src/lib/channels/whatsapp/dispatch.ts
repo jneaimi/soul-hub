@@ -10,7 +10,9 @@ import { dispatchVaultChat } from '../../vault-chat/index.js';
 import { checkAccess } from './access-control.js';
 import { resolveIntent } from './intent.js';
 import { getSocket } from './connection.js';
-import { reactTo, sendMedia, sendText } from './outbound.js';
+import { editText, reactTo, sendMedia, sendText, sendTypingIndicator, chunkText } from './outbound.js';
+import { startTypingLoop } from '../_shared/typing.js';
+import { isFocusQuery, placeholderTextForRoute } from '../_shared/placeholder.js';
 import { downloadMedia, saveMediaToDisk } from './media.js';
 import { transcribeVoiceNote } from './transcribe.js';
 import { resolveSenderLid } from './lid-resolve.js';
@@ -230,6 +232,18 @@ export async function dispatchInbound(
 	// has opted in via `intentMap.default.dynamic`. Order mirrors the
 	// ADR-001 §3 intercept chain: reset → slash meta → activeWorkflow?
 	// (Slice 4 placeholder) → router → vault-chat.
+	// Per ADR-022 Layer A: start typing indicator before the router LLM
+	// call so the user sees "Soul Hub is typing…" within ~100ms of their
+	// message. Re-fires every 4s; stopped by `finally` below regardless of
+	// outcome (early return, success, error). Decorative — failures inside
+	// the indicator never block the reply path.
+	const stopTyping = startTypingLoop(() => sendTypingIndicator(sock, envelope.chatJid));
+	// Per ADR-022 Layer B: vault-chat sends a placeholder bubble before
+	// the slow LLM call so we can edit it in place when the answer is
+	// ready (one bubble per turn, instead of "thinking…" + "answer" as
+	// two separate messages).
+	let placeholderId: string | null = null;
+	try {
 	const baseIntent = resolveIntent(workingBody, config.intentMap);
 	const intent = await maybeApplyRouter(baseIntent, config.intentMap);
 
@@ -277,6 +291,23 @@ export async function dispatchInbound(
 					console.warn(`[whatsapp] media download for vault-chat failed: ${(err as Error).message}`);
 					// Fall through — chat still works on the caption alone.
 				}
+			}
+			// Send placeholder bubble (ADR-022 Layer B). Captured messageId
+			// is used after the dispatch returns to edit-in-place. Best-effort:
+			// if the placeholder send fails, fall through to a normal sendText
+			// at the end.
+			const placeholderText = placeholderTextForRoute('vault-chat', {
+				isFocusQuery: isFocusQuery(userText),
+				hasMedia: chatMedia !== undefined,
+			});
+			const sentPlaceholder = await sendText(
+				sock,
+				envelope.chatJid,
+				placeholderText,
+				config.delivery,
+			);
+			if (sentPlaceholder.ok && sentPlaceholder.messageIds.length > 0) {
+				placeholderId = sentPlaceholder.messageIds[0];
 			}
 			const result = await dispatchVaultChat(userText, conversationKey, chatMedia);
 			replyText = result.text || '(no reply)';
@@ -424,7 +455,41 @@ export async function dispatchInbound(
 			});
 			replyText = result.text || '(no reply)';
 		}
-		await sendText(sock, envelope.chatJid, replyText, config.delivery);
+		// Stop the typing loop right before delivery — the response is about
+		// to land, no need to keep firing the indicator.
+		stopTyping();
+
+		// Per ADR-022 Layer B: if a placeholder bubble is in flight, edit it
+		// in place to the first chunk and send remaining chunks fresh. If
+		// editText fails (rare — usually because the bubble was deleted or
+		// the channel throttles edits), fall back to a fresh sendText so the
+		// user still gets the reply. Bubble stays in chat as cosmetic noise
+		// in that path; functional path is preserved.
+		if (placeholderId !== null && replyText && replyText !== '(no reply)') {
+			const chunks = chunkText(
+				replyText,
+				config.delivery.textChunkLimit,
+				config.delivery.chunkMode,
+			);
+			if (chunks.length > 0) {
+				const editResult = await editText(sock, envelope.chatJid, placeholderId, chunks[0]);
+				if (editResult.ok) {
+					for (let i = 1; i < chunks.length; i++) {
+						try {
+							await sock.sendMessage(envelope.chatJid, { text: chunks[i] });
+						} catch {
+							/* swallow — primary delivery already happened via the edit */
+						}
+					}
+				} else {
+					await sendText(sock, envelope.chatJid, replyText, config.delivery);
+				}
+			} else {
+				await sendText(sock, envelope.chatJid, replyText, config.delivery);
+			}
+		} else {
+			await sendText(sock, envelope.chatJid, replyText, config.delivery);
+		}
 
 		// Slice 5 — fire-and-forget extraction of inferred commitments. Off
 		// by default; gated inside extractCommitmentsAsync. Runs after the
@@ -440,6 +505,22 @@ export async function dispatchInbound(
 		const message = err instanceof RouteNotFoundError
 			? `Route "${intent.route}" is not configured. Edit settings.json or remove this command from intentMap.`
 			: `Sorry, I hit an error: ${(err as Error).message}`;
-		await sendText(sock, envelope.chatJid, message, config.delivery);
+		// On error: edit the placeholder bubble (if any) to the error so the
+		// chat doesn't accumulate a stale "🟡 …" bubble next to a fresh error
+		// message. Fallback to fresh send if the edit itself fails.
+		if (placeholderId !== null) {
+			const ed = await editText(sock, envelope.chatJid, placeholderId, message);
+			if (!ed.ok) {
+				await sendText(sock, envelope.chatJid, message, config.delivery);
+			}
+		} else {
+			await sendText(sock, envelope.chatJid, message, config.delivery);
+		}
+	}
+	} finally {
+		// Outer finally: covers all early returns (unknown, help, img return)
+		// AND both branches of the inner try/catch. Ensures the typing loop
+		// is always cleared, even if an unexpected error escapes.
+		stopTyping();
 	}
 }

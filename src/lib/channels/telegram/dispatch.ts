@@ -33,7 +33,9 @@ import { dispatchWebSearch, formatWebSearchForChat } from '../../web-search/inde
 import { saveTurn } from '../../vault-chat/history.js';
 import { checkAccess } from './access.js';
 import { resolveIntent } from './intent.js';
-import { sendText, sendMedia } from './outbound.js';
+import { sendText, sendMedia, sendTypingIndicator, editText, chunkText } from './outbound.js';
+import { startTypingLoop } from '../_shared/typing.js';
+import { isFocusQuery, placeholderTextForRoute } from '../_shared/placeholder.js';
 import { downloadMedia, saveMediaToDisk } from './media.js';
 import { transcribeVoiceNote } from './transcribe.js';
 import { setMessageReaction } from './client.js';
@@ -145,6 +147,12 @@ export async function dispatchInbound(
 		}
 	}
 
+	// Per ADR-022 Layer A: start typing indicator early so the user sees
+	// "Soul Hub is typing…" within ~100ms of their message. Re-fires every
+	// 4s; stopped by the outer finally regardless of outcome. Decorative —
+	// a typing-indicator failure must never break the reply path.
+	const stopTyping = startTypingLoop(() => sendTypingIndicator(envelope.chatJid));
+	try {
 	let workingBody = envelope.body;
 	const transcription = await transcribeIfVoice(envelope, config, account);
 	if (transcription.error) {
@@ -261,6 +269,13 @@ export async function dispatchInbound(
 				? `Route "${intent.route}" is not configured. Edit settings.json or remove this command from intentMap.`
 				: `Sorry, I hit an error: ${(err as Error).message}`;
 		await sendText(envelope.chatJid, message, config.delivery);
+	}
+	} finally {
+		// Outer finally — covers all early returns above (access denied,
+		// transcription error, reset, unknown/help, vault-chat orchestrated
+		// path) AND the inner try/catch. Ensures the typing loop is always
+		// cleared even if an unexpected error escapes.
+		stopTyping();
 	}
 }
 
@@ -513,15 +528,68 @@ async function fallbackToVaultChat(
 			);
 		}
 	}
+	// Per ADR-022 Layer B: send a placeholder bubble before the slow LLM
+	// call so we can edit it in place when the answer is ready (one bubble
+	// per turn). Placeholder text picks up focus-query / multimodal hints
+	// from the message body. Best-effort: a failed placeholder send falls
+	// through to a normal sendText below.
+	const placeholderText = placeholderTextForRoute('vault-chat', {
+		isFocusQuery: isFocusQuery(userText),
+		hasMedia: chatMedia !== undefined,
+	});
+	const sentPlaceholder = await sendText(envelope.chatJid, placeholderText, config.delivery);
+	const placeholderId =
+		sentPlaceholder.ok && sentPlaceholder.messageIds.length > 0
+			? sentPlaceholder.messageIds[0]
+			: null;
+
 	try {
 		const result = await dispatchVaultChat(userText, conversationKey, chatMedia);
-		await sendText(envelope.chatJid, result.text || '(no reply)', config.delivery);
+		const replyText = result.text || '(no reply)';
+		if (placeholderId !== null && replyText !== '(no reply)') {
+			const chunks = chunkText(
+				replyText,
+				config.delivery.textChunkLimit,
+				config.delivery.chunkMode,
+			);
+			if (chunks.length > 0) {
+				const editResult = await editText(
+					envelope.chatJid,
+					placeholderId,
+					chunks[0],
+					config.delivery.parseMode,
+				);
+				if (editResult.ok) {
+					for (let i = 1; i < chunks.length; i++) {
+						await sendText(envelope.chatJid, chunks[i], config.delivery);
+					}
+				} else {
+					await sendText(envelope.chatJid, replyText, config.delivery);
+				}
+			} else {
+				await sendText(envelope.chatJid, replyText, config.delivery);
+			}
+		} else {
+			await sendText(envelope.chatJid, replyText, config.delivery);
+		}
 	} catch (err) {
-		await sendText(
-			envelope.chatJid,
-			`Sorry, I hit an error: ${(err as Error).message}`,
-			config.delivery,
-		);
+		const message = `Sorry, I hit an error: ${(err as Error).message}`;
+		// On error: edit the placeholder bubble (if any) to the error so
+		// the chat doesn't accumulate a stale "🟡 …" bubble next to the
+		// fresh error.
+		if (placeholderId !== null) {
+			const ed = await editText(
+				envelope.chatJid,
+				placeholderId,
+				message,
+				config.delivery.parseMode,
+			);
+			if (!ed.ok) {
+				await sendText(envelope.chatJid, message, config.delivery);
+			}
+		} else {
+			await sendText(envelope.chatJid, message, config.delivery);
+		}
 	}
 }
 

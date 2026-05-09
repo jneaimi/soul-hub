@@ -6,6 +6,7 @@ import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 import {
 	editMessageText,
+	sendChatAction,
 	sendMedia as apiSendMedia,
 	sendMessage,
 } from './client.js';
@@ -121,6 +122,17 @@ export async function sendText(
 		if (result.result) ids.push(result.result.message_id);
 	}
 	return { ok: true, messageIds: ids };
+}
+
+/** Show "Soul Hub is typing…" under the bot name in the chat. Per ADR-022
+ *  Layer A. Auto-clears in ~5s; callers re-fire on a 4s cadence via
+ *  `keepTypingUntil`. Best-effort — never block the reply path. */
+export async function sendTypingIndicator(chatId: string | number): Promise<void> {
+	try {
+		await sendChatAction({ chat_id: chatId, action: 'typing' });
+	} catch {
+		/* swallow — decorative only */
+	}
 }
 
 /** Edit an existing text message in place. */

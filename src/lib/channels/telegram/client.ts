@@ -273,6 +273,29 @@ export function setMessageReaction(params: {
 	return call<true>('setMessageReaction', params);
 }
 
+/** Telegram bot status indicator — `typing`, `upload_photo`, etc. Per
+ *  ADR-022 Layer A. Auto-clears in ~5s on the recipient side; callers
+ *  re-fire on a ~4s cadence via `keepTypingUntil`. */
+export type ChatAction =
+	| 'typing'
+	| 'upload_photo'
+	| 'record_video'
+	| 'upload_video'
+	| 'record_voice'
+	| 'upload_voice'
+	| 'upload_document'
+	| 'choose_sticker'
+	| 'find_location'
+	| 'record_video_note'
+	| 'upload_video_note';
+
+export function sendChatAction(params: {
+	chat_id: string | number;
+	action: ChatAction;
+}) {
+	return call<true>('sendChatAction', params);
+}
+
 export interface BotIdentity {
 	user: TgUser;
 }
