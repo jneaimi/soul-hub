@@ -37,7 +37,20 @@ if ! echo "$RESPONSE" | grep -q '"ok":true' ; then
   exit 1
 fi
 
-# 2. Disable this task in settings.json so it doesn't fire again next year
+# 2. Register the send in chat_history (per ADR-021) so the user's reply has
+#    a topic anchor. Best-effort — failure to register doesn't unwind the
+#    delivery (the message already left); we just log and continue.
+PROACTIVE_BODY=$(jq -n \
+  --arg target "$TELEGRAM_CHAT_ID" \
+  --arg text "$REMINDER_MESSAGE" \
+  '{channel: "telegram", target: $target, text: $text, source: "scheduler"}')
+if ! curl -sS -X POST http://localhost:2400/api/conversation/proactive \
+  -H 'Content-Type: application/json' \
+  -d "$PROACTIVE_BODY" > /dev/null ; then
+  echo "[vault-review-reminder] proactive register failed (non-fatal)" >&2
+fi
+
+# 3. Disable this task in settings.json so it doesn't fire again next year
 SETTINGS="$HOME/.soul-hub/settings.json"
 if [ ! -f "$SETTINGS" ]; then
   echo "[vault-review-reminder] $SETTINGS not found — skipping self-disable" >&2
@@ -50,7 +63,7 @@ jq --arg id "$REMINDER_TASK_ID" \
   "$SETTINGS" > "$TMP"
 mv "$TMP" "$SETTINGS"
 
-# 3. Hot-reload the running scheduler so the disable takes effect immediately
+# 4. Hot-reload the running scheduler so the disable takes effect immediately
 curl -sS -X POST http://localhost:2400/api/settings \
   -H 'Content-Type: application/json' \
   -d "$(cat "$SETTINGS")" > /dev/null 2>&1 || true

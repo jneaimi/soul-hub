@@ -44,6 +44,16 @@ function ensureSchema(db: Database): void {
 		CREATE INDEX IF NOT EXISTS idx_chat_history_recent
 			ON chat_history(conversation_key, ts DESC);
 	`);
+	// Per ADR-021: proactive sends (heartbeat, scheduler reminders, agent
+	// follow-ups) tag their row with `source` so we can distinguish them
+	// from reactive replies. Additive migration — wrapped because SQLite
+	// has no "ADD COLUMN IF NOT EXISTS" so re-runs on a migrated DB throw
+	// "duplicate column name" which we treat as success.
+	try {
+		db.exec(`ALTER TABLE chat_history ADD COLUMN source TEXT`);
+	} catch (err) {
+		if (!/duplicate column name/i.test((err as Error).message)) throw err;
+	}
 }
 
 function db(): Database {
@@ -107,6 +117,28 @@ export function saveTurn(
 			 VALUES (?, ?, ?, ?)`,
 		)
 		.run(conversationKey, now, role, content);
+}
+
+/** Per ADR-021: register a proactive outbound message (heartbeat,
+ *  scheduler reminder, agent follow-up) so the next user reply has the
+ *  right context. Role is always `assistant`; the `source` column lets
+ *  us tell these apart from reactive replies. Returns silently for
+ *  empty inputs to keep callers terse. */
+export type ProactiveSource = 'heartbeat' | 'scheduler' | 'agent-followup';
+
+export function saveProactiveTurn(
+	conversationKey: string,
+	content: string,
+	source: ProactiveSource,
+	now = Date.now(),
+): void {
+	if (!conversationKey || !content) return;
+	db()
+		.prepare(
+			`INSERT INTO chat_history (conversation_key, ts, role, content, source)
+			 VALUES (?, ?, 'assistant', ?, ?)`,
+		)
+		.run(conversationKey, now, content, source);
 }
 
 /** Wipe a conversation. Returns the number of rows removed so the caller

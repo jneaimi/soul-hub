@@ -38,6 +38,7 @@ import {
 } from './heartbeat-state.js';
 import { getEligibleVoiceItems, type VoiceQueueItem } from '../../vault/voice-queue.js';
 import { tickVaultHygiene } from '../../vault-hygiene/index.js';
+import { saveProactiveTurn } from '../../vault-chat/history.js';
 import type { WhatsAppChannelConfig } from './types.js';
 
 type HeartbeatConfig = WhatsAppChannelConfig['heartbeat'];
@@ -407,6 +408,12 @@ export async function runHeartbeatOnce(
 		tokensOut: modelResult.tokensOut,
 		model: hb.model,
 	});
+	// Per ADR-021: register the heartbeat in chat_history so the user's next
+	// reply ("yes do it" / "what was that?") has a topic anchor. Use the clean
+	// text — the mute/voice hints below it are UI affordance, not content
+	// the LLM should answer about. Conversation key matches the WhatsApp
+	// inbound side: bare E.164 for DM targets.
+	saveProactiveTurn(hb.target, ack.cleanText, 'heartbeat');
 	return { status: 'sent', text: ack.cleanText };
 }
 
