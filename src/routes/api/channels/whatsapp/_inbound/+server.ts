@@ -49,6 +49,8 @@ import {
 import { dispatchWebSearch, formatWebSearchForChat } from '$lib/web-search/index.js';
 import { workerSend as workerSendForOrchestrator } from '$lib/channels/whatsapp/worker-client.js';
 import { isFocusQuery, placeholderTextForRoute } from '$lib/channels/_shared/placeholder.js';
+import { writeIntentDecision } from '$lib/intent/log.js';
+import { normalizeSignature } from '$lib/intent/normalize.js';
 import { isResetCommand, resetConversation, saveTurn } from '$lib/vault-chat/history.js';
 import { getConversationContext, buildAgentContextBrief } from '$lib/conversation/index.js';
 import {
@@ -533,6 +535,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			// turns + recent agent runs on this jid.
 			const ctx = getConversationContext(conversationKey, { jid: envelope.chatJid });
 
+			const decideStart = Date.now();
 			const orch = await decideV2(workingBody, {
 				history: ctx.history,
 				conversationKey,
@@ -551,6 +554,37 @@ export const POST: RequestHandler = async ({ request }) => {
 					model: cfg.youtube.model,
 				},
 			});
+			// Per ADR-023 Phase 1 + the WhatsApp orchestrator-v2 follow-up:
+			// log the orchestrator's chosen sub-action (web-search, vault-chat,
+			// dispatch, image, proposal, reply) alongside the routeFreeForm row
+			// already written upstream. A single message can produce TWO
+			// intent_log rows — one router decision (brain-find/recent/
+			// vault-chat) and one orchestrator decision (its sub-action). The
+			// future analyst infers the layer from picked_route values: only
+			// orchestrator outputs include actions like web-search / dispatch /
+			// image. fellThrough → vault-chat fallback row written below.
+			if (!orch.fellThrough) {
+				writeIntentDecision({
+					ts: Date.now(),
+					conversationKey,
+					rawMessage: workingBody,
+					normalizedSignature: normalizeSignature(workingBody),
+					pickedRoute: orch.decision.action,
+					source: 'llm',
+					confidence: orch.decision.confidence,
+					latencyMs: Date.now() - decideStart,
+				});
+			} else {
+				writeIntentDecision({
+					ts: Date.now(),
+					conversationKey,
+					rawMessage: workingBody,
+					normalizedSignature: normalizeSignature(workingBody),
+					pickedRoute: 'vault-chat',
+					source: 'fallback',
+					latencyMs: Date.now() - decideStart,
+				});
+			}
 
 			if (!orch.fellThrough && orch.v2Output) {
 				const out = orch.v2Output;
