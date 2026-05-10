@@ -103,16 +103,61 @@ case "$OS" in
   *) die "Unsupported platform: $OS. Install yt-dlp, ffmpeg, whisper-cpp manually." ;;
 esac
 
-step "Installing curl-cffi (Python — yt-dlp impersonation backend)"
-if python3 -c "import curl_cffi" >/dev/null 2>&1; then
-  ok "curl_cffi (already installed)"
-else
-  if pip3 install --user --quiet curl-cffi 2>/dev/null; then
-    ok "curl-cffi"
-  else
-    warn "curl-cffi install failed — TikTok will still work but is more anti-bot-fragile."
-    warn "Manual: pip3 install --user curl-cffi"
+step "Installing curl_cffi (Python — yt-dlp impersonation backend)"
+# yt-dlp on macOS Homebrew uses its own bundled Python venv (not system
+# python3), so a `pip3 --user` install is invisible to it. We resolve the
+# shebang of the yt-dlp script and install into THAT interpreter's
+# site-packages. Also pin to <0.14 — yt-dlp 2026.03.17 logs curl_cffi 0.15
+# as "(unsupported)" and refuses to use --impersonate. Validated 2026-05-10.
+CURL_CFFI_PIN='curl_cffi>=0.7,<0.14'
+CURL_CFFI_VERSION_OK_PY='import sys, curl_cffi; v = curl_cffi.__version__; major, minor, *_ = v.split("."); ok = (major == "0" and 7 <= int(minor) < 14); sys.exit(0 if ok else 1)'
+
+YTDLP_PY=""
+if command -v yt-dlp >/dev/null 2>&1; then
+  YTDLP_BIN=$(command -v yt-dlp)
+  YTDLP_FIRST_LINE=$(head -1 "$YTDLP_BIN" 2>/dev/null || true)
+  if [[ "$YTDLP_FIRST_LINE" == "#!"* ]]; then
+    candidate="${YTDLP_FIRST_LINE#\#!}"
+    # Strip leading whitespace and trailing args (e.g. `#!/usr/bin/env python3`)
+    candidate=$(echo "$candidate" | awk '{print $1}')
+    if [ -x "$candidate" ]; then
+      YTDLP_PY="$candidate"
+    fi
   fi
+fi
+
+if [ -n "$YTDLP_PY" ]; then
+  if "$YTDLP_PY" -c "$CURL_CFFI_VERSION_OK_PY" >/dev/null 2>&1; then
+    ok "curl_cffi (already installed in yt-dlp's venv at compatible version)"
+  else
+    if "$YTDLP_PY" -m pip install --quiet "$CURL_CFFI_PIN" 2>/dev/null; then
+      ok "curl_cffi (installed into yt-dlp's venv)"
+    else
+      warn "curl_cffi install into yt-dlp's venv failed — TikTok still works but is anti-bot-fragile."
+      warn "Manual: $YTDLP_PY -m pip install '$CURL_CFFI_PIN'"
+    fi
+  fi
+else
+  # Linux / non-Homebrew install — fall back to system python3
+  if python3 -c "$CURL_CFFI_VERSION_OK_PY" >/dev/null 2>&1; then
+    ok "curl_cffi (system python3, compatible version)"
+  else
+    if pip3 install --user --quiet "$CURL_CFFI_PIN" 2>/dev/null; then
+      ok "curl_cffi (system python3, --user)"
+    else
+      warn "curl_cffi install failed — TikTok still works but is anti-bot-fragile."
+      warn "Manual: pip3 install --user '$CURL_CFFI_PIN'"
+    fi
+  fi
+fi
+
+# Verify yt-dlp can actually USE --impersonate (catches version-mismatch cases
+# where curl_cffi installed but wrong version).
+if yt-dlp --list-impersonate-targets 2>/dev/null | grep -qE '^[A-Za-z][[:alnum:]-]*[[:space:]]+[^[:space:]]+[[:space:]]+curl_cffi[[:space:]]*$'; then
+  ok "yt-dlp --impersonate works (anti-bot bypass active)"
+else
+  warn "yt-dlp does NOT see usable impersonate targets — anti-bot bypass inactive."
+  warn "Run: yt-dlp --list-impersonate-targets   to inspect."
 fi
 
 download_model() {
