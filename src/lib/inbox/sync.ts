@@ -50,6 +50,17 @@ let workers: Map<string, AccountWorker> = new Map();
 let emitter: EventEmitter | null = null;
 let initialized = false;
 
+// Kill switch: set INBOX_SYNC_DISABLED=1 in ~/.soul-hub/.env to stop the IMAP
+// workers booting up. Diagnostic + temporary — used when the reconnect loop is
+// misbehaving (see error.log inbox-sync storm 2026-05-04+).
+//
+// Read at call time, not module load — `$lib/secrets.js` (which populates
+// process.env from ~/.soul-hub/.env) is imported AFTER `$lib/inbox` in
+// hooks.server.ts, so a module-level const here captures undefined.
+function isInboxSyncDisabled(): boolean {
+	return process.env.INBOX_SYNC_DISABLED === '1';
+}
+
 export function getSyncEmitter(): EventEmitter {
 	if (!emitter) {
 		emitter = new EventEmitter();
@@ -63,6 +74,11 @@ export async function startSync(): Promise<void> {
 	if (initialized) return;
 	initialized = true;
 
+	if (isInboxSyncDisabled()) {
+		console.log('[inbox-sync] Disabled via INBOX_SYNC_DISABLED=1 — no workers started');
+		return;
+	}
+
 	const accounts = listAccounts();
 	for (const account of accounts) {
 		startAccountSync(account);
@@ -75,10 +91,14 @@ export async function stopSync(): Promise<void> {
 	initialized = false;
 	const logouts: Promise<void>[] = [];
 
-	for (const [id, worker] of workers) {
+	for (const [, worker] of workers) {
 		worker.stopping = true;
-		if (worker.reconnectTimer) clearTimeout(worker.reconnectTimer);
+		if (worker.reconnectTimer) {
+			clearTimeout(worker.reconnectTimer);
+			worker.reconnectTimer = null;
+		}
 		if (worker.client) {
+			try { worker.client.removeAllListeners(); } catch {}
 			logouts.push(
 				worker.client.logout().catch(() => {})
 			);
@@ -92,12 +112,23 @@ export async function stopSync(): Promise<void> {
 
 /** Start or restart sync for a single account */
 export function startAccountSync(account: InboxAccount): void {
+	if (isInboxSyncDisabled()) {
+		console.log(`[inbox-sync:${account.id}] Skipped — INBOX_SYNC_DISABLED=1`);
+		return;
+	}
+
 	// Stop existing worker if any
 	const existing = workers.get(account.id);
 	if (existing) {
 		existing.stopping = true;
-		if (existing.reconnectTimer) clearTimeout(existing.reconnectTimer);
-		if (existing.client) { try { existing.client.close(); } catch {} }
+		if (existing.reconnectTimer) {
+			clearTimeout(existing.reconnectTimer);
+			existing.reconnectTimer = null;
+		}
+		if (existing.client) {
+			try { existing.client.removeAllListeners(); } catch {}
+			try { existing.client.close(); } catch {}
+		}
 	}
 
 	const worker: AccountWorker = {
@@ -117,8 +148,14 @@ export function stopAccountSync(accountId: string): void {
 	const worker = workers.get(accountId);
 	if (!worker) return;
 	worker.stopping = true;
-	if (worker.reconnectTimer) clearTimeout(worker.reconnectTimer);
-	if (worker.client) { try { worker.client.close(); } catch {} }
+	if (worker.reconnectTimer) {
+		clearTimeout(worker.reconnectTimer);
+		worker.reconnectTimer = null;
+	}
+	if (worker.client) {
+		try { worker.client.removeAllListeners(); } catch {}
+		try { worker.client.close(); } catch {}
+	}
 	workers.delete(accountId);
 }
 
@@ -240,10 +277,21 @@ async function connectWorker(worker: AccountWorker, account: InboxAccount): Prom
 
 function scheduleReconnect(worker: AccountWorker, account: InboxAccount): void {
 	if (worker.stopping) return;
+	// Idempotent: a single failed connect attempt fires both the 'close' event
+	// AND rejects the connect() promise, so two paths race to schedule. Without
+	// this guard, both stick — each spawns a new client on a fresh schedule,
+	// each new client fails the same way, and the timer count grows ~2× per
+	// cycle. That's the storm signature in the 2026-05-04 → 2026-05-10 logs.
+	if (worker.reconnectTimer) return;
 
 	worker.reconnectTimer = setTimeout(() => {
+		worker.reconnectTimer = null;
 		if (worker.stopping) return;
-		// Create a fresh client — never reuse a closed ImapFlow instance
+		// Detach handlers from the dead client so a late teardown event
+		// (TCP close arriving after we've moved on) can't re-enter scheduleReconnect.
+		if (worker.client) {
+			try { worker.client.removeAllListeners(); } catch {}
+		}
 		worker.client = null;
 		connectWorker(worker, account);
 	}, worker.reconnectDelay);
