@@ -50,8 +50,14 @@ module.exports = {
         APIDIRECT_API_KEY: process.env.APIDIRECT_API_KEY || '',
         YOUTUBE_API_KEY: process.env.YOUTUBE_API_KEY || '',
       },
-      // Restart policy
-      max_memory_restart: '512M',
+      // Restart policy.
+      // Bumped 512M → 1024M on 2026-05-10: TikTok mode=full path materialises
+      // a video mp4 + spawns whisper-cli + uploads to Gemini in the same
+      // process tree. Transient peak crossed 512M and PM2 SIGKILL'd mid-tool,
+      // leaving the WhatsApp turn with no reply (worker saw "fetch failed").
+      // Idle footprint is ~100-200MB so 1GB still has plenty of headroom for
+      // misbehaviour detection.
+      max_memory_restart: '1024M',
       exp_backoff_restart_delay: 100,
       max_restarts: 10,
       min_uptime: '5s',

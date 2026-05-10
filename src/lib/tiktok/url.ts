@@ -45,7 +45,16 @@ const TIKTOK_SHORTLINK_HOSTS = new Set([
 
 export interface CanonicalTikTokUrl {
 	videoId: string;
+	/** Clean canonical URL — used for display, cache key, vault save. */
 	watchUrl: string;
+	/** URL to pass to yt-dlp. Preserves `_t` and `_r` query params from the
+	 *  source URL when present — these are TikTok's session/share tokens,
+	 *  NOT tracking. yt-dlp without them gets served the JS-challenge page
+	 *  ("Unexpected response from webpage request" / "Unable to extract
+	 *  universal data for rehydration"). With them present TikTok treats the
+	 *  request as a legitimate share open and returns the video page.
+	 *  Validated A/B 2026-05-10. */
+	fetchUrl: string;
 	authorHandle?: string;
 	isPhotoPost: boolean;
 }
@@ -120,9 +129,11 @@ export function extractFromUrl(input: string): CanonicalTikTokUrl | null {
 		if ((kind === 'video' || kind === 'photo') && TIKTOK_ID_REGEX.test(id)) {
 			const handle = handleSeg.slice(1);
 			const isPhotoPost = kind === 'photo';
+			const watchUrl = `https://www.tiktok.com/@${handle}/${kind}/${id}`;
 			return {
 				videoId: id,
-				watchUrl: `https://www.tiktok.com/@${handle}/${kind}/${id}`,
+				watchUrl,
+				fetchUrl: appendShareTokens(watchUrl, url),
 				authorHandle: handle,
 				isPhotoPost,
 			};
@@ -133,9 +144,11 @@ export function extractFromUrl(input: string): CanonicalTikTokUrl | null {
 	if (segments.length === 2 && segments[0] === 'v') {
 		const id = segments[1].replace(/\.html$/, '');
 		if (TIKTOK_ID_REGEX.test(id)) {
+			const watchUrl = `https://www.tiktok.com/video/${id}`;
 			return {
 				videoId: id,
-				watchUrl: `https://www.tiktok.com/video/${id}`,
+				watchUrl,
+				fetchUrl: appendShareTokens(watchUrl, url),
 				isPhotoPost: false,
 			};
 		}
@@ -145,15 +158,31 @@ export function extractFromUrl(input: string): CanonicalTikTokUrl | null {
 	if (segments.length === 2 && segments[0] === 'video') {
 		const id = segments[1];
 		if (TIKTOK_ID_REGEX.test(id)) {
+			const watchUrl = `https://www.tiktok.com/video/${id}`;
 			return {
 				videoId: id,
-				watchUrl: `https://www.tiktok.com/video/${id}`,
+				watchUrl,
+				fetchUrl: appendShareTokens(watchUrl, url),
 				isPhotoPost: false,
 			};
 		}
 	}
 
 	return null;
+}
+
+/** Build the URL to send to yt-dlp. Preserves `_t` (TikTok share session
+ *  token) and `_r` (TikTok routing flag) from the source URL when present.
+ *  Validated A/B 2026-05-10: `?_t=<token>` is the difference between yt-dlp
+ *  succeeding and yt-dlp getting the JS-challenge page. */
+function appendShareTokens(cleanUrl: string, sourceUrl: URL): string {
+	const params = new URLSearchParams();
+	const t = sourceUrl.searchParams.get('_t');
+	const r = sourceUrl.searchParams.get('_r');
+	if (r) params.set('_r', r);
+	if (t) params.set('_t', t);
+	const qs = params.toString();
+	return qs ? `${cleanUrl}?${qs}` : cleanUrl;
 }
 
 function safeParseUrl(input: string): URL | null {

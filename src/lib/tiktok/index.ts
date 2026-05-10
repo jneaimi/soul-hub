@@ -192,10 +192,11 @@ export async function fetchTikTok(
 		};
 	}
 
-	// Stage 2 — Tier A metadata. Required.
+	// Stage 2 — Tier A metadata. Required. Uses `fetchUrl` (with `_t=`
+	// share token preserved) to bypass TikTok's anti-bot — see url.ts.
 	let metadata;
 	try {
-		metadata = await fetchTikTokMetadata(canonical.watchUrl);
+		metadata = await fetchTikTokMetadata(canonical.fetchUrl);
 	} catch (err) {
 		const errMsg = (err as Error).message;
 		// If anti-bot blocked metadata extraction, degrade to a partial result
@@ -324,7 +325,7 @@ export async function fetchTikTok(
 	// Stage 4 — download once, reuse for both Tier B and Tier C if needed.
 	let download: Awaited<ReturnType<typeof downloadTikTokAudio>> | null = null;
 	try {
-		download = await downloadTikTokAudio(canonical.watchUrl, { signal: opts.signal });
+		download = await downloadTikTokAudio(canonical.fetchUrl, { signal: opts.signal });
 	} catch (err) {
 		// Download failed — return metadata with a graceful note. Don't fail
 		// the whole fetch since Tier A already succeeded.
