@@ -236,6 +236,29 @@ export const WhatsAppYoutubeSchema = z.object({
 	model: z.string().default('gemini-2.5-flash'),
 });
 
+/** ADR-024 — `tiktokFetch` tool config. Tier A (yt-dlp metadata) always
+ *  runs and is free. Tier B (whisper.cpp local STT) is free if the host
+ *  has the deps installed. Tier C (Gemini multimodal) is paid — capped
+ *  per-target so share-spam can't burn the budget. The runtime capability
+ *  probe in src/lib/tiktok/whisper.ts disables the tool entirely when
+ *  yt-dlp/ffmpeg/whisper-cli are missing, so a fresh install without
+ *  TikTok deps is safe by default. */
+export const WhatsAppTiktokSchema = z.object({
+	enabled: z.boolean().default(true),
+	/** Per-target soft cap on Tier C (Gemini summary) calls. Tier B (local
+	 *  whisper) is free and uncounted. Hit cap → tool returns metadata +
+	 *  transcript with a `note: summary-quota-exceeded` hint. */
+	maxPerDay: z.number().int().min(1).max(50).default(5),
+	/** Hard cap on clip duration (seconds) before Tier B/C are skipped.
+	 *  TikTok now allows 30-min clips; transcribing a full 30-min clip with
+	 *  ggml-base on M-series ≈ 3.5 min wall-clock — too slow for a chat
+	 *  turn. 600s = 10 min covers ~99% of clips in practice. */
+	maxDurationSec: z.number().int().min(30).max(1800).default(600),
+	/** Default Gemini model for video understanding. Flash is the cost-
+	 *  effective default; swap to `gemini-2.5-pro` for richer summaries. */
+	model: z.string().default('gemini-2.5-flash'),
+});
+
 /** Telegram-specific config — extends the generic ChannelConfig with the
  *  fields the Bot API adapter needs (allowlist, intent map, webhook).
  *  Telegram chat IDs are integers (positive for DMs, negative for groups);
@@ -328,6 +351,7 @@ export const WhatsAppChannelSchema = ChannelConfigSchema.extend({
 	commitments: WhatsAppCommitmentsSchema.prefault({}),
 	img: WhatsAppImgSchema.prefault({}),
 	youtube: WhatsAppYoutubeSchema.prefault({}),
+	tiktok: WhatsAppTiktokSchema.prefault({}),
 	intentMap: WhatsAppIntentMapSchema.default({
 		'/save': { route: 'brain-save', description: 'Capture a note (text/image/voice/video) into the vault inbox.' },
 		'/find': { route: 'brain-find', description: 'Search the vault — top 5 matches.' },

@@ -26,6 +26,15 @@ SOUL_HUB_HOME="${SOUL_HUB_HOME:-$HOME/.soul-hub}"
 VAULT_DIR_DEFAULT="$HOME/vault"
 DEV_DIR_DEFAULT="$HOME/dev"
 
+# ── ADR-024 — opt-in install flags for TikTok transcription deps ─
+WITH_TIKTOK=auto  # auto | yes | no
+for arg in "$@"; do
+  case "$arg" in
+    --with-tiktok) WITH_TIKTOK=yes ;;
+    --no-tiktok)   WITH_TIKTOK=no  ;;
+  esac
+done
+
 printf "%sSoul Hub bootstrap%s\n" "$BOLD" "$RST"
 printf "%sRepo:%s %s\n" "$DIM" "$RST" "$REPO_ROOT"
 printf "%sHome:%s %s\n\n" "$DIM" "$RST" "$SOUL_HUB_HOME"
@@ -297,7 +306,38 @@ GITIGNORE
   fi
 fi
 
-# ── 9. Final summary ─────────────────────────────────────────────
+# ── 9. Optional: TikTok transcription deps (ADR-024) ────────────
+step "Optional: TikTok transcription deps"
+if command -v yt-dlp >/dev/null 2>&1 \
+  && command -v ffmpeg >/dev/null 2>&1 \
+  && command -v whisper-cli >/dev/null 2>&1 \
+  && [ -f "${WHISPER_MODEL_BASE_DIR:-$HOME/.cache/whisper-cpp}/ggml-base.bin" ]; then
+  ok "TikTok deps already installed (yt-dlp + ffmpeg + whisper-cli + ggml-base.bin)"
+else
+  case "$WITH_TIKTOK" in
+    yes)
+      bash "$REPO_ROOT/scripts/install-tiktok-deps.sh"
+      ;;
+    no)
+      ok "Skipped (--no-tiktok)"
+      ;;
+    auto)
+      if [ -t 0 ] && [ -t 1 ] && [ -z "${CI:-}" ]; then
+        printf "  TikTok transcription needs ~250 MB of extra deps (yt-dlp, ffmpeg, whisper.cpp, ggml-base.bin).\n"
+        printf "  Install now? [y/%sN%s] " "$BOLD" "$RST"
+        read -r ans </dev/tty || ans=""
+        case "$ans" in
+          y|Y|yes|YES) bash "$REPO_ROOT/scripts/install-tiktok-deps.sh" ;;
+          *) ok "Skipped — re-run with --with-tiktok later, or: bash scripts/install-tiktok-deps.sh" ;;
+        esac
+      else
+        ok "Skipped (non-interactive — pass --with-tiktok to install, or run: bash scripts/install-tiktok-deps.sh)"
+      fi
+      ;;
+  esac
+fi
+
+# ── 10. Final summary ────────────────────────────────────────────
 echo
 printf "%sBootstrap complete.%s\n\n" "$GRN$BOLD" "$RST"
 printf "Next steps:\n"

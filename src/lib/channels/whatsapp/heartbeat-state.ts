@@ -271,6 +271,22 @@ function migrate(db: Database.Database): void {
 		`);
 		db.pragma('user_version = 9');
 	}
+
+	if (version < 10) {
+		// ADR-024 — `tiktokFetch` per-target daily cap for the Gemini
+		// summary tier. Same shape as youtube_daily_counter; kept distinct
+		// so a heavy YouTube-summary day doesn't lock out TikTok summaries
+		// and vice versa.
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS tiktok_daily_counter (
+				target  TEXT NOT NULL,
+				ymd     TEXT NOT NULL,
+				count   INTEGER NOT NULL DEFAULT 0,
+				PRIMARY KEY (target, ymd)
+			);
+		`);
+		db.pragma('user_version = 10');
+	}
 }
 
 /** Heartbeat run statuses logged to `proactive_log`. */
@@ -382,6 +398,25 @@ export function incrementYoutubeCount(target: string, ymd: string): void {
 	getHeartbeatDb()
 		.prepare(
 			`INSERT INTO youtube_daily_counter (target, ymd, count) VALUES (?, ?, 1)
+			 ON CONFLICT(target, ymd) DO UPDATE SET count = count + 1`,
+		)
+		.run(target, ymd);
+}
+
+/** Per-target `tiktokFetch` Gemini-tier count for the current day (in the
+ *  user's wall-clock timezone). Only increments on successful Tier C calls
+ *  (Tier A metadata + Tier B local whisper are free and uncounted). */
+export function getTiktokCount(target: string, ymd: string): number {
+	const row = getHeartbeatDb()
+		.prepare('SELECT count FROM tiktok_daily_counter WHERE target = ? AND ymd = ?')
+		.get(target, ymd) as { count: number } | undefined;
+	return row?.count ?? 0;
+}
+
+export function incrementTiktokCount(target: string, ymd: string): void {
+	getHeartbeatDb()
+		.prepare(
+			`INSERT INTO tiktok_daily_counter (target, ymd, count) VALUES (?, ?, 1)
 			 ON CONFLICT(target, ymd) DO UPDATE SET count = count + 1`,
 		)
 		.run(target, ymd);

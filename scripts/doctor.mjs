@@ -172,7 +172,55 @@ try {
   else add('vault-backup task', 'warn', 'not in settings.json — re-run: bash scripts/bootstrap.sh, or copy from settings.example.json');
 }
 
-// ── 12. Node ABI parity between shell and running PM2 process ─
+// ── 12. TikTok transcription deps (ADR-024) ──────────────────
+{
+  const tiktokEnabled = settings?.channels?.whatsapp?.tiktok?.enabled ?? true;
+  if (!tiktokEnabled) {
+    add('tiktok-fetch deps', 'ok', 'tool disabled in settings');
+  } else {
+    const hasBin = (cmd) => {
+      try {
+        execSync(`command -v ${cmd}`, { stdio: ['ignore', 'pipe', 'ignore'], shell: '/bin/bash' });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const hasYtDlp = hasBin('yt-dlp');
+    const hasFfmpeg = hasBin('ffmpeg');
+    const hasWhisperCli = hasBin('whisper-cli');
+    let hasCurlCffi = false;
+    try {
+      execSync('python3 -c "import curl_cffi"', { stdio: 'ignore' });
+      hasCurlCffi = true;
+    } catch {
+      hasCurlCffi = false;
+    }
+    const modelDir = process.env.WHISPER_MODEL_BASE_DIR
+      ? process.env.WHISPER_MODEL_BASE_DIR.replace(/^~/, HOME)
+      : join(HOME, '.cache', 'whisper-cpp');
+    const hasModel = existsSync(join(modelDir, 'ggml-base.bin'));
+
+    const missing = [];
+    if (!hasYtDlp) missing.push('yt-dlp');
+    if (!hasFfmpeg) missing.push('ffmpeg');
+    if (!hasWhisperCli) missing.push('whisper-cli');
+    if (!hasModel) missing.push('ggml-base.bin');
+
+    if (missing.length === 0) {
+      const detail = `yt-dlp + ffmpeg + whisper-cli + model${hasCurlCffi ? ' + curl_cffi' : ' (curl_cffi missing — fragile)'}`;
+      add('tiktok-fetch deps', 'ok', detail);
+    } else {
+      add(
+        'tiktok-fetch deps',
+        'warn',
+        `missing: ${missing.join(', ')} — run: bash scripts/install-tiktok-deps.sh`,
+      );
+    }
+  }
+}
+
+// ── 13. Node ABI parity between shell and running PM2 process ─
 // Native modules (better-sqlite3, node-pty) compile against ONE
 // Node major. If the shell's Node differs from PM2's Node, the
 // next `npm rebuild` will fix one and silently break the other.
@@ -220,7 +268,7 @@ try {
   }
 }
 
-// ── 13. Platform sanity ────────────────────────────────────────
+// ── 14. Platform sanity ────────────────────────────────────────
 if (platform() === 'win32') {
   add('platform', 'fail', 'native Windows is unsupported. Use WSL2 (Ubuntu). See INSTALL.md.');
 } else if (platform() === 'linux') {

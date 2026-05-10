@@ -372,6 +372,7 @@ async function dispatchOrchestrated(
 		);
 		const imgCfg = waParsed.success ? waParsed.data.img : undefined;
 		const ytCfg = waParsed.success ? waParsed.data.youtube : undefined;
+		const ttCfg = waParsed.success ? waParsed.data.tiktok : undefined;
 		const decideStart = Date.now();
 		orch = await decideV2(workingBody, {
 			history: ctx.history,
@@ -392,6 +393,14 @@ async function dispatchOrchestrated(
 						enabled: ytCfg.enabled,
 						maxPerDay: ytCfg.maxPerDay,
 						model: ytCfg.model,
+					}
+				: undefined,
+			tiktokConfig: ttCfg
+				? {
+						enabled: ttCfg.enabled,
+						maxPerDay: ttCfg.maxPerDay,
+						maxDurationSec: ttCfg.maxDurationSec,
+						model: ttCfg.model,
 					}
 				: undefined,
 		});

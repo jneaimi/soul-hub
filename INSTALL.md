@@ -24,6 +24,7 @@ The bootstrap is **idempotent** — safe to re-run after pulling updates. It wil
 | **Claude Code** | Latest | Yes | [docs.anthropic.com](https://docs.anthropic.com/en/docs/claude-code) |
 | **uv** | Latest | For Python pipelines | [docs.astral.sh/uv](https://docs.astral.sh/uv/getting-started/installation/) |
 | **PM2** | 5+ | For production | Included as dev dependency |
+| **yt-dlp + ffmpeg + whisper.cpp** | Latest | Optional — TikTok transcription (ADR-024) | `npm run setup -- --with-tiktok` or `bash scripts/install-tiktok-deps.sh` |
 
 ### Supported Platforms
 
@@ -153,6 +154,39 @@ cp settings.example.json ~/.soul-hub/settings.json
 touch ~/.soul-hub/.env && chmod 600 ~/.soul-hub/.env
 echo "SOUL_HUB_SECRET=$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')" >> ~/.soul-hub/.env
 ```
+
+## Optional: TikTok transcription (ADR-024)
+
+The `tiktokFetch` orchestrator tool turns a TikTok URL pasted into WhatsApp/Telegram into structured metadata + speech transcript + (optional) Gemini summary. It is **off by default on fresh installs** because it requires ~250 MB of additional dependencies. The bootstrap prompts at install time; pass `--with-tiktok` for non-interactive installs or `--no-tiktok` to skip.
+
+When the deps are missing, the `tiktokFetch` tool is **dropped from the orchestrator entirely** by the runtime capability probe — the LLM never sees a tool it can't call, so a TikTok URL pasted into a non-TikTok install replies with a clean "TikTok transcription is not enabled on this server" message rather than a stack trace.
+
+**One-shot install (any time after bootstrap):**
+
+```bash
+bash scripts/install-tiktok-deps.sh                # English-only (~250 MB)
+bash scripts/install-tiktok-deps.sh --with-arabic  # also adds ggml-small for AR (~720 MB total)
+```
+
+**Per-platform deps** (the script handles all of these — listed for transparency):
+
+```
+macOS:    brew install yt-dlp ffmpeg whisper-cpp && pip3 install --user curl-cffi
+Ubuntu:   sudo apt install -y yt-dlp ffmpeg && pip3 install --user curl-cffi
+          (whisper.cpp built from source — script handles it)
+WSL2:     same as Ubuntu
+Model:    ggml-base.bin (~142 MB) → ~/.cache/whisper-cpp/  (auto-downloaded)
+```
+
+**Verify:**
+
+```bash
+npm run doctor      # look for the "tiktok-fetch deps" row — should be OK
+```
+
+**Disable cleanly:** set `channels.whatsapp.tiktok.enabled = false` in `~/.soul-hub/settings.json`. The capability probe also auto-disables when binaries are missing — no settings edit needed for opt-out.
+
+**Cost / privacy:** Tier A (yt-dlp metadata) and Tier B (local whisper) are free and run entirely on the host. Tier C (Gemini summary) is optional, capped per-day, and only fires when the user explicitly asks for a summary. No transcripts leave the host unless the user invokes `mode='summary'`.
 
 ## Optional: Auto-switch Node via nvm on `cd`
 

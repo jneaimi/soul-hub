@@ -143,6 +143,43 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 		],
 	},
 	{
+		name: 'tiktokFetch',
+		category: 'read',
+		llm_description:
+			'Fetch a TikTok video — author, caption, engagement, duration, and (when needed) speech transcript or summary. ' +
+			'Use whenever the user shares a TikTok URL (tiktok.com, vm.tiktok.com, vt.tiktok.com, tiktok.com/t/...) — ' +
+			'whether they want to save it, review it, summarize it, quote it, translate it, or ask a question about its content. ' +
+			'Modes: "metadata" = author/caption/engagement only (instant, free, for save-shaped intents); ' +
+			'"transcript" = adds the full speech transcript via local whisper.cpp (~7-15s, free — for "what does this say" / quote / search intents); ' +
+			'"summary" = adds a 2-3 paragraph summary via Gemini (~12-25s, costs cents — for review/summarize intents); ' +
+			'"full" = metadata + transcript + summary in one combined call. ' +
+			'CALL ONCE per video — pick the most-informative mode you need on the first call ("full" if uncertain). ' +
+			'Do NOT re-call this tool with a different mode for the same URL on failure — escalating modes just punches TikTok\'s anti-bot harder. ' +
+			'Successive calls within ~10 minutes are served from cache (note="cache-hit") so they\'re cheap, but still avoid repeating yourself. ' +
+			'After the tool returns, compose your reply from the structured fields. ' +
+			'If the result has note="summary-quota-exceeded" or note="gemini-failed", tell the user we have the transcript/metadata but couldn\'t summarize this turn. ' +
+			'If note="tiktok-rate-limited", TikTok\'s anti-bot is currently blocking downloads — tell the user we have the metadata but couldn\'t fetch the video right now and ask them to try again in a minute. Do NOT immediately re-call the tool. ' +
+			'If note="photo-post-no-audio", the URL is a photo carousel with no spoken content — only the caption is meaningful. ' +
+			'If note="duration-cap-exceeded", the clip is too long to transcribe; only the caption is available.',
+		ui_description:
+			'Fetch a TikTok video: yt-dlp metadata + local whisper.cpp transcript + optional Gemini summary. Tool is dropped from the registry on hosts missing yt-dlp/ffmpeg/whisper-cli — install via `npm run setup -- --with-tiktok`.',
+		has_config: {
+			settingsKey: 'channels.whatsapp.tiktok',
+			label: 'WhatsApp → TikTok fetch settings',
+		},
+		examples: [
+			{ user: '"what does this TikTok say <url>"', toolArgs: '{ url: "...", mode: "transcript" }' },
+			{
+				user: '"save this TikTok <url>"',
+				toolArgs: '{ url: "...", mode: "metadata" }',
+			},
+			{
+				user: '"summarize this TikTok <url>"',
+				toolArgs: '{ url: "...", mode: "summary" }',
+			},
+		],
+	},
+	{
 		name: 'vaultSave',
 		category: 'write',
 		llm_description:

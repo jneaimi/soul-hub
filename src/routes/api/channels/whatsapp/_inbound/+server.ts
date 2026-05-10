@@ -553,6 +553,12 @@ export const POST: RequestHandler = async ({ request }) => {
 					maxPerDay: cfg.youtube.maxPerDay,
 					model: cfg.youtube.model,
 				},
+				tiktokConfig: {
+					enabled: cfg.tiktok.enabled,
+					maxPerDay: cfg.tiktok.maxPerDay,
+					maxDurationSec: cfg.tiktok.maxDurationSec,
+					model: cfg.tiktok.model,
+				},
 			});
 			// Per ADR-023 Phase 1 + the WhatsApp orchestrator-v2 follow-up:
 			// log the orchestrator's chosen sub-action (web-search, vault-chat,

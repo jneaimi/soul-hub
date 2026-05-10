@@ -30,6 +30,10 @@ export interface DecideV2Options {
 	 *  fires the Gemini transcript tier and how the daily cap is enforced.
 	 *  Tier A (oEmbed metadata) runs regardless. */
 	youtubeConfig?: YoutubeConfigSlice;
+	/** TikTok fetch config snapshot (ADR-024) — gates whether `tiktokFetch`
+	 *  fires Tier B (whisper) / Tier C (Gemini) and enforces the daily cap +
+	 *  duration cap. Tier A (yt-dlp metadata) runs regardless. */
+	tiktokConfig?: TikTokConfigSlice;
 	/** Account name from the WhatsApp config — scopes the image output dir. */
 	account?: string;
 	/** Timezone for the daily image-quota window (defaults Asia/Dubai). */
@@ -50,6 +54,16 @@ export interface ImgConfigSlice {
 export interface YoutubeConfigSlice {
 	enabled: boolean;
 	maxPerDay: number;
+	model?: string;
+}
+
+/** Subset of `cfg.tiktok` (ADR-024) that the orchestrator needs.
+ *  Mirrors `YoutubeConfigSlice` with an extra `maxDurationSec` cap because
+ *  TikTok now allows 30-min clips that would blow whisper's turn budget. */
+export interface TikTokConfigSlice {
+	enabled: boolean;
+	maxPerDay: number;
+	maxDurationSec: number;
 	model?: string;
 }
 

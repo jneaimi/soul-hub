@@ -25,6 +25,7 @@ import { dispatchWebSearch, formatWebSearchForChat } from '../../web-search/inde
 import { dispatchVaultChat } from '../../vault-chat/index.js';
 import { dispatchImg, rememberLastImage } from '../../img/index.js';
 import { fetchYoutube } from '../../youtube/index.js';
+import { fetchTikTok, probeCapabilities as probeTikTokCapabilities } from '../../tiktok/index.js';
 import { dispatchVaultSave } from '../../vault-save/index.js';
 import { recordToolCall, assertManifestParity } from './registry.js';
 import { setPending, formatProposal } from '../../orchestrator/pending-proposals.js';
@@ -33,11 +34,13 @@ import {
 	incrementImgCount,
 	getYoutubeCount,
 	incrementYoutubeCount,
+	getTiktokCount,
+	incrementTiktokCount,
 	ymdInTimezone,
 } from '../../channels/whatsapp/heartbeat-state.js';
 import { runSkill } from '../../skills/index.js';
 import type { ChatSkillEntry } from '../../skills/index.js';
-import type { ImgConfigSlice, YoutubeConfigSlice } from '../types.js';
+import type { ImgConfigSlice, YoutubeConfigSlice, TikTokConfigSlice } from '../types.js';
 
 export interface ToolDeps {
 	conversationKey?: string;
@@ -54,6 +57,11 @@ export interface ToolDeps {
 	 *  Gemini transcript tier and surfaces a `note: 'transcript-disabled'`
 	 *  hint in the result. */
 	youtubeConfig?: YoutubeConfigSlice;
+	/** ADR-024 — TikTok fetch config. When undefined or `enabled: false`,
+	 *  the `tiktokFetch` tool is dropped from the registry entirely (the
+	 *  capability probe in src/lib/tiktok/whisper.ts also drops it when
+	 *  yt-dlp/ffmpeg/whisper-cli are missing on the host). */
+	tiktokConfig?: TikTokConfigSlice;
 	account?: string;
 	timezone?: string;
 	/** ADR-009 Phase 5 — A/B branch label that decided this turn. Forwarded
@@ -98,6 +106,39 @@ export type ToolResult =
 				| 'gemini-not-configured';
 	  }
 	| { kind: 'youtube-error'; url: string; error: string; tier: 'oembed' | 'gemini' | 'url' }
+	| {
+			kind: 'tiktok';
+			url: string;
+			videoId: string;
+			author: string;
+			authorHandle: string;
+			caption: string;
+			title?: string;
+			durationSec: number;
+			postedAt?: string;
+			views?: number;
+			likes?: number;
+			comments?: number;
+			reposts?: number;
+			isPhotoPost: boolean;
+			transcript?: string;
+			transcriptLang?: string;
+			transcriptSource: 'whisper-cpp' | 'gemini' | 'none';
+			summary?: string;
+			costUsd?: number;
+			note?:
+				| 'transcript-disabled'
+				| 'summary-quota-exceeded'
+				| 'whisper-failed'
+				| 'whisper-not-installed'
+				| 'gemini-failed'
+				| 'gemini-not-configured'
+				| 'duration-cap-exceeded'
+				| 'photo-post-no-audio'
+				| 'tiktok-rate-limited'
+				| 'cache-hit';
+	  }
+	| { kind: 'tiktok-error'; url: string; error: string; tier: 'url' | 'metadata' | 'download' | 'whisper' | 'gemini' }
 	| { kind: 'vault-save'; path: string; openUrl: string; title: string }
 	| { kind: 'vault-save-error'; error: string; title: string };
 
@@ -124,6 +165,14 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 			? z.enum(skillNames as [string, ...string[]])
 			: z.string().describe('(no skills enabled — none of these will work)');
 	const skillToolDescription = buildInvokeSkillDescription(deps.chatSkills);
+
+	// ADR-024 — TikTok capability gate. Drop the tool entirely (don't even
+	// register it) when the host can't transcribe TikTok clips OR when the
+	// settings flag is off. The LLM never sees a tool it can't successfully
+	// call — no hallucination surface.
+	const ttCaps = probeTikTokCapabilities();
+	const tiktokAvailable =
+		ttCaps.tierAReady && (deps.tiktokConfig?.enabled ?? true);
 
 	return {
 		reply: tool({
@@ -418,6 +467,107 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 				};
 			},
 		}),
+
+		...(tiktokAvailable
+			? {
+					tiktokFetch: tool({
+						description:
+							'Fetch a TikTok video — author, caption, engagement, duration, and (when needed) speech transcript or summary. ' +
+							'Use whenever the user shares a TikTok URL (tiktok.com, vm.tiktok.com, vt.tiktok.com, tiktok.com/t/...) — ' +
+							'whether they want to save it, review it, summarize it, quote it, translate it, or ask a question about its content. ' +
+							'Modes: "metadata" = author/caption/engagement only (instant, free, for save-shaped intents); ' +
+							'"transcript" = adds the full speech transcript via local whisper.cpp (~7-15s, free — for "what does this say" / quote / search intents); ' +
+							'"summary" = adds a 2-3 paragraph summary via Gemini (~12-25s, costs cents — for review/summarize intents); ' +
+							'"full" = metadata + transcript + summary in one combined call. ' +
+							'CALL ONCE per video — pick the most-informative mode you need on the first call ("full" if uncertain). ' +
+							'Do NOT re-call this tool with a different mode for the same URL on failure — escalating modes just punches TikTok\'s anti-bot harder. ' +
+							'Successive calls within ~10 minutes are served from cache (note="cache-hit") so they\'re cheap, but still avoid repeating yourself. ' +
+							'After the tool returns, compose your reply from the structured fields. ' +
+							'If the result has note="summary-quota-exceeded" or note="gemini-failed", tell the user we have the transcript/metadata but couldn\'t summarize this turn. ' +
+							'If note="tiktok-rate-limited", TikTok\'s anti-bot is currently blocking downloads — tell the user we have the metadata but couldn\'t fetch the video right now and ask them to try again in a minute. Do NOT immediately re-call the tool. ' +
+							'If note="photo-post-no-audio", the URL is a photo carousel with no spoken content — only the caption is meaningful. ' +
+							'If note="duration-cap-exceeded", the clip is too long to transcribe; only the caption is available.',
+						inputSchema: z.object({
+							url: z.string().min(1).describe('Full TikTok URL or share link'),
+							mode: z
+								.enum(['metadata', 'transcript', 'summary', 'full'])
+								.describe(
+									'metadata = instant + free; transcript = +full transcript via local whisper; summary = +Gemini summary; full = both. Default to "transcript" for review/quote phrasing, "metadata" for save phrasing, "summary" only when the user asks for a summary or analysis.',
+								),
+						}),
+						execute: async ({ url, mode }): Promise<ToolResult> => {
+							logToolCall('tiktokFetch', { url, mode });
+
+							let summaryQuotaExceeded = false;
+							const willCallGemini =
+								(mode === 'summary' || mode === 'full') &&
+								(deps.tiktokConfig?.enabled ?? false) &&
+								!!deps.senderNumber;
+							if (willCallGemini && deps.tiktokConfig && deps.senderNumber) {
+								const tz = deps.timezone ?? 'Asia/Dubai';
+								const today = ymdInTimezone(tz);
+								const count = getTiktokCount(deps.senderNumber, today);
+								if (count >= deps.tiktokConfig.maxPerDay) {
+									summaryQuotaExceeded = true;
+								}
+							}
+
+							const outcome = await fetchTikTok(url, {
+								mode,
+								tiktokConfig: deps.tiktokConfig,
+								summaryQuotaExceeded,
+							});
+
+							if (!outcome.ok) {
+								return {
+									kind: 'tiktok-error',
+									url: outcome.error.url,
+									error: outcome.error.error,
+									tier: outcome.error.tier,
+								};
+							}
+
+							const r = outcome.result;
+							// Increment quota only when Gemini actually produced a summary.
+							// transcriptSource='gemini' alone isn't enough — we want to
+							// charge against the cap when Tier C ran, regardless of
+							// whether transcript or summary came out of it.
+							if (
+								r.summary &&
+								deps.senderNumber &&
+								deps.tiktokConfig &&
+								!summaryQuotaExceeded
+							) {
+								const tz = deps.timezone ?? 'Asia/Dubai';
+								incrementTiktokCount(deps.senderNumber, ymdInTimezone(tz));
+							}
+
+							return {
+								kind: 'tiktok',
+								url: r.url,
+								videoId: r.videoId,
+								author: r.metadata.author,
+								authorHandle: r.metadata.authorHandle,
+								caption: r.metadata.caption,
+								title: r.metadata.title,
+								durationSec: r.metadata.durationSec,
+								postedAt: r.metadata.postedAt,
+								views: r.metadata.views,
+								likes: r.metadata.likes,
+								comments: r.metadata.comments,
+								reposts: r.metadata.reposts,
+								isPhotoPost: r.isPhotoPost,
+								transcript: r.transcript,
+								transcriptLang: r.transcriptLang,
+								transcriptSource: r.transcriptSource,
+								summary: r.summary,
+								costUsd: r.costUsd,
+								note: r.note,
+							};
+						},
+					}),
+				}
+			: {}),
 
 		vaultSave: tool({
 			description:

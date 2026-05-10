@@ -117,6 +117,7 @@ export async function decideV2(
 		chatSkills,
 		imgConfig: opts.imgConfig,
 		youtubeConfig: opts.youtubeConfig,
+		tiktokConfig: opts.tiktokConfig,
 		account: opts.account,
 		timezone: opts.timezone,
 		modelBranch: branch.name,
@@ -429,6 +430,13 @@ function buildV2Output(
 			text: ytErrorReply(ytErr.tier, ytErr.error),
 		};
 	}
+	const ttErr = results.find((r) => r.kind === 'tiktok-error');
+	if (ttErr && ttErr.kind === 'tiktok-error') {
+		return {
+			kind: 'error',
+			text: ttErrorReply(ttErr.tier, ttErr.error),
+		};
+	}
 	const vsaveErr = results.find((r) => r.kind === 'vault-save-error');
 	if (vsaveErr && vsaveErr.kind === 'vault-save-error') {
 		return {
@@ -492,6 +500,16 @@ function buildV2Output(
 			kind: 'text',
 			text: formatYoutubeFallback(ytResult),
 			youtubeContext: fbContext,
+		};
+	}
+	// TikTok fallback — same pattern as YouTube. Model is supposed to compose
+	// a reply from the structured fields; this is the safety net for
+	// short/empty finalText.
+	const ttResult = results.find((r) => r.kind === 'tiktok');
+	if (ttResult && ttResult.kind === 'tiktok') {
+		return {
+			kind: 'text',
+			text: formatTiktokFallback(ttResult),
 		};
 	}
 	// vault-save fallback — same pattern. Model usually composes a "Saved as
@@ -563,6 +581,8 @@ function mapToolCallsToDecision(
 			return { action: 'reply', reply: finalText, confidence: 0.8 };
 		case 'youtubeFetch':
 			return { action: 'reply', reply: finalText, confidence: 0.85 };
+		case 'tiktokFetch':
+			return { action: 'reply', reply: finalText, confidence: 0.85 };
 		case 'vaultSave':
 			return { action: 'reply', reply: finalText, confidence: 0.9 };
 		default:
@@ -599,6 +619,8 @@ function toolErrorFallback(errors: readonly ToolError[]): string {
 			return 'I tried to search but the query was too short — give me a few words to look for.';
 		case 'youtubeFetch':
 			return 'I tried to fetch the YouTube video but the link looks off — can you paste the full URL?';
+		case 'tiktokFetch':
+			return 'I tried to fetch the TikTok but the link looks off — can you paste the full URL?';
 		case 'vaultSave':
 			return "I tried to save that but the title or content didn't pass — can you say what you want me to save?";
 		default:
@@ -660,4 +682,71 @@ function formatDuration(sec: number): string {
 	const s = sec % 60;
 	if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 	return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+/** Format a graceful error reply when the TikTok fetch failed entirely.
+ *  Tier-aware so the user knows whether the link itself was bad, the
+ *  network call failed, or whisper/Gemini misbehaved (ADR-024). */
+function ttErrorReply(
+	tier: 'url' | 'metadata' | 'download' | 'whisper' | 'gemini',
+	error: string,
+): string {
+	switch (tier) {
+		case 'url':
+			return `That doesn't look like a TikTok link I can read. Could you paste the full URL?`;
+		case 'metadata':
+			return `Couldn't pull that TikTok — it might be private, region-locked, or the link is wrong (${error.slice(0, 80)}).`;
+		case 'download':
+			return `Couldn't download the TikTok audio — TikTok may be rate-limiting this server right now (${error.slice(0, 80)}). Try again in a minute.`;
+		case 'whisper':
+			return `Got the TikTok info, but couldn't transcribe it locally (${error.slice(0, 80)}).`;
+		case 'gemini':
+			return `Got the TikTok info, but couldn't summarize it this turn (${error.slice(0, 80)}).`;
+	}
+}
+
+/** Render a minimal text reply from a tiktok tool result when the LLM
+ *  didn't compose one itself. Mirrors `formatYoutubeFallback` (ADR-024). */
+function formatTiktokFallback(r: {
+	url: string;
+	author: string;
+	caption: string;
+	durationSec: number;
+	views?: number;
+	likes?: number;
+	transcript?: string;
+	summary?: string;
+	transcriptSource: 'whisper-cpp' | 'gemini' | 'none';
+	isPhotoPost: boolean;
+	note?: string;
+}): string {
+	const lines: string[] = [];
+	const head = r.author ? `*@${r.author}* — TikTok` : '*TikTok*';
+	lines.push(head);
+	if (!r.isPhotoPost && r.durationSec > 0) {
+		lines.push(`Duration: ${formatDuration(r.durationSec)}`);
+	}
+	if (r.caption) {
+		lines.push('', r.caption);
+	}
+	if (r.summary) {
+		lines.push('', r.summary);
+	} else if (r.transcript) {
+		lines.push('', r.transcript.slice(0, 2_000));
+	}
+	if (r.note === 'summary-quota-exceeded') {
+		lines.push('', `(Hit today's TikTok summary budget — saved transcript only.)`);
+	} else if (r.note === 'gemini-failed') {
+		lines.push('', `(Couldn't summarize this turn — only got metadata and transcript.)`);
+	} else if (r.note === 'whisper-failed' || r.note === 'whisper-not-installed') {
+		lines.push('', `(Couldn't transcribe this turn — only got the metadata and caption.)`);
+	} else if (r.note === 'duration-cap-exceeded') {
+		lines.push('', `(Clip is too long to transcribe — only got the metadata and caption.)`);
+	} else if (r.note === 'photo-post-no-audio') {
+		lines.push('', `(Photo carousel — no spoken content to transcribe.)`);
+	} else if (r.note === 'transcript-disabled') {
+		lines.push('', `(TikTok transcript fetch is disabled in settings.)`);
+	}
+	lines.push('', r.url);
+	return lines.join('\n');
 }
