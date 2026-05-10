@@ -15,6 +15,8 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+import { probeCapabilities } from './whisper.js';
+
 const DEFAULT_TIMEOUT_MS = 60_000;
 
 export interface DownloadResult {
@@ -61,6 +63,9 @@ export async function downloadTikTokAudio(
 }
 
 function runYtDlpDownload(url: string, mp4Path: string, opts: DownloadOpts): Promise<void> {
+	const caps = probeCapabilities();
+	// Real browser TLS fingerprint when curl_cffi is available (see metadata.ts).
+	const impersonateArgs = caps.curlCffi ? ['--impersonate', 'chrome'] : [];
 	return runProcess(
 		'yt-dlp',
 		[
@@ -76,6 +81,7 @@ function runYtDlpDownload(url: string, mp4Path: string, opts: DownloadOpts): Pro
 			// that. Adds jittered backoff between extraction attempts.
 			'--extractor-retries',
 			'3',
+			...impersonateArgs,
 			'--no-playlist',
 			// Prefer a smaller mp4 — we only need audio anyway, but keeping the
 			// container as mp4 allows Tier C (Gemini) to reuse the same file.

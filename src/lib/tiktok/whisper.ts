@@ -37,7 +37,11 @@ export function probeCapabilities(force = false): TikTokCapabilities {
 	const ytDlp = which('yt-dlp');
 	const ffmpeg = which('ffmpeg');
 	const whisperCli = which('whisper-cli');
-	const curlCffi = checkPython3Module('curl_cffi');
+	// Probe yt-dlp directly — checking system python3 misses the case where
+	// yt-dlp is brewed with its own venv (the common macOS install). Asks
+	// yt-dlp for its impersonate targets and looks for any non-"(unavailable)"
+	// line. Slower than the system import (~250ms one-time) but accurate.
+	const curlCffi = ytDlp ? checkYtDlpImpersonate() : false;
 
 	const baseModel = join(WHISPER_MODEL_BASE_DIR, 'ggml-base.bin');
 	const smallModel = join(WHISPER_MODEL_BASE_DIR, 'ggml-small.bin');
@@ -144,4 +148,26 @@ function which(cmd: string): boolean {
 function checkPython3Module(mod: string): boolean {
 	const r = spawnSync('python3', ['-c', `import ${mod}`], { stdio: 'ignore' });
 	return r.status === 0;
+}
+
+/** True iff yt-dlp can actually use --impersonate. Checks
+ *  --list-impersonate-targets for any non-"(unavailable)" entry — robust to
+ *  the case where curl_cffi is installed but at an unsupported version (e.g.
+ *  curl_cffi 0.15 against yt-dlp 2026.03 — yt-dlp logs it as
+ *  "curl_cffi-0.15.0 (unsupported)" and refuses to use it). */
+function checkYtDlpImpersonate(): boolean {
+	const r = spawnSync('yt-dlp', ['--list-impersonate-targets'], {
+		encoding: 'utf8',
+		timeout: 5000,
+	});
+	if (r.status !== 0 || !r.stdout) return false;
+	for (const line of r.stdout.split('\n')) {
+		// Real targets look like "Chrome-136    Macos-15    curl_cffi"
+		// Headers / "(unavailable)" rows / dividers are rejected.
+		if (!line.trim()) continue;
+		if (line.includes('(unavailable)')) continue;
+		if (/^\s*(Client|---|\[)/.test(line)) continue;
+		if (/^[A-Za-z][\w-]*\s+\S+\s+curl_cffi/.test(line)) return true;
+	}
+	return false;
 }

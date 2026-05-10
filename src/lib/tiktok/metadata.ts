@@ -14,6 +14,7 @@
 import { spawn } from 'node:child_process';
 
 import type { TikTokMetadata } from './types.js';
+import { probeCapabilities } from './whisper.js';
 
 const TIMEOUT_MS = 15_000;
 
@@ -25,6 +26,14 @@ const PRINT_TEMPLATE =
 	'%(id)s|%(duration|0)s|%(uploader)s|%(title)s|%(view_count|0)s|%(like_count|0)s|%(comment_count|0)s|%(repost_count|0)s|%(upload_date|)s|%(description|)s';
 
 export async function fetchTikTokMetadata(watchUrl: string): Promise<TikTokMetadata> {
+	// When curl_cffi is available, --impersonate=chrome makes yt-dlp use a real
+	// browser TLS fingerprint. This is the deterministic anti-bot bypass —
+	// without it TikTok intermittently serves the JS-challenge page (validated
+	// 2026-05-10). Falls back to plain HTTP when curl_cffi is missing, in
+	// which case the tool still works but is rate-limit-fragile.
+	const caps = probeCapabilities();
+	const impersonateArgs = caps.curlCffi ? ['--impersonate', 'chrome'] : [];
+
 	const stdout = await runYtDlp([
 		'--print',
 		PRINT_TEMPLATE,
@@ -37,6 +46,7 @@ export async function fetchTikTokMetadata(watchUrl: string): Promise<TikTokMetad
 		// extraction attempts when this is set. Mirrors download.ts.
 		'--extractor-retries',
 		'3',
+		...impersonateArgs,
 		watchUrl,
 	]);
 
