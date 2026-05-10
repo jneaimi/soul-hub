@@ -484,7 +484,7 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 							'Successive calls within ~10 minutes are served from cache (note="cache-hit") so they\'re cheap, but still avoid repeating yourself. ' +
 							'After the tool returns, compose your reply from the structured fields. ' +
 							'If the result has note="summary-quota-exceeded" or note="gemini-failed", tell the user we have the transcript/metadata but couldn\'t summarize this turn. ' +
-							'If note="tiktok-rate-limited", TikTok\'s anti-bot is currently blocking downloads — tell the user we have the metadata but couldn\'t fetch the video right now and ask them to try again in a minute. Do NOT immediately re-call the tool. ' +
+							'If note="tiktok-rate-limited", TikTok\'s anti-bot is currently blocking us. The result MAY have only the author handle (when caption is empty and durationSec is 0) — in that case say "TikTok is rate-limiting us right now — I can see this is from @<authorHandle> but couldn\'t pull the details. Try sharing the link again in a minute or two." If caption is populated, you have the metadata from a prior attempt — share what you have and tell the user the transcript/summary couldn\'t run this turn. Do NOT immediately re-call the tool. ' +
 							'If note="photo-post-no-audio", the URL is a photo carousel with no spoken content — only the caption is meaningful. ' +
 							'If note="duration-cap-exceeded", the clip is too long to transcribe; only the caption is available.',
 						inputSchema: z.object({

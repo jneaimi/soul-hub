@@ -99,15 +99,37 @@ function mergeIntoCache(videoId: string, result: TikTokFetchResult): void {
 	}
 }
 
-/** Detect TikTok's anti-bot rate-limit signature in a download error message,
- *  so we can surface a `tiktok-rate-limited` note (distinct from
- *  whisper/gemini failures) and tell the model to back off rather than
- *  mode-shop. */
+/** Detect TikTok's anti-bot signature in a yt-dlp error message. TikTok's
+ *  anti-bot has at least three distinct surfaces — the captcha/interstitial
+ *  ("Unexpected response from webpage request"), the JS-challenge page where
+ *  the extractor can't find the rehydration blob ("Unable to extract universal
+ *  data for rehydration"), and outright HTTP 403/429. We treat all of these
+ *  as the same condition: yt-dlp can't reach video data right now, retry
+ *  later. Validated against the 2026-05-10 WhatsApp test where the bare
+ *  "Unexpected response" check missed the rehydration variant and the model
+ *  emitted a misleading "private/region-locked" reply. */
 function isTikTokRateLimited(errMsg: string): boolean {
 	return (
 		/Unexpected response from webpage request/i.test(errMsg) ||
-		/blocked|rate.?limit|too many requests/i.test(errMsg)
+		/Unable to extract universal data/i.test(errMsg) ||
+		/Unable to (?:find|extract) video data/i.test(errMsg) ||
+		/blocked|rate.?limit|too many requests/i.test(errMsg) ||
+		/HTTP Error 4(?:03|29)/i.test(errMsg) ||
+		/Sign in to confirm you'?re not a bot/i.test(errMsg)
 	);
+}
+
+/** Read any live cache entry for a videoId regardless of whether it
+ *  satisfies a particular mode. Used on rate-limit fallback so we can surface
+ *  prior-fetched metadata instead of an empty degraded shell. */
+function peekCacheForRecovery(videoId: string): TikTokFetchResult | null {
+	const entry = cache.get(videoId);
+	if (!entry) return null;
+	if (entry.expiresAt < Date.now()) {
+		cache.delete(videoId);
+		return null;
+	}
+	return entry.result;
 }
 
 /** Visible for tests: clear the cache between runs. */
@@ -186,6 +208,25 @@ export async function fetchTikTok(
 			console.warn(
 				`[tiktok] metadata blocked by anti-bot for ${canonical.videoId}: ${errMsg}`,
 			);
+			// Recovery path: if a prior call already cached metadata for this
+			// videoId, return that with the rate-limit note appended so the
+			// user gets the rich data we already have plus a hint that the
+			// deeper tiers couldn't run this turn. Strictly better than the
+			// empty-shell degraded result.
+			const recovered = peekCacheForRecovery(canonical.videoId);
+			if (recovered) {
+				console.warn(
+					`[tiktok] serving cached metadata for ${canonical.videoId} (rate-limited this turn)`,
+				);
+				return {
+					ok: true,
+					result: {
+						...recovered,
+						note: 'tiktok-rate-limited',
+						durationMs: Date.now() - startedAt,
+					},
+				};
+			}
 			const degradedResult: TikTokFetchResult = {
 				url: canonical.watchUrl,
 				videoId: canonical.videoId,
@@ -200,8 +241,9 @@ export async function fetchTikTok(
 				note: 'tiktok-rate-limited',
 				durationMs: Date.now() - startedAt,
 			};
-			// NOTE: not cached — we want the next attempt (after backoff) to
-			// try again rather than serve the degraded result for 10 minutes.
+			// Degraded shell deliberately NOT cached — we want the next attempt
+			// (after backoff) to try Tier A fresh rather than serve the empty
+			// shell for 10 minutes.
 			return { ok: true, result: degradedResult };
 		}
 		return {
