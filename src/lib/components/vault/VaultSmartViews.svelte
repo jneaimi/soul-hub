@@ -182,6 +182,49 @@
   let typeSearch = $state('');
   let tagSearch = $state('');
 
+  // The smart-views toolbar uses overflow-x-auto, which forces overflow-y to
+  // clip too — popovers positioned `absolute` inside it get cropped at the
+  // toolbar's bottom edge. Use position:fixed and re-compute coords from the
+  // trigger button so the popovers escape the clipping container.
+  let typeBtnEl: HTMLButtonElement | undefined = $state();
+  let tagBtnEl: HTMLButtonElement | undefined = $state();
+  let typePopoverStyle = $state('');
+  let tagPopoverStyle = $state('');
+
+  function updateTypePopoverPos() {
+    if (!typeBtnEl) return;
+    const r = typeBtnEl.getBoundingClientRect();
+    typePopoverStyle = `top: ${r.bottom + 4}px; left: ${r.left}px;`;
+  }
+
+  function updateTagPopoverPos() {
+    if (!tagBtnEl) return;
+    const r = tagBtnEl.getBoundingClientRect();
+    tagPopoverStyle = `top: ${r.bottom + 4}px; right: ${window.innerWidth - r.right}px;`;
+  }
+
+  $effect(() => {
+    if (!showTypePopover) return;
+    updateTypePopoverPos();
+    window.addEventListener('scroll', updateTypePopoverPos, true);
+    window.addEventListener('resize', updateTypePopoverPos);
+    return () => {
+      window.removeEventListener('scroll', updateTypePopoverPos, true);
+      window.removeEventListener('resize', updateTypePopoverPos);
+    };
+  });
+
+  $effect(() => {
+    if (!showTagPopover) return;
+    updateTagPopoverPos();
+    window.addEventListener('scroll', updateTagPopoverPos, true);
+    window.addEventListener('resize', updateTagPopoverPos);
+    return () => {
+      window.removeEventListener('scroll', updateTagPopoverPos, true);
+      window.removeEventListener('resize', updateTagPopoverPos);
+    };
+  });
+
   let activeAdHocTypes = $derived.by(() => {
     const t = activeFilters.type;
     if (!t) return [] as string[];
@@ -341,9 +384,15 @@
     <!-- Type multi-select trigger -->
     <div class="flex-shrink-0 relative" use:clickOutside={() => { showTypePopover = false; typeSearch = ''; }}>
       <button
+        bind:this={typeBtnEl}
         class="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] cursor-pointer transition-colors duration-150 border
           {activeAdHocTypes.length > 0 ? 'border-hub-border bg-hub-card text-hub-text' : 'border-transparent text-hub-dim hover:text-hub-muted hover:bg-hub-card'}"
-        onclick={() => { showTypePopover = !showTypePopover; showTagPopover = false; }}
+        onclick={() => {
+          const next = !showTypePopover;
+          showTagPopover = false;
+          if (next) updateTypePopoverPos();
+          showTypePopover = next;
+        }}
         aria-expanded={showTypePopover}
         aria-haspopup="listbox"
       >
@@ -357,7 +406,7 @@
       </button>
 
       {#if showTypePopover}
-        <div class="absolute left-0 top-full mt-1 z-50 w-[260px] rounded-lg bg-hub-card border border-hub-border shadow-lg">
+        <div class="fixed z-50 w-[260px] rounded-lg bg-hub-card border border-hub-border shadow-lg" style={typePopoverStyle}>
           <div class="p-2 border-b border-hub-border">
             <input
               type="text"
@@ -392,9 +441,15 @@
     <!-- Tags multi-select trigger -->
     <div class="flex-shrink-0 relative" use:clickOutside={() => { showTagPopover = false; tagSearch = ''; }}>
       <button
+        bind:this={tagBtnEl}
         class="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] cursor-pointer transition-colors duration-150 border
           {activeAdHocTags.length > 0 ? 'border-hub-border bg-hub-card text-hub-text' : 'border-transparent text-hub-dim hover:text-hub-muted hover:bg-hub-card'}"
-        onclick={() => { showTagPopover = !showTagPopover; showTypePopover = false; }}
+        onclick={() => {
+          const next = !showTagPopover;
+          showTypePopover = false;
+          if (next) updateTagPopoverPos();
+          showTagPopover = next;
+        }}
         aria-expanded={showTagPopover}
         aria-haspopup="listbox"
       >
@@ -408,7 +463,7 @@
       </button>
 
       {#if showTagPopover}
-        <div class="absolute right-0 top-full mt-1 z-50 w-[240px] rounded-lg bg-hub-card border border-hub-border shadow-lg">
+        <div class="fixed z-50 w-[240px] rounded-lg bg-hub-card border border-hub-border shadow-lg" style={tagPopoverStyle}>
           <div class="p-2 border-b border-hub-border">
             <input
               type="text"
