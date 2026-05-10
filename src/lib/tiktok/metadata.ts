@@ -31,7 +31,12 @@ export async function fetchTikTokMetadata(watchUrl: string): Promise<TikTokMetad
 		'--no-warnings',
 		'--no-playlist',
 		'--retries',
-		'2',
+		'3',
+		// Anti-bot fails at extraction, before any download stream — `--retries`
+		// alone doesn't cover it. yt-dlp adds jittered backoff between
+		// extraction attempts when this is set. Mirrors download.ts.
+		'--extractor-retries',
+		'3',
 		watchUrl,
 	]);
 

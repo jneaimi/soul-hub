@@ -175,13 +175,42 @@ export async function fetchTikTok(
 	try {
 		metadata = await fetchTikTokMetadata(canonical.watchUrl);
 	} catch (err) {
+		const errMsg = (err as Error).message;
+		// If anti-bot blocked metadata extraction, degrade to a partial result
+		// (using the canonical URL fields we already have) and surface
+		// note='tiktok-rate-limited' so the model can tell the user to retry
+		// later. Returning a hard error here makes the model say "private,
+		// region-locked, or the link is wrong" — which is misleading and
+		// removes any chance of a graceful retry path.
+		if (isTikTokRateLimited(errMsg)) {
+			console.warn(
+				`[tiktok] metadata blocked by anti-bot for ${canonical.videoId}: ${errMsg}`,
+			);
+			const degradedResult: TikTokFetchResult = {
+				url: canonical.watchUrl,
+				videoId: canonical.videoId,
+				metadata: {
+					author: canonical.authorHandle ?? 'unknown',
+					authorHandle: canonical.authorHandle ?? '',
+					caption: '',
+					durationSec: 0,
+				},
+				isPhotoPost: canonical.isPhotoPost,
+				transcriptSource: 'none',
+				note: 'tiktok-rate-limited',
+				durationMs: Date.now() - startedAt,
+			};
+			// NOTE: not cached — we want the next attempt (after backoff) to
+			// try again rather than serve the degraded result for 10 minutes.
+			return { ok: true, result: degradedResult };
+		}
 		return {
 			ok: false,
 			error: {
 				url: canonical.watchUrl,
 				videoId: canonical.videoId,
 				tier: 'metadata',
-				error: (err as Error).message,
+				error: errMsg,
 			},
 		};
 	}
