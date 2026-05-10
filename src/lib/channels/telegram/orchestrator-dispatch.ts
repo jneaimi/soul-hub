@@ -1,29 +1,44 @@
 /** Background agent dispatch for Telegram.
  *
- *  Mirrors the spirit of `src/lib/orchestrator/worker.ts:runInBackground`
- *  but uses Telegram outbound instead of Baileys. Slimmer than the
- *  WhatsApp version: no 60s check-in (Telegram users get faster
- *  notifications natively), no media-artefact split (vault links are
- *  appended to the result body), and no capacity gate (single-user
- *  app — overlap is rare and the active-run registry already
- *  short-circuits cancel-by-message). The 'still running' UX comes
- *  from edit-in-place on the original ack message.
+ *  Mirrors `src/lib/orchestrator/worker.ts:runInBackground` (the WhatsApp
+ *  path) but uses Telegram outbound. Both channels share:
+ *    - `settleBody` → trailer-aware suppression so artefact-producing
+ *      agents (author/scribe/media-creator) don't leak the full cleaned
+ *      PTY transcript when they forget the `---CHAT---` marker.
+ *    - `extractMediaArtefacts` → channel-agnostic detection of PDFs,
+ *      images, videos, audio that the agent saved to disk.
+ *    - `terminalLine` → consistent emoji/duration/cost status line.
+ *
+ *  Telegram differences vs WhatsApp:
+ *    - No 60s check-in (Telegram's native delivery receipts make it
+ *      unnecessary).
+ *    - No capacity gate (single-user app).
+ *    - Edits the original ack in place for the terminal status line.
  *
  *  Flow:
  *   1. Send "🟡 Running *agentId*…" ack → capture message_id
  *   2. Run `dispatchAgent` generator
  *   3. On `started` event → register in active-run registry so
  *      cancel-by-message works
- *   4. On terminal status → edit ack ("✅ done" / "❌ failed") and
- *      send the result body as a follow-up message (so it doesn't
- *      get truncated against Telegram's 4096-char message limit) */
+ *   4. On terminal status →
+ *        a. Edit ack to terminal status line
+ *        b. Extract artefacts from output (PDF/image/video/audio)
+ *        c. Send body via settleBody (suppressed if artefact + no trailer)
+ *        d. Upload each artefact via sendMedia (caption on first
+ *           image/video where the body fits)
+ *        e. If no artefacts but vault path detected → append vault URL */
 
 import { dispatchAgent } from '../../agents/dispatch/index.js';
 import { setActive, clearActive } from '../../orchestrator/active-runs.js';
-import { editText, sendText } from './outbound.js';
+import {
+	extractMediaArtefacts,
+	pickCaptionTarget,
+	CAPTION_LIMIT_CHARS,
+} from '../../orchestrator/media-output.js';
+import { settleBody, terminalLine } from '../../orchestrator/settle.js';
+import { extractVaultPath } from '../../conversation/index.js';
+import { editText, sendMedia, sendText } from './outbound.js';
 import type { TelegramDeliveryConfig } from './types.js';
-
-const DEFAULT_DURATION_DISPLAY_THRESHOLD_MS = 1000;
 
 interface DispatchArgs {
 	chatId: string;
@@ -33,6 +48,16 @@ interface DispatchArgs {
 	conversationKey: string;
 	delivery: TelegramDeliveryConfig;
 	agentContext?: string;
+}
+
+/** Render a clickable vault URL for a vault-relative path. Returns null
+ *  if `SOUL_HUB_PUBLIC_URL` is not configured. Mirrors the helper in
+ *  `worker.ts` — kept local because it's two lines and pulling it out
+ *  would couple the channels through another module. */
+function vaultUrl(vaultRelPath: string): string | null {
+	const base = (process.env.SOUL_HUB_PUBLIC_URL ?? '').replace(/\/$/, '');
+	if (!base) return null;
+	return `${base}/vault?note=${encodeURIComponent(vaultRelPath)}`;
 }
 
 /** Fire-and-forget — caller must not await. The promise is intentionally
@@ -45,7 +70,6 @@ export function runInBackground(args: DispatchArgs): void {
 		agentId,
 		task,
 		sourceMessage,
-		conversationKey,
 		delivery,
 		agentContext,
 	} = args;
@@ -94,48 +118,91 @@ export function runInBackground(args: DispatchArgs): void {
 			}
 
 			const result = next.value;
-			const durationMs = Date.now() - startedAt;
-			const durationDisplay = formatDuration(durationMs);
+			const status = terminalLine(agentId, result);
 
-			if (result.status === 'success') {
-				if (ackMessageId) {
-					await editText(
-						chatId,
-						ackMessageId,
-						`✅ *${agentId}* done in ${durationDisplay}.`,
-						delivery.parseMode,
-					).catch(() => {
-						/* edit failure shouldn't block the result body */
-					});
-				}
-				const body = result.output?.trim();
-				if (body && body.length > 0) {
-					await sendText(chatId, body, delivery);
-				}
-			} else if (result.status === 'cancelled') {
-				if (ackMessageId) {
-					await editText(
-						chatId,
-						ackMessageId,
-						`🛑 *${agentId}* cancelled after ${durationDisplay}.`,
-						delivery.parseMode,
-					).catch(() => {});
+			// (a) Edit the ack to the terminal status line. Edit failure
+			// shouldn't block delivery — fall back to a fresh send.
+			if (ackMessageId) {
+				const edited = await editText(chatId, ackMessageId, status, delivery.parseMode).catch(
+					(err) => {
+						console.warn(
+							`[telegram/orchestrator] settle-status-edit failed: ${(err as Error).message}`,
+						);
+						return null;
+					},
+				);
+				if (!edited) {
+					await sendText(chatId, status, delivery).catch(() => {});
 				}
 			} else {
-				const reason = result.error?.slice(0, 240) ?? result.status;
-				if (ackMessageId) {
-					await editText(
-						chatId,
-						ackMessageId,
-						`❌ *${agentId}* failed after ${durationDisplay}: ${reason}`,
-						delivery.parseMode,
-					).catch(() => {});
-				} else {
-					await sendText(
-						chatId,
-						`❌ *${agentId}* failed: ${reason}`,
-						delivery,
+				await sendText(chatId, status, delivery).catch(() => {});
+			}
+
+			// Cancel: status edit is the whole story. Skip body/artefacts.
+			if (result.status === 'cancelled') return;
+
+			// (b) Extract artefacts. Channel-agnostic — same detection the
+			// WhatsApp worker uses.
+			const artefacts =
+				result.status === 'success' && result.output
+					? extractMediaArtefacts(result.output)
+					: [];
+
+			// (c) Compute the chat body. settleBody suppresses raw output
+			// when artefacts are present and the agent forgot its trailer
+			// — the file is the deliverable, not the transcript.
+			const body = settleBody(result, artefacts.length);
+
+			// (d) Artefact path: upload each as a Telegram media message.
+			// Caption goes on the first image/video where it fits; otherwise
+			// the body is sent as a separate text message first.
+			if (artefacts.length > 0) {
+				const captionIdx = pickCaptionTarget(artefacts);
+				const captionFits = body.length > 0 && body.length <= CAPTION_LIMIT_CHARS;
+
+				if (body.length > 0 && (!captionFits || captionIdx === -1)) {
+					await sendText(chatId, body, delivery).catch((err) => {
+						console.error(
+							`[telegram/orchestrator] settle-body-send failed: ${(err as Error).message}`,
+						);
+					});
+				}
+
+				for (let i = 0; i < artefacts.length; i++) {
+					const a = artefacts[i];
+					const useCaption = i === captionIdx && captionFits && captionIdx !== -1;
+					await sendMedia(chatId, {
+						kind: a.kind,
+						path: a.path,
+						caption: useCaption ? body : undefined,
+					}).catch((err) => {
+						console.error(
+							`[telegram/orchestrator] media-send failed (${a.kind}): ${(err as Error).message}`,
+						);
+					});
+				}
+				return;
+			}
+
+			// (e) No artefacts: send the body, then a vault-link follow-up
+			// if the agent reported saving a note.
+			if (body.length > 0) {
+				await sendText(chatId, body, delivery).catch((err) => {
+					console.error(
+						`[telegram/orchestrator] settle-body-send failed: ${(err as Error).message}`,
 					);
+				});
+			}
+
+			if (result.status === 'success' && result.output) {
+				const path = extractVaultPath(result.output);
+				const url = path ? vaultUrl(path) : null;
+				if (url) {
+					await sendText(chatId, `📄 Full report: ${url}`, delivery).catch((err) => {
+						console.warn(
+							`[telegram/orchestrator] vault-link send failed: ${(err as Error).message}`,
+						);
+					});
 				}
 			}
 		} catch (err) {
@@ -148,6 +215,10 @@ export function runInBackground(args: DispatchArgs): void {
 					`❌ *${agentId}* errored: ${message.slice(0, 240)}`,
 					delivery.parseMode,
 				).catch(() => {});
+			} else {
+				await sendText(chatId, `❌ *${agentId}* errored: ${message.slice(0, 240)}`, delivery).catch(
+					() => {},
+				);
 			}
 		} finally {
 			if (registered) {
@@ -155,12 +226,4 @@ export function runInBackground(args: DispatchArgs): void {
 			}
 		}
 	})();
-}
-
-function formatDuration(ms: number): string {
-	if (ms < DEFAULT_DURATION_DISPLAY_THRESHOLD_MS) return `${ms}ms`;
-	if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-	const minutes = Math.floor(ms / 60_000);
-	const seconds = Math.floor((ms % 60_000) / 1000);
-	return `${minutes}m${seconds}s`;
 }
