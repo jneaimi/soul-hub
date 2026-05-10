@@ -15,6 +15,7 @@
 
 import { canonicalizeTikTokUrl, UrlCanonicalizationError } from './url.js';
 import { fetchTikTokMetadata } from './metadata.js';
+import { fetchTikTokMetadataViaTikwm } from './tikwm.js';
 import { downloadTikTokAudio } from './download.js';
 import { transcribeWav, probeCapabilities } from './whisper.js';
 import { fetchTikTokViaGemini } from './gemini.js';
@@ -24,6 +25,7 @@ import {
 	type TikTokFetchMode,
 	type TikTokFetchOutcome,
 	type TikTokFetchResult,
+	type TikTokMetadata,
 } from './types.js';
 
 // ──────────────────────────────────────────────
@@ -192,70 +194,92 @@ export async function fetchTikTok(
 		};
 	}
 
-	// Stage 2 — Tier A metadata. Required. Uses `fetchUrl` (with `_t=`
-	// share token preserved) to bypass TikTok's anti-bot — see url.ts.
-	let metadata;
-	try {
-		metadata = await fetchTikTokMetadata(canonical.fetchUrl);
-	} catch (err) {
-		const errMsg = (err as Error).message;
-		// If anti-bot blocked metadata extraction, degrade to a partial result
-		// (using the canonical URL fields we already have) and surface
-		// note='tiktok-rate-limited' so the model can tell the user to retry
-		// later. Returning a hard error here makes the model say "private,
-		// region-locked, or the link is wrong" — which is misleading and
-		// removes any chance of a graceful retry path.
-		if (isTikTokRateLimited(errMsg)) {
-			console.warn(
-				`[tiktok] metadata blocked by anti-bot for ${canonical.videoId}: ${errMsg}`,
-			);
-			// Recovery path: if a prior call already cached metadata for this
-			// videoId, return that with the rate-limit note appended so the
-			// user gets the rich data we already have plus a hint that the
-			// deeper tiers couldn't run this turn. Strictly better than the
-			// empty-shell degraded result.
-			const recovered = peekCacheForRecovery(canonical.videoId);
-			if (recovered) {
+	// Stage 2 — Tier A metadata. Required.
+	//
+	// Two-stage strategy:
+	//   Tier 0  — tikwm.com JSON wrapper. Free, runs from their pool, so our
+	//             server IP is never the one that hits TikTok's anti-bot.
+	//             Returns null on any failure (silently falls back).
+	//   Tier A  — yt-dlp --print with `--impersonate=chrome`. Authoritative
+	//             fallback that uses our IP — that's where rate limits bite.
+	//
+	// Order matters: tikwm absorbs the IP exposure for the high-volume
+	// metadata calls. yt-dlp stays in the loop for Tier B audio download
+	// (we don't trust tikwm's CDN URLs as a download path yet) and for the
+	// metadata fallback when tikwm is down.
+	let metadata: TikTokMetadata;
+
+	const tikwm = await fetchTikTokMetadataViaTikwm(
+		canonical.watchUrl,
+		canonical.videoId,
+		opts.signal,
+	);
+	if (tikwm) {
+		metadata = tikwm;
+		console.log(`[tiktok] metadata via tikwm for ${canonical.videoId}`);
+	} else {
+		try {
+			metadata = await fetchTikTokMetadata(canonical.fetchUrl);
+		} catch (err) {
+			const errMsg = (err as Error).message;
+			// If anti-bot blocked metadata extraction, degrade to a partial result
+			// (using the canonical URL fields we already have) and surface
+			// note='tiktok-rate-limited' so the model can tell the user to retry
+			// later. Returning a hard error here makes the model say "private,
+			// region-locked, or the link is wrong" — which is misleading and
+			// removes any chance of a graceful retry path.
+			if (isTikTokRateLimited(errMsg)) {
 				console.warn(
-					`[tiktok] serving cached metadata for ${canonical.videoId} (rate-limited this turn)`,
+					`[tiktok] metadata blocked by anti-bot for ${canonical.videoId}: ${errMsg}`,
 				);
-				return {
-					ok: true,
-					result: {
-						...recovered,
-						note: 'tiktok-rate-limited',
-						durationMs: Date.now() - startedAt,
+				// Recovery path: if a prior call already cached metadata for this
+				// videoId, return that with the rate-limit note appended so the
+				// user gets the rich data we already have plus a hint that the
+				// deeper tiers couldn't run this turn. Strictly better than the
+				// empty-shell degraded result.
+				const recovered = peekCacheForRecovery(canonical.videoId);
+				if (recovered) {
+					console.warn(
+						`[tiktok] serving cached metadata for ${canonical.videoId} (rate-limited this turn)`,
+					);
+					return {
+						ok: true,
+						result: {
+							...recovered,
+							note: 'tiktok-rate-limited',
+							durationMs: Date.now() - startedAt,
+						},
+					};
+				}
+				const degradedResult: TikTokFetchResult = {
+					url: canonical.watchUrl,
+					videoId: canonical.videoId,
+					metadata: {
+						author: canonical.authorHandle ?? 'unknown',
+						authorHandle: canonical.authorHandle ?? '',
+						caption: '',
+						durationSec: 0,
 					},
+					isPhotoPost: canonical.isPhotoPost,
+					transcriptSource: 'none',
+					note: 'tiktok-rate-limited',
+					durationMs: Date.now() - startedAt,
 				};
+				// Degraded shell deliberately NOT cached — we want the next attempt
+				// (after backoff) to try Tier A fresh rather than serve the empty
+				// shell for 10 minutes.
+				return { ok: true, result: degradedResult };
 			}
-			const degradedResult: TikTokFetchResult = {
-				url: canonical.watchUrl,
-				videoId: canonical.videoId,
-				metadata: {
-					author: canonical.authorHandle ?? 'unknown',
-					authorHandle: canonical.authorHandle ?? '',
-					caption: '',
-					durationSec: 0,
+			return {
+				ok: false,
+				error: {
+					url: canonical.watchUrl,
+					videoId: canonical.videoId,
+					tier: 'metadata',
+					error: errMsg,
 				},
-				isPhotoPost: canonical.isPhotoPost,
-				transcriptSource: 'none',
-				note: 'tiktok-rate-limited',
-				durationMs: Date.now() - startedAt,
 			};
-			// Degraded shell deliberately NOT cached — we want the next attempt
-			// (after backoff) to try Tier A fresh rather than serve the empty
-			// shell for 10 minutes.
-			return { ok: true, result: degradedResult };
 		}
-		return {
-			ok: false,
-			error: {
-				url: canonical.watchUrl,
-				videoId: canonical.videoId,
-				tier: 'metadata',
-				error: errMsg,
-			},
-		};
 	}
 
 	// If the canonicalizer detected an author handle but yt-dlp gave us a
