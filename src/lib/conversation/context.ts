@@ -99,7 +99,13 @@ function stripTerminalNoise(s: string): string {
 }
 
 const MIN_ALPHA_WORDS_FOR_USEFUL_LINE = 3;
-const WORD_RE = /[A-Za-z]{3,}/g;
+// `\p{L}` matches a letter in ANY script (Latin, Arabic, CJK, Cyrillic, …).
+// The previous Latin-only `[A-Za-z]{3,}` silently dropped pure-Arabic prose
+// lines from chat replies — every line had zero "alpha words" so the
+// cleaner stripped them as banner noise. Banner-detection runs AFTER this
+// in `looksLikeClaudeCodeBanner`, so widening the script set can't re-leak
+// TUI artifacts.
+const WORD_RE = /\p{L}{3,}/gu;
 
 function alphaWordCount(s: string): number {
 	const m = s.match(WORD_RE);
