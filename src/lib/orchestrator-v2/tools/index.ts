@@ -973,18 +973,33 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 		'inbox-mark-processed': tool({
 			description:
 				"Mark an inbox message as processed (agent has handled it). The message transitions queued → processed; it stays cached for 365 days as audit trail but stops appearing in queued listings. " +
-				"Use after summarizing, routing-to-vault, replying, or otherwise handling a message.",
+				"Use after summarizing, routing-to-vault, replying, or otherwise handling a message. " +
+				"PROVENANCE: `messageId` MUST be a REAL id returned by a prior `inbox-list-queued`, `inbox-read-body`, or `inbox-correct-classification` call in the SAME conversation. NEVER invent ids. If you don't have one from a prior tool result, call `inbox-list-queued` first to discover real ids. The tool returns an ERROR when the id doesn't exist — that error means you hallucinated; do NOT relay a fake 'success' to the user.",
 			inputSchema: z.object({
 				messageId: z.number().int().positive(),
 			}),
 			execute: async ({ messageId }): Promise<ToolResult> => {
 				logToolCall('inbox-mark-processed', { messageId });
 				const ok = markMessageProcessed(messageId);
+				if (ok) {
+					return { kind: 'reply', text: `Message ${messageId} marked processed.` };
+				}
+				// Differentiate doesn't-exist (likely hallucinated) vs exists-but-wrong-state.
+				const msg = getMessage(messageId);
+				if (!msg) {
+					return {
+						kind: 'reply',
+						text:
+							`ERROR: messageId ${messageId} does not exist in the inbox — likely a hallucinated id. ` +
+							`Call inbox-list-queued first and use a real id from the result. ` +
+							`Do NOT report success to the user; tell them the id was wrong and ask which message they meant.`,
+					};
+				}
 				return {
 					kind: 'reply',
-					text: ok
-						? `Message ${messageId} marked processed.`
-						: `Message ${messageId} not found or not in queued state.`,
+					text:
+						`Message ${messageId} exists but is in state '${msg.processStatus}' (not 'queued'), so no change was made. ` +
+						`This is usually fine — it just means the message was already handled, skipped, or never queued.`,
 				};
 			},
 		}),
@@ -1165,7 +1180,8 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 				"Log an interaction with a CRM contact (channel: email/call/meeting/social/whatsapp/other). " +
 				"Resolve the contact via `contactId` (CRM-YYYY-NNN) OR `email`. Provide a short `summary`. " +
 				"Optionally set `messageId` to cross-reference an inbox message id from inbox-list-queued. " +
-				"Use after 'I met with X', 'called Y', 'replied to Z's email'.",
+				"Use after 'I met with X', 'called Y', 'replied to Z's email'. " +
+				"PROVENANCE: `contactId` MUST come from a prior `crm-find-contact` / `crm-add-contact` / `crm-update-stage` result. `email` MUST be either a known CRM contact's email (run `crm-find-contact` first if unsure) OR a real `from_address` from a prior `inbox-list-queued` row. NEVER fabricate emails or contact ids. `messageId` MUST be a real inbox id from a prior `inbox-list-queued` / `inbox-read-body` result.",
 			inputSchema: z
 				.object({
 					contactId: z.string().regex(/^CRM-\d{4}-\w+$/).optional(),
@@ -1188,7 +1204,11 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 				if (!contactId) {
 					return {
 						kind: 'reply',
-						text: `Could not resolve contact${input.email ? ` for ${input.email}` : ''}.`,
+						text:
+							`ERROR: No CRM contact for ${input.email ?? input.contactId ?? 'the provided id'}. ` +
+							`Likely a hallucinated email/id. ` +
+							`Call crm-find-contact first to look up the real value, or use crm-add-contact if this is a new lead. ` +
+							`Do NOT report success to the user.`,
 					};
 				}
 				try {
@@ -1213,7 +1233,8 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 			description:
 				"Move a CRM contact between pipeline stages: Lead → Contacted → In Conversation → Proposal → Won → Lost. " +
 				"Resolve via `contactId` or `email`. Writes a stage_history row + refreshes the vault note frontmatter. " +
-				"Use for 'move John to In Conversation', 'mark Acme as Won', 'lost the Carrefour deal'.",
+				"Use for 'move John to In Conversation', 'mark Acme as Won', 'lost the Carrefour deal'. " +
+				"PROVENANCE: `contactId` / `email` MUST come from a prior `crm-find-contact` / `crm-add-contact` result, OR be one the user explicitly named. NEVER fabricate emails or contact ids.",
 			inputSchema: z
 				.object({
 					contactId: z.string().regex(/^CRM-\d{4}-\w+$/).optional(),
@@ -1234,7 +1255,11 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 				if (!contactId) {
 					return {
 						kind: 'reply',
-						text: `Could not resolve contact${input.email ? ` for ${input.email}` : ''}.`,
+						text:
+							`ERROR: No CRM contact for ${input.email ?? input.contactId ?? 'the provided id'}. ` +
+							`Likely a hallucinated email/id. ` +
+							`Call crm-find-contact first to look up the real value. ` +
+							`Do NOT report success to the user.`,
 					};
 				}
 				const changed = updateContactStage(contactId, input.stage as ContactStage, input.reason);
@@ -1262,7 +1287,8 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 				"Emit `dueAt` as ISO 8601 with timezone offset (parse natural language relative to Asia/Dubai). " +
 				"By default also creates a WhatsApp reminder via the heartbeat commitments rail so the user is " +
 				"pinged at the due time — set `createReminder=false` to skip the ping. " +
-				"Use for 'follow up with X next Tuesday', 'set a reminder to ping Sarah in two weeks'.",
+				"Use for 'follow up with X next Tuesday', 'set a reminder to ping Sarah in two weeks'. " +
+				"PROVENANCE: `contactId` / `email` MUST come from a prior `crm-find-contact` / `crm-add-contact` result, OR be one the user explicitly named. NEVER fabricate emails or contact ids.",
 			inputSchema: z
 				.object({
 					contactId: z.string().regex(/^CRM-\d{4}-\w+$/).optional(),
@@ -1284,12 +1310,19 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 				if (!contactId) {
 					return {
 						kind: 'reply',
-						text: `Could not resolve contact${input.email ? ` for ${input.email}` : ''}.`,
+						text:
+							`ERROR: No CRM contact for ${input.email ?? input.contactId ?? 'the provided id'}. ` +
+							`Likely a hallucinated email/id. ` +
+							`Call crm-find-contact first to look up the real value. ` +
+							`Do NOT report success to the user.`,
 					};
 				}
 				const contact = getContact(contactId);
 				if (!contact) {
-					return { kind: 'reply', text: `Contact ${contactId} not found.` };
+					return {
+						kind: 'reply',
+						text: `ERROR: Contact ${contactId} not found. Do NOT report success to the user.`,
+					};
 				}
 				const ts = Date.parse(input.dueAt);
 				if (Number.isNaN(ts)) {
@@ -1373,7 +1406,8 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 				"Add an additional email address to an existing CRM contact. Resolve via `contactId` or " +
 				"`currentEmail` (one of the contact's existing addresses). Provide the `newEmail` and " +
 				"optional `label` ('work' | 'personal' | other) and `isPrimary`. Emails are globally unique " +
-				"across the CRM — reusing an email attached to another contact errors.",
+				"across the CRM — reusing an email attached to another contact errors. " +
+				"PROVENANCE: `contactId` / `currentEmail` MUST come from a prior `crm-find-contact` / `crm-add-contact` result. `newEmail` MUST come from the user explicitly (a message they typed) OR from a real `from_address` in `inbox-list-queued`. NEVER fabricate emails.",
 			inputSchema: z
 				.object({
 					contactId: z.string().regex(/^CRM-\d{4}-\w+$/).optional(),
@@ -1398,7 +1432,11 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 				if (!contactId) {
 					return {
 						kind: 'reply',
-						text: `Could not resolve contact${input.currentEmail ? ` for ${input.currentEmail}` : ''}.`,
+						text:
+							`ERROR: No CRM contact for ${input.currentEmail ?? input.contactId ?? 'the provided id'}. ` +
+							`Likely a hallucinated email/id. ` +
+							`Call crm-find-contact first to look up the real value. ` +
+							`Do NOT report success to the user.`,
 					};
 				}
 				try {
@@ -1433,7 +1471,8 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 				'Chains naturally after `vaultSave` when the saved content came from a URL fetch ' +
 				'(via `fetchPage`) or an email link relevant to a CRM contact. ' +
 				'Idempotent — re-attaching the same (contact, vaultPath) pair reports the prior ' +
-				'attachment timestamp without inserting a duplicate.',
+				'attachment timestamp without inserting a duplicate. ' +
+				"PROVENANCE — DO NOT INVENT ARGS: `vaultPath` MUST be the LITERAL `path` returned by a prior `vaultSave` call (NEVER guess based on title or date — vaultSave's output is the truth). `email` / `contactId` MUST come from a prior `crm-find-contact` / `crm-add-contact` result, OR be one the user explicitly named. `sourceMessageId` MUST be a real inbox id from a prior `inbox-list-queued` / `inbox-read-body` result. The tool errors loudly when args don't resolve — that error means you hallucinated; do NOT relay a fake 'success' to the user.",
 			inputSchema: z
 				.object({
 					contactId: z.string().regex(/^CRM-\d{4}-\w+$/).optional(),
@@ -1460,25 +1499,37 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 				if (!contactId) {
 					return {
 						kind: 'reply',
-						text: `Could not resolve contact${input.email ? ` for ${input.email}` : ''}.`,
+						text:
+							`ERROR: No CRM contact for ${input.email ?? input.contactId ?? 'the provided id'}. ` +
+							`Likely a hallucinated email/id. ` +
+							`Call crm-find-contact first to look up the real value, or use crm-add-contact if this is a new lead. ` +
+							`Do NOT report success to the user.`,
 					};
 				}
 				const contact = getContact(contactId);
 				if (!contact) {
-					return { kind: 'reply', text: `Contact ${contactId} not found.` };
+					return {
+						kind: 'reply',
+						text: `ERROR: Contact ${contactId} not found. Do NOT report success to the user.`,
+					};
 				}
 
 				// 2. Verify the vault note exists BEFORE inserting (per ADR D10.2
 				// step 2 — guards against LLM-hallucinated paths).
 				const vault = getVaultEngine();
 				if (!vault) {
-					return { kind: 'reply', text: 'Vault engine not initialized.' };
+					return { kind: 'reply', text: 'ERROR: Vault engine not initialized.' };
 				}
 				const note = vault.getNote(input.vaultPath);
 				if (!note) {
 					return {
 						kind: 'reply',
-						text: `No vault note at ${input.vaultPath}. Save the content first via vaultSave, then attach.`,
+						text:
+							`ERROR: No vault note at "${input.vaultPath}". Likely a hallucinated path. ` +
+							`vaultSave returns the exact path — use that value verbatim from the prior tool call's result. ` +
+							`Do NOT guess paths from titles or dates. ` +
+							`If you haven't saved yet, call vaultSave first and read the \`path\` field from the result. ` +
+							`Do NOT report success to the user.`,
 					};
 				}
 

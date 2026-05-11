@@ -256,7 +256,8 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 		category: 'write',
 		llm_description:
 			"Mark an inbox message as processed (agent has handled it). The message transitions queued → processed; it stays cached for 365 days as audit trail but stops appearing in queued listings. " +
-			"Use after summarizing, routing-to-vault, replying, or otherwise handling a message.",
+			"Use after summarizing, routing-to-vault, replying, or otherwise handling a message. " +
+			"PROVENANCE: `messageId` MUST be a REAL id returned by a prior `inbox-list-queued`, `inbox-read-body`, or `inbox-correct-classification` call in the SAME conversation. NEVER invent ids. If you don't have one from a prior tool result, call `inbox-list-queued` first to discover real ids. The tool returns an ERROR when the id doesn't exist — that error means you hallucinated; do NOT relay a fake 'success' to the user.",
 		ui_description:
 			'Mark a queued inbox message as processed. Agents call this after handling.',
 	},
@@ -329,7 +330,8 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 			"Log an interaction with a CRM contact (channel: email/call/meeting/social/whatsapp/other). " +
 			"Resolve the contact via `contactId` (CRM-YYYY-NNN) OR `email`. Provide a short `summary`. " +
 			"Optionally set `messageId` to cross-reference an inbox message id from inbox-list-queued. " +
-			"Use after 'I met with X', 'called Y', 'replied to Z's email'.",
+			"Use after 'I met with X', 'called Y', 'replied to Z's email'. " +
+			"PROVENANCE: `contactId` MUST come from a prior `crm-find-contact` / `crm-add-contact` / `crm-update-stage` result. `email` MUST be either a known CRM contact's email (run `crm-find-contact` first if unsure) OR a real `from_address` from a prior `inbox-list-queued` row. NEVER fabricate emails or contact ids. `messageId` MUST be a real inbox id from a prior `inbox-list-queued` / `inbox-read-body` result.",
 		ui_description:
 			'Append an interaction touch to a contact. Supports linking to an inbox message id.',
 		examples: [
@@ -345,7 +347,8 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 		llm_description:
 			"Move a CRM contact between pipeline stages: Lead → Contacted → In Conversation → Proposal → Won → Lost. " +
 			"Resolve via `contactId` or `email`. Writes a stage_history row + refreshes the vault note frontmatter. " +
-			"Use for 'move John to In Conversation', 'mark Acme as Won', 'lost the Carrefour deal'.",
+			"Use for 'move John to In Conversation', 'mark Acme as Won', 'lost the Carrefour deal'. " +
+			"PROVENANCE: `contactId` / `email` MUST come from a prior `crm-find-contact` / `crm-add-contact` result, OR be one the user explicitly named. NEVER fabricate emails or contact ids.",
 		ui_description:
 			'Move a contact between pipeline stages. Audits the move in stage_history and syncs the vault note.',
 		examples: [
@@ -363,7 +366,8 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 			"Emit `dueAt` as ISO 8601 with timezone offset (parse natural language relative to Asia/Dubai). " +
 			"By default also creates a WhatsApp reminder via the heartbeat commitments rail so the user is " +
 			"pinged at the due time — set `createReminder=false` to skip the ping. " +
-			"Use for 'follow up with X next Tuesday', 'set a reminder to ping Sarah in two weeks'.",
+			"Use for 'follow up with X next Tuesday', 'set a reminder to ping Sarah in two weeks'. " +
+			"PROVENANCE: `contactId` / `email` MUST come from a prior `crm-find-contact` / `crm-add-contact` result, OR be one the user explicitly named. NEVER fabricate emails or contact ids.",
 		ui_description:
 			'Set the next follow-up date on a CRM contact. Optionally fires a WhatsApp reminder via heartbeat commitments.',
 		examples: [
@@ -395,7 +399,8 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 			"Add an additional email address to an existing CRM contact. Resolve via `contactId` or " +
 			"`currentEmail` (one of the contact's existing addresses). Provide the `newEmail` and " +
 			"optional `label` ('work' | 'personal' | other) and `isPrimary`. Emails are globally unique " +
-			"across the CRM — reusing an email attached to another contact errors.",
+			"across the CRM — reusing an email attached to another contact errors. " +
+			"PROVENANCE: `contactId` / `currentEmail` MUST come from a prior `crm-find-contact` / `crm-add-contact` result. `newEmail` MUST come from the user explicitly (a message they typed) OR from a real `from_address` in `inbox-list-queued`. NEVER fabricate emails.",
 		ui_description:
 			'Add a secondary email address to a CRM contact. Mirrors the multi-email schema from ADR D2.',
 		examples: [
@@ -417,7 +422,8 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 			'Chains naturally after `vaultSave` when the saved content came from a URL fetch ' +
 			'(via `fetchPage`) or an email link relevant to a CRM contact. ' +
 			'Idempotent — re-attaching the same (contact, vaultPath) pair reports the prior ' +
-			'attachment timestamp without inserting a duplicate.',
+			'attachment timestamp without inserting a duplicate. ' +
+			'PROVENANCE — DO NOT INVENT ARGS: `vaultPath` MUST be the LITERAL `path` returned by a prior `vaultSave` call (NEVER guess based on title or date — vaultSave\'s output is the truth). `email` / `contactId` MUST come from a prior `crm-find-contact` / `crm-add-contact` result, OR be one the user explicitly named. `sourceMessageId` MUST be a real inbox id from a prior `inbox-list-queued` / `inbox-read-body` result. The tool errors loudly when args don\'t resolve — that error means you hallucinated; do NOT relay a fake \'success\' to the user.',
 		ui_description:
 			'Attach a vault note to a CRM contact. Closes the email → fetchPage → vaultSave → CRM-link loop. Idempotent and validates the vault path exists before insert.',
 		examples: [
