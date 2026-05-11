@@ -19,6 +19,7 @@ import {
 	getInboxDb, closeInboxDb, startSync, stopSync,
 	startFilterWorker, stopFilterWorker,
 } from '$lib/inbox/index.js';
+import { getCrmDb, closeCrmDb } from '$lib/crm/index.js';
 import { initAgentsWatcher, shutdownAgentsWatcher } from '$lib/agents/watcher.js';
 import { seedDefaultsIfEmpty } from '$lib/explorer-roots.js';
 import { soulHubDataDir, soulHubSettingsPath } from '$lib/paths.js';
@@ -71,6 +72,16 @@ try {
 	console.log('[inbox] Database initialized');
 } catch (err) {
 	console.error('[inbox] Failed to initialize:', err);
+}
+
+// Initialize CRM database — ADR 2026-05-11-crm-local-sqlite-transition Stage A.
+// Schema-only ship; tools / API / UI follow in later stages. Cheap call
+// (file open + migration check) so we run it inline.
+try {
+	getCrmDb();
+	console.log('[crm] Database initialized');
+} catch (err) {
+	console.error('[crm] Failed to initialize:', err);
 }
 
 // Start agents lane watcher (Phase 2 — bumps store version on file change)
@@ -156,6 +167,9 @@ function gracefulShutdown(signal: string) {
 	stopSync().catch(() => {});
 	stopFilterWorker().catch(() => {});
 	closeInboxDb();
+
+	// Close CRM database (no workers — schema-only at Stage A).
+	closeCrmDb();
 
 	// Shutdown vault engine (stop file watcher)
 	const vault = getVaultEngine();
