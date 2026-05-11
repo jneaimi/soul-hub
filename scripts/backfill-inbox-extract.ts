@@ -27,17 +27,20 @@ import {
 
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
+const retryUnknown = args.includes('--retry-unknown');
 const limitIdx = args.indexOf('--limit');
 const limit = limitIdx >= 0 ? Number(args[limitIdx + 1]) : Number.POSITIVE_INFINITY;
 
 const db = getInboxDb();
+const targetSql = retryUnknown
+	? `SELECT * FROM messages WHERE category='transactional' AND json_extract(extracted_data, '$.kind') = 'unknown' ORDER BY date_received DESC LIMIT ?`
+	: `SELECT * FROM messages WHERE category='transactional' AND extracted_data IS NULL ORDER BY date_received DESC LIMIT ?`;
 const rows = db
-	.prepare(
-		`SELECT * FROM messages WHERE category='transactional' AND extracted_data IS NULL ORDER BY date_received DESC LIMIT ?`,
-	)
+	.prepare(targetSql)
 	.all(Number.isFinite(limit) ? limit : 1000) as Record<string, unknown>[];
 
-console.log(`Backfill target: ${rows.length} unextracted transactional rows.${dryRun ? ' (dry-run)' : ''}\n`);
+const mode = retryUnknown ? 'retry-unknown' : 'fresh';
+console.log(`Backfill mode: ${mode}. Target: ${rows.length} rows.${dryRun ? ' (dry-run)' : ''}\n`);
 
 if (rows.length === 0) {
 	console.log('Nothing to do.');
@@ -57,6 +60,7 @@ const stats = {
 	processed: 0,
 	ok: 0,
 	failed: 0,
+	bodyFallbacks: 0,
 	byKind: {} as Record<string, number>,
 	totalMs: 0,
 };
@@ -72,12 +76,18 @@ for (let i = 0; i < rows.length; i++) {
 			tool: 'inbox-extract-data',
 			messageId: msg.id,
 			actor: 'operator-direct',
-			args: { mode: 'backfill' },
-			result: { ok: result.ok, kind: result.extract.kind, reason: result.reason },
+			args: { mode: retryUnknown ? 'backfill-retry-unknown' : 'backfill' },
+			result: {
+				ok: result.ok,
+				kind: result.extract.kind,
+				reason: result.reason,
+				usedBodyFallback: result.usedBodyFallback,
+			},
 		});
 		stats.processed++;
 		if (result.ok) stats.ok++;
 		else stats.failed++;
+		if (result.usedBodyFallback) stats.bodyFallbacks++;
 		stats.byKind[result.extract.kind] = (stats.byKind[result.extract.kind] || 0) + 1;
 		stats.totalMs += Date.now() - rowStart;
 	} catch (err) {
@@ -97,14 +107,14 @@ for (let i = 0; i < rows.length; i++) {
 
 const totalSec = ((Date.now() - t0) / 1000).toFixed(1);
 console.log(`\nDone in ${totalSec}s.`);
-console.log(`  processed: ${stats.processed}`);
-console.log(`  ok:        ${stats.ok}`);
-console.log(`  failed:    ${stats.failed}`);
+console.log(`  processed:     ${stats.processed}`);
+console.log(`  ok:            ${stats.ok}`);
+console.log(`  failed:        ${stats.failed}`);
+console.log(`  bodyFallbacks: ${stats.bodyFallbacks}`);
 console.log(`  byKind:`, stats.byKind);
 
 // Cost estimate (Gemini 2.5 Flash, rough):
-//   input  ~ 400 tok @ $0.075/1M  = $0.00003/row
-//   output ~ 150 tok @ $0.30/1M   = $0.000045/row
-//   total ≈ $0.00008/row
-const estCost = (stats.processed * 0.00008).toFixed(4);
+//   preview-only row ≈ $0.00008
+//   body-fallback row ≈ $0.00018 (2 LLM passes + larger context on pass 2)
+const estCost = ((stats.processed - stats.bodyFallbacks) * 0.00008 + stats.bodyFallbacks * 0.00018).toFixed(4);
 console.log(`  est. cost: ~$${estCost}`);

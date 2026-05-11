@@ -24,6 +24,10 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { z } from 'zod';
 
 import type { InboxMessage } from './types.js';
+import { getAccount } from './db.js';
+import { fetchImapBody } from './body.js';
+
+const BODY_FALLBACK_TRUNCATE_CHARS = 4000;
 
 const TRANSACTIONAL_KINDS = [
 	'payment',
@@ -102,18 +106,28 @@ const TransactionalExtractSchema = z.object({
 		),
 });
 
-const SYSTEM_PROMPT = `You read a single transactional email (subject + 500-character preview) and extract a structured JSON record.
+const SYSTEM_PROMPT = `You read a single transactional email (subject + content excerpt) and extract a structured JSON record.
 
 Rules:
 - Output strictly matches the schema. Use empty strings for missing string fields and 0 for missing amounts — do not invent values.
 - Pick exactly one \`kind\`. Use "unknown" when no category fits.
 - ISO date format only (YYYY-MM-DD). Parse "12 May 2026", "May 12", "2026-05-12" — but skip ambiguous "5/12" without a year.
 - \`anomalyHint\` is strict: set TRUE only when the email itself flags unusual activity ("unusual sign-in", "exceeded", "fraud", "suspicious", "verify it was you"). A large but routine transaction is NOT anomalous.
-- The preview is truncated to ~500 chars. If a field is genuinely missing from the preview, leave it empty — do not guess. The caller may re-extract from the full body later.`;
+- The excerpt may be truncated. If a field is genuinely missing, leave it empty — do not guess.`;
 
 export interface ExtractInput {
 	subject: string;
 	preview: string;
+	/** Optional body-fetch fallback — invoked ONLY when the preview pass
+	 *  returns `kind='unknown'`. Should resolve to the readable text of
+	 *  the full message body, or null if unavailable. Returning null
+	 *  causes the extractor to keep the preview-pass result.
+	 *
+	 *  Per ADR §Privacy: bodies are pulled live, used once, not cached.
+	 *  This is the single privacy-sensitive escape hatch — the caller
+	 *  owns the policy (e.g. wire it for transactional, skip for other
+	 *  categories). */
+	fetchBody?: () => Promise<string | null>;
 }
 
 export interface ExtractResult {
@@ -121,26 +135,24 @@ export interface ExtractResult {
 	extract: TransactionalExtract;
 	/** When `ok=false`, the reason is also written into `extract.note`. */
 	reason?: string;
+	/** TRUE when the preview pass returned `unknown` and the body-fetch
+	 *  fallback was invoked. Recorded into agent_actions for cost
+	 *  accounting and to measure preview-only ceiling vs body coverage. */
+	usedBodyFallback?: boolean;
 }
 
-/** Run the extractor on a single transactional message. Always returns —
- *  failures resolve to `{ok:false, extract:{kind:'unknown',note:<reason>}}`
- *  so the caller can cache the result and short-circuit retries.
- *
- *  Returns a plain result; persistence is the caller's job (so the same
- *  function can be exercised in tests without touching the DB). */
-export async function extractTransactional(input: ExtractInput): Promise<ExtractResult> {
+/** Internal: one Gemini pass against a single subject + content excerpt.
+ *  Returns a normalised result. Used by `extractTransactional` for both
+ *  the preview pass and (optionally) the body-fetch fallback pass. */
+async function runExtraction(
+	subject: string,
+	content: string,
+): Promise<{ ok: true; extract: TransactionalExtract } | { ok: false; reason: string }> {
 	const apiKey = process.env.GEMINI_API_KEY;
-	if (!apiKey) {
-		const reason = 'GEMINI_API_KEY not set';
-		return { ok: false, reason, extract: { kind: 'unknown', note: reason } };
-	}
+	if (!apiKey) return { ok: false, reason: 'GEMINI_API_KEY not set' };
 
-	const subject = (input.subject || '').slice(0, 200);
-	const preview = (input.preview || '').slice(0, 500);
-	if (!subject.trim() && !preview.trim()) {
-		const reason = 'empty subject and preview';
-		return { ok: false, reason, extract: { kind: 'unknown', note: reason } };
+	if (!subject.trim() && !content.trim()) {
+		return { ok: false, reason: 'empty subject and content' };
 	}
 
 	const client = createGoogleGenerativeAI({ apiKey });
@@ -152,7 +164,7 @@ export async function extractTransactional(input: ExtractInput): Promise<Extract
 			model: client(modelId),
 			system: SYSTEM_PROMPT,
 			output: Output.object({ schema: TransactionalExtractSchema }),
-			prompt: `Subject: ${subject}\n\nPreview: ${preview}`,
+			prompt: `Subject: ${subject}\n\nContent: ${content}`,
 			maxOutputTokens: 400,
 			providerOptions: {
 				google: { thinkingConfig: { thinkingBudget: 0 } },
@@ -160,8 +172,7 @@ export async function extractTransactional(input: ExtractInput): Promise<Extract
 		});
 		raw = result.output;
 	} catch (err) {
-		const reason = `extractor LLM error: ${(err as Error).message}`;
-		return { ok: false, reason, extract: { kind: 'unknown', note: reason } };
+		return { ok: false, reason: `extractor LLM error: ${(err as Error).message}` };
 	}
 
 	// Normalise the flat-string output into the optional-field
@@ -179,9 +190,81 @@ export async function extractTransactional(input: ExtractInput): Promise<Extract
 	return { ok: true, extract };
 }
 
+/** Run the extractor on a single transactional message. Always returns —
+ *  failures resolve to `{ok:false, extract:{kind:'unknown',note:<reason>}}`
+ *  so the caller can cache the result and short-circuit retries.
+ *
+ *  Two-stage flow when `input.fetchBody` is provided:
+ *    1. Preview pass — subject + 500-char body_preview.
+ *    2. If pass 1 returned `kind='unknown'`, invoke `fetchBody()` and
+ *       run a second pass against the full body (truncated to 4KB).
+ *       Used to recover HTML-template emails whose transactional payload
+ *       sits below the preview window (bank statements, invoice mailers).
+ *
+ *  Persistence is the caller's job — the same function is exercised in
+ *  tests/scripts without touching the DB. */
+export async function extractTransactional(input: ExtractInput): Promise<ExtractResult> {
+	const subject = (input.subject || '').slice(0, 200);
+	const preview = (input.preview || '').slice(0, 500);
+
+	const pass1 = await runExtraction(subject, preview);
+	if (!pass1.ok) {
+		return { ok: false, reason: pass1.reason, extract: { kind: 'unknown', note: pass1.reason } };
+	}
+
+	// Preview pass returned a definite category — done.
+	if (pass1.extract.kind !== 'unknown' || !input.fetchBody) {
+		return { ok: true, extract: pass1.extract };
+	}
+
+	// Pass 2 — body-fetch fallback for unknowns.
+	let body: string | null;
+	try {
+		body = await input.fetchBody();
+	} catch (err) {
+		// Body fetch failed (IMAP down, etc.) — keep pass-1 unknown rather
+		// than reporting a different error. The audit row still records
+		// that fallback was attempted.
+		return { ok: true, extract: pass1.extract, usedBodyFallback: true };
+	}
+
+	if (!body || !body.trim()) {
+		return { ok: true, extract: pass1.extract, usedBodyFallback: true };
+	}
+
+	const truncated = body.slice(0, BODY_FALLBACK_TRUNCATE_CHARS);
+	const pass2 = await runExtraction(subject, truncated);
+	if (!pass2.ok) {
+		// Second-pass LLM error — fall back to pass-1 result so the row
+		// gets a `kind='unknown'` cache and doesn't retry on every poll.
+		return { ok: true, extract: pass1.extract, usedBodyFallback: true };
+	}
+	return { ok: true, extract: pass2.extract, usedBodyFallback: true };
+}
+
 /** Helper for the orchestrator tool — given an `InboxMessage`, returns
- *  the inputs the extractor needs. Centralised here so the tool stays
- *  thin and tests can construct inputs from fixture rows directly. */
+ *  the inputs the extractor needs INCLUDING a wired `fetchBody` callback.
+ *  The fallback only fires if the preview pass returns `kind='unknown'`,
+ *  so the cost is bounded — most rows extract from preview alone.
+ *
+ *  Body-fetch errors are caught and logged; the extractor degrades to
+ *  the preview-pass result rather than propagating IMAP failures. */
 export function inputFromMessage(msg: InboxMessage): ExtractInput {
-	return { subject: msg.subject, preview: msg.bodyPreview };
+	return {
+		subject: msg.subject,
+		preview: msg.bodyPreview,
+		fetchBody: async () => {
+			const account = getAccount(msg.accountId);
+			if (!account) return null;
+			try {
+				const body = await fetchImapBody(account, msg);
+				return body.text ?? null;
+			} catch (err) {
+				console.warn(
+					`[inbox-extract/body-fallback] msg ${msg.id}: ${(err as Error).message}`,
+				);
+				return null;
+			}
+		},
+	};
 }

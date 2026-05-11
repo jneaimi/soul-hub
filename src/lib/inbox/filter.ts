@@ -129,7 +129,12 @@ function maybeQueueEagerExtraction(
 				messageId,
 				actor: 'worker',
 				args: { mode: 'eager' },
-				result: { ok: result.ok, kind: result.extract.kind, reason: result.reason },
+				result: {
+					ok: result.ok,
+					kind: result.extract.kind,
+					reason: result.reason,
+					usedBodyFallback: result.usedBodyFallback,
+				},
 			});
 		} catch (err) {
 			console.warn(

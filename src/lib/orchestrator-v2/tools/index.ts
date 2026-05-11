@@ -1150,7 +1150,12 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 					messageId,
 					actor: 'orchestrator',
 					args: { messageId },
-					result: { ok: result.ok, kind: result.extract.kind, reason: result.reason },
+					result: {
+						ok: result.ok,
+						kind: result.extract.kind,
+						reason: result.reason,
+						usedBodyFallback: result.usedBodyFallback,
+					},
 				});
 				return {
 					kind: 'reply',
