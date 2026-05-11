@@ -39,6 +39,24 @@ import {
 	type FilterCategory,
 } from '../../inbox/index.js';
 import {
+	addContact,
+	getContact,
+	searchContacts,
+	findContactByEmail,
+	updateContactStage,
+	setNextFollowup,
+	addContactEmail,
+	addInteraction,
+	listFollowups,
+	findWebsiteLeads,
+	syncContactToVault,
+	CONTACT_STAGES,
+	type Contact,
+	type ContactStage,
+	type InteractionChannel,
+	type InteractionDirection,
+} from '../../crm/index.js';
+import {
 	getImgCount,
 	incrementImgCount,
 	getYoutubeCount,
@@ -1015,6 +1033,383 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 				}
 			},
 		}),
+
+		'crm-add-contact': tool({
+			description:
+				"Add a new CRM contact. Use when the user says 'add X as a new lead', 'remember Sarah from Acme', " +
+				"'create a contact for Y'. Provide displayName plus any combination of company, role, source, stage " +
+				"(default 'Lead'), and an emails array. After creating, the contact's vault note is generated " +
+				"automatically in knowledge/crm/contacts/ with managed frontmatter.",
+			inputSchema: z.object({
+				displayName: z.string().min(1).max(120),
+				company: z.string().max(120).optional(),
+				role: z.string().max(120).optional(),
+				source: z.enum(['Website', 'LinkedIn', 'Twitter', 'Email', 'Referral', 'Speaking']).optional(),
+				stage: z.enum(CONTACT_STAGES as readonly [ContactStage, ...ContactStage[]]).optional(),
+				notes: z.string().max(2000).optional(),
+				emails: z
+					.array(
+						z.object({
+							email: z.string().email(),
+							label: z.string().max(40).optional(),
+							isPrimary: z.boolean().optional(),
+						}),
+					)
+					.optional(),
+			}),
+			execute: async (input): Promise<ToolResult> => {
+				logToolCall('crm-add-contact', {
+					displayName: input.displayName,
+					company: input.company,
+					emails: input.emails?.length ?? 0,
+				});
+				try {
+					const created = addContact(input);
+					const syncResult = await syncContactToVault(created.id);
+					const vaultNote = syncResult.ok ? ` Vault note: ${syncResult.path}.` : '';
+					const emailLine =
+						created.emails.length > 0
+							? ` Emails: ${created.emails.map((e) => e.email).join(', ')}.`
+							: '';
+					return {
+						kind: 'reply',
+						text: `Created ${created.id} (${created.displayName}, ${created.stage}).${emailLine}${vaultNote}`,
+					};
+				} catch (err) {
+					return { kind: 'reply', text: `Could not add contact: ${(err as Error).message}` };
+				}
+			},
+		}),
+
+		'crm-find-contact': tool({
+			description:
+				"Search CRM contacts. Pass `email` for exact-email lookup (case-insensitive) or `query` for FTS5 " +
+				"over name, company, role, and notes. Returns the matches with stage and primary email. " +
+				"Use for 'who is X', 'do I have a contact at Acme', 'find John's record', 'is sarah@acme.com in my CRM'.",
+			inputSchema: z
+				.object({
+					query: z.string().min(1).max(200).optional(),
+					email: z.string().email().optional(),
+					limit: z.number().int().min(1).max(25).optional(),
+				})
+				.refine((v) => v.query || v.email, {
+					message: 'Provide either `query` or `email`.',
+				}),
+			execute: async ({ query, email, limit }): Promise<ToolResult> => {
+				logToolCall('crm-find-contact', { query, email, limit });
+				const matches: Contact[] = [];
+				if (email) {
+					const m = findContactByEmail(email);
+					if (m) matches.push(m.contact);
+				}
+				if (query && matches.length === 0) {
+					matches.push(...searchContacts(query, limit ?? 10));
+				}
+				if (matches.length === 0) {
+					return { kind: 'reply', text: 'No CRM contacts match.' };
+				}
+				const lines = matches.map((c, i) => {
+					const company = c.company ? ` · ${c.company}` : '';
+					const role = c.role ? ` (${c.role})` : '';
+					return `${i + 1}. ${c.displayName}${company}${role} — ${c.stage}  (id ${c.id})`;
+				});
+				return {
+					kind: 'reply',
+					text: `${matches.length} match${matches.length === 1 ? '' : 'es'}:\n${lines.join('\n')}`,
+				};
+			},
+		}),
+
+		'crm-log-interaction': tool({
+			description:
+				"Log an interaction with a CRM contact (channel: email/call/meeting/social/whatsapp/other). " +
+				"Resolve the contact via `contactId` (CRM-YYYY-NNN) OR `email`. Provide a short `summary`. " +
+				"Optionally set `messageId` to cross-reference an inbox message id from inbox-list-queued. " +
+				"Use after 'I met with X', 'called Y', 'replied to Z's email'.",
+			inputSchema: z
+				.object({
+					contactId: z.string().regex(/^CRM-\d{4}-\w+$/).optional(),
+					email: z.string().email().optional(),
+					channel: z.enum(['email', 'call', 'meeting', 'social', 'whatsapp', 'other']),
+					direction: z.enum(['inbound', 'outbound']).optional(),
+					summary: z.string().min(1).max(500),
+					messageId: z.number().int().positive().optional(),
+				})
+				.refine((v) => v.contactId || v.email, {
+					message: 'Provide either `contactId` or `email`.',
+				}),
+			execute: async (input): Promise<ToolResult> => {
+				logToolCall('crm-log-interaction', {
+					contactId: input.contactId,
+					email: input.email,
+					channel: input.channel,
+				});
+				const contactId = resolveCrmContactId(input);
+				if (!contactId) {
+					return {
+						kind: 'reply',
+						text: `Could not resolve contact${input.email ? ` for ${input.email}` : ''}.`,
+					};
+				}
+				try {
+					const row = addInteraction({
+						contactId,
+						channel: input.channel as InteractionChannel,
+						direction: input.direction as InteractionDirection | undefined,
+						summary: input.summary,
+						messageId: input.messageId ?? null,
+					});
+					return {
+						kind: 'reply',
+						text: `Logged ${row.channel} interaction with ${contactId} (#${row.id}).`,
+					};
+				} catch (err) {
+					return { kind: 'reply', text: `Could not log interaction: ${(err as Error).message}` };
+				}
+			},
+		}),
+
+		'crm-update-stage': tool({
+			description:
+				"Move a CRM contact between pipeline stages: Lead → Contacted → In Conversation → Proposal → Won → Lost. " +
+				"Resolve via `contactId` or `email`. Writes a stage_history row + refreshes the vault note frontmatter. " +
+				"Use for 'move John to In Conversation', 'mark Acme as Won', 'lost the Carrefour deal'.",
+			inputSchema: z
+				.object({
+					contactId: z.string().regex(/^CRM-\d{4}-\w+$/).optional(),
+					email: z.string().email().optional(),
+					stage: z.enum(CONTACT_STAGES as readonly [ContactStage, ...ContactStage[]]),
+					reason: z.string().max(200).optional(),
+				})
+				.refine((v) => v.contactId || v.email, {
+					message: 'Provide either `contactId` or `email`.',
+				}),
+			execute: async (input): Promise<ToolResult> => {
+				logToolCall('crm-update-stage', {
+					contactId: input.contactId,
+					email: input.email,
+					stage: input.stage,
+				});
+				const contactId = resolveCrmContactId(input);
+				if (!contactId) {
+					return {
+						kind: 'reply',
+						text: `Could not resolve contact${input.email ? ` for ${input.email}` : ''}.`,
+					};
+				}
+				const changed = updateContactStage(contactId, input.stage as ContactStage, input.reason);
+				if (!changed) {
+					const current = getContact(contactId);
+					return {
+						kind: 'reply',
+						text: current
+							? `${contactId} is already at stage ${current.stage}.`
+							: `Contact ${contactId} not found.`,
+					};
+				}
+				const syncResult = await syncContactToVault(contactId);
+				const vaultNote = syncResult.ok ? ` Vault note synced.` : '';
+				return {
+					kind: 'reply',
+					text: `Updated ${contactId} to ${input.stage}.${vaultNote}`,
+				};
+			},
+		}),
+
+		'crm-set-followup': tool({
+			description:
+				"Schedule the next follow-up date for a CRM contact. Resolve via `contactId` or `email`. " +
+				"Emit `dueAt` as ISO 8601 with timezone offset (parse natural language relative to Asia/Dubai). " +
+				"By default also creates a WhatsApp reminder via the heartbeat commitments rail so the user is " +
+				"pinged at the due time — set `createReminder=false` to skip the ping. " +
+				"Use for 'follow up with X next Tuesday', 'set a reminder to ping Sarah in two weeks'.",
+			inputSchema: z
+				.object({
+					contactId: z.string().regex(/^CRM-\d{4}-\w+$/).optional(),
+					email: z.string().email().optional(),
+					dueAt: z.string().datetime({ offset: true }),
+					context: z.string().max(120).optional(),
+					createReminder: z.boolean().optional(),
+				})
+				.refine((v) => v.contactId || v.email, {
+					message: 'Provide either `contactId` or `email`.',
+				}),
+			execute: async (input): Promise<ToolResult> => {
+				logToolCall('crm-set-followup', {
+					contactId: input.contactId,
+					email: input.email,
+					dueAt: input.dueAt,
+				});
+				const contactId = resolveCrmContactId(input);
+				if (!contactId) {
+					return {
+						kind: 'reply',
+						text: `Could not resolve contact${input.email ? ` for ${input.email}` : ''}.`,
+					};
+				}
+				const contact = getContact(contactId);
+				if (!contact) {
+					return { kind: 'reply', text: `Contact ${contactId} not found.` };
+				}
+				const ts = Date.parse(input.dueAt);
+				if (Number.isNaN(ts)) {
+					return { kind: 'reply', text: `Invalid dueAt: ${input.dueAt}.` };
+				}
+				setNextFollowup(contactId, ts);
+
+				// Optional heartbeat reminder. Mirrors scheduleReminder's gates but
+				// quieter — if any gate fails we still record the follow-up date,
+				// we just skip the chat-ping piece and tell the user.
+				const wantsReminder = input.createReminder !== false;
+				let reminderNote = '';
+				if (wantsReminder) {
+					const canReminder =
+						deps.channel === 'whatsapp' &&
+						deps.remindersConfig?.enabled &&
+						!!deps.senderNumber &&
+						ts > Date.now();
+					if (canReminder) {
+						const ctx = input.context ? ` about ${input.context}` : '';
+						try {
+							insertCommitment({
+								channel: 'whatsapp',
+								target: deps.senderNumber!,
+								suggestedText: `Follow up with ${contact.displayName}${ctx}`,
+								dueAfterTs: ts,
+								sourceMsgId: null,
+								confidence: 1.0,
+								source: 'crm-followup',
+							});
+							reminderNote = ' WhatsApp reminder scheduled.';
+						} catch (err) {
+							reminderNote = ` (reminder skipped: ${(err as Error).message})`;
+						}
+					} else {
+						reminderNote = ' (reminder skipped — heartbeat off or non-WhatsApp channel)';
+					}
+				}
+				const when = new Date(ts).toISOString();
+				return {
+					kind: 'reply',
+					text: `Set follow-up for ${contact.displayName} (${contactId}) at ${when}.${reminderNote}`,
+				};
+			},
+		}),
+
+		'crm-list-followups': tool({
+			description:
+				"List CRM contacts with overdue or upcoming follow-ups. Optional knobs: `overdueWindowDays` " +
+				"(how far back to look for overdue rows) + `upcomingWindowDays` (default 3). Returns the lists " +
+				"grouped — render them as two short sections in the reply. Use for 'what's overdue', " +
+				"'who do I need to follow up with', 'my follow-ups this week'.",
+			inputSchema: z.object({
+				overdueWindowDays: z.number().int().min(0).max(365).optional(),
+				upcomingWindowDays: z.number().int().min(0).max(60).optional(),
+				limit: z.number().int().min(1).max(100).optional(),
+			}),
+			execute: async (opts): Promise<ToolResult> => {
+				logToolCall('crm-list-followups', opts);
+				const { overdue, upcoming } = listFollowups(opts);
+				if (overdue.length === 0 && upcoming.length === 0) {
+					return { kind: 'reply', text: 'No follow-ups in window.' };
+				}
+				const formatRow = (c: Contact): string => {
+					const when = c.nextFollowupAt ? new Date(c.nextFollowupAt).toISOString().slice(0, 10) : '—';
+					return `${c.displayName} (${c.stage}) — ${when}  (id ${c.id})`;
+				};
+				const sections: string[] = [];
+				if (overdue.length > 0) {
+					sections.push(`Overdue (${overdue.length}):\n${overdue.map(formatRow).join('\n')}`);
+				}
+				if (upcoming.length > 0) {
+					sections.push(`Upcoming (${upcoming.length}):\n${upcoming.map(formatRow).join('\n')}`);
+				}
+				return { kind: 'reply', text: sections.join('\n\n') };
+			},
+		}),
+
+		'crm-add-email': tool({
+			description:
+				"Add an additional email address to an existing CRM contact. Resolve via `contactId` or " +
+				"`currentEmail` (one of the contact's existing addresses). Provide the `newEmail` and " +
+				"optional `label` ('work' | 'personal' | other) and `isPrimary`. Emails are globally unique " +
+				"across the CRM — reusing an email attached to another contact errors.",
+			inputSchema: z
+				.object({
+					contactId: z.string().regex(/^CRM-\d{4}-\w+$/).optional(),
+					currentEmail: z.string().email().optional(),
+					newEmail: z.string().email(),
+					label: z.string().max(40).optional(),
+					isPrimary: z.boolean().optional(),
+				})
+				.refine((v) => v.contactId || v.currentEmail, {
+					message: 'Provide either `contactId` or `currentEmail`.',
+				}),
+			execute: async (input): Promise<ToolResult> => {
+				logToolCall('crm-add-email', {
+					contactId: input.contactId,
+					currentEmail: input.currentEmail,
+					newEmail: input.newEmail,
+				});
+				const contactId = resolveCrmContactId({
+					contactId: input.contactId,
+					email: input.currentEmail,
+				});
+				if (!contactId) {
+					return {
+						kind: 'reply',
+						text: `Could not resolve contact${input.currentEmail ? ` for ${input.currentEmail}` : ''}.`,
+					};
+				}
+				try {
+					addContactEmail({
+						contactId,
+						email: input.newEmail,
+						label: input.label,
+						isPrimary: !!input.isPrimary,
+					});
+				} catch (err) {
+					return {
+						kind: 'reply',
+						text: `Could not add email: ${(err as Error).message}`,
+					};
+				}
+				const syncResult = await syncContactToVault(contactId);
+				const vaultNote = syncResult.ok ? ' Vault note synced.' : '';
+				return {
+					kind: 'reply',
+					text: `Added ${input.newEmail} to ${contactId}.${vaultNote}`,
+				};
+			},
+		}),
+
+		'crm-find-website-leads': tool({
+			description:
+				"Find inbox messages that look like website leads — subject contains a configurable tag " +
+				"(default `[jneaimi.com]`) AND the sender is NOT already a CRM contact. Returns a list " +
+				"the user can convert into contacts via crm-add-contact. Use for 'any new website leads', " +
+				"'check for inquiries from the site', 'who reached out from the site this week'.",
+			inputSchema: z.object({
+				subjectContains: z.string().max(80).optional(),
+				limit: z.number().int().min(1).max(50).optional(),
+			}),
+			execute: async ({ subjectContains, limit }): Promise<ToolResult> => {
+				logToolCall('crm-find-website-leads', { subjectContains, limit });
+				const results = findWebsiteLeads({ subjectContains, limit });
+				if (results.length === 0) {
+					return { kind: 'reply', text: 'No fresh website leads.' };
+				}
+				const lines = results.map((r, i) => {
+					const when = new Date(r.dateReceived).toISOString().slice(0, 10);
+					const who = r.fromName ? `${r.fromName} <${r.fromAddress}>` : r.fromAddress;
+					return `${i + 1}. ${who} — ${r.subject}  · ${when}  (id ${r.messageId})`;
+				});
+				return {
+					kind: 'reply',
+					text: `${results.length} website lead${results.length === 1 ? '' : 's'}:\n${lines.join('\n')}`,
+				};
+			},
+		}),
 	};
 }
 
@@ -1128,6 +1523,19 @@ function logToolCall(name: string, payload: Record<string, unknown>): void {
 	console.log(`[orchestrator-v2] tool:${name}`, argPreview);
 	// ADR-015 — feed the in-memory ring buffer that powers /orchestrator/tools.
 	recordToolCall(name, argPreview.slice(0, 240));
+}
+
+/** Resolve a CRM contact id from either an explicit id or an email lookup.
+ *  Returns null when neither input matches an existing contact. Used by
+ *  every mutation tool that lets the model identify a contact two ways
+ *  (the LLM rarely knows the CRM id but often knows the email). */
+function resolveCrmContactId(input: { contactId?: string; email?: string }): string | null {
+	if (input.contactId) return input.contactId;
+	if (input.email) {
+		const match = findContactByEmail(input.email);
+		return match?.contact.id ?? null;
+	}
+	return null;
 }
 
 /** Build the `invokeSkill` tool description dynamically from the registry.

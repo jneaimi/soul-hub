@@ -7,8 +7,9 @@ export {
 	addContactEmail, setPrimaryEmail, listContactEmails, findContactByEmail,
 	addInteraction, listInteractions,
 	addTag, tagContact, listContactTags,
-	listStageHistory,
+	listStageHistory, listFollowups,
 	type ListContactsOptions, type AddContactEmailInput, type AddInteractionInput,
+	type ListFollowupsOptions,
 } from './db.js';
 
 export type {

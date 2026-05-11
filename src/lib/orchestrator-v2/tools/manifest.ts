@@ -262,6 +262,141 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 		],
 	},
 	{
+		name: 'crm-add-contact',
+		category: 'write',
+		llm_description:
+			"Add a new CRM contact. Use when the user says 'add X as a new lead', 'remember Sarah from Acme', " +
+			"'create a contact for Y'. Provide displayName plus any combination of company, role, source, stage " +
+			"(default 'Lead'), and an emails array. After creating, the contact's vault note is generated " +
+			"automatically in knowledge/crm/contacts/ with managed frontmatter.",
+		ui_description:
+			'Add a new CRM contact with optional emails. Creates the vault note alongside the DB row.',
+		examples: [
+			{
+				user: '"add Sarah from Acme as a lead, her email is sarah@acme.com"',
+				toolArgs: '{ displayName: "Sarah Smith", company: "Acme", emails: [{ email: "sarah@acme.com", isPrimary: true }] }',
+			},
+		],
+	},
+	{
+		name: 'crm-find-contact',
+		category: 'read',
+		llm_description:
+			"Search CRM contacts. Pass `email` for exact-email lookup (case-insensitive) or `query` for FTS5 " +
+			"over name, company, role, and notes. Returns the matches with stage and primary email. " +
+			"Use for 'who is X', 'do I have a contact at Acme', 'find John's record', 'is sarah@acme.com in my CRM'.",
+		ui_description:
+			'Search CRM contacts by name/company/role/notes (FTS5) or exact email.',
+		examples: [
+			{ user: '"do I have John from Acme"', toolArgs: '{ query: "John Acme" }' },
+			{
+				user: '"is sarah@acme.com a contact"',
+				toolArgs: '{ email: "sarah@acme.com" }',
+			},
+		],
+	},
+	{
+		name: 'crm-log-interaction',
+		category: 'write',
+		llm_description:
+			"Log an interaction with a CRM contact (channel: email/call/meeting/social/whatsapp/other). " +
+			"Resolve the contact via `contactId` (CRM-YYYY-NNN) OR `email`. Provide a short `summary`. " +
+			"Optionally set `messageId` to cross-reference an inbox message id from inbox-list-queued. " +
+			"Use after 'I met with X', 'called Y', 'replied to Z's email'.",
+		ui_description:
+			'Append an interaction touch to a contact. Supports linking to an inbox message id.',
+		examples: [
+			{
+				user: '"log a meeting with Sarah today, we discussed pricing"',
+				toolArgs: '{ email: "sarah@acme.com", channel: "meeting", summary: "Discussed pricing" }',
+			},
+		],
+	},
+	{
+		name: 'crm-update-stage',
+		category: 'write',
+		llm_description:
+			"Move a CRM contact between pipeline stages: Lead → Contacted → In Conversation → Proposal → Won → Lost. " +
+			"Resolve via `contactId` or `email`. Writes a stage_history row + refreshes the vault note frontmatter. " +
+			"Use for 'move John to In Conversation', 'mark Acme as Won', 'lost the Carrefour deal'.",
+		ui_description:
+			'Move a contact between pipeline stages. Audits the move in stage_history and syncs the vault note.',
+		examples: [
+			{
+				user: '"move Sarah to In Conversation"',
+				toolArgs: '{ email: "sarah@acme.com", stage: "In Conversation" }',
+			},
+		],
+	},
+	{
+		name: 'crm-set-followup',
+		category: 'write',
+		llm_description:
+			"Schedule the next follow-up date for a CRM contact. Resolve via `contactId` or `email`. " +
+			"Emit `dueAt` as ISO 8601 with timezone offset (parse natural language relative to Asia/Dubai). " +
+			"By default also creates a WhatsApp reminder via the heartbeat commitments rail so the user is " +
+			"pinged at the due time — set `createReminder=false` to skip the ping. " +
+			"Use for 'follow up with X next Tuesday', 'set a reminder to ping Sarah in two weeks'.",
+		ui_description:
+			'Set the next follow-up date on a CRM contact. Optionally fires a WhatsApp reminder via heartbeat commitments.',
+		examples: [
+			{
+				user: '"follow up with John about the proposal next Tuesday"',
+				toolArgs: '{ email: "john@acme.com", dueAt: "2026-05-19T09:00:00+04:00", context: "proposal" }',
+			},
+		],
+	},
+	{
+		name: 'crm-list-followups',
+		category: 'read',
+		llm_description:
+			"List CRM contacts with overdue or upcoming follow-ups. Optional knobs: `overdueWindowDays` " +
+			"(how far back to look for overdue rows) + `upcomingWindowDays` (default 3). Returns the lists " +
+			"grouped — render them as two short sections in the reply. Use for 'what's overdue', " +
+			"'who do I need to follow up with', 'my follow-ups this week'.",
+		ui_description:
+			'List CRM contacts with overdue + upcoming follow-ups inside a configurable window.',
+		examples: [
+			{ user: '"what is overdue this week"', toolArgs: '{ upcomingWindowDays: 0 }' },
+			{ user: '"my follow-ups this week"', toolArgs: '{ upcomingWindowDays: 7 }' },
+		],
+	},
+	{
+		name: 'crm-add-email',
+		category: 'write',
+		llm_description:
+			"Add an additional email address to an existing CRM contact. Resolve via `contactId` or " +
+			"`currentEmail` (one of the contact's existing addresses). Provide the `newEmail` and " +
+			"optional `label` ('work' | 'personal' | other) and `isPrimary`. Emails are globally unique " +
+			"across the CRM — reusing an email attached to another contact errors.",
+		ui_description:
+			'Add a secondary email address to a CRM contact. Mirrors the multi-email schema from ADR D2.',
+		examples: [
+			{
+				user: '"John\'s personal email is john.doe@gmail.com"',
+				toolArgs: '{ currentEmail: "john@acme.com", newEmail: "john.doe@gmail.com", label: "personal" }',
+			},
+		],
+	},
+	{
+		name: 'crm-find-website-leads',
+		category: 'read',
+		llm_description:
+			"Find inbox messages that look like website leads — subject contains a configurable tag " +
+			"(default `[jneaimi.com]`) AND the sender is NOT already a CRM contact. Returns a list " +
+			"the user can convert into contacts via crm-add-contact. Use for 'any new website leads', " +
+			"'check for inquiries from the site', 'who reached out from the site this week'.",
+		ui_description:
+			'Find fresh inbox messages that look like website leads (subject tag + unknown sender). Surfaces conversion candidates.',
+		examples: [
+			{ user: '"any new website leads"', toolArgs: '{}' },
+			{
+				user: '"any leads tagged with [acme.com]"',
+				toolArgs: '{ subjectContains: "[acme.com]" }',
+			},
+		],
+	},
+	{
 		name: 'scheduleReminder',
 		category: 'write',
 		llm_description:

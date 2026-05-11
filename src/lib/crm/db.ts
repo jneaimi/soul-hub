@@ -491,6 +491,60 @@ export function findContactByEmail(email: string): ContactEmailMatch | null {
 	};
 }
 
+export interface ListFollowupsOptions {
+	/** Include contacts whose follow-up is overdue by up to this many days
+	 *  (default: any overdue, including ancient stale rows). */
+	overdueWindowDays?: number;
+	/** Include contacts with follow-ups due within the next N days
+	 *  (default: 3). */
+	upcomingWindowDays?: number;
+	/** Max rows. Default 50. */
+	limit?: number;
+}
+
+/**
+ * Follow-ups split into overdue + upcoming by `next_followup_at` relative
+ * to now. Single SQL query — caller-side bucketing is cheaper than two
+ * round-trips. Rows without `next_followup_at` are never returned.
+ */
+export function listFollowups(opts: ListFollowupsOptions = {}): {
+	overdue: Contact[];
+	upcoming: Contact[];
+} {
+	const db = getCrmDb();
+	const now = Date.now();
+	const upcomingWindowMs = (opts.upcomingWindowDays ?? 3) * 24 * 60 * 60 * 1000;
+	const overdueFloor =
+		opts.overdueWindowDays !== undefined
+			? now - opts.overdueWindowDays * 24 * 60 * 60 * 1000
+			: 0;
+	const upcomingCeiling = now + upcomingWindowMs;
+	const limit = opts.limit ?? 50;
+
+	const rows = db
+		.prepare(`
+			SELECT * FROM contacts
+			WHERE next_followup_at IS NOT NULL
+			  AND next_followup_at >= ?
+			  AND next_followup_at <= ?
+			ORDER BY next_followup_at ASC
+			LIMIT ?
+		`)
+		.all(overdueFloor, upcomingCeiling, limit) as Record<string, unknown>[];
+
+	const overdue: Contact[] = [];
+	const upcoming: Contact[] = [];
+	for (const row of rows) {
+		const contact = rowToContact(row);
+		if ((contact.nextFollowupAt ?? 0) <= now) {
+			overdue.push(contact);
+		} else {
+			upcoming.push(contact);
+		}
+	}
+	return { overdue, upcoming };
+}
+
 // ─── helpers — interactions ────────────────────────────────────────────────
 
 export interface AddInteractionInput {
