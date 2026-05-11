@@ -324,7 +324,13 @@ async function syncInbox(
 			return;
 		}
 
-		const uidValidity = mailbox.uidValidity || 0;
+		// imapflow returns mailbox.uidValidity as a BigInt. We store it as a
+		// Number in sync_state (see Number() casts on upsert below). Coerce
+		// at the source so the equality checks against syncState.uidValidity
+		// don't silently always-fail — `2n !== 2` is true in JS, which would
+		// re-trigger the "UIDVALIDITY changed" branch on every reconnect and
+		// re-fetch the full mailbox every PM2 reload.
+		const uidValidity = Number(mailbox.uidValidity || 0);
 		const syncState = getSyncState(account.id, 'INBOX');
 
 		// Check UIDVALIDITY — if changed, folder was rebuilt server-side and
