@@ -147,6 +147,22 @@ function migrate(db: Database.Database): void {
 		`);
 		db.pragma(`user_version = 2`);
 	}
+
+	if (version < 3) {
+		// UNIQUE (provider, email) enforced at the storage layer. The
+		// application-level dedup in the OAuth callbacks + POST handler
+		// stays in place as the primary UX path — it returns helpful
+		// "Use Reauthorize / Reset Password" messages. The index here is
+		// belt-and-suspenders: a defense against any future code path
+		// (Layer 2 imports, batch tooling, direct SQL) that might bypass
+		// the application-level checks. Audited 2026-05-11: no existing
+		// duplicates in prod.
+		db.exec(`
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_provider_email
+			ON accounts(provider, email);
+		`);
+		db.pragma(`user_version = 3`);
+	}
 }
 
 // ── Account CRUD ──

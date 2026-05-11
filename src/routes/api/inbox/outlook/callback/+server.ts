@@ -2,7 +2,7 @@ import type { RequestHandler } from './$types';
 import { redirect } from '@sveltejs/kit';
 import { randomUUID } from 'node:crypto';
 import { exchangeOutlookCode, getOutlookUserEmail } from '$lib/inbox/outlook.js';
-import { addAccount, startAccountSync } from '$lib/inbox/index.js';
+import { addAccount, listAccounts, startAccountSync } from '$lib/inbox/index.js';
 
 /**
  * GET /api/inbox/outlook/callback — Microsoft OAuth2 callback
@@ -25,6 +25,26 @@ export const GET: RequestHandler = async ({ url }) => {
 	try {
 		const tokens = await exchangeOutlookCode(code, redirectUri);
 		const email = await getOutlookUserEmail(tokens.accessToken);
+
+		// Dedup on (outlook, email). Symmetric to the Gmail callback
+		// (ADR 2026-05-11-multiple-gmail-accounts) — prevents the
+		// duplicate-row + IDLE-storm pathology if the operator hits
+		// "Sign in with Microsoft" again with an already-connected
+		// identity. The Reauthorize hint is currently aspirational
+		// (Outlook in-place reauthorize lands with plan Open #2);
+		// until then, the operator's recovery path is the "remove and
+		// re-add" workaround from the settings modal (B2 stub).
+		const duplicate = listAccounts().find(
+			(a) => a.provider === 'outlook' && a.email === email,
+		);
+		if (duplicate) {
+			return redirect(
+				302,
+				`/inbox?error=${encodeURIComponent(
+					`Outlook account ${email} is already connected. Use the existing row's recovery options instead.`,
+				)}`,
+			);
+		}
 
 		const id = randomUUID().slice(0, 8);
 		const credential = JSON.stringify({

@@ -55,6 +55,28 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ error: 'host is required for custom IMAP provider' }, { status: 400 });
 	}
 
+	// Dedup on (provider, email). Re-adding an existing account would
+	// produce two rows competing for IMAP IDLE on the same mailbox — the
+	// storm pathology the 2026-05-10 cascade post-mortem catalogued. Same
+	// guard pattern as the Gmail OAuth callback (see ADR
+	// 2026-05-11-multiple-gmail-accounts) and Outlook callback. The
+	// UNIQUE(provider, email) index (migration #3) enforces this at the
+	// storage layer too; this earlier check just produces a friendlier
+	// error message.
+	const duplicate = listAccounts().find(
+		(a) => a.provider === provider && a.email === email,
+	);
+	if (duplicate) {
+		const fix =
+			provider === 'gmail' || provider === 'outlook'
+				? 'Use Reauthorize on the existing account if its tokens expired.'
+				: 'Open the existing account\'s settings (gear icon) and use Reset password.';
+		return json(
+			{ error: `Account ${email} is already connected. ${fix}` },
+			{ status: 409 },
+		);
+	}
+
 	const id = randomUUID().slice(0, 8);
 
 	try {

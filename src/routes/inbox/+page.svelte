@@ -174,12 +174,20 @@
 	let gmailConfigured = $state<boolean | null>(null); // null = not yet checked
 	let gmailConfigChecking = $state(false);
 
-	// Count of already-connected Gmail accounts. Drives the "Sign in with
-	// Google" vs "Add another Gmail account" copy branch in the Add panel,
-	// signalling that the flow supports multiple Gmail identities. See
-	// ADR 2026-05-11-multiple-gmail-accounts.
+	// Count of already-connected accounts per provider. Drives the
+	// "Sign in / Add another" copy branch in the Add panel for OAuth
+	// providers, and a "you already have N {provider} accounts" hint
+	// for password providers (iCloud, custom IMAP). Signals that the
+	// flow supports multiple identities per provider. See ADR
+	// 2026-05-11-multiple-gmail-accounts.
 	const existingGmailCount = $derived(
 		accounts.filter((a) => a.provider === 'gmail').length,
+	);
+	const existingOutlookCount = $derived(
+		accounts.filter((a) => a.provider === 'outlook').length,
+	);
+	const existingProviderCount = $derived(
+		accounts.filter((a) => a.provider === addProvider).length,
 	);
 
 	async function checkGmailConfig() {
@@ -842,14 +850,26 @@
 								{/if}
 							</div>
 						{:else if addProvider === 'outlook'}
-							<div class="col-span-2">
-								<p class="text-xs text-hub-muted mb-3">Outlook uses secure OAuth2 authentication.</p>
+							<div class="col-span-2 space-y-3">
+								<p class="text-xs text-hub-muted">Outlook uses secure OAuth2 authentication.</p>
 								<a href="/api/inbox/outlook" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-sky-500/15 text-sky-400 text-sm font-medium hover:bg-sky-500/25 transition-colors">
 									<svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M11.4 24H0V12.6L11.4 24zM24 24H12.6V12.6L24 24zM11.4 11.4H0V0l11.4 11.4zM24 11.4H12.6V0L24 11.4z"/></svg>
-									Sign in with Microsoft
+									{existingOutlookCount === 0 ? 'Sign in with Microsoft' : 'Add another Microsoft account'}
 								</a>
+								{#if existingOutlookCount > 0}
+									<p class="text-[10px] text-hub-dim leading-relaxed">
+										Microsoft will let you choose a different account on the consent screen. Re-grant for an existing account is currently routed through Remove + re-add (in-place reauthorize lands with plan Open #2).
+									</p>
+								{/if}
 							</div>
 						{:else}
+							{#if existingProviderCount > 0}
+								<div class="col-span-2">
+									<p class="text-[11px] text-hub-dim leading-relaxed">
+										You already have {existingProviderCount} {addProvider === 'icloud' ? 'iCloud' : 'IMAP'} account{existingProviderCount === 1 ? '' : 's'} connected. Adding another? Use a different email — duplicates are blocked.
+									</p>
+								</div>
+							{/if}
 							<div>
 								<label class="text-[10px] text-hub-dim uppercase tracking-wider">Label (optional)</label>
 								<input type="text" bind:value={addLabel} placeholder="Work, Personal..." class="w-full mt-1 px-2 py-1.5 rounded bg-hub-surface border border-hub-border text-sm text-hub-text placeholder:text-hub-dim focus:outline-none" />
