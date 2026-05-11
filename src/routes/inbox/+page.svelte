@@ -963,11 +963,27 @@
 										<p class="text-[10px] uppercase tracking-wider text-hub-dim mb-1">Attachments ({realAttachments.length})</p>
 										<ul class="space-y-1">
 											{#each realAttachments as att (att.part || att.filename)}
-												<li class="flex items-center gap-2 text-xs text-hub-muted">
-													<svg class="w-3 h-3 text-hub-dim flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
-													<span class="truncate flex-1" title={att.filename}>{att.filename}</span>
-													<span class="text-[10px] text-hub-dim flex-shrink-0">{formatBytes(att.size)}</span>
-												</li>
+												{#if att.part}
+													<li>
+														<a
+															href={`/api/inbox/messages/${msg.id}/attachments/${att.part}`}
+															download={att.filename}
+															class="flex items-center gap-2 text-xs text-hub-muted hover:text-hub-text hover:bg-hub-surface/40 -mx-1 px-1 py-0.5 rounded transition-colors"
+															title="Download {att.filename}"
+														>
+															<svg class="w-3 h-3 text-hub-dim flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+															<span class="truncate flex-1">{att.filename}</span>
+															<span class="text-[10px] text-hub-dim flex-shrink-0">{formatBytes(att.size)}</span>
+															<svg class="w-3 h-3 text-hub-dim flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+														</a>
+													</li>
+												{:else}
+													<li class="flex items-center gap-2 text-xs text-hub-muted opacity-60" title="No part id captured at sync time — can't fetch">
+														<svg class="w-3 h-3 text-hub-dim flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+														<span class="truncate flex-1" title={att.filename}>{att.filename}</span>
+														<span class="text-[10px] text-hub-dim flex-shrink-0">{formatBytes(att.size)}</span>
+													</li>
+												{/if}
 											{/each}
 										</ul>
 									</div>
