@@ -61,3 +61,16 @@ export type {
 	ExtractInput,
 	ExtractResult,
 } from './extractor.js';
+
+// Layer 3 Stage 3a — real-time anomaly push
+export {
+	listAnomalyPushCandidates,
+	evaluateAnomalyGate,
+	formatAnomalyMessage,
+} from './anomaly.js';
+export type {
+	AnomalyConfig,
+	AnomalyReason,
+	AnomalyDecision,
+	ListAnomalyCandidatesOptions,
+} from './anomaly.js';

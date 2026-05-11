@@ -218,6 +218,36 @@ export const WhatsAppRemindersSchema = z.object({
 	maxPerDay: z.number().int().min(1).max(50).default(10),
 });
 
+/** Layer 3 Stage 3a — real-time anomaly push.
+ *
+ *  Heartbeat tick reads new transactional + personal rows from inbox.db,
+ *  applies the gate (anomalyHint OR amount-threshold OR CRM sender OR
+ *  category=personal), and fires a separate WhatsApp message per
+ *  qualifying row — bypasses the LLM heartbeat composition for
+ *  determinism + auditability.
+ *
+ *  Per ADR §D4.1: heartbeat is the right rail for this (time-sensitive,
+ *  30-min cadence, active-hours-aware, mute-respecting). The daily
+ *  digest (S3b) ships separately as a scheduler task. */
+export const WhatsAppInboxAnomalySchema = z.object({
+	/** OFF by default. Operator enables once they've eyeballed the
+	 *  extracted_data for a few days and tuned thresholds. */
+	enabled: z.boolean().default(false),
+	/** Absolute amount above which a transactional row is pushed
+	 *  regardless of anomalyHint. Currency-typed via `thresholdCurrency`. */
+	thresholdAmount: z.number().min(0).default(1000),
+	/** Currency for `thresholdAmount`. Rows in other currencies skip the
+	 *  threshold branch (anomalyHint and CRM-sender branches still apply). */
+	thresholdCurrency: z.string().default('AED'),
+	/** How far back the candidate query looks on each tick — tolerates a
+	 *  few missed ticks without re-pushing already-handled rows (the
+	 *  agent_actions exclusion clause is the real deduplication). */
+	lookbackHours: z.number().int().min(1).max(48).default(6),
+	/** Max anomalies pushed per tick. Runaway protection — prevents a
+	 *  classification flood from spamming WhatsApp. */
+	perTickCap: z.number().int().min(1).max(20).default(5),
+});
+
 /** `/img` configuration — image generation + editing via Gemini Nano
  *  Banana. One slash command, no flags, system prompt sourced from a
  *  vault-watched markdown file (per ADR-002). */
@@ -365,6 +395,7 @@ export const WhatsAppChannelSchema = ChannelConfigSchema.extend({
 	heartbeat: WhatsAppHeartbeatSchema.prefault({}),
 	commitments: WhatsAppCommitmentsSchema.prefault({}),
 	reminders: WhatsAppRemindersSchema.prefault({}),
+	inboxAnomaly: WhatsAppInboxAnomalySchema.prefault({}),
 	img: WhatsAppImgSchema.prefault({}),
 	youtube: WhatsAppYoutubeSchema.prefault({}),
 	tiktok: WhatsAppTiktokSchema.prefault({}),

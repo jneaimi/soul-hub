@@ -40,6 +40,15 @@ import { getEligibleVoiceItems, type VoiceQueueItem } from '../../vault/voice-qu
 import { tickVaultHygiene } from '../../vault-hygiene/index.js';
 import { saveProactiveTurn } from '../../vault-chat/history.js';
 import type { WhatsAppChannelConfig } from './types.js';
+// Layer 3 Stage 3a — anomaly push (ADR 2026-05-11-inbox-agent-workflows-layer-3 §D4.1)
+import {
+	listAnomalyPushCandidates,
+	evaluateAnomalyGate,
+	formatAnomalyMessage,
+	recordAgentAction,
+	type TransactionalExtract,
+} from '../../inbox/index.js';
+import { findContactByEmail } from '../../crm/index.js';
 
 type HeartbeatConfig = WhatsAppChannelConfig['heartbeat'];
 
@@ -141,6 +150,91 @@ async function deliver(text: string, cfg: WhatsAppChannelConfig, target: string)
 	if (!sock) return { ok: false, error: 'WhatsApp socket not connected' };
 	const result = await sendText(sock, jid, text, cfg.delivery);
 	return { ok: result.ok, error: result.error };
+}
+
+/** Layer 3 Stage 3a — real-time anomaly push.
+ *
+ *  Fetches queued transactional/personal rows from inbox.db that haven't
+ *  been anomaly-pushed yet, applies the gate (anomalyHint OR threshold
+ *  OR CRM sender OR personal-always), and fires one WhatsApp message
+ *  per qualifier. Each push is its OWN message — no LLM composition —
+ *  and writes an `inbox-anomaly-push` row to `agent_actions` which
+ *  serves as the dedup key on future ticks.
+ *
+ *  Returns the number of anomalies actually pushed. Errors per-row
+ *  are caught + logged + audited (with `pushed: false`) so a single
+ *  bad delivery never poisons the rest of the batch. */
+async function runAnomalyPush(
+	cfg: WhatsAppChannelConfig,
+	target: string,
+): Promise<number> {
+	if (process.env.INBOX_ANOMALY_DISABLED === '1') return 0;
+	const a = cfg.inboxAnomaly;
+	if (!a.enabled) return 0;
+
+	const candidates = listAnomalyPushCandidates({
+		lookbackHours: a.lookbackHours,
+		// Pull a bit more than the cap so the gate can reject some without
+		// starving the per-tick budget for real anomalies.
+		limit: a.perTickCap * 4,
+	});
+	if (candidates.length === 0) return 0;
+
+	const gateCfg = {
+		enabled: a.enabled,
+		thresholdAmount: a.thresholdAmount,
+		thresholdCurrency: a.thresholdCurrency,
+		lookbackHours: a.lookbackHours,
+		perTickCap: a.perTickCap,
+	};
+
+	let pushed = 0;
+	for (const msg of candidates) {
+		if (pushed >= a.perTickCap) break;
+		const extract = safeParseExtract(msg.extractedData);
+		if (!extract) continue;
+
+		const crmHit = !!findContactByEmail(msg.fromAddress)?.contact;
+		const decision = evaluateAnomalyGate(msg, extract, gateCfg, crmHit);
+		if (!decision.push) {
+			// Record the gate decision so a future "why didn't this push"
+			// audit query has data. Defers to S3b daily digest.
+			recordAgentAction({
+				tool: 'inbox-anomaly-push',
+				messageId: msg.id,
+				actor: 'worker',
+				args: { reason: decision.reason },
+				result: { pushed: false },
+			});
+			continue;
+		}
+
+		const text = formatAnomalyMessage(msg, extract, decision.reason);
+		const delivery = await deliver(text, cfg, target);
+		recordAgentAction({
+			tool: 'inbox-anomaly-push',
+			messageId: msg.id,
+			actor: 'worker',
+			args: { reason: decision.reason, crmHit },
+			result: { pushed: delivery.ok, error: delivery.error },
+		});
+		if (delivery.ok) {
+			pushed++;
+			// Save the proactive turn so the user's anaphoric reply ("what
+			// merchant", "is that right") has context for the orchestrator.
+			saveProactiveTurn(target, text, 'heartbeat');
+		}
+	}
+	return pushed;
+}
+
+function safeParseExtract(json: string | null): TransactionalExtract | null {
+	if (!json) return null;
+	try {
+		return JSON.parse(json) as TransactionalExtract;
+	} catch {
+		return null;
+	}
 }
 
 /** Pick the tasks whose interval has elapsed since their last run. */
@@ -330,6 +424,31 @@ export async function runHeartbeatOnce(
 	if (getDailyCount(hb.target, ymd) >= hb.maxPerDay) {
 		appendLog({ ts: Date.now(), target: hb.target, status: 'gated_cap' });
 		return { status: 'gated_cap' };
+	}
+
+	// Layer 3 Stage 3a — anomaly push runs as its own rail BEFORE the
+	// LLM composition. Each anomaly is its own message (deterministic,
+	// no LLM rephrasing), so they slot in cleanly without competing for
+	// the heartbeat ack budget. OFF by default; `cfg.inboxAnomaly.enabled`
+	// gates it. Errors are caught inside; this never throws.
+	const anomaliesPushed = await runAnomalyPush(cfg, hb.target);
+	if (anomaliesPushed > 0) {
+		appendLog({
+			ts: Date.now(),
+			target: hb.target,
+			status: 'sent',
+			text: `[anomaly-push] ${anomaliesPushed} message(s) fired`,
+		});
+		// Count anomaly messages against the daily cap so the operator
+		// doesn't drown in heartbeat traffic on a busy mail day.
+		for (let i = 0; i < anomaliesPushed; i++) {
+			incrementDailyCount(hb.target, ymd);
+		}
+		// If we already hit the cap with anomalies alone, skip the rest
+		// of the tick — the LLM composition would just be noise on top.
+		if (getDailyCount(hb.target, ymd) >= hb.maxPerDay) {
+			return { status: 'sent', text: `${anomaliesPushed} anomaly push(es)` };
+		}
 	}
 
 	const checklist = getHeartbeatChecklist(hb.checklistPath);
