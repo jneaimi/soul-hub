@@ -146,6 +146,14 @@
 	let gmailConfigured = $state<boolean | null>(null); // null = not yet checked
 	let gmailConfigChecking = $state(false);
 
+	// Count of already-connected Gmail accounts. Drives the "Sign in with
+	// Google" vs "Add another Gmail account" copy branch in the Add panel,
+	// signalling that the flow supports multiple Gmail identities. See
+	// ADR 2026-05-11-multiple-gmail-accounts.
+	const existingGmailCount = $derived(
+		accounts.filter((a) => a.provider === 'gmail').length,
+	);
+
 	async function checkGmailConfig() {
 		gmailConfigChecking = true;
 		try {
@@ -689,8 +697,13 @@
 								{:else}
 									<a href="/api/inbox/oauth" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/15 text-red-400 text-sm font-medium hover:bg-red-500/25 transition-colors">
 										<svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12.545 10.239v3.821h5.445c-.712 2.315-2.647 3.972-5.445 3.972a6.033 6.033 0 110-12.064c1.498 0 2.866.549 3.921 1.453l2.814-2.814A9.969 9.969 0 0012.545 2C7.021 2 2.543 6.477 2.543 12s4.478 10 10.002 10c8.396 0 10.249-7.85 9.426-11.748l-9.426-.013z"/></svg>
-										Sign in with Google
+										{existingGmailCount === 0 ? 'Sign in with Google' : 'Add another Gmail account'}
 									</a>
+									{#if existingGmailCount > 0}
+										<p class="text-[10px] text-hub-dim leading-relaxed">
+											Google will let you choose a different account on the consent screen. To recover an existing account whose tokens expired, use <em>Reauthorize</em> from its settings instead.
+										</p>
+									{/if}
 								{/if}
 							</div>
 						{:else if addProvider === 'outlook'}

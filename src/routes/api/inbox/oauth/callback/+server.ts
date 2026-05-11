@@ -5,6 +5,7 @@ import { exchangeCode } from '$lib/inbox/oauth.js';
 import {
 	addAccount,
 	getAccount,
+	listAccounts,
 	startAccountSync,
 	stopAccountSync,
 	updateAccountCredential,
@@ -77,7 +78,23 @@ export const GET: RequestHandler = async ({ url }) => {
 			return redirect(302, `/inbox?reauthorized=${encodeURIComponent(email)}`);
 		}
 
-		// First-time link.
+		// First-time link. Dedup on (provider, email) so re-clicking
+		// "Sign in with Google" with an already-connected identity doesn't
+		// create a duplicate row that would IDLE-compete with the original
+		// on the same mailbox (storm pathology). The accounts.email column
+		// has no UNIQUE constraint yet — see ADR 2026-05-11-multiple-gmail-accounts.
+		const duplicate = listAccounts().find(
+			(a) => a.provider === 'gmail' && a.email === email,
+		);
+		if (duplicate) {
+			return redirect(
+				302,
+				`/inbox?error=${encodeURIComponent(
+					`Gmail account ${email} is already connected. Use Reauthorize on the existing row if the tokens expired.`,
+				)}`,
+			);
+		}
+
 		const id = randomUUID().slice(0, 8);
 		const account = addAccount(
 			{ id, label: email, provider: 'gmail', email, host: 'imap.gmail.com', port: 993 },
