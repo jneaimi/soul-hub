@@ -150,6 +150,21 @@
 		{ value: 'skipped', label: 'Skipped' },
 	];
 
+	// L2-U3 — category filter, complementary to status. Empty string = no
+	// filter. Wired into /api/inbox/messages?category=… and the URL so the
+	// view survives reload + is shareable. Order tracks information value:
+	// personal first (rarest, highest priority), unclassified last.
+	let categoryFilter = $state('');
+	const categoryFilterOptions = [
+		{ value: '', label: 'All' },
+		{ value: 'personal', label: 'Personal' },
+		{ value: 'transactional', label: 'Transactional' },
+		{ value: 'notification', label: 'Notification' },
+		{ value: 'promotional', label: 'Promotional' },
+		{ value: 'bulk', label: 'Bulk' },
+		{ value: 'unclassified', label: 'Unclassified' },
+	];
+
 	// Process-status colors. queued was bg-amber-400 originally but collided
 	// with the syncing account-status dot (also amber-400) on the same screen
 	// — two semantically different states sharing a color. Moved queued to
@@ -181,6 +196,16 @@
 		promotional: 'promo',
 		bulk: 'bulk',
 		unclassified: '?',
+	};
+	// Solid dot colors for the sidebar filter — the chip palette uses
+	// /15 tints which vanish at 1.5px size.
+	const categoryDotColors: Record<string, string> = {
+		personal: 'bg-violet-400',
+		transactional: 'bg-emerald-400',
+		notification: 'bg-sky-400',
+		promotional: 'bg-amber-400',
+		bulk: 'bg-slate-400',
+		unclassified: 'bg-hub-dim/60',
 	};
 	const ALL_CATEGORIES = [
 		'personal',
@@ -436,6 +461,7 @@
 		// Read each reactive slot so $effect tracks them.
 		selectedAccount;
 		statusFilter;
+		categoryFilter;
 		search;
 		syncUrl();
 	});
@@ -486,6 +512,7 @@
 			if (selectedAccount) params.set('account', selectedAccount);
 			if (search) params.set('search', search);
 			if (statusFilter) params.set('status', statusFilter);
+			if (categoryFilter) params.set('category', categoryFilter);
 			params.set('limit', String(PAGE_SIZE));
 			params.set('offset', String(append ? offset : 0));
 
@@ -686,6 +713,7 @@
 		const params = new URLSearchParams();
 		if (selectedAccount) params.set('account', selectedAccount);
 		if (statusFilter) params.set('status', statusFilter);
+		if (categoryFilter) params.set('category', categoryFilter);
 		if (search) params.set('q', search);
 		const qs = params.toString();
 		const next = qs ? `/inbox?${qs}` : '/inbox';
@@ -722,9 +750,11 @@
 		// re-writes the URL from state, so the params survive the strip.
 		const urlAccount = urlParams.get('account');
 		const urlStatus = urlParams.get('status');
+		const urlCategory = urlParams.get('category');
 		const urlQ = urlParams.get('q');
 		if (urlAccount) selectedAccount = urlAccount;
 		if (urlStatus) statusFilter = urlStatus;
+		if (urlCategory) categoryFilter = urlCategory;
 		if (urlQ) search = urlQ;
 
 		// Handle URL params (from OAuth callbacks). Error wins over success
@@ -928,6 +958,26 @@
 							<span class="w-1.5 h-1.5 rounded-full flex-shrink-0 {processStatusColors[filter.value] || 'bg-hub-dim/50'}"></span>
 						{/if}
 						<span class="text-xs">{filter.label}</span>
+					</button>
+				{/each}
+			</div>
+
+			<!-- L2-U3 — Category filter. Sits below Status because category
+			     classification is the more interpretive lens; status is the raw
+			     agent-handoff state. Both are independent and combine via AND. -->
+			<div class="mt-4">
+				<p class="text-[10px] text-hub-dim uppercase tracking-wider mb-2 px-1">Category</p>
+				{#each categoryFilterOptions as opt (opt.value)}
+					<button
+						type="button"
+						onclick={() => { categoryFilter = opt.value; loadMessages(); }}
+						aria-pressed={categoryFilter === opt.value}
+						class="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-colors text-left {categoryFilter === opt.value ? 'bg-hub-surface text-hub-text' : 'text-hub-muted hover:bg-hub-surface/50'}"
+					>
+						{#if opt.value && categoryDotColors[opt.value]}
+							<span class="w-1.5 h-1.5 rounded-full flex-shrink-0 {categoryDotColors[opt.value]}"></span>
+						{/if}
+						<span class="text-xs">{opt.label}</span>
 					</button>
 				{/each}
 			</div>
