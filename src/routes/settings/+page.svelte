@@ -4,6 +4,7 @@
 	import PlatformEnv from '$lib/components/PlatformEnv.svelte';
 	import ConnectionsSection from '$lib/components/settings/ConnectionsSection.svelte';
 	import ExplorerRootsSection from '$lib/components/settings/ExplorerRootsSection.svelte';
+	import InboxFilterSection from '$lib/components/settings/InboxFilterSection.svelte';
 	import RoutesSection from '$lib/components/settings/RoutesSection.svelte';
 	import WhatsAppSection from '$lib/components/settings/WhatsAppSection.svelte';
 	import TelegramSection from '$lib/components/settings/TelegramSection.svelte';
@@ -492,6 +493,9 @@
 
 		<!-- OAuth Connections (Gmail, Outlook) -->
 		<ConnectionsSection />
+
+		<!-- Inbox Layer 2 filter — read-only worker + classifier stats -->
+		<InboxFilterSection />
 
 		<!-- Channels section -->
 		{#if channelMetas.length > 0}

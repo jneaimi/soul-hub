@@ -38,6 +38,11 @@
 		// on first run; those vars are no longer read at runtime.
 		{ key: 'HF_API_TOKEN', description: 'Hugging Face Inference API (optional)', usedBy: ['research skill'] },
 		{ key: 'EODHD_API_KEY', description: 'EODHD financial data API', usedBy: ['market skill'] },
+		// Inbox Layer 2 filter switches — set to "1" to disable the matching
+		// behavior. PM2 reload required for changes to take effect.
+		{ key: 'INBOX_FILTER_DISABLED', description: 'Set to 1 to disable the Layer 2 inbox filter worker entirely', usedBy: ['inbox-filter worker'] },
+		{ key: 'INBOX_FILTER_LLM_DISABLED', description: 'Set to 1 to run rules-only (no claude -p classifier calls)', usedBy: ['inbox-filter worker'] },
+		{ key: 'INBOX_FILTER_COLDSTART_SKIP', description: 'Set to 1 to skip the historical sweep on fresh installs', usedBy: ['inbox-filter worker'] },
 	];
 	const knownByKey = new Map(KNOWN_VARS.map((v) => [v.key, v]));
 
