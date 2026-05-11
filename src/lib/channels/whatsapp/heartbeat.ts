@@ -192,7 +192,10 @@ function buildUserPrompt(
 	}
 	if (dueCommitments.length > 0) {
 		const userExplicit = dueCommitments.filter((c) => c.source === 'user-explicit');
-		const extractorInferred = dueCommitments.filter((c) => c.source !== 'user-explicit');
+		const crmFollowups = dueCommitments.filter((c) => c.source === 'crm-followup');
+		const extractorInferred = dueCommitments.filter(
+			(c) => c.source !== 'user-explicit' && c.source !== 'crm-followup',
+		);
 		const lines: string[] = [];
 		if (userExplicit.length > 0) {
 			lines.push(
@@ -202,6 +205,18 @@ function buildUserPrompt(
 				'',
 			);
 			for (const c of userExplicit) {
+				lines.push(`[#${c.id}] ${c.suggestedText}`);
+			}
+			lines.push('');
+		}
+		if (crmFollowups.length > 0) {
+			lines.push(
+				'\nCRM follow-ups due now (scheduled via the pipeline):',
+				'',
+				'These tie to a specific contact in the user\'s CRM. Surface them naturally — by name — and treat them as first-class commitments the user is expecting. If the user replies "done" or "logged", that closes the loop; if they say "snooze 3d", reschedule. Use the same `HEARTBEAT_OK <id>` dismissal contract as the reminders block above.',
+				'',
+			);
+			for (const c of crmFollowups) {
 				lines.push(`[#${c.id}] ${c.suggestedText}`);
 			}
 			lines.push('');
@@ -338,7 +353,15 @@ export async function runHeartbeatOnce(
 		? getDueCommitments('whatsapp', hb.target, { source: 'user-explicit' })
 				.slice(0, cfg.reminders.maxPerDay)
 		: [];
-	const dueCommitments = [...dueReminders, ...dueExtractor];
+	// ADR-CRM §D6 — CRM-scheduled follow-ups share the reminders cap +
+	// gate. They're user-explicit-in-spirit (operator set them via the
+	// CRM UI / `crm-set-followup` chat tool) and shouldn't be drowned by
+	// extractor-inferred noise.
+	const dueCrmFollowups = cfg.reminders.enabled && hb.target
+		? getDueCommitments('whatsapp', hb.target, { source: 'crm-followup' })
+				.slice(0, cfg.reminders.maxPerDay)
+		: [];
+	const dueCommitments = [...dueReminders, ...dueCrmFollowups, ...dueExtractor];
 
 	// Phase 4 / ADR-003 — voice-queue items from the inbox. Same shape
 	// of input as commitments: scoped query, capped, fed to the agent.

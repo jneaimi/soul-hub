@@ -460,7 +460,7 @@ export function setTaskLastRun(taskName: string, at = Date.now()): void {
 
 export type CommitmentStatus = 'pending' | 'surfaced' | 'dismissed';
 
-export type CommitmentSource = 'extractor' | 'user-explicit';
+export type CommitmentSource = 'extractor' | 'user-explicit' | 'crm-followup';
 
 export interface CommitmentRow {
 	id: number;

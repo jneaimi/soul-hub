@@ -20,6 +20,7 @@ import { config as soulHubConfig } from '../../config.js';
 import { WhatsAppChannelSchema } from '../../config.schema.js';
 import { parseProviderRef } from '../../llm/types.js';
 import { insertCommitment } from './heartbeat-state.js';
+import { searchContacts, setNextFollowup, syncContactToVault } from '../../crm/index.js';
 
 const CommitmentSchema = z.object({
 	suggested_text: z
@@ -40,6 +41,11 @@ const CommitmentSchema = z.object({
 		.max(1)
 		.describe(
 			'How confident you are that this is a real conversation-bound commitment worth tracking. 0 = clearly not, 1 = certainty. Below 0.7 means probably skip.',
+		),
+	crm_contact_name: z
+		.string()
+		.describe(
+			'When the message explicitly names a person the user is tracking ("follow up with John about the Carrefour proposal", "check in with Sara next week"), put the bare name here. Empty string for impersonal commitments or when no specific contact is named. The system fuzzy-resolves this against the CRM; an ambiguous match falls back to a regular commitment.',
 		),
 });
 
@@ -65,7 +71,11 @@ Rules:
 - Skip explicit reminders ("remind me at 3pm") — those are handled by a different system.
 - Each commitment must have a clear time horizon (hours_until_due) computed AGAINST THE TIME ANCHOR ABOVE, and a natural follow-up text.
 - Set confidence honestly — if you're guessing, score below 0.7 and the system will drop it.
-- Most exchanges produce zero commitments. That's the right answer when nothing surfaces.`;
+- Most exchanges produce zero commitments. That's the right answer when nothing surfaces.
+
+## CRM follow-ups (new in 2026-05-12)
+
+When the user names a specific person they want to follow up with — patterns like "follow up with John about X", "check in with Sara next Tuesday", "ping Rahul Friday on the proposal" — set \`crm_contact_name\` to the bare name (e.g. "John", "Sara", "Rahul"). The system will fuzzy-match against the CRM and route to the relationship pipeline when the name resolves unambiguously. If you're not sure it's a CRM-tracked person, leave \`crm_contact_name\` empty and the system falls back to a regular commitment — that's the safe default.`;
 
 function buildSystemPrompt(timezone: string): string {
 	const now = new Date();
@@ -157,6 +167,53 @@ export async function extractCommitments(input: ExtractInput): Promise<number> {
 
 		const dueAfterTs =
 			Date.now() + Math.max(commitment.hours_until_due * 60 * 60 * 1000, dueDelayMs);
+
+		// ADR-CRM §D6 — when the extractor named a CRM contact, try to
+		// route to the relationship pipeline. Unambiguous single match →
+		// set next_followup on the contact + sync vault frontmatter +
+		// insert a heartbeat commitment tagged `crm-followup`. Ambiguous
+		// or no match → fall through to today's `extractor` insert path.
+		const crmName = commitment.crm_contact_name?.trim();
+		if (crmName) {
+			let matches: Awaited<ReturnType<typeof searchContacts>> = [];
+			try {
+				matches = searchContacts(crmName, 5);
+			} catch {
+				matches = [];
+			}
+			if (matches.length === 1) {
+				const contact = matches[0];
+				try {
+					setNextFollowup(contact.id, dueAfterTs);
+					await syncContactToVault(contact.id);
+					insertCommitment({
+						channel: input.channel,
+						target: input.target,
+						suggestedText: commitment.suggested_text.trim(),
+						dueAfterTs,
+						sourceMsgId: input.sourceMsgId,
+						confidence: commitment.confidence,
+						source: 'crm-followup',
+					});
+					console.log(
+						`[whatsapp/commitments] routed to CRM: ${contact.id} (${contact.displayName}) at ${new Date(dueAfterTs).toISOString()}`,
+					);
+					inserted++;
+					continue;
+				} catch (err) {
+					console.warn(
+						`[whatsapp/commitments] CRM route failed for "${crmName}":`,
+						(err as Error).message,
+					);
+					// Fall through to extractor insert below — better to land
+					// the commitment somewhere than drop it on the floor.
+				}
+			} else if (matches.length > 1) {
+				console.log(
+					`[whatsapp/commitments] "${crmName}" matched ${matches.length} contacts; falling back to extractor source`,
+				);
+			}
+		}
 
 		try {
 			insertCommitment({
