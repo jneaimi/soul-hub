@@ -591,7 +591,7 @@
 			<div class="flex items-center gap-3">
 				<button
 					onclick={() => { showSidebar = !showSidebar; }}
-					class="sm:hidden p-1 rounded text-hub-dim hover:text-hub-muted cursor-pointer"
+					class="lg:hidden p-1 rounded text-hub-dim hover:text-hub-muted cursor-pointer"
 					aria-label={showSidebar ? 'Close sidebar' : 'Open sidebar'}
 				>
 					<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
@@ -631,10 +631,10 @@
 				type="button"
 				onclick={() => { showSidebar = false; }}
 				aria-label="Close sidebar"
-				class="fixed inset-0 bg-black/30 z-10 sm:hidden cursor-default"
+				class="fixed inset-0 bg-black/30 z-10 lg:hidden cursor-default"
 			></button>
 		{/if}
-		<aside class="w-56 flex-shrink-0 border-r border-hub-border p-3 overflow-y-auto {showSidebar ? 'fixed inset-y-0 left-0 z-20 bg-hub-bg' : 'hidden'} sm:block sm:static sm:z-auto">
+		<aside class="w-56 flex-shrink-0 border-r border-hub-border p-3 overflow-y-auto {showSidebar ? 'fixed inset-y-0 left-0 z-20 bg-hub-bg' : 'hidden'} lg:block lg:static lg:z-auto">
 			<div class="mb-4 relative">
 				<input
 					type="text"
@@ -716,7 +716,7 @@
 		</aside>
 
 		<!-- Contact list -->
-		<main class="{selectedId ? 'hidden sm:block' : 'block'} w-full sm:w-80 flex-shrink-0 border-r border-hub-border overflow-y-auto">
+		<main class="{selectedId ? 'hidden sm:block' : 'block'} w-full sm:w-72 lg:w-80 flex-shrink-0 border-r border-hub-border overflow-y-auto">
 			{#if loading}
 				<p class="text-xs text-hub-dim px-4 py-6 text-center">Loading…</p>
 			{:else if contacts.length === 0}
@@ -766,9 +766,11 @@
 			{/if}
 		</main>
 
-		<!-- Detail panel — desktop: third column; mobile: full-screen overlay when selectedId is set -->
+		<!-- Detail panel — visibility flips between list and detail on mobile so the
+		     two share the same content area (under the AppHeader). No fixed positioning;
+		     the parent layout's flex column already bounds the content correctly. -->
 		<section
-			class="{selectedId ? 'flex fixed inset-0 z-20 bg-hub-bg sm:static sm:z-auto' : 'hidden'} sm:flex flex-1 flex-col overflow-hidden"
+			class="{selectedId ? 'flex' : 'hidden'} sm:flex flex-1 flex-col overflow-hidden min-w-0"
 		>
 			{#if !selectedId}
 				<div class="flex-1 flex items-center justify-center text-sm text-hub-dim">
