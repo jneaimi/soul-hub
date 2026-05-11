@@ -606,7 +606,7 @@
 					<h1 class="text-lg font-bold text-hub-text">CRM</h1>
 				</div>
 				{#if total > 0}
-					<span class="text-xs text-hub-dim px-2 py-0.5 rounded bg-hub-surface">{total} contacts</span>
+					<span class="hidden sm:inline-block text-xs text-hub-dim px-2 py-0.5 rounded bg-hub-surface">{total} contacts</span>
 				{/if}
 				{#if followupBadge}
 					<span class="text-xs text-hub-warning px-2 py-0.5 rounded bg-hub-warning/10">{followupBadge}</span>
@@ -615,9 +615,10 @@
 			<div class="flex items-center gap-2">
 				<button
 					onclick={() => { showAddContact = true; }}
-					class="px-3 py-1.5 rounded-lg bg-hub-cta text-hub-bg text-sm font-medium hover:bg-hub-cta-hover transition-colors cursor-pointer"
+					class="px-4 py-2 sm:py-1.5 rounded-lg bg-hub-cta text-hub-bg text-sm font-medium hover:bg-hub-cta-hover transition-colors cursor-pointer"
 				>
-					+ Add Contact
+					<span class="hidden sm:inline">+ Add Contact</span>
+					<span class="sm:hidden">+ Add</span>
 				</button>
 			</div>
 		</div>
@@ -715,7 +716,7 @@
 		</aside>
 
 		<!-- Contact list -->
-		<main class="w-full sm:w-80 flex-shrink-0 border-r border-hub-border overflow-y-auto">
+		<main class="{selectedId ? 'hidden sm:block' : 'block'} w-full sm:w-80 flex-shrink-0 border-r border-hub-border overflow-y-auto">
 			{#if loading}
 				<p class="text-xs text-hub-dim px-4 py-6 text-center">Loading…</p>
 			{:else if contacts.length === 0}
@@ -765,8 +766,10 @@
 			{/if}
 		</main>
 
-		<!-- Detail panel -->
-		<section class="hidden sm:flex flex-1 flex-col overflow-hidden">
+		<!-- Detail panel — desktop: third column; mobile: full-screen overlay when selectedId is set -->
+		<section
+			class="{selectedId ? 'flex fixed inset-0 z-20 bg-hub-bg sm:static sm:z-auto' : 'hidden'} sm:flex flex-1 flex-col overflow-hidden"
+		>
 			{#if !selectedId}
 				<div class="flex-1 flex items-center justify-center text-sm text-hub-dim">
 					Select a contact
@@ -779,10 +782,22 @@
 				{@const c = detail.contact}
 				{@const due = dueLabel(c.nextFollowupAt)}
 				<!-- Detail header -->
-				<div class="px-6 py-4 border-b border-hub-border">
+				<div class="px-4 sm:px-6 py-4 border-b border-hub-border">
+					<!-- Mobile back button — drills back to the list -->
+					<button
+						type="button"
+						onclick={clearSelection}
+						class="sm:hidden flex items-center gap-1 -ml-1 mb-2 px-2 py-2 text-sm text-hub-muted hover:text-hub-text cursor-pointer"
+						aria-label="Back to contacts"
+					>
+						<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+							<polyline points="15 18 9 12 15 6"/>
+						</svg>
+						<span>Contacts</span>
+					</button>
 					<div class="flex items-start justify-between gap-4">
 						<div class="flex-1 min-w-0">
-							<div class="flex items-center gap-2 mb-1">
+							<div class="flex items-center gap-2 mb-1 flex-wrap">
 								<h2 class="text-lg font-semibold text-hub-text truncate">{c.displayName}</h2>
 								<span class="text-xs text-hub-dim">{c.id}</span>
 							</div>
@@ -795,16 +810,16 @@
 								<p class="text-[11px] text-hub-dim mt-0.5">source: {c.source}</p>
 							{/if}
 						</div>
-						<div class="flex items-center gap-2">
+						<div class="flex items-center gap-2 flex-shrink-0">
 							<button
 								onclick={() => { editingMeta = !editingMeta; if (editingMeta) seedEditForm(c); }}
-								class="text-xs px-2 py-1 rounded border border-hub-border text-hub-muted hover:text-hub-text cursor-pointer"
+								class="text-xs px-3 py-2 sm:py-1 rounded border border-hub-border text-hub-muted hover:text-hub-text cursor-pointer"
 							>
 								{editingMeta ? 'Cancel' : 'Edit'}
 							</button>
 							<button
 								onclick={deleteContact}
-								class="text-xs px-2 py-1 rounded border border-hub-border text-hub-danger/80 hover:text-hub-danger cursor-pointer"
+								class="text-xs px-3 py-2 sm:py-1 rounded border border-hub-border text-hub-danger/80 hover:text-hub-danger cursor-pointer"
 							>
 								Delete
 							</button>
@@ -813,12 +828,12 @@
 
 					<!-- Stage selector -->
 					<div class="mt-3 flex items-center gap-2 flex-wrap">
-						<span class="text-[10px] text-hub-dim uppercase tracking-wider">Stage:</span>
+						<span class="text-[10px] text-hub-dim uppercase tracking-wider w-full sm:w-auto">Stage:</span>
 						{#each STAGES as s (s)}
 							<button
 								type="button"
 								onclick={() => moveStage(s)}
-								class="text-[11px] px-2 py-0.5 rounded transition-colors cursor-pointer {c.stage === s ? STAGE_COLORS[s] + ' ring-1 ring-current' : 'text-hub-dim hover:text-hub-text bg-hub-surface'}"
+								class="text-xs sm:text-[11px] px-2.5 py-1.5 sm:py-0.5 rounded transition-colors cursor-pointer {c.stage === s ? STAGE_COLORS[s] + ' ring-1 ring-current' : 'text-hub-dim hover:text-hub-text bg-hub-surface'}"
 							>
 								{s}
 							</button>
@@ -827,14 +842,14 @@
 
 					<!-- Follow-up controls -->
 					<div class="mt-3 flex items-center gap-2 flex-wrap">
-						<span class="text-[10px] text-hub-dim uppercase tracking-wider">Follow-up:</span>
+						<span class="text-[10px] text-hub-dim uppercase tracking-wider w-full sm:w-auto">Follow-up:</span>
 						{#if c.nextFollowupAt}
 							<span class="text-xs {due?.tone === 'overdue' ? 'text-hub-danger' : due?.tone === 'soon' ? 'text-hub-warning' : 'text-hub-text'}">
 								{formatDate(c.nextFollowupAt)} {due ? `(${due.label})` : ''}
 							</span>
 							<button
 								onclick={() => setFollowup('clear')}
-								class="text-[11px] px-2 py-0.5 rounded text-hub-dim hover:text-hub-danger cursor-pointer"
+								class="text-xs sm:text-[11px] px-3 py-1.5 sm:py-0.5 rounded text-hub-dim hover:text-hub-danger cursor-pointer"
 							>
 								Clear
 							</button>
@@ -845,24 +860,24 @@
 							<input
 								type="date"
 								bind:value={followupInput}
-								class="px-2 py-0.5 text-xs rounded bg-hub-surface border border-hub-border text-hub-text"
+								class="px-2 py-1.5 sm:py-0.5 text-sm sm:text-xs rounded bg-hub-surface border border-hub-border text-hub-text"
 							/>
 							<button
 								onclick={() => setFollowup('set')}
-								class="text-[11px] px-2 py-0.5 rounded bg-hub-cta text-hub-bg cursor-pointer"
+								class="text-xs sm:text-[11px] px-3 py-1.5 sm:py-0.5 rounded bg-hub-cta text-hub-bg cursor-pointer"
 							>
 								Set
 							</button>
 							<button
 								onclick={() => { showFollowupForm = false; followupInput = ''; }}
-								class="text-[11px] px-2 py-0.5 rounded text-hub-dim hover:text-hub-text cursor-pointer"
+								class="text-xs sm:text-[11px] px-3 py-1.5 sm:py-0.5 rounded text-hub-dim hover:text-hub-text cursor-pointer"
 							>
 								Cancel
 							</button>
 						{:else}
 							<button
 								onclick={() => { showFollowupForm = true; }}
-								class="text-[11px] px-2 py-0.5 rounded text-hub-cta hover:underline cursor-pointer"
+								class="text-xs sm:text-[11px] px-3 py-1.5 sm:py-0.5 rounded text-hub-cta hover:underline cursor-pointer"
 							>
 								{c.nextFollowupAt ? 'Reschedule' : '+ Set'}
 							</button>
@@ -872,8 +887,8 @@
 
 				<!-- Inline edit form -->
 				{#if editingMeta}
-					<div class="px-6 py-4 border-b border-hub-border bg-hub-surface/30">
-						<div class="grid grid-cols-2 gap-3 max-w-2xl">
+					<div class="px-4 sm:px-6 py-4 border-b border-hub-border bg-hub-surface/30">
+						<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-2xl">
 							<label class="col-span-2 text-xs">
 								<span class="text-hub-dim">Display name</span>
 								<input
@@ -913,19 +928,19 @@
 				{/if}
 
 				<!-- Emails section -->
-				<div class="px-6 py-4 border-b border-hub-border">
+				<div class="px-4 sm:px-6 py-4 border-b border-hub-border">
 					<div class="flex items-center justify-between mb-2">
 						<p class="text-[10px] text-hub-dim uppercase tracking-wider">Emails ({detail.emails.length})</p>
 						<button
 							onclick={() => { showAddEmail = !showAddEmail; }}
-							class="text-[11px] text-hub-cta hover:underline cursor-pointer"
+							class="text-xs sm:text-[11px] px-2 py-1 sm:p-0 text-hub-cta hover:underline cursor-pointer"
 						>
 							{showAddEmail ? 'Cancel' : '+ Add'}
 						</button>
 					</div>
 					{#each detail.emails as e (e.email)}
-						<div class="flex items-center gap-2 py-1 text-sm">
-							<span class="font-mono text-hub-text">{e.email}</span>
+						<div class="flex items-center gap-2 py-1.5 text-sm flex-wrap">
+							<span class="font-mono text-hub-text break-all">{e.email}</span>
 							{#if e.isPrimary}
 								<span class="text-[10px] px-1.5 py-0.5 rounded bg-hub-cta/20 text-hub-cta">primary</span>
 							{/if}
@@ -936,14 +951,14 @@
 								{#if !e.isPrimary}
 									<button
 										onclick={() => promoteEmail(e.email)}
-										class="text-[11px] text-hub-dim hover:text-hub-text cursor-pointer"
+										class="text-xs sm:text-[11px] px-2 py-1.5 sm:py-0 text-hub-dim hover:text-hub-text cursor-pointer"
 									>
 										make primary
 									</button>
 								{/if}
 								<button
 									onclick={() => removeEmail(e.email)}
-									class="text-[11px] text-hub-dim hover:text-hub-danger cursor-pointer"
+									class="text-xs sm:text-[11px] px-2 py-1.5 sm:py-0 text-hub-dim hover:text-hub-danger cursor-pointer"
 								>
 									remove
 								</button>
@@ -951,30 +966,32 @@
 						</div>
 					{/each}
 					{#if showAddEmail}
-						<div class="mt-2 flex items-center gap-2">
+						<div class="mt-2 flex flex-col sm:flex-row sm:items-center gap-2">
 							<input
 								type="email"
 								placeholder="email@domain"
 								bind:value={addEmailForm.email}
-								class="flex-1 px-2 py-1 text-sm rounded bg-hub-surface border border-hub-border text-hub-text"
+								class="w-full sm:flex-1 px-2 py-1.5 sm:py-1 text-sm rounded bg-hub-surface border border-hub-border text-hub-text"
 							/>
 							<input
 								type="text"
 								placeholder="label"
 								bind:value={addEmailForm.label}
-								class="w-24 px-2 py-1 text-sm rounded bg-hub-surface border border-hub-border text-hub-text"
+								class="w-full sm:w-24 px-2 py-1.5 sm:py-1 text-sm rounded bg-hub-surface border border-hub-border text-hub-text"
 							/>
-							<label class="text-[11px] text-hub-muted flex items-center gap-1">
-								<input type="checkbox" bind:checked={addEmailForm.isPrimary} />
-								primary
-							</label>
-							<button onclick={addEmail} class="px-3 py-1 rounded bg-hub-cta text-hub-bg text-sm cursor-pointer">Add</button>
+							<div class="flex items-center justify-between gap-2">
+								<label class="text-xs text-hub-muted flex items-center gap-1.5 cursor-pointer">
+									<input type="checkbox" bind:checked={addEmailForm.isPrimary} class="w-4 h-4" />
+									primary
+								</label>
+								<button onclick={addEmail} class="px-4 py-1.5 sm:py-1 rounded bg-hub-cta text-hub-bg text-sm cursor-pointer">Add</button>
+							</div>
 						</div>
 					{/if}
 				</div>
 
 				<!-- Tabs -->
-				<div class="px-6 pt-3 flex items-center gap-1 border-b border-hub-border">
+				<div class="px-4 sm:px-6 pt-3 flex items-center gap-1 border-b border-hub-border overflow-x-auto scrollbar-thin">
 					{#each [
 						{ key: 'interactions' as const, label: `Interactions (${detail.interactions.length})` },
 						{ key: 'notes' as const, label: `Notes (${detail.notes.length})` },
@@ -985,31 +1002,31 @@
 							type="button"
 							onclick={() => { detailTab = t.key; }}
 							aria-pressed={detailTab === t.key}
-							class="text-xs px-3 py-1.5 rounded-t cursor-pointer transition-colors {detailTab === t.key ? 'text-hub-text border-b-2 border-hub-cta -mb-px' : 'text-hub-muted hover:text-hub-text'}"
+							class="text-xs px-3 py-2.5 sm:py-1.5 rounded-t cursor-pointer transition-colors whitespace-nowrap flex-shrink-0 {detailTab === t.key ? 'text-hub-text border-b-2 border-hub-cta -mb-px' : 'text-hub-muted hover:text-hub-text'}"
 						>
 							{t.label}
 						</button>
 					{/each}
 				</div>
 
-				<div class="flex-1 overflow-y-auto px-6 py-4">
+				<div class="flex-1 overflow-y-auto px-4 sm:px-6 py-4">
 					{#if detailTab === 'interactions'}
 						<div class="flex items-center justify-between mb-3">
 							<p class="text-[10px] text-hub-dim uppercase tracking-wider">Interaction log</p>
 							<button
 								onclick={() => { showAddInteraction = !showAddInteraction; }}
-								class="text-[11px] text-hub-cta hover:underline cursor-pointer"
+								class="text-xs sm:text-[11px] px-2 py-1 sm:p-0 text-hub-cta hover:underline cursor-pointer"
 							>
 								{showAddInteraction ? 'Cancel' : '+ Log interaction'}
 							</button>
 						</div>
 						{#if showAddInteraction}
 							<div class="mb-4 p-3 rounded bg-hub-surface/40 border border-hub-border">
-								<div class="flex items-center gap-2 mb-2">
-									<select bind:value={addInteractionForm.channel} class="px-2 py-1 text-xs rounded bg-hub-bg border border-hub-border text-hub-text">
+								<div class="flex items-center gap-2 mb-2 flex-wrap">
+									<select bind:value={addInteractionForm.channel} class="px-2 py-1.5 sm:py-1 text-sm sm:text-xs rounded bg-hub-bg border border-hub-border text-hub-text">
 										{#each CHANNELS as ch (ch)}<option value={ch}>{ch}</option>{/each}
 									</select>
-									<select bind:value={addInteractionForm.direction} class="px-2 py-1 text-xs rounded bg-hub-bg border border-hub-border text-hub-text">
+									<select bind:value={addInteractionForm.direction} class="px-2 py-1.5 sm:py-1 text-sm sm:text-xs rounded bg-hub-bg border border-hub-border text-hub-text">
 										<option value="outbound">outbound</option>
 										<option value="inbound">inbound</option>
 									</select>
@@ -1017,11 +1034,11 @@
 								<textarea
 									bind:value={addInteractionForm.summary}
 									placeholder="Summary…"
-									rows="2"
+									rows="3"
 									class="w-full px-2 py-1.5 text-sm rounded bg-hub-bg border border-hub-border text-hub-text"
 								></textarea>
 								<div class="mt-2 flex items-center gap-2">
-									<button onclick={addInteraction} class="px-3 py-1 rounded bg-hub-cta text-hub-bg text-sm cursor-pointer">Log</button>
+									<button onclick={addInteraction} class="px-4 py-2 sm:py-1 rounded bg-hub-cta text-hub-bg text-sm cursor-pointer">Log</button>
 								</div>
 							</div>
 						{/if}
@@ -1112,16 +1129,16 @@
 		aria-label="Close add contact modal"
 		class="fixed inset-0 bg-black/60 z-30 cursor-default"
 	></button>
-	<div class="fixed inset-0 z-40 flex items-center justify-center p-4 pointer-events-none">
-		<div class="bg-hub-surface border border-hub-border rounded-xl w-full max-w-lg p-5 pointer-events-auto shadow-xl max-h-[90vh] overflow-y-auto">
+	<div class="fixed inset-0 z-40 flex items-end sm:items-center justify-center sm:p-4 pointer-events-none">
+		<div class="bg-hub-surface border border-hub-border rounded-t-2xl sm:rounded-xl w-full max-w-lg p-5 pointer-events-auto shadow-xl max-h-[92vh] sm:max-h-[90vh] overflow-y-auto self-end sm:self-auto">
 			<div class="flex items-center justify-between mb-4">
 				<h2 class="text-sm font-semibold text-hub-text">Add Contact</h2>
 				<button
 					onclick={() => { showAddContact = false; }}
-					class="text-hub-dim hover:text-hub-text cursor-pointer"
+					class="p-2 -mr-2 text-hub-dim hover:text-hub-text cursor-pointer"
 					aria-label="Close"
 				>
-					<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+					<svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
 				</button>
 			</div>
 			<div class="space-y-3">
@@ -1132,7 +1149,7 @@
 						class="w-full mt-1 px-2 py-1.5 rounded bg-hub-bg border border-hub-border text-sm text-hub-text focus:outline-none focus:border-hub-cta/50"
 					/>
 				</label>
-				<div class="grid grid-cols-2 gap-3">
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
 					<label class="text-xs">
 						<span class="text-hub-dim">Company</span>
 						<input bind:value={addForm.company} class="w-full mt-1 px-2 py-1.5 rounded bg-hub-bg border border-hub-border text-sm text-hub-text" />
