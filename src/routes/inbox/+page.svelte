@@ -115,6 +115,15 @@
 
 	// URL params feedback
 	let flashMessage = $state('');
+	let flashType = $state<'success' | 'error'>('success');
+	let flashTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function showFlash(message: string, type: 'success' | 'error', ms: number) {
+		if (flashTimer) clearTimeout(flashTimer);
+		flashMessage = message;
+		flashType = type;
+		flashTimer = setTimeout(() => { flashMessage = ''; flashTimer = null; }, ms);
+	}
 
 	// Origin for redirect-URI display in Gmail setup hint (client-only).
 	let currentOrigin = $state('');
@@ -342,24 +351,21 @@
 
 	onMount(() => {
 		currentOrigin = window.location.origin;
-		// Handle URL params (from OAuth callbacks)
+		// Handle URL params (from OAuth callbacks). Error wins over success
+		// when multiple flags arrive on the same redirect, and only one
+		// timer ever runs (see showFlash).
 		const urlParams = new URLSearchParams(window.location.search);
 		const added = urlParams.get('added');
 		const reauthorized = urlParams.get('reauthorized');
 		const error = urlParams.get('error');
-		if (added) {
-			flashMessage = `${added} account connected successfully`;
-			setTimeout(() => { flashMessage = ''; }, 5000);
-			window.history.replaceState({}, '', '/inbox');
-		}
-		if (reauthorized) {
-			flashMessage = `Reauthorized ${decodeURIComponent(reauthorized)} — reconnecting…`;
-			setTimeout(() => { flashMessage = ''; }, 5000);
-			window.history.replaceState({}, '', '/inbox');
-		}
 		if (error) {
-			flashMessage = `Error: ${decodeURIComponent(error)}`;
-			setTimeout(() => { flashMessage = ''; }, 8000);
+			showFlash(`Error: ${decodeURIComponent(error)}`, 'error', 8000);
+			window.history.replaceState({}, '', '/inbox');
+		} else if (reauthorized) {
+			showFlash(`Reauthorized ${decodeURIComponent(reauthorized)} — reconnecting…`, 'success', 5000);
+			window.history.replaceState({}, '', '/inbox');
+		} else if (added) {
+			showFlash(`${added} account connected successfully`, 'success', 5000);
 			window.history.replaceState({}, '', '/inbox');
 		}
 
@@ -368,7 +374,10 @@
 
 		// Refresh accounts periodically to see status changes
 		const refreshInterval = setInterval(loadAccounts, 15000);
-		return () => clearInterval(refreshInterval);
+		return () => {
+			clearInterval(refreshInterval);
+			if (flashTimer) clearTimeout(flashTimer);
+		};
 	});
 </script>
 
@@ -379,7 +388,7 @@
 <div class="h-full flex flex-col">
 	<!-- Flash message -->
 	{#if flashMessage}
-		<div class="px-4 py-2 text-sm text-center {flashMessage.startsWith('Error') ? 'bg-hub-danger/10 text-hub-danger' : 'bg-emerald-500/10 text-emerald-400'}">
+		<div class="px-4 py-2 text-sm text-center {flashType === 'error' ? 'bg-hub-danger/10 text-hub-danger' : 'bg-emerald-500/10 text-emerald-400'}">
 			{flashMessage}
 		</div>
 	{/if}
