@@ -244,6 +244,24 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 			'Correct a misclassified inbox message and update the cache so future similar messages get the right category.',
 	},
 	{
+		name: 'inbox-read-body',
+		category: 'read',
+		llm_description:
+			"Fetch the full body text of a queued inbox message. " +
+			"Use ONLY after inbox-list-queued returned a row whose preview is insufficient to answer the user's question. " +
+			"Bodies are fetched live from IMAP each call — not cached server-side. " +
+			"Avoid for routine 'what's in my inbox' queries; preview is usually enough. " +
+			"Required for 'what did X say', 'what was the amount', 'extract the link from row N'.",
+		ui_description:
+			'Fetch the full body of a queued inbox message live from IMAP. Used when the preview is not enough to answer a follow-up question.',
+		examples: [
+			{
+				user: '"what did the noon order email actually say"',
+				toolArgs: '{ messageId: 32801 }',
+			},
+		],
+	},
+	{
 		name: 'scheduleReminder',
 		category: 'write',
 		llm_description:

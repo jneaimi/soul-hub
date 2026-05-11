@@ -33,6 +33,9 @@ import {
 	listMessages,
 	markMessageProcessed,
 	correctClassification,
+	getMessage,
+	getAccount,
+	fetchImapBody,
 	type FilterCategory,
 } from '../../inbox/index.js';
 import {
@@ -968,6 +971,48 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 					kind: 'reply',
 					text: `Updated message ${messageId} to ${category}.${tail}`,
 				};
+			},
+		}),
+
+		'inbox-read-body': tool({
+			description:
+				"Fetch the full body text of a queued inbox message. " +
+				"Use ONLY after inbox-list-queued returned a row whose preview is insufficient to answer the user's question. " +
+				"Bodies are fetched live from IMAP each call — not cached server-side. " +
+				"Avoid for routine 'what's in my inbox' queries; preview is usually enough. " +
+				"Required for 'what did X say', 'what was the amount', 'extract the link from row N'.",
+			inputSchema: z.object({
+				messageId: z.number().int().positive(),
+			}),
+			execute: async ({ messageId }): Promise<ToolResult> => {
+				logToolCall('inbox-read-body', { messageId });
+				const msg = getMessage(messageId);
+				if (!msg) {
+					return { kind: 'reply', text: `Message ${messageId} not found.` };
+				}
+				const account = getAccount(msg.accountId);
+				if (!account) {
+					return { kind: 'reply', text: `Account for message ${messageId} not found.` };
+				}
+				try {
+					const body = await fetchImapBody(account, msg);
+					// Bodies can run 10KB+ but the LLM only needs the first ~8KB to
+					// answer most "what does it say" questions. A future v2 may add
+					// offset/length when this proves limiting.
+					const text = (body.text || '').slice(0, 8000);
+					if (!text) {
+						return {
+							kind: 'reply',
+							text: `Message ${messageId} has no readable text body (likely HTML-only or attachment-only).`,
+						};
+					}
+					return { kind: 'reply', text };
+				} catch (err) {
+					return {
+						kind: 'reply',
+						text: `Could not fetch body for message ${messageId}: ${(err as Error).message}`,
+					};
+				}
 			},
 		}),
 	};

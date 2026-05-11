@@ -46,3 +46,6 @@ export {
 	startSync, stopSync, startAccountSync, stopAccountSync,
 	getSyncEmitter, getSyncStatus,
 } from './sync.js';
+
+export { fetchImapBody, fetchImapHeaders, fetchImapAttachment } from './body.js';
+export type { MessageBody, AttachmentBytes } from './body.js';

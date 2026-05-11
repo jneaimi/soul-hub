@@ -1,7 +1,6 @@
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
-import { getAccount, getMessage } from '$lib/inbox/index.js';
-import { fetchImapBody } from '$lib/inbox/body.js';
+import { getAccount, getMessage, fetchImapBody } from '$lib/inbox/index.js';
 
 /**
  * GET /api/inbox/messages/[id]/body
