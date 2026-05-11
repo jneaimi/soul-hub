@@ -1,7 +1,7 @@
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { randomUUID } from 'node:crypto';
-import { addAccount, listAccounts, removeAccount, getAccount, updateAccountSettings, updateAccountCredential, startAccountSync, stopAccountSync } from '$lib/inbox/index.js';
+import { addAccount, listAccounts, removeAccount, getAccount, updateAccountSettings, updateAccountCredential, startAccountSync, stopAccountSync, pruneOldMessages } from '$lib/inbox/index.js';
 import type { InboxProvider } from '$lib/inbox/index.js';
 
 const VALID_PROVIDERS: InboxProvider[] = ['icloud', 'gmail', 'outlook', 'imap'];
@@ -132,11 +132,27 @@ export const PATCH: RequestHandler = async ({ request }) => {
 		return json({ error: 'No valid fields to update' }, { status: 400 });
 	}
 
+	// Track whether retention actually changed so we know to run an
+	// immediate prune. Without this the new value sits inert until the next
+	// sync cycle fires — confusing UX, especially for an account in error
+	// state where sync may not fire for a long time (G2 in the retention
+	// punch list).
+	const newRetention = typeof body.retentionDays === 'number' ? body.retentionDays : undefined;
+	const retentionChanged = newRetention !== undefined && newRetention !== account.retentionDays;
+	let pruned: number | null = null;
+
 	if (hasSettings) {
 		updateAccountSettings(id, {
 			label: body.label as string | undefined,
-			retentionDays: typeof body.retentionDays === 'number' ? body.retentionDays : undefined,
+			retentionDays: newRetention,
 		});
+
+		// Immediate prune on retention change. pruneOldMessages already
+		// short-circuits on retentionDays <= 0 (the "never delete" sentinel),
+		// so passing 0 here is a safe no-op.
+		if (retentionChanged && newRetention !== undefined) {
+			pruned = pruneOldMessages(id, newRetention);
+		}
 	}
 
 	if (hasCredential) {
@@ -157,5 +173,5 @@ export const PATCH: RequestHandler = async ({ request }) => {
 	}
 
 	const refreshed = getAccount(id);
-	return json({ ok: true, account: refreshed });
+	return json({ ok: true, account: refreshed, pruned });
 };

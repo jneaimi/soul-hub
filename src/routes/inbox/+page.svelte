@@ -76,6 +76,10 @@
 	let settingsAccount = $state<Account | null>(null);
 	let settingsLabel = $state('');
 	let settingsRetention = $state(90);
+	// keepForever = "never delete" toggle (sentinel value is retentionDays=0;
+	// pruneOldMessages already short-circuits on <= 0). When toggled on, the
+	// slider stays at its last numeric value so unchecking restores cleanly.
+	let keepForever = $state(false);
 	let settingsSaving = $state(false);
 
 	// Reset password / Reauthorize section
@@ -382,7 +386,16 @@
 		e.stopPropagation();
 		settingsAccount = acc;
 		settingsLabel = acc.label;
-		settingsRetention = acc.retentionDays;
+		// Seed both retention slots: if the account is "never delete" (0),
+		// keepForever=true and the slider defaults to 90 so unchecking the
+		// checkbox restores to a sensible value rather than the 0 sentinel.
+		if (acc.retentionDays === 0) {
+			keepForever = true;
+			settingsRetention = 90;
+		} else {
+			keepForever = false;
+			settingsRetention = acc.retentionDays;
+		}
 		resetOpen = false;
 		resetPassword = '';
 		resetError = '';
@@ -392,6 +405,7 @@
 	async function saveAccountSettings() {
 		if (!settingsAccount) return;
 		settingsSaving = true;
+		const effectiveRetention = keepForever ? 0 : settingsRetention;
 		try {
 			const res = await fetch('/api/inbox/accounts', {
 				method: 'PATCH',
@@ -399,12 +413,22 @@
 				body: JSON.stringify({
 					id: settingsAccount.id,
 					label: settingsLabel,
-					retentionDays: settingsRetention,
+					retentionDays: effectiveRetention,
 				}),
 			});
 			if (res.ok) {
+				const data = await res.json();
 				await loadAccounts();
 				settingsAccount = null;
+				// G3 visibility: surface the immediate-prune count when retention
+				// changed. API returns null when retention wasn't touched.
+				if (typeof data.pruned === 'number') {
+					if (data.pruned > 0) {
+						showFlash(`Settings saved — pruned ${data.pruned} old message${data.pruned === 1 ? '' : 's'}.`, 'success', 5000);
+					} else {
+						showFlash('Settings saved.', 'success', 3000);
+					}
+				}
 			}
 		} catch { /* silent */ }
 		settingsSaving = false;
@@ -1109,13 +1133,24 @@
 
 				<!-- Retention -->
 				<div class="mb-5">
-					<label class="text-[10px] text-hub-dim uppercase tracking-wider">Retention</label>
-					<div class="flex items-center gap-3 mt-1">
+					<div class="flex items-center justify-between">
+						<label class="text-[10px] text-hub-dim uppercase tracking-wider">Retention</label>
+						<label class="flex items-center gap-1.5 text-[11px] text-hub-muted cursor-pointer">
+							<input
+								type="checkbox"
+								bind:checked={keepForever}
+								class="accent-hub-cta cursor-pointer"
+							/>
+							Never delete
+						</label>
+					</div>
+					<div class="flex items-center gap-3 mt-1 {keepForever ? 'opacity-50' : ''}">
 						<input
 							type="range"
 							min="1"
 							max="365"
 							bind:value={settingsRetention}
+							disabled={keepForever}
 							class="flex-1 accent-hub-cta"
 						/>
 						<div class="flex items-center gap-1">
@@ -1124,11 +1159,19 @@
 								min="1"
 								max="365"
 								bind:value={settingsRetention}
-								class="w-14 px-1.5 py-1 rounded bg-hub-surface border border-hub-border text-xs text-hub-text text-center focus:outline-none focus:border-hub-cta/50"
+								disabled={keepForever}
+								class="w-14 px-1.5 py-1 rounded bg-hub-surface border border-hub-border text-xs text-hub-text text-center focus:outline-none focus:border-hub-cta/50 disabled:cursor-not-allowed"
 							/>
 							<span class="text-[10px] text-hub-dim">days</span>
 						</div>
 					</div>
+					<p class="text-[10px] text-hub-dim mt-1 leading-relaxed">
+						{#if keepForever}
+							All synced messages will be kept locally. Local cache only — never touches the remote mailbox.
+						{:else}
+							Locally cached messages older than {settingsRetention} day{settingsRetention === 1 ? '' : 's'} are deleted from this app. Flagged messages and messages that have been processed by agents are never pruned. The remote mailbox is never touched.
+						{/if}
+					</p>
 				</div>
 
 				<!-- Reset Password / Reauthorize -->

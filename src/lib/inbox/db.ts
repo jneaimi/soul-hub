@@ -159,9 +159,14 @@ export function addAccount(
 	const now = Date.now();
 	const encrypted = encrypt(credential);
 
+	// New accounts default to 90-day retention. The schema's column default
+	// is still 30 from migration #2 (kept untouched to avoid disturbing
+	// existing rows — see ADR thread on retention harmonization). Specifying
+	// it explicitly here makes the new-account behavior independent of the
+	// schema default.
 	db.prepare(`
-		INSERT INTO accounts (id, label, provider, email, host, port, encrypted_credential, status, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 'disconnected', ?)
+		INSERT INTO accounts (id, label, provider, email, host, port, encrypted_credential, status, retention_days, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 'disconnected', 90, ?)
 	`).run(account.id, account.label, account.provider, account.email, account.host ?? null, account.port ?? null, encrypted, now);
 
 	return {
@@ -172,7 +177,7 @@ export function addAccount(
 		lastSync: null,
 		lastError: null,
 		createdAt: now,
-		retentionDays: 30,
+		retentionDays: 90,
 	};
 }
 
@@ -228,7 +233,7 @@ function rowToAccount(row: Record<string, unknown>): InboxAccount {
 		lastSync: row.last_sync as number | null,
 		lastError: row.last_error as string | null,
 		createdAt: row.created_at as number,
-		retentionDays: (row.retention_days as number) ?? 30,
+		retentionDays: (row.retention_days as number) ?? 90,
 	};
 }
 
@@ -499,7 +504,13 @@ export function updateAccountSettings(id: string, settings: { label?: string; re
 		sets.push('label = ?');
 		params.push(settings.label);
 	}
-	if (settings.retentionDays !== undefined && settings.retentionDays > 0) {
+	// retentionDays = 0 is the "never delete" sentinel — pruneOldMessages
+	// already short-circuits on retentionDays <= 0. Accept 0..365.
+	if (
+		settings.retentionDays !== undefined &&
+		settings.retentionDays >= 0 &&
+		settings.retentionDays <= 365
+	) {
 		sets.push('retention_days = ?');
 		params.push(settings.retentionDays);
 	}
