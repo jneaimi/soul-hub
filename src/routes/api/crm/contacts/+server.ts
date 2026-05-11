@@ -21,6 +21,7 @@ import {
 	countContacts,
 	searchContacts,
 	listContactEmails,
+	listContactPhones,
 	syncContactToVault,
 	CONTACT_STAGES,
 	type ContactStage,
@@ -64,7 +65,11 @@ export const GET: RequestHandler = async ({ url }) => {
 				warning: `Search engine couldn't parse the query: ${message}`,
 			});
 		}
-		const enriched = contacts.map((c) => ({ ...c, emails: listContactEmails(c.id) }));
+		const enriched = contacts.map((c) => ({
+			...c,
+			emails: listContactEmails(c.id),
+			phones: listContactPhones(c.id),
+		}));
 		return json({ mode: 'search', contacts: enriched, total: enriched.length });
 	}
 
@@ -108,6 +113,12 @@ export const POST: RequestHandler = async ({ request }) => {
 			return json({ error: 'every emails[] entry needs an `email` string' }, { status: 400 });
 		}
 	}
+	const phones = Array.isArray(body.phones) ? body.phones as Array<Record<string, unknown>> : [];
+	for (const entry of phones) {
+		if (typeof entry.phone !== 'string' || entry.phone.length === 0) {
+			return json({ error: 'every phones[] entry needs a `phone` string' }, { status: 400 });
+		}
+	}
 
 	const input: NewContactInput = {
 		displayName: displayName.trim(),
@@ -125,6 +136,11 @@ export const POST: RequestHandler = async ({ request }) => {
 			label: typeof e.label === 'string' ? e.label : null,
 			isPrimary: !!e.isPrimary,
 		})),
+		phones: phones.map((p) => ({
+			phone: (p.phone as string).trim(),
+			label: typeof p.label === 'string' ? p.label : null,
+			isPrimary: !!p.isPrimary,
+		})),
 	};
 
 	try {
@@ -138,7 +154,13 @@ export const POST: RequestHandler = async ({ request }) => {
 		const message = err instanceof Error ? err.message : String(err);
 		const code = (err as { code?: string }).code ?? '';
 		if (code === 'SQLITE_CONSTRAINT_UNIQUE' || message.includes('UNIQUE constraint failed')) {
-			return json({ error: 'duplicate email — already attached to a contact', detail: message }, { status: 409 });
+			// Disambiguate by which table fired the constraint.
+			const isPhone = message.includes('contact_phones');
+			const kind = isPhone ? 'phone' : 'email';
+			return json(
+				{ error: `duplicate ${kind} — already attached to a contact`, detail: message },
+				{ status: 409 },
+			);
 		}
 		return json({ error: 'addContact failed', detail: message }, { status: 500 });
 	}

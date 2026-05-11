@@ -48,6 +48,14 @@
 		createdAt: number;
 	};
 
+	type ContactPhoneDto = {
+		contactId: string;
+		phone: string;
+		label: string | null;
+		isPrimary: boolean;
+		createdAt: number;
+	};
+
 	type ContactDto = {
 		id: string;
 		displayName: string;
@@ -65,11 +73,13 @@
 		createdAt: number;
 		updatedAt: number;
 		emails: ContactEmailDto[];
+		phones: ContactPhoneDto[];
 	};
 
 	type DetailResponse = {
 		contact: ContactDto;
 		emails: ContactEmailDto[];
+		phones: ContactPhoneDto[];
 		tags: { id: number; name: string }[];
 		interactions: {
 			id: number; contactId: string; timestamp: number; channel: string;
@@ -118,6 +128,8 @@
 	let editForm = $state({ displayName: '', company: '', role: '', notes: '', source: '' });
 	let addEmailForm = $state({ email: '', label: '', isPrimary: false });
 	let showAddEmail = $state(false);
+	let addPhoneForm = $state({ phone: '', label: '', isPrimary: false });
+	let showAddPhone = $state(false);
 	let addInteractionForm = $state({ channel: 'email' as string, direction: 'outbound' as string, summary: '' });
 	let showAddInteraction = $state(false);
 	let followupInput = $state(''); // yyyy-mm-dd
@@ -127,6 +139,7 @@
 	let addForm = $state({
 		displayName: '',
 		emails: [{ email: '', label: '', isPrimary: true }],
+		phones: [{ phone: '', label: '', isPrimary: true }],
 		company: '',
 		role: '',
 		source: '' as string,
@@ -381,6 +394,69 @@
 		}
 	}
 
+	async function addPhone() {
+		if (!detail) return;
+		const p = addPhoneForm.phone.trim();
+		if (!p) return;
+		try {
+			const res = await fetch(`/api/crm/contacts/${detail.contact.id}/phones`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					phone: p,
+					label: addPhoneForm.label.trim() || undefined,
+					isPrimary: addPhoneForm.isPrimary,
+				}),
+			});
+			if (res.status === 409) {
+				flash('Phone already attached to a contact', 'error');
+				return;
+			}
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			flash('Phone added');
+			addPhoneForm = { phone: '', label: '', isPrimary: false };
+			showAddPhone = false;
+			await loadDetail(detail.contact.id);
+		} catch (err) {
+			flash(`Add phone failed: ${errMsg(err)}`, 'error');
+		}
+	}
+
+	async function promotePhone(phone: string) {
+		if (!detail) return;
+		try {
+			const res = await fetch(`/api/crm/contacts/${detail.contact.id}/phones`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ phone, makePrimary: true }),
+			});
+			if (!res.ok) {
+				const errBody = await res.json().catch(() => ({}));
+				throw new Error(errBody.error ?? `HTTP ${res.status}`);
+			}
+			flash(`Promoted ${phone} to primary`);
+			await loadDetail(detail.contact.id);
+		} catch (err) {
+			flash(`Promote failed: ${errMsg(err)}`, 'error');
+		}
+	}
+
+	async function removePhone(phone: string) {
+		if (!detail) return;
+		if (!confirm(`Remove ${phone}?`)) return;
+		try {
+			const res = await fetch(
+				`/api/crm/contacts/${detail.contact.id}/phones?phone=${encodeURIComponent(phone)}`,
+				{ method: 'DELETE' },
+			);
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			flash('Phone removed');
+			await loadDetail(detail.contact.id);
+		} catch (err) {
+			flash(`Remove failed: ${errMsg(err)}`, 'error');
+		}
+	}
+
 	async function addInteraction() {
 		if (!detail) return;
 		const summary = addInteractionForm.summary.trim();
@@ -449,9 +525,18 @@
 				label: e.label.trim() || null,
 				isPrimary: e.isPrimary,
 			}));
+		const phones = addForm.phones
+			.map((p) => ({ ...p, phone: p.phone.trim() }))
+			.filter((p) => p.phone.length > 0)
+			.map((p) => ({
+				phone: p.phone,
+				label: p.label.trim() || null,
+				isPrimary: p.isPrimary,
+			}));
 		const payload: Record<string, unknown> = {
 			displayName: name,
 			emails,
+			phones,
 			stage: addForm.stage,
 		};
 		if (addForm.company.trim()) payload.company = addForm.company.trim();
@@ -464,7 +549,8 @@
 				body: JSON.stringify(payload),
 			});
 			if (res.status === 409) {
-				flash('Duplicate email — already attached to a contact', 'error');
+				const errBody = await res.json().catch(() => ({}));
+				flash(errBody.error ?? 'Duplicate email or phone — already attached to a contact', 'error');
 				return;
 			}
 			if (!res.ok) {
@@ -475,7 +561,9 @@
 			flash(`Created ${created.displayName}`);
 			showAddContact = false;
 			addForm = {
-				displayName: '', emails: [{ email: '', label: '', isPrimary: true }],
+				displayName: '',
+				emails: [{ email: '', label: '', isPrimary: true }],
+				phones: [{ phone: '', label: '', isPrimary: true }],
 				company: '', role: '', source: '', stage: 'Lead',
 			};
 			await loadContacts();
@@ -571,6 +659,22 @@
 
 	function setAddFormPrimary(idx: number) {
 		addForm.emails = addForm.emails.map((e, i) => ({ ...e, isPrimary: i === idx }));
+	}
+
+	function addPhoneRow() {
+		addForm.phones = [...addForm.phones, { phone: '', label: '', isPrimary: false }];
+	}
+
+	function removePhoneRow(idx: number) {
+		if (addForm.phones.length === 1) return;
+		addForm.phones = addForm.phones.filter((_, i) => i !== idx);
+		if (!addForm.phones.some((p) => p.isPrimary) && addForm.phones.length > 0) {
+			addForm.phones[0].isPrimary = true;
+		}
+	}
+
+	function setAddFormPrimaryPhone(idx: number) {
+		addForm.phones = addForm.phones.map((p, i) => ({ ...p, isPrimary: i === idx }));
 	}
 </script>
 
@@ -992,6 +1096,72 @@
 					{/if}
 				</div>
 
+				<!-- Phones section — mirrors Emails section above. -->
+				<div class="px-4 sm:px-6 py-4 border-b border-hub-border">
+					<div class="flex items-center justify-between mb-2">
+						<p class="text-[10px] text-hub-dim uppercase tracking-wider">Phones ({detail.phones.length})</p>
+						<button
+							onclick={() => { showAddPhone = !showAddPhone; }}
+							class="text-xs sm:text-[11px] px-2 py-1 sm:p-0 text-hub-cta hover:underline cursor-pointer"
+						>
+							{showAddPhone ? 'Cancel' : '+ Add'}
+						</button>
+					</div>
+					{#if detail.phones.length === 0 && !showAddPhone}
+						<p class="text-xs text-hub-dim italic">No phone numbers on file.</p>
+					{/if}
+					{#each detail.phones as p (p.phone)}
+						<div class="flex items-center gap-2 py-1.5 text-sm flex-wrap">
+							<a href="tel:{p.phone}" class="font-mono text-hub-text hover:text-hub-cta break-all">{p.phone}</a>
+							{#if p.isPrimary}
+								<span class="text-[10px] px-1.5 py-0.5 rounded bg-hub-cta/20 text-hub-cta">primary</span>
+							{/if}
+							{#if p.label}
+								<span class="text-[10px] text-hub-dim">{p.label}</span>
+							{/if}
+							<div class="ml-auto flex items-center gap-1">
+								{#if !p.isPrimary}
+									<button
+										onclick={() => promotePhone(p.phone)}
+										class="text-xs sm:text-[11px] px-2 py-1.5 sm:py-0 text-hub-dim hover:text-hub-text cursor-pointer"
+									>
+										make primary
+									</button>
+								{/if}
+								<button
+									onclick={() => removePhone(p.phone)}
+									class="text-xs sm:text-[11px] px-2 py-1.5 sm:py-0 text-hub-dim hover:text-hub-danger cursor-pointer"
+								>
+									remove
+								</button>
+							</div>
+						</div>
+					{/each}
+					{#if showAddPhone}
+						<div class="mt-2 flex flex-col sm:flex-row sm:items-center gap-2">
+							<input
+								type="tel"
+								placeholder="+971 5X XXX XXXX"
+								bind:value={addPhoneForm.phone}
+								class="w-full sm:flex-1 px-2 py-1.5 sm:py-1 text-sm rounded bg-hub-surface border border-hub-border text-hub-text"
+							/>
+							<input
+								type="text"
+								placeholder="label (mobile, work)"
+								bind:value={addPhoneForm.label}
+								class="w-full sm:w-32 px-2 py-1.5 sm:py-1 text-sm rounded bg-hub-surface border border-hub-border text-hub-text"
+							/>
+							<div class="flex items-center justify-between gap-2">
+								<label class="text-xs text-hub-muted flex items-center gap-1.5 cursor-pointer">
+									<input type="checkbox" bind:checked={addPhoneForm.isPrimary} class="w-4 h-4" />
+									primary
+								</label>
+								<button onclick={addPhone} class="px-4 py-1.5 sm:py-1 rounded bg-hub-cta text-hub-bg text-sm cursor-pointer">Add</button>
+							</div>
+						</div>
+					{/if}
+				</div>
+
 				<!-- Tabs -->
 				<div class="px-4 sm:px-6 pt-3 flex items-center gap-1 border-b border-hub-border overflow-x-auto scrollbar-thin">
 					{#each [
@@ -1207,6 +1377,46 @@
 									onclick={() => removeEmailRow(i)}
 									class="text-[11px] text-hub-dim hover:text-hub-danger cursor-pointer"
 									aria-label="Remove email row"
+								>
+									x
+								</button>
+							{/if}
+						</div>
+					{/each}
+				</div>
+				<div>
+					<div class="flex items-center justify-between mb-1">
+						<span class="text-xs text-hub-dim">Phones</span>
+						<button onclick={addPhoneRow} class="text-[11px] text-hub-cta hover:underline cursor-pointer">+ Add another</button>
+					</div>
+					{#each addForm.phones as p, i (i)}
+						<div class="flex items-center gap-2 mb-1.5">
+							<input
+								type="tel"
+								placeholder="+971 5X XXX XXXX"
+								bind:value={addForm.phones[i].phone}
+								class="flex-1 px-2 py-1 text-sm rounded bg-hub-bg border border-hub-border text-hub-text"
+							/>
+							<input
+								type="text"
+								placeholder="label"
+								bind:value={addForm.phones[i].label}
+								class="w-20 px-2 py-1 text-sm rounded bg-hub-bg border border-hub-border text-hub-text"
+							/>
+							<button
+								type="button"
+								onclick={() => setAddFormPrimaryPhone(i)}
+								title="Make primary"
+								class="text-[11px] px-2 py-1 rounded {p.isPrimary ? 'bg-hub-cta/20 text-hub-cta' : 'text-hub-dim hover:text-hub-text'} cursor-pointer"
+							>
+								{p.isPrimary ? '★' : '☆'}
+							</button>
+							{#if addForm.phones.length > 1}
+								<button
+									type="button"
+									onclick={() => removePhoneRow(i)}
+									class="text-[11px] text-hub-dim hover:text-hub-danger cursor-pointer"
+									aria-label="Remove phone row"
 								>
 									x
 								</button>

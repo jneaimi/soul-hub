@@ -12,6 +12,7 @@
  *   type, created, tags          ← required by GLOBAL_REQUIRED_FIELDS
  *   crm_id, stage, company       ← always written
  *   emails: [{email, label, primary}]
+ *   phones: [{phone, label, primary}]   ← Stage F2; mirrors emails shape
  *   last_synced                  ← ISO timestamp; refreshed every sync
  *
  * Operator-edited frontmatter keys outside this set are preserved by the
@@ -28,11 +29,12 @@ import {
 	getContact,
 	listContactEmails,
 	listContactNotes,
+	listContactPhones,
 	listContactTags,
 	getCrmDb,
 } from './db.js';
 import { getVaultEngine } from '../vault/index.js';
-import type { Contact, ContactEmail, ContactNote, Tag } from './types.js';
+import type { Contact, ContactEmail, ContactNote, ContactPhone, Tag } from './types.js';
 
 /** Per ADR §D10.3, cap `related_notes` in the frontmatter at the most-recent
  *  N entries. DB stays authoritative for the full list; the markdown is the
@@ -77,11 +79,12 @@ export async function syncContactToVault(contactId: string): Promise<SyncContact
 	}
 
 	const emails = listContactEmails(contactId);
+	const phones = listContactPhones(contactId);
 	const tags = listContactTags(contactId);
 	const notes = listContactNotes(contactId, RELATED_NOTES_FRONTMATTER_CAP);
 	const targetPath = contact.vaultNotePath ?? defaultContactPath(contact.displayName);
 
-	const managedMeta = buildManagedFrontmatter(contact, emails, tags, notes);
+	const managedMeta = buildManagedFrontmatter(contact, emails, phones, tags, notes);
 	const existing = vault.getNote(targetPath);
 
 	if (existing) {
@@ -132,7 +135,7 @@ export async function archiveCrmFrontmatter(vaultPath: string): Promise<SyncCont
 
 	const existing = note.meta as Record<string, unknown>;
 	const stripped: Record<string, unknown> = {};
-	const STRIP_KEYS = new Set(['crm_id', 'stage', 'emails', 'related_notes', 'last_synced', 'tags']);
+	const STRIP_KEYS = new Set(['crm_id', 'stage', 'emails', 'phones', 'related_notes', 'last_synced', 'tags']);
 	for (const [k, v] of Object.entries(existing)) {
 		if (!STRIP_KEYS.has(k)) stripped[k] = v;
 	}
@@ -151,6 +154,7 @@ export async function archiveCrmFrontmatter(vaultPath: string): Promise<SyncCont
 function buildManagedFrontmatter(
 	contact: Contact,
 	emails: ContactEmail[],
+	phones: ContactPhone[],
 	tags: Tag[],
 	notes: ContactNote[],
 ): Record<string, unknown> {
@@ -180,6 +184,18 @@ function buildManagedFrontmatter(
 			primary: e.isPrimary,
 		};
 		if (e.label) entry.label = e.label;
+		return entry;
+	});
+
+	// Stage F2 — phones array mirrors the emails shape. Always-write (even
+	// empty) so a removed phone clears the key from frontmatter on next sync
+	// rather than leaving a stale entry behind. Same reasoning as related_notes.
+	meta.phones = phones.map((p) => {
+		const entry: Record<string, unknown> = {
+			phone: p.phone,
+			primary: p.isPrimary,
+		};
+		if (p.label) entry.label = p.label;
 		return entry;
 	});
 

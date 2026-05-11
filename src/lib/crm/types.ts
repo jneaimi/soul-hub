@@ -75,6 +75,14 @@ export interface ContactEmail {
 	createdAt: number;
 }
 
+export interface ContactPhone {
+	contactId: string;
+	phone: string;              // stored as-typed (no normalization v1)
+	label: string | null;       // 'mobile' | 'work' | 'home' | NULL
+	isPrimary: boolean;
+	createdAt: number;
+}
+
 export interface Interaction {
 	id: number;
 	contactId: string;
@@ -114,12 +122,19 @@ export interface NewContactInput {
 	notes?: string | null;
 	vaultNotePath?: string | null;
 	emails?: Array<{ email: string; label?: string | null; isPrimary?: boolean }>;
+	phones?: Array<{ phone: string; label?: string | null; isPrimary?: boolean }>;
 }
 
 /** Result shape for addContact — returns the full contact + the persisted
- *  email rows so callers don't need a follow-up SELECT. */
+ *  email + phone rows so callers don't need follow-up SELECTs.
+ *
+ *  Name kept for backwards-compat after Stage F2 added phones (renaming
+ *  would ripple through the orchestrator + route handlers without
+ *  changing semantics). Think of it as "contact + relations from the
+ *  add-contact transaction". */
 export interface ContactWithEmails extends Contact {
 	emails: ContactEmail[];
+	phones: ContactPhone[];
 }
 
 /** Result for findContactByEmail and similar lookups that need both the
@@ -127,6 +142,12 @@ export interface ContactWithEmails extends Contact {
 export interface ContactEmailMatch {
 	contact: Contact;
 	matchedEmail: ContactEmail;
+}
+
+/** Result for findContactByPhone — mirrors ContactEmailMatch. */
+export interface ContactPhoneMatch {
+	contact: Contact;
+	matchedPhone: ContactPhone;
 }
 
 /** Narrow enum per ADR §D10.1 — prevents LLM drift / typos. Expand only

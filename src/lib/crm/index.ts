@@ -5,17 +5,19 @@ export {
 	addContact, getContact, listContacts, countContacts, searchContacts,
 	updateContact, updateContactStage, setNextFollowup, deleteContact,
 	addContactEmail, setPrimaryEmail, removeContactEmail, listContactEmails, findContactByEmail,
+	// Phones — mirror of emails (Stage F2 — phone support)
+	addContactPhone, setPrimaryPhone, removeContactPhone, listContactPhones, findContactByPhone,
 	addInteraction, listInteractions,
 	addTag, tagContact, listContactTags,
 	listStageHistory, listFollowups,
 	// D10 — vault-note attachments
 	listContactNotes, attachNote, detachNote, findContactsByVaultPath,
-	type ListContactsOptions, type AddContactEmailInput, type AddInteractionInput,
-	type ListFollowupsOptions, type UpdateContactFields, type RemoveContactEmailResult,
+	type ListContactsOptions, type AddContactEmailInput, type AddContactPhoneInput, type AddInteractionInput,
+	type ListFollowupsOptions, type UpdateContactFields, type RemoveContactEmailResult, type RemoveContactPhoneResult,
 } from './db.js';
 
 export type {
-	Contact, ContactEmail, ContactEmailMatch, ContactWithEmails,
+	Contact, ContactEmail, ContactEmailMatch, ContactPhone, ContactPhoneMatch, ContactWithEmails,
 	Interaction, StageHistory, Tag,
 	ContactStage, ContactSource,
 	InteractionChannel, InteractionDirection,

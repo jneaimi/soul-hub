@@ -20,6 +20,7 @@ import {
 	updateContact,
 	deleteContact,
 	listContactEmails,
+	listContactPhones,
 	listContactTags,
 	listInteractions,
 	listStageHistory,
@@ -48,6 +49,7 @@ export const GET: RequestHandler = async ({ params }) => {
 	if (!contact) return json({ error: `Contact ${contactId} not found` }, { status: 404 });
 
 	const emails = listContactEmails(contactId);
+	const phones = listContactPhones(contactId);
 	const tags = listContactTags(contactId);
 	const interactions = listInteractions(contactId, INTERACTIONS_LIMIT);
 	const stageHistory = listStageHistory(contactId, STAGE_HISTORY_LIMIT);
@@ -68,6 +70,7 @@ export const GET: RequestHandler = async ({ params }) => {
 	return json({
 		contact,
 		emails,
+		phones,
 		tags,
 		interactions,
 		stageHistory,

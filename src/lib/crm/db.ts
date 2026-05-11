@@ -31,6 +31,7 @@ import type {
 	ContactEmailMatch,
 	ContactNote,
 	ContactNoteKind,
+	ContactPhone,
 	ContactStage,
 	ContactWithEmails,
 	Interaction,
@@ -75,6 +76,10 @@ export function closeCrmDb(): void {
 }
 
 function migrate(db: Database.Database): void {
+	// Incremental migrations. A fresh install boots at user_version=0 and runs
+	// every block below in sequence (1 → 2 → 3 → …), so new operators get the
+	// full schema in one pass. Upgrades only run the unseen blocks. Every
+	// statement uses IF NOT EXISTS so re-runs are idempotent.
 	const version = db.pragma('user_version', { simple: true }) as number;
 
 	if (version < 1) {
@@ -202,6 +207,28 @@ function migrate(db: Database.Database): void {
 		`);
 		db.pragma(`user_version = 2`);
 	}
+
+	if (version < 3) {
+		// Phones — mirrors the contact_emails table exactly so the operator's
+		// mental model stays "phones work the same way as emails". Global
+		// UNIQUE on phone string + FK CASCADE + indexes parallel to emails.
+		// Difference from emails: there's no inbox-bridge analogue (yet), so
+		// the API allows removing the last phone — phones are non-essential.
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS contact_phones (
+				contact_id TEXT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+				phone TEXT NOT NULL,
+				label TEXT,
+				is_primary INTEGER NOT NULL DEFAULT 0,
+				created_at INTEGER NOT NULL,
+				PRIMARY KEY(contact_id, phone)
+			);
+
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_contact_phones_unique ON contact_phones(phone);
+			CREATE INDEX IF NOT EXISTS idx_contact_phones_primary ON contact_phones(contact_id) WHERE is_primary = 1;
+		`);
+		db.pragma(`user_version = 3`);
+	}
 }
 
 // ─── helpers — contacts ────────────────────────────────────────────────────
@@ -262,13 +289,13 @@ export function addContact(input: NewContactInput): ContactWithEmails {
 
 		const emails: ContactEmail[] = [];
 		const inputEmails = input.emails ?? [];
-		const primaryCount = inputEmails.filter((e) => e.isPrimary).length;
+		const primaryEmailCount = inputEmails.filter((e) => e.isPrimary).length;
 		// If caller didn't designate exactly one primary, promote the first.
-		const shouldPromoteFirst = inputEmails.length > 0 && primaryCount !== 1;
+		const promoteFirstEmail = inputEmails.length > 0 && primaryEmailCount !== 1;
 
 		for (let i = 0; i < inputEmails.length; i++) {
 			const e = inputEmails[i];
-			const isPrimary = shouldPromoteFirst ? i === 0 : !!e.isPrimary;
+			const isPrimary = promoteFirstEmail ? i === 0 : !!e.isPrimary;
 			db.prepare(`
 				INSERT INTO contact_emails (contact_id, email, label, is_primary, created_at)
 				VALUES (?, ?, ?, ?, ?)
@@ -277,6 +304,30 @@ export function addContact(input: NewContactInput): ContactWithEmails {
 				contactId: id,
 				email: e.email,
 				label: e.label ?? null,
+				isPrimary,
+				createdAt: now,
+			});
+		}
+
+		const phones: ContactPhone[] = [];
+		const inputPhones = input.phones ?? [];
+		const primaryPhoneCount = inputPhones.filter((p) => p.isPrimary).length;
+		// Same promote-first rule as emails — caller skips picking a primary,
+		// the first phone gets the flag so the "exactly one primary per
+		// contact" invariant holds on insert.
+		const promoteFirstPhone = inputPhones.length > 0 && primaryPhoneCount !== 1;
+
+		for (let i = 0; i < inputPhones.length; i++) {
+			const p = inputPhones[i];
+			const isPrimary = promoteFirstPhone ? i === 0 : !!p.isPrimary;
+			db.prepare(`
+				INSERT INTO contact_phones (contact_id, phone, label, is_primary, created_at)
+				VALUES (?, ?, ?, ?, ?)
+			`).run(id, p.phone, p.label ?? null, isPrimary ? 1 : 0, now);
+			phones.push({
+				contactId: id,
+				phone: p.phone,
+				label: p.label ?? null,
 				isPrimary,
 				createdAt: now,
 			});
@@ -299,6 +350,7 @@ export function addContact(input: NewContactInput): ContactWithEmails {
 			createdAt: now,
 			updatedAt: now,
 			emails,
+			phones,
 		};
 	});
 
@@ -641,6 +693,137 @@ export function findContactByEmail(email: string): ContactEmailMatch | null {
 	};
 }
 
+// ─── helpers — phones ──────────────────────────────────────────────────────
+
+export interface AddContactPhoneInput {
+	contactId: string;
+	phone: string;
+	label?: string | null;
+	isPrimary?: boolean;
+}
+
+/**
+ * Add a phone number to an existing contact. Same semantics as
+ * `addContactEmail`: when `isPrimary` is true, demotes any other primary
+ * on the same contact first so the "exactly one primary per contact"
+ * invariant holds at the application layer.
+ *
+ * Throws `SQLITE_CONSTRAINT_UNIQUE` if the phone is already attached to
+ * any contact (the UNIQUE index on contact_phones.phone is global).
+ */
+export function addContactPhone(input: AddContactPhoneInput): ContactPhone {
+	const db = getCrmDb();
+	const now = Date.now();
+	const tx = db.transaction((): ContactPhone => {
+		if (input.isPrimary) {
+			db.prepare('UPDATE contact_phones SET is_primary = 0 WHERE contact_id = ?')
+				.run(input.contactId);
+		}
+		db.prepare(`
+			INSERT INTO contact_phones (contact_id, phone, label, is_primary, created_at)
+			VALUES (?, ?, ?, ?, ?)
+		`).run(
+			input.contactId,
+			input.phone,
+			input.label ?? null,
+			input.isPrimary ? 1 : 0,
+			now,
+		);
+		return {
+			contactId: input.contactId,
+			phone: input.phone,
+			label: input.label ?? null,
+			isPrimary: !!input.isPrimary,
+			createdAt: now,
+		};
+	});
+	return tx();
+}
+
+export function setPrimaryPhone(contactId: string, phone: string): boolean {
+	const db = getCrmDb();
+	const tx = db.transaction((): boolean => {
+		const row = db
+			.prepare('SELECT 1 FROM contact_phones WHERE contact_id = ? AND phone = ?')
+			.get(contactId, phone);
+		if (!row) return false;
+		db.prepare('UPDATE contact_phones SET is_primary = 0 WHERE contact_id = ?')
+			.run(contactId);
+		db.prepare('UPDATE contact_phones SET is_primary = 1 WHERE contact_id = ? AND phone = ?')
+			.run(contactId, phone);
+		return true;
+	});
+	return tx();
+}
+
+export function listContactPhones(contactId: string): ContactPhone[] {
+	const db = getCrmDb();
+	const rows = db
+		.prepare('SELECT * FROM contact_phones WHERE contact_id = ? ORDER BY is_primary DESC, created_at ASC')
+		.all(contactId) as Record<string, unknown>[];
+	return rows.map(rowToContactPhone);
+}
+
+/** Unlike `removeContactEmail`, removing the LAST phone is allowed —
+ *  phones are non-essential (no inbox-bridge analogue), and the operator
+ *  may genuinely want a phone-less contact. If the removed row was the
+ *  primary AND another phone remains, the oldest remaining row gets
+ *  promoted so the invariant survives. */
+export interface RemoveContactPhoneResult {
+	removed: boolean;
+	wasPrimary: boolean;
+	remaining: number;
+}
+
+export function removeContactPhone(contactId: string, phone: string): RemoveContactPhoneResult {
+	const db = getCrmDb();
+	const tx = db.transaction((): RemoveContactPhoneResult => {
+		const target = db
+			.prepare('SELECT is_primary FROM contact_phones WHERE contact_id = ? AND phone = ?')
+			.get(contactId, phone) as { is_primary: number } | undefined;
+		if (!target) return { removed: false, wasPrimary: false, remaining: 0 };
+		const wasPrimary = target.is_primary === 1;
+		db.prepare('DELETE FROM contact_phones WHERE contact_id = ? AND phone = ?').run(contactId, phone);
+		const remainingRows = db
+			.prepare('SELECT phone FROM contact_phones WHERE contact_id = ? ORDER BY created_at ASC')
+			.all(contactId) as { phone: string }[];
+		if (wasPrimary && remainingRows.length > 0) {
+			db.prepare('UPDATE contact_phones SET is_primary = 1 WHERE contact_id = ? AND phone = ?')
+				.run(contactId, remainingRows[0].phone);
+		}
+		return { removed: true, wasPrimary, remaining: remainingRows.length };
+	});
+	return tx();
+}
+
+/** Reverse lookup — given a phone string, return the contact + matched
+ *  phone row. Used by future WhatsApp/SMS sender-to-contact linkage and
+ *  by the orchestrator's `crm-find-contact` tool. */
+export function findContactByPhone(phone: string): import('./types.js').ContactPhoneMatch | null {
+	const db = getCrmDb();
+	const row = db
+		.prepare(`
+			SELECT c.*, cp.phone AS matched_phone, cp.label AS matched_label,
+			       cp.is_primary AS matched_is_primary, cp.created_at AS matched_created_at
+			FROM contacts c
+			JOIN contact_phones cp ON cp.contact_id = c.id
+			WHERE cp.phone = ?
+			LIMIT 1
+		`)
+		.get(phone) as Record<string, unknown> | undefined;
+	if (!row) return null;
+	return {
+		contact: rowToContact(row),
+		matchedPhone: {
+			contactId: row.id as string,
+			phone: row.matched_phone as string,
+			label: row.matched_label as string | null,
+			isPrimary: (row.matched_is_primary as number) === 1,
+			createdAt: row.matched_created_at as number,
+		},
+	};
+}
+
 export interface ListFollowupsOptions {
 	/** Include contacts whose follow-up is overdue by up to this many days
 	 *  (default: any overdue, including ancient stale rows). */
@@ -923,6 +1106,16 @@ function rowToContactEmail(row: Record<string, unknown>): ContactEmail {
 	return {
 		contactId: row.contact_id as string,
 		email: row.email as string,
+		label: (row.label as string | null) ?? null,
+		isPrimary: (row.is_primary as number) === 1,
+		createdAt: row.created_at as number,
+	};
+}
+
+function rowToContactPhone(row: Record<string, unknown>): ContactPhone {
+	return {
+		contactId: row.contact_id as string,
+		phone: row.phone as string,
 		label: (row.label as string | null) ?? null,
 		isPrimary: (row.is_primary as number) === 1,
 		createdAt: row.created_at as number,
