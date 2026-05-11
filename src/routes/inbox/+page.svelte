@@ -39,6 +39,10 @@
 	// Accounts whose lastError is expanded in the sidebar. Single-id slot —
 	// only one error is expanded at a time, keeps the sidebar compact.
 	let expandedErrorId = $state<string | null>(null);
+
+	// Focus targets for first-input-focus on modal/drawer open.
+	let settingsLabelInput: HTMLInputElement | undefined = $state();
+	let addEmailInput: HTMLInputElement | undefined = $state();
 	let showSidebar = $state(false);
 	let offset = $state(0);
 	const PAGE_SIZE = 50;
@@ -99,9 +103,14 @@
 		{ value: 'skipped', label: 'Skipped' },
 	];
 
+	// Process-status colors. queued was bg-amber-400 originally but collided
+	// with the syncing account-status dot (also amber-400) on the same screen
+	// — two semantically different states sharing a color. Moved queued to
+	// emerald-300 so it sits in the same family as `processed` (both are
+	// "signal-confirmed for agents") while staying visually distinct.
 	const processStatusColors: Record<string, string> = {
 		new: 'bg-blue-400',
-		queued: 'bg-amber-400',
+		queued: 'bg-emerald-300',
 		processed: 'bg-emerald-400',
 		skipped: 'bg-hub-dim/50',
 	};
@@ -157,6 +166,34 @@
 			checkGmailConfig();
 		}
 	});
+
+	// First-input focus on overlay open. requestAnimationFrame waits for the
+	// node to mount; without it the bind:this reference may still be undefined.
+	$effect(() => {
+		if (settingsAccount && settingsLabelInput) {
+			requestAnimationFrame(() => settingsLabelInput?.focus());
+		}
+	});
+	$effect(() => {
+		// Only focus the email field for password providers — OAuth providers
+		// render a single CTA button instead.
+		if (showAddForm && (addProvider === 'icloud' || addProvider === 'imap') && addEmailInput) {
+			requestAnimationFrame(() => addEmailInput?.focus());
+		}
+	});
+
+	// Escape closes whichever overlay is open, top-down by visual stacking
+	// (modal > drawer > mobile sidebar). Only one runs per press.
+	function onKeydown(e: KeyboardEvent) {
+		if (e.key !== 'Escape') return;
+		if (settingsAccount) {
+			settingsAccount = null;
+		} else if (showAddForm) {
+			showAddForm = false;
+		} else if (showSidebar) {
+			showSidebar = false;
+		}
+	}
 
 	const statusColors: Record<string, string> = {
 		connected: 'bg-emerald-400',
@@ -388,6 +425,8 @@
 	<title>Inbox — Soul Hub</title>
 </svelte:head>
 
+<svelte:window onkeydown={onKeydown} />
+
 <div class="h-full flex flex-col">
 	<!-- Flash message -->
 	{#if flashMessage}
@@ -404,6 +443,8 @@
 				<button
 					onclick={() => { showSidebar = !showSidebar; }}
 					class="sm:hidden p-1 rounded text-hub-dim hover:text-hub-muted cursor-pointer"
+					aria-label={showSidebar ? 'Close sidebar' : 'Open sidebar'}
+					aria-expanded={showSidebar}
 				>
 					<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
 				</button>
@@ -650,7 +691,7 @@
 							</div>
 							<div>
 								<label class="text-[10px] text-hub-dim uppercase tracking-wider">Email</label>
-								<input type="email" bind:value={addEmail} placeholder="you@example.com" class="w-full mt-1 px-2 py-1.5 rounded bg-hub-surface border border-hub-border text-sm text-hub-text placeholder:text-hub-dim focus:outline-none" />
+								<input type="email" bind:value={addEmail} bind:this={addEmailInput} placeholder="you@example.com" class="w-full mt-1 px-2 py-1.5 rounded bg-hub-surface border border-hub-border text-sm text-hub-text placeholder:text-hub-dim focus:outline-none" />
 							</div>
 							<div class="col-span-2">
 								<label class="text-[10px] text-hub-dim uppercase tracking-wider">
@@ -815,6 +856,7 @@
 					<input
 						type="text"
 						bind:value={settingsLabel}
+						bind:this={settingsLabelInput}
 						class="w-full mt-1 px-2 py-1.5 rounded bg-hub-surface border border-hub-border text-sm text-hub-text focus:outline-none focus:border-hub-cta/50"
 					/>
 				</div>
