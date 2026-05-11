@@ -179,7 +179,7 @@ async function runColdStart(): Promise<void> {
 
 		const summary = await processChunk(messages);
 		totalProcessed += summary.processed;
-		totalClassified += summary.classified;
+		totalClassified += summary.cacheHits + summary.ruleHits + summary.llmHits;
 		console.log(
 			`[inbox-filter] cold-start chunk: processed=${summary.processed} ` +
 				`cache=${summary.cacheHits} rule=${summary.ruleHits} llm=${summary.llmHits} ` +
@@ -354,10 +354,13 @@ async function processChunk(messages: InboxMessage[]): Promise<ChunkSummary> {
 			const classifiedIds = new Set(outcome.results.map((r) => r.id));
 			summary.grayLeftover += chunk.filter((b) => !classifiedIds.has(b.id)).length;
 
-			// Successful classification clears prior alerts.
+			// Successful classification clears prior alerts AND the stale
+			// `lastError` diagnostic (so /api/inbox/filter/stats reflects
+			// current state, not the last-seen error from minutes ago).
 			if (outcome.results.length > 0) {
 				consecutiveLLMFailures = 0;
 				rateLimitStage = 0;
+				lastError = null;
 				markFilterRecovered();
 			}
 		}
