@@ -44,9 +44,11 @@ import {
 	getContact,
 	searchContacts,
 	findContactByEmail,
+	findContactByPhone,
 	updateContactStage,
 	setNextFollowup,
 	addContactEmail,
+	addContactPhone,
 	addInteraction,
 	listFollowups,
 	findWebsiteLeads,
@@ -1138,23 +1140,27 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 
 		'crm-find-contact': tool({
 			description:
-				"Search CRM contacts. Pass `email` for exact-email lookup (case-insensitive) or `query` for FTS5 " +
-				"over name, company, role, and notes. Returns the matches with stage and primary email. " +
-				"Use for 'who is X', 'do I have a contact at Acme', 'find John's record', 'is sarah@acme.com in my CRM'.",
+				"Search CRM contacts. Pass `email` for exact-email lookup (case-insensitive), `phone` for exact-phone lookup (as-typed — phones are stored unnormalized), or `query` for FTS5 over name, company, role, and notes. Returns the matches with stage and primary email. " +
+				"Use for 'who is X', 'do I have a contact at Acme', 'find John's record', 'is sarah@acme.com in my CRM', 'who owns +971 50 123 4567'.",
 			inputSchema: z
 				.object({
 					query: z.string().min(1).max(200).optional(),
 					email: z.string().email().optional(),
+					phone: z.string().min(3).max(40).optional(),
 					limit: z.number().int().min(1).max(25).optional(),
 				})
-				.refine((v) => v.query || v.email, {
-					message: 'Provide either `query` or `email`.',
+				.refine((v) => v.query || v.email || v.phone, {
+					message: 'Provide one of `query`, `email`, or `phone`.',
 				}),
-			execute: async ({ query, email, limit }): Promise<ToolResult> => {
-				logToolCall('crm-find-contact', { query, email, limit });
+			execute: async ({ query, email, phone, limit }): Promise<ToolResult> => {
+				logToolCall('crm-find-contact', { query, email, phone, limit });
 				const matches: Contact[] = [];
 				if (email) {
 					const m = findContactByEmail(email);
+					if (m) matches.push(m.contact);
+				}
+				if (phone && matches.length === 0) {
+					const m = findContactByPhone(phone);
 					if (m) matches.push(m.contact);
 				}
 				if (query && matches.length === 0) {
@@ -1457,6 +1463,63 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 				return {
 					kind: 'reply',
 					text: `Added ${input.newEmail} to ${contactId}.${vaultNote}`,
+				};
+			},
+		}),
+
+		'crm-add-phone': tool({
+			description:
+				"Add a phone number to an existing CRM contact. Resolve via `contactId` or `email` (one of the contact's existing emails). Provide `phone` (any format — stored as-typed, no E.164 normalization) and optional `label` ('mobile' | 'home' | 'work' | other) and `isPrimary`. Phones are globally unique across the CRM — reusing a number attached to another contact errors. " +
+				"PROVENANCE: `contactId` / `email` MUST come from a prior `crm-find-contact` / `crm-add-contact` result. `phone` MUST come from the user explicitly (a message they typed). NEVER fabricate phone numbers.",
+			inputSchema: z
+				.object({
+					contactId: z.string().regex(/^CRM-\d{4}-\w+$/).optional(),
+					email: z.string().email().optional(),
+					phone: z.string().min(3).max(40),
+					label: z.string().max(40).optional(),
+					isPrimary: z.boolean().optional(),
+				})
+				.refine((v) => v.contactId || v.email, {
+					message: 'Provide either `contactId` or `email`.',
+				}),
+			execute: async (input): Promise<ToolResult> => {
+				logToolCall('crm-add-phone', {
+					contactId: input.contactId,
+					email: input.email,
+					phone: input.phone,
+				});
+				const contactId = resolveCrmContactId({
+					contactId: input.contactId,
+					email: input.email,
+				});
+				if (!contactId) {
+					return {
+						kind: 'reply',
+						text:
+							`ERROR: No CRM contact for ${input.email ?? input.contactId ?? 'the provided id'}. ` +
+							`Likely a hallucinated email/id. ` +
+							`Call crm-find-contact first to look up the real value. ` +
+							`Do NOT report success to the user.`,
+					};
+				}
+				try {
+					addContactPhone({
+						contactId,
+						phone: input.phone,
+						label: input.label,
+						isPrimary: !!input.isPrimary,
+					});
+				} catch (err) {
+					return {
+						kind: 'reply',
+						text: `Could not add phone: ${(err as Error).message}`,
+					};
+				}
+				const syncResult = await syncContactToVault(contactId);
+				const vaultNote = syncResult.ok ? ' Vault note synced.' : '';
+				return {
+					kind: 'reply',
+					text: `Added ${input.phone} to ${contactId}.${vaultNote}`,
 				};
 			},
 		}),

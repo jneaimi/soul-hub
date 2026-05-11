@@ -310,16 +310,19 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 		name: 'crm-find-contact',
 		category: 'read',
 		llm_description:
-			"Search CRM contacts. Pass `email` for exact-email lookup (case-insensitive) or `query` for FTS5 " +
-			"over name, company, role, and notes. Returns the matches with stage and primary email. " +
-			"Use for 'who is X', 'do I have a contact at Acme', 'find John's record', 'is sarah@acme.com in my CRM'.",
+			"Search CRM contacts. Pass `email` for exact-email lookup (case-insensitive), `phone` for exact-phone lookup (as-typed — phones are stored unnormalized), or `query` for FTS5 over name, company, role, and notes. Returns the matches with stage and primary email. " +
+			"Use for 'who is X', 'do I have a contact at Acme', 'find John's record', 'is sarah@acme.com in my CRM', 'who owns +971 50 123 4567'.",
 		ui_description:
-			'Search CRM contacts by name/company/role/notes (FTS5) or exact email.',
+			'Search CRM contacts by name/company/role/notes (FTS5), exact email, or exact phone.',
 		examples: [
 			{ user: '"do I have John from Acme"', toolArgs: '{ query: "John Acme" }' },
 			{
 				user: '"is sarah@acme.com a contact"',
 				toolArgs: '{ email: "sarah@acme.com" }',
+			},
+			{
+				user: '"who owns +971 50 123 4567"',
+				toolArgs: '{ phone: "+971 50 123 4567" }',
 			},
 		],
 	},
@@ -407,6 +410,21 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 			{
 				user: '"John\'s personal email is john.doe@gmail.com"',
 				toolArgs: '{ currentEmail: "john@acme.com", newEmail: "john.doe@gmail.com", label: "personal" }',
+			},
+		],
+	},
+	{
+		name: 'crm-add-phone',
+		category: 'write',
+		llm_description:
+			"Add a phone number to an existing CRM contact. Resolve via `contactId` or `email` (one of the contact's existing emails). Provide `phone` (any format — stored as-typed, no E.164 normalization) and optional `label` ('mobile' | 'home' | 'work' | other) and `isPrimary`. Phones are globally unique across the CRM — reusing a number attached to another contact errors. " +
+			"PROVENANCE: `contactId` / `email` MUST come from a prior `crm-find-contact` / `crm-add-contact` result. `phone` MUST come from the user explicitly (a message they typed). NEVER fabricate phone numbers.",
+		ui_description:
+			'Add a phone number to a CRM contact. Mirrors the multi-phone schema from ADR Stage F2.',
+		examples: [
+			{
+				user: '"Sarah\'s mobile is +971 50 123 4567"',
+				toolArgs: '{ email: "sarah@acme.com", phone: "+971 50 123 4567", label: "mobile", isPrimary: true }',
 			},
 		],
 	},
