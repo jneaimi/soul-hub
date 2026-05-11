@@ -53,7 +53,9 @@
 	let resetSaving = $state(false);
 	let resetError = $state('');
 	let resetSuccess = $state('');
-	const isOAuthAccount = $derived(settingsAccount?.provider === 'gmail');
+	const isOAuthAccount = $derived(
+		settingsAccount?.provider === 'gmail' || settingsAccount?.provider === 'outlook',
+	);
 
 	interface ProviderHelp {
 		label: string;
@@ -846,8 +848,8 @@
 								{/if}
 							</div>
 
-							{#if isOAuthAccount}
-								<!-- Gmail / OAuth re-link: redirect to Google consent flow -->
+							{#if isOAuthAccount && settingsAccount.provider === 'gmail'}
+								<!-- Gmail OAuth re-link: redirect to Google consent flow -->
 								<a
 									href={`/api/inbox/oauth?account=${settingsAccount.id}`}
 									class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-red-500/15 text-red-400 text-xs font-medium hover:bg-red-500/25 transition-colors"
@@ -855,6 +857,20 @@
 									<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M12.545 10.239v3.821h5.445c-.712 2.315-2.647 3.972-5.445 3.972a6.033 6.033 0 110-12.064c1.498 0 2.866.549 3.921 1.453l2.814-2.814A9.969 9.969 0 0012.545 2C7.021 2 2.543 6.477 2.543 12s4.478 10 10.002 10c8.396 0 10.249-7.85 9.426-11.748l-9.426-.013z"/></svg>
 									Reauthorize with Google
 								</a>
+							{:else if isOAuthAccount && settingsAccount.provider === 'outlook'}
+								<!-- Outlook in-place reauthorize isn't wired yet (inbox-plan Open #2).
+								     Direct the operator at the only working recovery: remove + re-add. -->
+								<div class="rounded-md bg-amber-500/10 border border-amber-500/30 px-3 py-2.5 space-y-2">
+									<p class="text-[11px] text-amber-300 leading-relaxed">
+										In-place Outlook reauthorize isn't wired yet. To recover this account, remove it below and re-add via <span class="font-medium">Add Account → Outlook → Sign in with Microsoft</span>. Tracked in the inbox plan.
+									</p>
+									<button
+										onclick={() => { if (settingsAccount) { const id = settingsAccount.id; settingsAccount = null; removeAccount(id); } }}
+										class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/15 text-amber-300 text-xs font-medium hover:bg-amber-500/25 transition-colors cursor-pointer"
+									>
+										Remove this account
+									</button>
+								</div>
 							{:else}
 								<!-- Password-based providers: in-place credential update -->
 								<input
