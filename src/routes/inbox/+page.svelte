@@ -9,6 +9,7 @@
 		status: string;
 		lastSync: number | null;
 		lastError: string | null;
+		retentionDays: number;
 	}
 
 	interface Message {
@@ -246,7 +247,7 @@
 		e.stopPropagation();
 		settingsAccount = acc;
 		settingsLabel = acc.label;
-		settingsRetention = 90; // default, will be overridden by API if available
+		settingsRetention = acc.retentionDays;
 		resetOpen = false;
 		resetPassword = '';
 		resetError = '';
