@@ -1489,10 +1489,12 @@
 					/>
 				</div>
 
-				<!-- Retention -->
+				<!-- Retention — L2-U6 relabel. The slider controls `queued`
+				     retention specifically; skipped (14d) and processed (365d)
+				     are fixed per Layer 2 D6. -->
 				<div class="mb-5">
 					<div class="flex items-center justify-between">
-						<label class="text-[10px] text-hub-dim uppercase tracking-wider">Retention</label>
+						<label class="text-[10px] text-hub-dim uppercase tracking-wider">Keep agent-relevant mail for</label>
 						<label class="flex items-center gap-1.5 text-[11px] text-hub-muted cursor-pointer">
 							<input
 								type="checkbox"
@@ -1525,9 +1527,14 @@
 					</div>
 					<p class="text-[10px] text-hub-dim mt-1 leading-relaxed">
 						{#if keepForever}
-							All synced messages will be kept locally. Local cache only — never touches the remote mailbox.
+							Queued mail (the agent-visible stream) is never deleted. Promotional / bulk is still
+							pruned at 14 days; agent-processed mail at 365 days. Local cache only — the remote
+							mailbox is never touched.
 						{:else}
-							Locally cached messages older than {settingsRetention} day{settingsRetention === 1 ? '' : 's'} are deleted from this app. Flagged messages and messages that have been processed by agents are never pruned. The remote mailbox is never touched.
+							Queued mail (personal · transactional · notification · unclassified) older than
+							{settingsRetention} day{settingsRetention === 1 ? '' : 's'} is deleted from this app.
+							Promotional / bulk is pruned at 14 days; agent-processed mail at 365 days. Flagged
+							messages are kept across all states. The remote mailbox is never touched.
 						{/if}
 					</p>
 				</div>

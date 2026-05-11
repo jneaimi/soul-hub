@@ -380,6 +380,35 @@
 					<li>Open the vault, dispatch a pipeline, or pin a project from the dashboard.</li>
 					<li>Need to start fresh? <code class="font-mono">rm -rf ~/.soul-hub/</code> and reload.</li>
 				</ul>
+
+				<!-- L2-U5 — Layer 2 inbox filter heads-up. Optional: filter runs
+				     rules-only without Claude auth, so this is a nudge not a
+				     blocker. ADR 2026-05-11-inbox-processing-filter-layer §D-Bootstrap. -->
+				<div class="mb-6 rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+					<div class="flex items-start gap-3">
+						<svg class="w-4 h-4 mt-0.5 text-amber-400 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+							<circle cx="12" cy="12" r="10"/>
+							<line x1="12" y1="8" x2="12" y2="12"/>
+							<line x1="12" y1="16" x2="12.01" y2="16"/>
+						</svg>
+						<div class="flex-1 text-xs">
+							<p class="text-amber-300 font-medium mb-1">One more thing — authenticate the Claude CLI</p>
+							<p class="text-hub-muted leading-relaxed">
+								The inbox Layer 2 filter uses <code class="font-mono text-hub-text">claude -p</code> to
+								classify mail that header rules can't decide. Run <code class="font-mono text-hub-text">claude</code>
+								once in a terminal to authenticate. Until then, the filter runs rules-only and ambiguous
+								mail is held for the next sweep — not a blocker, just a heads-up.
+							</p>
+							<p class="text-hub-dim leading-relaxed mt-1.5">
+								<span class="uppercase tracking-wider text-[9px] text-hub-dim/80">Privacy:</span>
+								the classifier sends email subjects + the 500-char preview to Anthropic. No bodies or
+								attachments are sent. Set <code class="font-mono text-hub-muted">INBOX_FILTER_LLM_DISABLED=1</code>
+								for rules-only mode, or <code class="font-mono text-hub-muted">INBOX_FILTER_DISABLED=1</code>
+								to skip the filter entirely.
+							</p>
+						</div>
+					</div>
+				</div>
 				<div class="flex items-center justify-end gap-2">
 					<button
 						onclick={() => (step = 3)}
