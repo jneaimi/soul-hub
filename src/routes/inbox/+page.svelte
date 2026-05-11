@@ -36,6 +36,9 @@
 	let search = $state('');
 	let selectedAccount = $state<string | null>(null);
 	let selectedMessage = $state<Message | null>(null);
+	// Accounts whose lastError is expanded in the sidebar. Single-id slot —
+	// only one error is expanded at a time, keeps the sidebar compact.
+	let expandedErrorId = $state<string | null>(null);
 	let showSidebar = $state(false);
 	let offset = $state(0);
 	const PAGE_SIZE = 50;
@@ -490,8 +493,32 @@
 							aria-label="Remove account"
 						>x</button>
 					</div>
+					<!-- Per-account staleness. Always rendered when lastSync is known;
+					     "never synced" for fresh accounts that haven't completed a cycle yet. -->
+					<p class="text-[10px] text-hub-dim px-6 -mt-0.5 mb-0.5">
+						{acc.lastSync ? `synced ${timeAgo(acc.lastSync)} ago` : 'never synced'}
+					</p>
 					{#if acc.status === 'error' && acc.lastError}
-						<p class="text-[10px] text-hub-danger/70 px-6 -mt-0.5 mb-1 truncate" title={acc.lastError}>{acc.lastError}</p>
+						<button
+							type="button"
+							onclick={(e) => {
+								e.stopPropagation();
+								expandedErrorId = expandedErrorId === acc.id ? null : acc.id;
+							}}
+							class="flex items-start gap-1 w-full text-left px-6 -mt-0.5 mb-1 text-[10px] text-hub-danger/80 hover:text-hub-danger cursor-pointer"
+							aria-expanded={expandedErrorId === acc.id}
+							aria-label={expandedErrorId === acc.id ? 'Collapse error' : 'Expand error'}
+						>
+							<svg
+								class="w-2.5 h-2.5 mt-0.5 flex-shrink-0 transition-transform {expandedErrorId === acc.id ? 'rotate-90' : ''}"
+								viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+							>
+								<polyline points="9 18 15 12 9 6"/>
+							</svg>
+							<span class="{expandedErrorId === acc.id ? 'break-words' : 'truncate'} flex-1">
+								{acc.lastError}
+							</span>
+						</button>
 					{/if}
 				{/each}
 
