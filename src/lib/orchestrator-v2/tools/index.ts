@@ -51,12 +51,16 @@ import {
 	listFollowups,
 	findWebsiteLeads,
 	syncContactToVault,
+	attachNote,
 	CONTACT_STAGES,
+	CONTACT_NOTE_KINDS,
 	type Contact,
 	type ContactStage,
+	type ContactNoteKind,
 	type InteractionChannel,
 	type InteractionDirection,
 } from '../../crm/index.js';
+import { getVaultEngine } from '../../vault/index.js';
 import {
 	getImgCount,
 	incrementImgCount,
@@ -1415,6 +1419,94 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 				return {
 					kind: 'reply',
 					text: `Added ${input.newEmail} to ${contactId}.${vaultNote}`,
+				};
+			},
+		}),
+
+		'crm-attach-note': tool({
+			description:
+				'Attach a vault note (transcript, document, reference) to a CRM contact. ' +
+				'Resolve via `contactId` (CRM-YYYY-NNN) OR `email`. `vaultPath` is the ' +
+				"vault-relative path of an EXISTING note (e.g., 'inbox/2026-05-11-acme-kickoff.md'). " +
+				"Optional: `kind` (transcript / document / reference / other; default 'other'), " +
+				'`label`, `sourceUrl`, `sourceMessageId`. ' +
+				'Chains naturally after `vaultSave` when the saved content came from a URL fetch ' +
+				'(via `fetchPage`) or an email link relevant to a CRM contact. ' +
+				'Idempotent — re-attaching the same (contact, vaultPath) pair reports the prior ' +
+				'attachment timestamp without inserting a duplicate.',
+			inputSchema: z
+				.object({
+					contactId: z.string().regex(/^CRM-\d{4}-\w+$/).optional(),
+					email: z.string().email().optional(),
+					vaultPath: z.string().min(1).max(500),
+					kind: z.enum(CONTACT_NOTE_KINDS as readonly [ContactNoteKind, ...ContactNoteKind[]]).optional(),
+					label: z.string().max(120).optional(),
+					sourceUrl: z.string().url().optional(),
+					sourceMessageId: z.number().int().positive().optional(),
+				})
+				.refine((v) => v.contactId || v.email, {
+					message: 'Provide either `contactId` or `email`.',
+				}),
+			execute: async (input): Promise<ToolResult> => {
+				logToolCall('crm-attach-note', {
+					contactId: input.contactId,
+					email: input.email,
+					vaultPath: input.vaultPath,
+					kind: input.kind,
+				});
+
+				// 1. Resolve contact.
+				const contactId = resolveCrmContactId(input);
+				if (!contactId) {
+					return {
+						kind: 'reply',
+						text: `Could not resolve contact${input.email ? ` for ${input.email}` : ''}.`,
+					};
+				}
+				const contact = getContact(contactId);
+				if (!contact) {
+					return { kind: 'reply', text: `Contact ${contactId} not found.` };
+				}
+
+				// 2. Verify the vault note exists BEFORE inserting (per ADR D10.2
+				// step 2 — guards against LLM-hallucinated paths).
+				const vault = getVaultEngine();
+				if (!vault) {
+					return { kind: 'reply', text: 'Vault engine not initialized.' };
+				}
+				const note = vault.getNote(input.vaultPath);
+				if (!note) {
+					return {
+						kind: 'reply',
+						text: `No vault note at ${input.vaultPath}. Save the content first via vaultSave, then attach.`,
+					};
+				}
+
+				// 3. Idempotent attach.
+				const result = attachNote({
+					contactId,
+					vaultPath: input.vaultPath,
+					kind: input.kind,
+					label: input.label,
+					sourceUrl: input.sourceUrl,
+					sourceMessageId: input.sourceMessageId,
+				});
+
+				// 4. Refresh the contact's frontmatter (`related_notes` array).
+				const syncResult = await syncContactToVault(contactId);
+				const vaultNote = syncResult.ok ? ' Vault note synced.' : '';
+
+				const kind = result.row.kind;
+				if (!result.inserted) {
+					const when = new Date(result.row.attachedAt).toISOString();
+					return {
+						kind: 'reply',
+						text: `Already attached to ${contact.displayName} (${contactId}) as ${kind} at ${when}.${vaultNote}`,
+					};
+				}
+				return {
+					kind: 'reply',
+					text: `Attached ${input.vaultPath} to ${contact.displayName} (${contactId}) as ${kind}.${vaultNote}`,
 				};
 			},
 		}),

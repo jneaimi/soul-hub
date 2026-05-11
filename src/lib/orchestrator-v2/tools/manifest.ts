@@ -406,6 +406,29 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 		],
 	},
 	{
+		name: 'crm-attach-note',
+		category: 'write',
+		llm_description:
+			'Attach a vault note (transcript, document, reference) to a CRM contact. ' +
+			'Resolve via `contactId` (CRM-YYYY-NNN) OR `email`. `vaultPath` is the ' +
+			'vault-relative path of an EXISTING note (e.g., \'inbox/2026-05-11-acme-kickoff.md\'). ' +
+			'Optional: `kind` (transcript / document / reference / other; default \'other\'), ' +
+			'`label`, `sourceUrl`, `sourceMessageId`. ' +
+			'Chains naturally after `vaultSave` when the saved content came from a URL fetch ' +
+			'(via `fetchPage`) or an email link relevant to a CRM contact. ' +
+			'Idempotent — re-attaching the same (contact, vaultPath) pair reports the prior ' +
+			'attachment timestamp without inserting a duplicate.',
+		ui_description:
+			'Attach a vault note to a CRM contact. Closes the email → fetchPage → vaultSave → CRM-link loop. Idempotent and validates the vault path exists before insert.',
+		examples: [
+			{
+				user: '"attach inbox/2026-05-11-acme-kickoff-transcript.md to Sarah as a transcript"',
+				toolArgs:
+					'{ email: "sarah@acme.com", vaultPath: "inbox/2026-05-11-acme-kickoff-transcript.md", kind: "transcript" }',
+			},
+		],
+	},
+	{
 		name: 'crm-find-website-leads',
 		category: 'read',
 		llm_description:

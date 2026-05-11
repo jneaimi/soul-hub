@@ -128,3 +128,43 @@ export interface ContactEmailMatch {
 	contact: Contact;
 	matchedEmail: ContactEmail;
 }
+
+/** Narrow enum per ADR §D10.1 — prevents LLM drift / typos. Expand only
+ *  when a concrete fifth kind emerges in usage. */
+export type ContactNoteKind = 'transcript' | 'document' | 'reference' | 'other';
+
+export const CONTACT_NOTE_KINDS: readonly ContactNoteKind[] = [
+	'transcript',
+	'document',
+	'reference',
+	'other',
+] as const;
+
+/** Junction row linking a CRM contact to a vault note. See ADR D10.1. */
+export interface ContactNote {
+	id: number;
+	contactId: string;
+	vaultPath: string;
+	kind: ContactNoteKind;
+	label: string | null;
+	sourceUrl: string | null;
+	sourceMessageId: number | null;
+	attachedAt: number;
+}
+
+/** Input for `attachNote(...)`. `kind` defaults to 'other' when omitted. */
+export interface AttachNoteInput {
+	contactId: string;
+	vaultPath: string;
+	kind?: ContactNoteKind;
+	label?: string | null;
+	sourceUrl?: string | null;
+	sourceMessageId?: number | null;
+}
+
+/** Result of `attachNote(...)`. `inserted=false` indicates the
+ *  (contact_id, vault_path) pair was already attached — see `existing`. */
+export interface AttachNoteResult {
+	inserted: boolean;
+	row: ContactNote;
+}

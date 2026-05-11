@@ -24,9 +24,13 @@ import Database from 'better-sqlite3';
 import { resolve } from 'node:path';
 import { soulHubDataDir } from '../paths.js';
 import type {
+	AttachNoteInput,
+	AttachNoteResult,
 	Contact,
 	ContactEmail,
 	ContactEmailMatch,
+	ContactNote,
+	ContactNoteKind,
 	ContactStage,
 	ContactWithEmails,
 	Interaction,
@@ -169,6 +173,34 @@ function migrate(db: Database.Database): void {
 			END;
 		`);
 		db.pragma(`user_version = 1`);
+	}
+
+	if (version < 2) {
+		// Per ADR 2026-05-11-crm-local-sqlite-transition §D10.1 — junction
+		// table linking contacts to vault notes. Many-to-many: a single
+		// transcript can attach to multiple contacts, and one contact can
+		// have many attached artifacts. ON DELETE CASCADE keeps the linkage
+		// in sync with contact lifecycle; vault notes themselves are NEVER
+		// auto-deleted (per Privacy posture / Delete semantics).
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS contact_notes (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				contact_id TEXT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+				vault_path TEXT NOT NULL,
+				kind TEXT NOT NULL DEFAULT 'other',
+				label TEXT,
+				source_url TEXT,
+				source_message_id INTEGER,
+				attached_at INTEGER NOT NULL
+			);
+
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_contact_notes_unique ON contact_notes(contact_id, vault_path);
+			CREATE INDEX IF NOT EXISTS idx_contact_notes_contact ON contact_notes(contact_id, attached_at DESC);
+			CREATE INDEX IF NOT EXISTS idx_contact_notes_path ON contact_notes(vault_path);
+			CREATE INDEX IF NOT EXISTS idx_contact_notes_kind ON contact_notes(kind);
+			CREATE INDEX IF NOT EXISTS idx_contact_notes_message ON contact_notes(source_message_id) WHERE source_message_id IS NOT NULL;
+		`);
+		db.pragma(`user_version = 2`);
 	}
 }
 
@@ -665,6 +697,88 @@ export function listStageHistory(contactId: string, limit = 25): StageHistory[] 
 	return rows.map(rowToStageHistory);
 }
 
+// ─── helpers — contact_notes (D10) ─────────────────────────────────────────
+
+/** List a contact's attached vault notes, newest first. */
+export function listContactNotes(contactId: string, limit = 50): ContactNote[] {
+	const db = getCrmDb();
+	const rows = db
+		.prepare(`
+			SELECT * FROM contact_notes
+			WHERE contact_id = ?
+			ORDER BY attached_at DESC
+			LIMIT ?
+		`)
+		.all(contactId, limit) as Record<string, unknown>[];
+	return rows.map(rowToContactNote);
+}
+
+/**
+ * Idempotent attach. Returns `inserted: true` + the new row on first call,
+ * `inserted: false` + the existing row on subsequent attempts with the
+ * same (contact_id, vault_path) pair. Lets the orchestrator tool report
+ * the prior `attached_at` instead of a silent no-op.
+ */
+export function attachNote(input: AttachNoteInput): AttachNoteResult {
+	const db = getCrmDb();
+	const now = Date.now();
+	const kind = input.kind ?? 'other';
+
+	const tx = db.transaction((): AttachNoteResult => {
+		const result = db.prepare(`
+			INSERT OR IGNORE INTO contact_notes
+				(contact_id, vault_path, kind, label, source_url, source_message_id, attached_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`).run(
+			input.contactId,
+			input.vaultPath,
+			kind,
+			input.label ?? null,
+			input.sourceUrl ?? null,
+			input.sourceMessageId ?? null,
+			now,
+		);
+
+		const row = db.prepare(`
+			SELECT * FROM contact_notes
+			WHERE contact_id = ? AND vault_path = ?
+		`).get(input.contactId, input.vaultPath) as Record<string, unknown>;
+
+		return {
+			inserted: result.changes > 0,
+			row: rowToContactNote(row),
+		};
+	});
+
+	return tx();
+}
+
+/** Detach a vault note from a contact. Returns true when a row was
+ *  removed, false when no such linkage existed. */
+export function detachNote(contactId: string, vaultPath: string): boolean {
+	const db = getCrmDb();
+	const result = db
+		.prepare('DELETE FROM contact_notes WHERE contact_id = ? AND vault_path = ?')
+		.run(contactId, vaultPath);
+	return result.changes > 0;
+}
+
+/** Reverse lookup — every contact a given vault note is attached to.
+ *  Used by Stage E's "linked contacts" panel on the vault note view + by
+ *  future hygiene work (find dangling references). */
+export function findContactsByVaultPath(vaultPath: string): Contact[] {
+	const db = getCrmDb();
+	const rows = db
+		.prepare(`
+			SELECT c.* FROM contacts c
+			JOIN contact_notes cn ON cn.contact_id = c.id
+			WHERE cn.vault_path = ?
+			ORDER BY cn.attached_at DESC
+		`)
+		.all(vaultPath) as Record<string, unknown>[];
+	return rows.map(rowToContact);
+}
+
 // ─── row converters ────────────────────────────────────────────────────────
 
 function rowToContact(row: Record<string, unknown>): Contact {
@@ -718,5 +832,18 @@ function rowToStageHistory(row: Record<string, unknown>): StageHistory {
 		toStage: row.to_stage as ContactStage,
 		movedAt: row.moved_at as number,
 		reason: (row.reason as string | null) ?? null,
+	};
+}
+
+function rowToContactNote(row: Record<string, unknown>): ContactNote {
+	return {
+		id: row.id as number,
+		contactId: row.contact_id as string,
+		vaultPath: row.vault_path as string,
+		kind: row.kind as ContactNoteKind,
+		label: (row.label as string | null) ?? null,
+		sourceUrl: (row.source_url as string | null) ?? null,
+		sourceMessageId: (row.source_message_id as number | null) ?? null,
+		attachedAt: row.attached_at as number,
 	};
 }

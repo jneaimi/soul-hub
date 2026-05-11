@@ -8,6 +8,8 @@ export {
 	addInteraction, listInteractions,
 	addTag, tagContact, listContactTags,
 	listStageHistory, listFollowups,
+	// D10 — vault-note attachments
+	listContactNotes, attachNote, detachNote, findContactsByVaultPath,
 	type ListContactsOptions, type AddContactEmailInput, type AddInteractionInput,
 	type ListFollowupsOptions,
 } from './db.js';
@@ -18,8 +20,10 @@ export type {
 	ContactStage, ContactSource,
 	InteractionChannel, InteractionDirection,
 	NewContactInput,
+	// D10
+	ContactNote, ContactNoteKind, AttachNoteInput, AttachNoteResult,
 } from './types.js';
-export { CONTACT_STAGES } from './types.js';
+export { CONTACT_STAGES, CONTACT_NOTE_KINDS } from './types.js';
 
 // Stage B — cross-DB bridge.
 export {

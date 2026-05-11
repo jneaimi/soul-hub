@@ -27,11 +27,18 @@
 import {
 	getContact,
 	listContactEmails,
+	listContactNotes,
 	listContactTags,
 	getCrmDb,
 } from './db.js';
 import { getVaultEngine } from '../vault/index.js';
-import type { Contact, ContactEmail, Tag } from './types.js';
+import type { Contact, ContactEmail, ContactNote, Tag } from './types.js';
+
+/** Per ADR §D10.3, cap `related_notes` in the frontmatter at the most-recent
+ *  N entries. DB stays authoritative for the full list; the markdown is the
+ *  recent slice. A contact with 50+ attachments would otherwise bloat the
+ *  frontmatter and slow vault-engine parsing. */
+const RELATED_NOTES_FRONTMATTER_CAP = 20;
 
 /** Zone under the vault root that holds CRM contact notes. */
 const CRM_CONTACTS_ZONE = 'knowledge/crm/contacts';
@@ -71,9 +78,10 @@ export async function syncContactToVault(contactId: string): Promise<SyncContact
 
 	const emails = listContactEmails(contactId);
 	const tags = listContactTags(contactId);
+	const notes = listContactNotes(contactId, RELATED_NOTES_FRONTMATTER_CAP);
 	const targetPath = contact.vaultNotePath ?? defaultContactPath(contact.displayName);
 
-	const managedMeta = buildManagedFrontmatter(contact, emails, tags);
+	const managedMeta = buildManagedFrontmatter(contact, emails, tags, notes);
 	const existing = vault.getNote(targetPath);
 
 	if (existing) {
@@ -106,9 +114,13 @@ function buildManagedFrontmatter(
 	contact: Contact,
 	emails: ContactEmail[],
 	tags: Tag[],
+	notes: ContactNote[],
 ): Record<string, unknown> {
 	const now = new Date();
-	return {
+	// IMPORTANT: js-yaml (via gray-matter) throws on `undefined` values. We
+	// MUST omit keys we don't want to write rather than setting them to
+	// `undefined`. Empty arrays + null are fine.
+	const meta: Record<string, unknown> = {
 		// GLOBAL_REQUIRED_FIELDS — always present on every vault note.
 		type: 'contact',
 		created: contact.createdAt
@@ -118,15 +130,37 @@ function buildManagedFrontmatter(
 		// CRM-managed keys.
 		crm_id: contact.id,
 		stage: contact.stage,
-		company: contact.company ?? undefined,
-		role: contact.role ?? undefined,
-		emails: emails.map((e) => ({
-			email: e.email,
-			label: e.label ?? undefined,
-			primary: e.isPrimary,
-		})),
 		last_synced: now.toISOString(),
 	};
+
+	if (contact.company) meta.company = contact.company;
+	if (contact.role) meta.role = contact.role;
+
+	meta.emails = emails.map((e) => {
+		const entry: Record<string, unknown> = {
+			email: e.email,
+			primary: e.isPrimary,
+		};
+		if (e.label) entry.label = e.label;
+		return entry;
+	});
+
+	// D10.3 — `related_notes` array (most-recent N by attached_at DESC).
+	// ALWAYS write the key — vault engine merges meta over existing, so
+	// omitting it on detach would leave stale entries in the markdown. An
+	// empty array is the right "no attachments" representation.
+	meta.related_notes = notes.map((n) => {
+		const entry: Record<string, unknown> = {
+			path: n.vaultPath,
+			kind: n.kind,
+			attached_at: new Date(n.attachedAt).toISOString(),
+		};
+		if (n.label) entry.label = n.label;
+		if (n.sourceUrl) entry.source_url = n.sourceUrl;
+		return entry;
+	});
+
+	return meta;
 }
 
 function buildScaffoldContent(contact: Contact): string {
