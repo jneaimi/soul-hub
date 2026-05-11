@@ -158,8 +158,31 @@ function buildUserPrompt(
 	due: HeartbeatTask[],
 	dueCommitments: CommitmentRow[] = [],
 	voiceItems: VoiceQueueItem[] = [],
+	timezone: string = 'Asia/Dubai',
 ): string {
-	const parts: string[] = [basePrompt];
+	// Current-time anchor — without this the heartbeat model hallucinates
+	// the day/date (live 2026-05-11 Monday tick was opened with "Today is
+	// Saturday..."). Same fix pattern as the orchestrator system prompt.
+	const now = new Date();
+	const localNow = new Intl.DateTimeFormat('en-GB', {
+		timeZone: timezone,
+		weekday: 'long',
+		year: 'numeric',
+		month: 'long',
+		day: 'numeric',
+		hour: '2-digit',
+		minute: '2-digit',
+		hour12: false,
+	}).format(now);
+	const timeAnchor = [
+		'## Current time anchor',
+		`- User's local time: **${localNow}** (timezone: ${timezone})`,
+		`- UTC now: ${now.toISOString()}`,
+		'- Use these as ground truth for "today", "this morning", "yesterday", weekday names, etc.',
+		'- NEVER open with a wrong day name — if the local time above says Monday, today is Monday.',
+	].join('\n');
+
+	const parts: string[] = [timeAnchor, basePrompt];
 	if (body.trim()) parts.push(body.trim());
 	if (due.length > 0) {
 		parts.push('\nDue tasks for this tick:\n');
@@ -335,7 +358,14 @@ export async function runHeartbeatOnce(
 
 	// Compose + call.
 	const system = getSoulBody(hb.soulPath);
-	const user = buildUserPrompt(hb.basePrompt, checklist.body, dueTasks, dueCommitments, voiceItems);
+	const user = buildUserPrompt(
+		hb.basePrompt,
+		checklist.body,
+		dueTasks,
+		dueCommitments,
+		voiceItems,
+		hb.activeHours.timezone,
+	);
 
 	let modelResult: { text: string; tokensIn?: number; tokensOut?: number };
 	try {
