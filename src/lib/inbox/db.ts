@@ -440,6 +440,37 @@ export function upsertSyncState(state: SyncState): void {
 
 // ── Stats ──
 
+/**
+ * Delete all messages for (account, folder), optionally filtered to a specific
+ * `uid_validity`. Used by the sync worker when the server reports a UIDVALIDITY
+ * change — the old uid <-> message mapping is invalid and the existing rows
+ * would otherwise show up in the inbox UI as orphans (messages that no longer
+ * exist on the server). Re-sync re-populates with the new uid_validity.
+ *
+ * Returns the number of rows deleted. Idempotent.
+ */
+export function deleteMessagesByFolder(
+	accountId: string,
+	folder: string,
+	uidValidity?: number,
+): number {
+	const db = getInboxDb();
+	let sql = 'DELETE FROM messages WHERE account_id = ? AND folder = ?';
+	const params: (string | number)[] = [accountId, folder];
+	if (uidValidity !== undefined) {
+		sql += ' AND uid_validity = ?';
+		params.push(uidValidity);
+	}
+	const result = db.prepare(sql).run(...params);
+	if (result.changes > 0) {
+		console.log(
+			`[inbox:${accountId}] Deleted ${result.changes} messages from ${folder}` +
+				(uidValidity !== undefined ? ` (uid_validity=${uidValidity})` : ''),
+		);
+	}
+	return result.changes;
+}
+
 export function pruneOldMessages(accountId: string, retentionDays: number): number {
 	const db = getInboxDb();
 	if (retentionDays <= 0) return 0;

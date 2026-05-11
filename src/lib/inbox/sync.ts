@@ -22,7 +22,7 @@ import {
 	getAccountCredential, listAccounts, updateAccountStatus,
 	updateAccountLastSync, upsertMessages, getSyncState,
 	upsertSyncState, getMessageCount, getInboxDb,
-	getAccount, pruneOldMessages,
+	getAccount, pruneOldMessages, deleteMessagesByFolder,
 } from './db.js';
 import { getValidToken, type OAuthTokens } from './oauth.js';
 import {
@@ -318,10 +318,13 @@ async function syncInbox(
 		const uidValidity = mailbox.uidValidity || 0;
 		const syncState = getSyncState(account.id, 'INBOX');
 
-		// Check UIDVALIDITY — if changed, folder was rebuilt, must re-sync
+		// Check UIDVALIDITY — if changed, folder was rebuilt server-side and
+		// the old uid <-> message mapping is invalid. Clear the stale rows
+		// before re-syncing so they don't linger as orphans (messages that
+		// no longer exist on the server but still show in the inbox list).
 		if (syncState && syncState.uidValidity !== uidValidity) {
-			console.log(`[inbox-sync:${account.id}] UIDVALIDITY changed (${syncState.uidValidity} → ${uidValidity}), full re-sync`);
-			// Could clear old messages here — for now just re-sync from scratch
+			console.log(`[inbox-sync:${account.id}] UIDVALIDITY changed (${syncState.uidValidity} → ${uidValidity}), clearing stale rows + full re-sync`);
+			deleteMessagesByFolder(account.id, 'INBOX', syncState.uidValidity);
 		}
 
 		// Determine UID range to fetch
