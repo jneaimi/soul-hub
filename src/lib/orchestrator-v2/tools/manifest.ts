@@ -210,6 +210,40 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 			'Invoke a chat-enabled skill (research, recipe, arabic, etc.). Synchronous, seconds. Skill list is dynamic — see /orchestration/skills.',
 	},
 	{
+		name: 'inbox-list-queued',
+		category: 'read',
+		llm_description:
+			"List the user's queued inbox messages (post-Layer-2 filter, agent-relevant only). " +
+			"Use when the user asks 'what's in my inbox', 'any new emails', 'show me bank alerts', 'what came in today'. " +
+			"Filter by category for targeted queries: personal (human mail), transactional (bank/orders/receipts), notification (service alerts), unclassified (filter wasn't confident). " +
+			"Returns newest first.",
+		ui_description:
+			'List queued inbox messages, optionally filtered by category. The queued stream is what Layer 2 deemed agent-relevant.',
+		examples: [
+			{ user: '"any new emails today"', toolArgs: '{ since: "today", limit: 10 }' },
+			{ user: '"show me my bank alerts"', toolArgs: '{ category: "transactional", limit: 5 }' },
+		],
+	},
+	{
+		name: 'inbox-mark-processed',
+		category: 'write',
+		llm_description:
+			"Mark an inbox message as processed (agent has handled it). The message transitions queued → processed; it stays cached for 365 days as audit trail but stops appearing in queued listings. " +
+			"Use after summarizing, routing-to-vault, replying, or otherwise handling a message.",
+		ui_description:
+			'Mark a queued inbox message as processed. Agents call this after handling.',
+	},
+	{
+		name: 'inbox-correct-classification',
+		category: 'write',
+		llm_description:
+			"Correct the Layer 2 classification of a message and update the cache so future similar messages get the new category. " +
+			"Use when the user pushes back (\"that's not promotional, it's a receipt\") or when the agent notices a clear miscategorization. " +
+			"Scope can be 'this' (this message only) or 'pattern' (this message + all matching siblings via the cache signature).",
+		ui_description:
+			'Correct a misclassified inbox message and update the cache so future similar messages get the right category.',
+	},
+	{
 		name: 'scheduleReminder',
 		category: 'write',
 		llm_description:

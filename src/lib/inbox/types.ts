@@ -4,6 +4,66 @@ export type InboxProvider = 'icloud' | 'gmail' | 'outlook' | 'imap';
 
 export type AccountStatus = 'connected' | 'syncing' | 'error' | 'disconnected';
 
+/** Layer 2 filter — see ADR 2026-05-11-inbox-processing-filter-layer. */
+export type FilterCategory =
+	| 'personal'
+	| 'transactional'
+	| 'notification'
+	| 'promotional'
+	| 'bulk'
+	| 'unclassified';
+
+/** process_status derived from category. queued surfaces to agents; skipped is hidden. */
+export const CATEGORY_TO_STATUS: Record<FilterCategory, 'queued' | 'skipped'> = {
+	personal: 'queued',
+	transactional: 'queued',
+	notification: 'queued',
+	unclassified: 'queued',
+	promotional: 'skipped',
+	bulk: 'skipped',
+};
+
+export type FilterRuleMatchType =
+	| 'header_present'
+	| 'header_value'
+	| 'sender_domain'
+	| 'sender_pattern'
+	| 'subject_pattern';
+
+export interface FilterRule {
+	id: number;
+	accountId: string | null;
+	precedence: number;
+	matchType: FilterRuleMatchType;
+	matchValue: string;
+	actionCategory: FilterCategory;
+	reason: string | null;
+	createdAt: number;
+	createdBy: 'system' | 'user' | 'agent';
+	enabled: boolean;
+}
+
+export interface FilterCacheEntry {
+	signature: string;
+	category: FilterCategory;
+	reason: string | null;
+	hitCount: number;
+	firstHitAt: number;
+	lastHitAt: number;
+	userCorrected: boolean;
+}
+
+/** Parsed signals from RFC822 headers, persisted as JSON in messages.header_signals. */
+export interface HeaderSignals {
+	listUnsubscribe?: boolean;
+	listId?: string;
+	precedence?: string;
+	autoSubmitted?: string;
+	isNoreplySender?: boolean;
+	isMarketingDomain?: boolean;
+	dmarcPass?: boolean;
+}
+
 export interface InboxAccount {
 	id: string;
 	label: string;
@@ -59,6 +119,12 @@ export interface InboxMessage {
 	attachmentsMeta: AttachmentMeta[];
 	attachmentCount: number;
 	isFlagged: boolean;
+	/** Layer 2 filter outputs. NULL until classified. */
+	category: FilterCategory | null;
+	filterReason: string | null;
+	filteredAt: number | null;
+	/** Raw HeaderSignals as JSON string. Populated lazily. */
+	headerSignals: string | null;
 }
 
 export interface AttachmentMeta {

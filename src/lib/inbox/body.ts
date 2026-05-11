@@ -127,6 +127,58 @@ export async function fetchImapBody(
 }
 
 /**
+ * Fetch RFC822 headers for a batch of messages (BODY.PEEK[HEADER]).
+ *
+ * Used by the Layer 2 filter cold-start sweep to fill in `messages.header_signals`
+ * for rows captured before the filter existed — Layer 1 stores only envelope +
+ * preview, so header-based rules (List-Unsubscribe, List-ID, Precedence) have
+ * nothing to read against until the headers are refetched.
+ *
+ * Cheaper than fetchImapBody (no body parsing, smaller IMAP payload). Throughput
+ * is bounded by the per-account IMAP connection — sequential, no parallelism
+ * inside a single fetch. Empirically ~50-100 msgs/sec on Gmail (well under
+ * Apple iCloud's rate limit too).
+ *
+ * Returns a Map<uid, headersString>. UIDs not present in the response are
+ * silently omitted (e.g. deleted upstream between sync and re-fetch); callers
+ * should treat absence as "skip" not "error".
+ *
+ * Opens INBOX read-only. Caller passes UIDs from the messages table; this
+ * function assumes those UIDs are valid under the current UIDVALIDITY (the
+ * sync worker holds that invariant — a UIDVALIDITY change purges the rows).
+ */
+export async function fetchImapHeaders(
+	account: InboxAccount,
+	uids: number[],
+): Promise<Map<number, string>> {
+	const result = new Map<number, string>();
+	if (uids.length === 0) return result;
+
+	const client = await connectImap(account);
+	try {
+		const lock = await client.getMailboxLock('INBOX', { readonly: true });
+		try {
+			// imapflow accepts a UID array directly as the sequence; setting
+			// `headers: true` requests BODY.PEEK[HEADER] without marking \Seen.
+			for await (const msg of client.fetch(
+				uids,
+				{ headers: true },
+				{ uid: true },
+			)) {
+				if (msg.uid && msg.headers) {
+					result.set(Number(msg.uid), msg.headers.toString('utf-8'));
+				}
+			}
+		} finally {
+			lock.release();
+		}
+	} finally {
+		try { await client.logout(); } catch { /* best-effort close */ }
+	}
+	return result;
+}
+
+/**
  * Fetch a single attachment part by its IMAP part id (e.g. "2", "1.2").
  * Buffers the part into memory and returns it with the upstream-reported
  * content type. The caller (HTTP endpoint) is responsible for filename

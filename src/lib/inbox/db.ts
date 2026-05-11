@@ -17,7 +17,9 @@ import { randomUUID } from 'node:crypto';
 import type {
 	InboxAccount, InboxMessage, SyncState, InboxProvider, AccountStatus,
 	OauthClient,
+	FilterCategory, FilterRule, FilterRuleMatchType, FilterCacheEntry,
 } from './types.js';
+import { CATEGORY_TO_STATUS } from './types.js';
 import { encrypt, decrypt } from './crypto.js';
 import { soulHubDataDir } from '../paths.js';
 
@@ -285,6 +287,106 @@ function migrate(db: Database.Database): void {
 		});
 		tx();
 		db.pragma(`user_version = 5`);
+	}
+
+	if (version < 6) {
+		// Layer 2 inbox processing filter — categorize agent-relevant signal
+		// from noise. See ADR 2026-05-11-inbox-processing-filter-layer.
+		//
+		// 1. Add classifier output columns to messages
+		// 2. CREATE filter_rules (data-driven rule engine)
+		// 3. CREATE filter_cache (per-(from, subject) memoization)
+		// 4. Seed 13 system rules (header-based + sender-pattern + domain)
+		const tx = db.transaction(() => {
+			db.exec(`
+				ALTER TABLE messages ADD COLUMN category TEXT;
+				ALTER TABLE messages ADD COLUMN filter_reason TEXT;
+				ALTER TABLE messages ADD COLUMN filtered_at INTEGER;
+				ALTER TABLE messages ADD COLUMN header_signals TEXT;
+
+				CREATE INDEX IF NOT EXISTS idx_messages_category_date
+					ON messages(category, date_received DESC)
+					WHERE process_status IN ('queued', 'processed');
+
+				CREATE INDEX IF NOT EXISTS idx_messages_filtered_at
+					ON messages(filtered_at)
+					WHERE filtered_at IS NOT NULL;
+
+				CREATE TABLE IF NOT EXISTS filter_rules (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					account_id TEXT,
+					precedence INTEGER NOT NULL,
+					match_type TEXT NOT NULL CHECK (match_type IN (
+						'header_present',
+						'header_value',
+						'sender_domain',
+						'sender_pattern',
+						'subject_pattern'
+					)),
+					match_value TEXT NOT NULL,
+					action_category TEXT NOT NULL CHECK (action_category IN (
+						'personal','transactional','notification','promotional','bulk','unclassified'
+					)),
+					reason TEXT,
+					created_at INTEGER NOT NULL,
+					created_by TEXT NOT NULL DEFAULT 'user',
+					enabled INTEGER NOT NULL DEFAULT 1
+				);
+
+				CREATE INDEX IF NOT EXISTS idx_filter_rules_precedence
+					ON filter_rules(precedence) WHERE enabled = 1;
+
+				CREATE TABLE IF NOT EXISTS filter_cache (
+					signature TEXT PRIMARY KEY,
+					category TEXT NOT NULL,
+					reason TEXT,
+					hit_count INTEGER NOT NULL DEFAULT 1,
+					first_hit_at INTEGER NOT NULL,
+					last_hit_at INTEGER NOT NULL,
+					user_corrected INTEGER NOT NULL DEFAULT 0
+				);
+
+				CREATE INDEX IF NOT EXISTS idx_filter_cache_lastHit ON filter_cache(last_hit_at);
+			`);
+
+			// Seed system rules only if none exist — keeps rollback path
+			// (DELETE FROM filter_rules WHERE created_by='system') idempotent.
+			const sysCount = (db.prepare(
+				`SELECT COUNT(*) AS c FROM filter_rules WHERE created_by = 'system'`,
+			).get() as { c: number }).c;
+
+			if (sysCount === 0) {
+				const now = Date.now();
+				const seed = db.prepare(`
+					INSERT INTO filter_rules
+						(precedence, match_type, match_value, action_category, reason, created_by, created_at, enabled)
+					VALUES (?, ?, ?, ?, ?, 'system', ?, 1)
+				`);
+
+				const rules: Array<[number, string, string, string, string]> = [
+					[100, 'header_present', 'List-Unsubscribe',  'promotional',  'List-Unsubscribe header indicates bulk mail (RFC 2369/8058)'],
+					[110, 'header_value',   'Precedence:bulk',   'bulk',         'Precedence: bulk legacy indicator'],
+					[120, 'header_value',   'Precedence:list',   'bulk',         'Precedence: list legacy indicator'],
+					[130, 'header_present', 'List-ID',           'bulk',         'List-ID header indicates mailing list'],
+					[200, 'sender_pattern', 'noreply@*',         'notification', 'noreply senders are typically automated service notifications'],
+					[210, 'sender_pattern', 'do-not-reply@*',    'notification', 'do-not-reply senders are typically automated service notifications'],
+					[220, 'sender_pattern', 'notifications@*',   'notification', 'notifications@ senders are typically automated service notifications'],
+					[300, 'sender_domain',  'mailchimp.com',     'promotional',  'Mailchimp is a marketing email platform'],
+					[300, 'sender_domain',  'mailgun.org',       'promotional',  'Mailgun is a transactional/marketing platform'],
+					[300, 'sender_domain',  'sendgrid.net',      'promotional',  'SendGrid is a marketing email platform'],
+					[300, 'sender_domain',  'klaviyo.com',       'promotional',  'Klaviyo is a marketing email platform'],
+					[300, 'sender_domain',  'beehiiv.com',       'promotional',  'Beehiiv is a newsletter platform'],
+					[300, 'sender_domain',  'substack.com',      'promotional',  'Substack is a newsletter platform'],
+				];
+
+				for (const [prec, mtype, mval, cat, reason] of rules) {
+					seed.run(prec, mtype, mval, cat, reason, now);
+				}
+				console.log(`[inbox-migration] Seeded ${rules.length} Layer 2 system filter rules`);
+			}
+		});
+		tx();
+		db.pragma(`user_version = 6`);
 	}
 }
 
@@ -611,6 +713,10 @@ export interface MessageListOptions {
 	offset?: number;
 	search?: string;
 	status?: string;
+	/** Layer 2 filter — match exact category, e.g. 'transactional'. */
+	category?: string;
+	/** Layer 2 filter — only messages with date_received >= since (epoch ms). */
+	since?: number;
 }
 
 export function listMessages(opts: MessageListOptions = {}): { messages: InboxMessage[]; total: number } {
@@ -632,6 +738,14 @@ export function listMessages(opts: MessageListOptions = {}): { messages: InboxMe
 	if (opts.status) {
 		conditions.push('m.process_status = ?');
 		params.push(opts.status);
+	}
+	if (opts.category) {
+		conditions.push('m.category = ?');
+		params.push(opts.category);
+	}
+	if (opts.since !== undefined) {
+		conditions.push('m.date_received >= ?');
+		params.push(opts.since);
 	}
 
 	let query: string;
@@ -715,6 +829,10 @@ function rowToMessage(row: Record<string, unknown>): InboxMessage {
 		attachmentsMeta: JSON.parse((row.attachments_meta as string) || '[]'),
 		attachmentCount: (row.attachment_count as number) || 0,
 		isFlagged: (row.is_flagged as number) === 1,
+		category: (row.category as FilterCategory | null) ?? null,
+		filterReason: (row.filter_reason as string | null) ?? null,
+		filteredAt: (row.filtered_at as number | null) ?? null,
+		headerSignals: (row.header_signals as string | null) ?? null,
 	};
 }
 
@@ -776,23 +894,87 @@ export function deleteMessagesByFolder(
 	return result.changes;
 }
 
+/**
+ * Layer 2 status-aware retention (see ADR 2026-05-11-inbox-processing-filter-layer §D6).
+ *
+ * - skipped:   14 days hardcoded (promotional/bulk — aggressive prune)
+ * - queued:    per-account retention_days (operator-configurable)
+ * - processed: 365 days hardcoded (agent-handled, long audit trail)
+ * - new:       never pruned, BUT a 7-day "stuck-new" safety net promotes them
+ *              to category='unclassified' + process_status='queued' so they
+ *              surface to agents instead of rotting silently if the worker dies.
+ *
+ * `is_flagged = 1` rows are preserved across all statuses (existing semantics).
+ *
+ * Returns total messages affected (deleted + promoted).
+ */
 export function pruneOldMessages(accountId: string, retentionDays: number): number {
 	const db = getInboxDb();
-	if (retentionDays <= 0) return 0;
+	const now = Date.now();
+	let total = 0;
 
-	const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
-	const result = db.prepare(`
-		DELETE FROM messages
-		WHERE account_id = ?
-		  AND date_received < ?
-		  AND process_status IN ('new', 'skipped')
-		  AND is_flagged = 0
-	`).run(accountId, cutoffMs);
+	const tx = db.transaction(() => {
+		// 1. skipped — 14 days
+		const skippedCutoff = now - 14 * 24 * 60 * 60 * 1000;
+		const skipped = db.prepare(`
+			DELETE FROM messages
+			WHERE account_id = ?
+			  AND process_status = 'skipped'
+			  AND date_received < ?
+			  AND is_flagged = 0
+		`).run(accountId, skippedCutoff);
+		total += skipped.changes;
 
-	if (result.changes > 0) {
-		console.log(`[inbox-prune:${accountId}] Pruned ${result.changes} messages older than ${retentionDays} days`);
+		// 2. queued — operator-configured retention (skip if 0 = never delete)
+		if (retentionDays > 0) {
+			const queuedCutoff = now - retentionDays * 24 * 60 * 60 * 1000;
+			const queued = db.prepare(`
+				DELETE FROM messages
+				WHERE account_id = ?
+				  AND process_status = 'queued'
+				  AND date_received < ?
+				  AND is_flagged = 0
+			`).run(accountId, queuedCutoff);
+			total += queued.changes;
+		}
+
+		// 3. processed — 365 days
+		const processedCutoff = now - 365 * 24 * 60 * 60 * 1000;
+		const processed = db.prepare(`
+			DELETE FROM messages
+			WHERE account_id = ?
+			  AND process_status = 'processed'
+			  AND date_received < ?
+			  AND is_flagged = 0
+		`).run(accountId, processedCutoff);
+		total += processed.changes;
+
+		// 4. 7-day stuck-new safety net (per-account-bounded for parity with prune scope)
+		const stuckCutoff = now - 7 * 24 * 60 * 60 * 1000;
+		const promoted = db.prepare(`
+			UPDATE messages
+			SET category = 'unclassified',
+			    process_status = 'queued',
+			    filter_reason = 'stuck-new-fallback',
+			    filtered_at = ?
+			WHERE account_id = ?
+			  AND process_status = 'new'
+			  AND synced_at < ?
+		`).run(now, accountId, stuckCutoff);
+		total += promoted.changes;
+
+		if (promoted.changes > 0) {
+			console.log(
+				`[inbox-prune:${accountId}] Promoted ${promoted.changes} stuck-new messages to unclassified/queued`,
+			);
+		}
+	});
+	tx();
+
+	if (total > 0) {
+		console.log(`[inbox-prune:${accountId}] Pruned/promoted ${total} messages (retention=${retentionDays}d for queued)`);
 	}
-	return result.changes;
+	return total;
 }
 
 export function updateAccountSettings(
@@ -845,4 +1027,312 @@ export function getInboxStats(): { accounts: number; messages: number; lastSync:
 	const messages = (db.prepare('SELECT COUNT(*) as c FROM messages').get() as { c: number }).c;
 	const lastSync = (db.prepare('SELECT MAX(last_sync) as ls FROM accounts').get() as { ls: number | null }).ls;
 	return { accounts, messages, lastSync };
+}
+
+// ── Layer 2 Filter — rules, cache, classification ──
+// See ADR 2026-05-11-inbox-processing-filter-layer.
+
+export function listFilterRules(opts: { enabledOnly?: boolean; accountId?: string | null } = {}): FilterRule[] {
+	const db = getInboxDb();
+	const conditions: string[] = [];
+	const params: unknown[] = [];
+	if (opts.enabledOnly) {
+		conditions.push('enabled = 1');
+	}
+	if (opts.accountId === null) {
+		conditions.push('account_id IS NULL');
+	} else if (opts.accountId !== undefined) {
+		conditions.push('(account_id IS NULL OR account_id = ?)');
+		params.push(opts.accountId);
+	}
+	const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+	const rows = db.prepare(
+		`SELECT * FROM filter_rules ${where} ORDER BY precedence ASC, created_at ASC`,
+	).all(...params) as Record<string, unknown>[];
+	return rows.map(rowToFilterRule);
+}
+
+export function getFilterRule(id: number): FilterRule | null {
+	const db = getInboxDb();
+	const row = db.prepare(`SELECT * FROM filter_rules WHERE id = ?`).get(id) as
+		| Record<string, unknown>
+		| undefined;
+	if (!row) return null;
+	return rowToFilterRule(row);
+}
+
+export function insertFilterRule(input: {
+	accountId?: string | null;
+	precedence: number;
+	matchType: FilterRuleMatchType;
+	matchValue: string;
+	actionCategory: FilterCategory;
+	reason?: string | null;
+	createdBy?: 'system' | 'user' | 'agent';
+	enabled?: boolean;
+}): number {
+	const db = getInboxDb();
+	const result = db.prepare(`
+		INSERT INTO filter_rules
+			(account_id, precedence, match_type, match_value, action_category, reason, created_by, created_at, enabled)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`).run(
+		input.accountId ?? null,
+		input.precedence,
+		input.matchType,
+		input.matchValue,
+		input.actionCategory,
+		input.reason ?? null,
+		input.createdBy ?? 'user',
+		Date.now(),
+		input.enabled === false ? 0 : 1,
+	);
+	return Number(result.lastInsertRowid);
+}
+
+export function setFilterRuleEnabled(id: number, enabled: boolean): boolean {
+	const db = getInboxDb();
+	const result = db.prepare(`UPDATE filter_rules SET enabled = ? WHERE id = ?`).run(enabled ? 1 : 0, id);
+	return result.changes > 0;
+}
+
+/**
+ * Delete a filter rule. Refuses on system-seeded rows — operators can disable
+ * them (setFilterRuleEnabled(id, false)) but not delete. Prevents accidental
+ * loss of the curated defaults shipped via migration #6.
+ */
+export function deleteFilterRule(id: number): { deleted: boolean; reason?: 'system_rule_protected' | 'not_found' } {
+	const db = getInboxDb();
+	const existing = db.prepare(`SELECT created_by FROM filter_rules WHERE id = ?`).get(id) as
+		| { created_by: string }
+		| undefined;
+	if (!existing) return { deleted: false, reason: 'not_found' };
+	if (existing.created_by === 'system') return { deleted: false, reason: 'system_rule_protected' };
+	const result = db.prepare(`DELETE FROM filter_rules WHERE id = ?`).run(id);
+	return { deleted: result.changes > 0 };
+}
+
+export function getFilterCache(signature: string): FilterCacheEntry | null {
+	const db = getInboxDb();
+	const row = db.prepare(`SELECT * FROM filter_cache WHERE signature = ?`).get(signature) as
+		| Record<string, unknown>
+		| undefined;
+	if (!row) return null;
+	return rowToFilterCache(row);
+}
+
+/**
+ * Upsert a cache entry. New rows: first_hit_at = last_hit_at = now, hit_count = 1.
+ * Existing rows: bump hit_count, refresh last_hit_at, leave first_hit_at, and
+ * overwrite category/reason/user_corrected (the caller's whole point of
+ * upserting is to update the cached decision).
+ */
+export function setFilterCache(input: {
+	signature: string;
+	category: FilterCategory;
+	reason?: string | null;
+	userCorrected?: boolean;
+}): void {
+	const db = getInboxDb();
+	const now = Date.now();
+	db.prepare(`
+		INSERT INTO filter_cache (signature, category, reason, hit_count, first_hit_at, last_hit_at, user_corrected)
+		VALUES (?, ?, ?, 1, ?, ?, ?)
+		ON CONFLICT(signature) DO UPDATE SET
+			category = excluded.category,
+			reason = excluded.reason,
+			user_corrected = excluded.user_corrected,
+			hit_count = filter_cache.hit_count + 1,
+			last_hit_at = excluded.last_hit_at
+	`).run(
+		input.signature,
+		input.category,
+		input.reason ?? null,
+		now,
+		now,
+		input.userCorrected ? 1 : 0,
+	);
+}
+
+/** Touch hit_count / last_hit_at without rewriting category — for cache:hit reads. */
+export function bumpFilterCacheHit(signature: string): void {
+	const db = getInboxDb();
+	db.prepare(
+		`UPDATE filter_cache SET hit_count = hit_count + 1, last_hit_at = ? WHERE signature = ?`,
+	).run(Date.now(), signature);
+}
+
+/**
+ * Apply a classification to a message. Sets category, derives process_status
+ * via CATEGORY_TO_STATUS, writes filter_reason + filtered_at = now.
+ * Optionally accepts pre-parsed header_signals JSON to persist alongside.
+ */
+export function applyClassification(
+	messageId: number,
+	input: { category: FilterCategory; reason: string; headerSignalsJson?: string | null },
+): boolean {
+	const db = getInboxDb();
+	const status = CATEGORY_TO_STATUS[input.category];
+	const sets = ['category = ?', 'process_status = ?', 'filter_reason = ?', 'filtered_at = ?'];
+	const params: unknown[] = [input.category, status, input.reason, Date.now()];
+	if (input.headerSignalsJson !== undefined) {
+		sets.push('header_signals = ?');
+		params.push(input.headerSignalsJson);
+	}
+	params.push(messageId);
+	const result = db.prepare(`UPDATE messages SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+	return result.changes > 0;
+}
+
+/** Persist parsed header signals without re-classifying. Used by cold-start. */
+export function setMessageHeaderSignals(messageId: number, headerSignalsJson: string): boolean {
+	const db = getInboxDb();
+	const result = db.prepare(`UPDATE messages SET header_signals = ? WHERE id = ?`).run(
+		headerSignalsJson,
+		messageId,
+	);
+	return result.changes > 0;
+}
+
+export function markMessageProcessed(messageId: number): boolean {
+	const db = getInboxDb();
+	const result = db.prepare(`
+		UPDATE messages SET process_status = 'processed' WHERE id = ? AND process_status = 'queued'
+	`).run(messageId);
+	return result.changes > 0;
+}
+
+/**
+ * List messages awaiting classification. Two modes:
+ *   - cold-start: pass workerStartTs → only rows with synced_at < workerStartTs - 5s,
+ *     filtered_at IS NULL, process_status='new'. Idempotent across crashes.
+ *   - steady-state: pass workerStartTs=undefined → just rows with process_status='new'
+ *     and filtered_at IS NULL. limit defaults to 50.
+ */
+export function listMessagesForFiltering(opts: { workerStartTs?: number; limit?: number } = {}): InboxMessage[] {
+	const db = getInboxDb();
+	const limit = opts.limit ?? 50;
+	const conditions = [`process_status = 'new'`, `filtered_at IS NULL`];
+	const params: unknown[] = [];
+	if (opts.workerStartTs !== undefined) {
+		conditions.push(`synced_at < ?`);
+		params.push(opts.workerStartTs - 5_000);
+	}
+	const rows = db.prepare(
+		`SELECT * FROM messages WHERE ${conditions.join(' AND ')} ORDER BY account_id, synced_at LIMIT ?`,
+	).all(...params, limit) as Record<string, unknown>[];
+	return rows.map(rowToMessage);
+}
+
+/**
+ * Re-classify all messages matching a cache signature. Used by the correction
+ * loop: when a user/agent corrects the cache, all `new` + `skipped` rows
+ * sharing the signature are updated in one transaction. `queued`/`processed`
+ * rows are LEFT ALONE (agents may have acted on them).
+ *
+ * Returns the count of messages whose state actually changed (excludes the
+ * row that was the source of the correction if its category is unchanged).
+ */
+export function reclassifyBySignature(
+	signature: string,
+	category: FilterCategory,
+	reason: string,
+	signatureOf: (msg: { fromAddress: string; subject: string }) => string,
+): number {
+	const db = getInboxDb();
+	const status = CATEGORY_TO_STATUS[category];
+	const now = Date.now();
+
+	// Find candidate rows. Recomputing the signature in JS is cheaper than a
+	// SQL signature predicate (no DB-side hash). We bound to status IN
+	// ('new','skipped') here — applying corrections to in-flight queued mail
+	// or already-processed rows creates inconsistency (see ADR §D4).
+	const candidates = db.prepare(`
+		SELECT id, from_address, subject FROM messages
+		WHERE process_status IN ('new','skipped')
+	`).all() as Array<{ id: number; from_address: string; subject: string }>;
+
+	let updated = 0;
+	const upd = db.prepare(`
+		UPDATE messages
+		SET category = ?, process_status = ?, filter_reason = ?, filtered_at = ?
+		WHERE id = ?
+	`);
+	const tx = db.transaction(() => {
+		for (const row of candidates) {
+			const sig = signatureOf({ fromAddress: row.from_address, subject: row.subject });
+			if (sig === signature) {
+				const r = upd.run(category, status, reason, now, row.id);
+				updated += r.changes;
+			}
+		}
+	});
+	tx();
+	return updated;
+}
+
+/** Aggregated stats for the settings UI / stats endpoint. */
+export function getFilterStats(): {
+	ruleCount: number;
+	systemRuleCount: number;
+	userRuleCount: number;
+	cacheSize: number;
+	queuedCount: number;
+	skippedCount: number;
+	newCount: number;
+	processedCount: number;
+	byCategory: Record<string, number>;
+} {
+	const db = getInboxDb();
+	const ruleRow = db.prepare(
+		`SELECT COUNT(*) AS total, SUM(CASE WHEN created_by='system' THEN 1 ELSE 0 END) AS sys FROM filter_rules`,
+	).get() as { total: number; sys: number | null };
+	const cacheSize = (db.prepare(`SELECT COUNT(*) AS c FROM filter_cache`).get() as { c: number }).c;
+	const queuedCount = (db.prepare(`SELECT COUNT(*) AS c FROM messages WHERE process_status='queued'`).get() as { c: number }).c;
+	const skippedCount = (db.prepare(`SELECT COUNT(*) AS c FROM messages WHERE process_status='skipped'`).get() as { c: number }).c;
+	const newCount = (db.prepare(`SELECT COUNT(*) AS c FROM messages WHERE process_status='new'`).get() as { c: number }).c;
+	const processedCount = (db.prepare(`SELECT COUNT(*) AS c FROM messages WHERE process_status='processed'`).get() as { c: number }).c;
+	const catRows = db.prepare(
+		`SELECT category, COUNT(*) AS c FROM messages WHERE category IS NOT NULL GROUP BY category`,
+	).all() as Array<{ category: string; c: number }>;
+	const byCategory: Record<string, number> = {};
+	for (const r of catRows) byCategory[r.category] = r.c;
+	return {
+		ruleCount: ruleRow.total,
+		systemRuleCount: ruleRow.sys ?? 0,
+		userRuleCount: (ruleRow.total ?? 0) - (ruleRow.sys ?? 0),
+		cacheSize,
+		queuedCount,
+		skippedCount,
+		newCount,
+		processedCount,
+		byCategory,
+	};
+}
+
+function rowToFilterRule(row: Record<string, unknown>): FilterRule {
+	return {
+		id: row.id as number,
+		accountId: (row.account_id as string | null) ?? null,
+		precedence: row.precedence as number,
+		matchType: row.match_type as FilterRuleMatchType,
+		matchValue: row.match_value as string,
+		actionCategory: row.action_category as FilterCategory,
+		reason: (row.reason as string | null) ?? null,
+		createdAt: row.created_at as number,
+		createdBy: (row.created_by as 'system' | 'user' | 'agent') ?? 'user',
+		enabled: (row.enabled as number) === 1,
+	};
+}
+
+function rowToFilterCache(row: Record<string, unknown>): FilterCacheEntry {
+	return {
+		signature: row.signature as string,
+		category: row.category as FilterCategory,
+		reason: (row.reason as string | null) ?? null,
+		hitCount: row.hit_count as number,
+		firstHitAt: row.first_hit_at as number,
+		lastHitAt: row.last_hit_at as number,
+		userCorrected: (row.user_corrected as number) === 1,
+	};
 }

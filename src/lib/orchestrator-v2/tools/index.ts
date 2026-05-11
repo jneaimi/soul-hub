@@ -30,6 +30,12 @@ import { dispatchVaultSave } from '../../vault-save/index.js';
 import { recordToolCall, assertManifestParity } from './registry.js';
 import { setPending, formatProposal } from '../../orchestrator/pending-proposals.js';
 import {
+	listMessages,
+	markMessageProcessed,
+	correctClassification,
+	type FilterCategory,
+} from '../../inbox/index.js';
+import {
 	getImgCount,
 	incrementImgCount,
 	getYoutubeCount,
@@ -849,7 +855,159 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 				};
 			},
 		}),
+
+		'inbox-list-queued': tool({
+			description:
+				"List the user's queued inbox messages (post-Layer-2 filter, agent-relevant only). " +
+				"Use when the user asks 'what's in my inbox', 'any new emails', 'show me bank alerts', 'what came in today'. " +
+				"Filter by category for targeted queries: personal (human mail), transactional (bank/orders/receipts), notification (service alerts), unclassified (filter wasn't confident). " +
+				"Returns newest first.",
+			inputSchema: z.object({
+				category: z
+					.enum(['personal', 'transactional', 'notification', 'unclassified'])
+					.optional()
+					.describe('Optional category filter. Omit to see everything queued.'),
+				since: z
+					.string()
+					.optional()
+					.describe('Lower bound for date_received. Accepts ISO datetime ("2026-05-11T00:00:00Z") or the literal strings "today" / "yesterday" / "week".'),
+				limit: z
+					.number()
+					.int()
+					.min(1)
+					.max(50)
+					.optional()
+					.describe('Max rows to return (default 20).'),
+				accountId: z
+					.string()
+					.optional()
+					.describe('Restrict to one inbox account (rare — usually omit).'),
+			}),
+			execute: async ({ category, since, limit, accountId }): Promise<ToolResult> => {
+				logToolCall('inbox-list-queued', { category, since, limit, accountId });
+				const sinceMs = parseSinceArg(since);
+				const result = listMessages({
+					status: 'queued',
+					category,
+					since: sinceMs,
+					limit: limit ?? 20,
+					accountId,
+				});
+				if (result.messages.length === 0) {
+					return { kind: 'reply', text: 'No queued messages match.' };
+				}
+				const lines = result.messages.map((m, i) => {
+					const sender = m.fromName || m.fromAddress;
+					const cat = m.category ?? '?';
+					const when = formatRelativeDate(m.dateReceived);
+					return `${i + 1}. [${cat}] ${sender} — ${m.subject}  · ${when}  (id ${m.id})`;
+				});
+				const head = `${result.total} queued message${result.total === 1 ? '' : 's'}` +
+					(category ? ` in ${category}` : '') +
+					':';
+				return { kind: 'reply', text: `${head}\n${lines.join('\n')}` };
+			},
+		}),
+
+		'inbox-mark-processed': tool({
+			description:
+				"Mark an inbox message as processed (agent has handled it). The message transitions queued → processed; it stays cached for 365 days as audit trail but stops appearing in queued listings. " +
+				"Use after summarizing, routing-to-vault, replying, or otherwise handling a message.",
+			inputSchema: z.object({
+				messageId: z.number().int().positive(),
+			}),
+			execute: async ({ messageId }): Promise<ToolResult> => {
+				logToolCall('inbox-mark-processed', { messageId });
+				const ok = markMessageProcessed(messageId);
+				return {
+					kind: 'reply',
+					text: ok
+						? `Message ${messageId} marked processed.`
+						: `Message ${messageId} not found or not in queued state.`,
+				};
+			},
+		}),
+
+		'inbox-correct-classification': tool({
+			description:
+				"Correct the Layer 2 classification of a message and update the cache so future similar messages get the new category. " +
+				"Use when the user pushes back (\"that's not promotional, it's a receipt\") or when the agent notices a clear miscategorization. " +
+				"Scope can be 'this' (this message only) or 'pattern' (this message + all matching siblings via the cache signature).",
+			inputSchema: z.object({
+				messageId: z.number().int().positive(),
+				category: z.enum([
+					'personal',
+					'transactional',
+					'notification',
+					'promotional',
+					'bulk',
+					'unclassified',
+				]),
+				scope: z.enum(['this', 'pattern']).optional(),
+				reason: z.string().max(200).optional(),
+			}),
+			execute: async ({ messageId, category, scope, reason }): Promise<ToolResult> => {
+				logToolCall('inbox-correct-classification', { messageId, category, scope });
+				const result = correctClassification(messageId, {
+					category: category as FilterCategory,
+					scope: scope ?? 'pattern',
+					reason,
+				});
+				if (!result.ok) {
+					return {
+						kind: 'reply',
+						text: `Could not update message ${messageId}: ${result.reason ?? 'unknown'}.`,
+					};
+				}
+				const sib = result.siblingsUpdated;
+				const tail =
+					(scope ?? 'pattern') === 'pattern' && sib > 0
+						? ` Re-classified ${sib} matching sibling${sib === 1 ? '' : 's'}.`
+						: '';
+				return {
+					kind: 'reply',
+					text: `Updated message ${messageId} to ${category}.${tail}`,
+				};
+			},
+		}),
 	};
+}
+
+/**
+ * Coerce a `since` arg into epoch-ms for inbox-list-queued. Accepts ISO
+ * datetimes and a handful of natural-language tokens. Returns undefined
+ * when the input is empty or unparseable — the caller treats that as "no
+ * lower bound" rather than 400'ing.
+ */
+function parseSinceArg(since?: string): number | undefined {
+	if (!since) return undefined;
+	const lower = since.toLowerCase().trim();
+	const now = Date.now();
+	if (lower === 'today') {
+		const d = new Date();
+		d.setHours(0, 0, 0, 0);
+		return d.getTime();
+	}
+	if (lower === 'yesterday') {
+		return now - 24 * 60 * 60 * 1000;
+	}
+	if (lower === 'week' || lower === 'this week') {
+		return now - 7 * 24 * 60 * 60 * 1000;
+	}
+	const parsed = Date.parse(since);
+	return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/** Lightweight "5h ago" / "2d ago" formatter for the listing UI. */
+function formatRelativeDate(ms: number): string {
+	const diff = Date.now() - ms;
+	const min = Math.round(diff / 60_000);
+	if (min < 1) return 'just now';
+	if (min < 60) return `${min}m ago`;
+	const hr = Math.round(min / 60);
+	if (hr < 24) return `${hr}h ago`;
+	const d = Math.round(hr / 24);
+	return `${d}d ago`;
 }
 
 /** Given a ts (ms) and an active-hours window, return the same ts if it

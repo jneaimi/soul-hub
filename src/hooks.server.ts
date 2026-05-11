@@ -15,7 +15,10 @@ import { initVault, getVaultEngine } from '$lib/vault/index.js';
 import { initSystemHealth, getSystemHealth } from '$lib/system/index.js';
 import { listSessions, killSession } from '$lib/pty/manager.js';
 import { extractProxyPort, proxyRequest } from '$lib/proxy.js';
-import { getInboxDb, closeInboxDb, startSync, stopSync } from '$lib/inbox/index.js';
+import {
+	getInboxDb, closeInboxDb, startSync, stopSync,
+	startFilterWorker, stopFilterWorker,
+} from '$lib/inbox/index.js';
 import { initAgentsWatcher, shutdownAgentsWatcher } from '$lib/agents/watcher.js';
 import { seedDefaultsIfEmpty } from '$lib/explorer-roots.js';
 import { soulHubDataDir, soulHubSettingsPath } from '$lib/paths.js';
@@ -59,6 +62,12 @@ try {
 	getInboxDb();
 	startSync().then(() => console.log('[inbox] Sync workers started'))
 		.catch((err) => console.error('[inbox] Sync start failed:', err));
+	// Layer 2 filter worker — ADR 2026-05-11-inbox-processing-filter-layer.
+	// Fire-and-forget: auth probe + cold-start may take minutes; we don't
+	// want SvelteKit boot to wait. The interval is scheduled inside
+	// startFilterWorker() only after cold-start completes.
+	startFilterWorker().then(() => console.log('[inbox] Filter worker started'))
+		.catch((err) => console.error('[inbox] Filter start failed:', err));
 	console.log('[inbox] Database initialized');
 } catch (err) {
 	console.error('[inbox] Failed to initialize:', err);
@@ -143,8 +152,9 @@ function gracefulShutdown(signal: string) {
 	const systemHealth = getSystemHealth();
 	if (systemHealth) systemHealth.shutdown();
 
-	// Shutdown inbox sync workers + database
+	// Shutdown inbox sync + filter workers, then close database.
 	stopSync().catch(() => {});
+	stopFilterWorker().catch(() => {});
 	closeInboxDb();
 
 	// Shutdown vault engine (stop file watcher)
