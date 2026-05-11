@@ -25,7 +25,7 @@ import {
 	getAccount, pruneOldMessages, deleteMessagesByFolder,
 } from './db.js';
 import { markAccountFailed, markAccountRecovered, clearAccountAlert } from './notifications.js';
-import { getValidToken, accountOauthOverride, type OAuthTokens } from './oauth.js';
+import { getValidToken, resolveClientCredsForAccount, type OAuthTokens } from './oauth.js';
 import {
 	getValidOutlookToken, fetchMessagesDelta, DeltaExpiredError,
 	type OutlookTokens, type GraphMessage,
@@ -204,7 +204,7 @@ async function connectWorker(worker: AccountWorker, account: InboxAccount): Prom
 					refreshToken: parsedCred.refreshToken,
 					expiresAt: parsedCred.expiresAt || 0,
 				},
-				accountOauthOverride(account),
+				resolveClientCredsForAccount(account),
 			);
 
 			// Persist refreshed tokens back to DB (encrypted)

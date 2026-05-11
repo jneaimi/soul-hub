@@ -21,7 +21,7 @@
 
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
-import { getValidToken, accountOauthOverride } from './oauth.js';
+import { getValidToken, resolveClientCredsForAccount } from './oauth.js';
 import { encrypt } from './crypto.js';
 import { getAccountCredential, getInboxDb } from './db.js';
 import type { InboxAccount, InboxMessage } from './types.js';
@@ -67,7 +67,7 @@ async function connectImap(account: InboxAccount): Promise<ImapFlow> {
 				refreshToken: parsedCred.refreshToken,
 				expiresAt: parsedCred.expiresAt || 0,
 			},
-			accountOauthOverride(account),
+			resolveClientCredsForAccount(account),
 		);
 		// Persist refreshed tokens back to DB if changed.
 		if (tokens.accessToken !== parsedCred.accessToken) {

@@ -1,7 +1,7 @@
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { randomUUID } from 'node:crypto';
-import { addAccount, listAccounts, removeAccount, getAccount, updateAccountSettings, updateAccountCredential, startAccountSync, stopAccountSync, pruneOldMessages } from '$lib/inbox/index.js';
+import { addAccount, listAccounts, removeAccount, getAccount, updateAccountSettings, updateAccountCredential, startAccountSync, stopAccountSync, pruneOldMessages, getOauthClient } from '$lib/inbox/index.js';
 import type { InboxProvider } from '$lib/inbox/index.js';
 
 const VALID_PROVIDERS: InboxProvider[] = ['icloud', 'gmail', 'outlook', 'imap'];
@@ -146,12 +146,43 @@ export const PATCH: RequestHandler = async ({ request }) => {
 	const account = getAccount(id);
 	if (!account) return json({ error: `Account "${id}" not found` }, { status: 404 });
 
-	const hasSettings = body.label !== undefined || typeof body.retentionDays === 'number';
+	const hasSettings =
+		body.label !== undefined ||
+		typeof body.retentionDays === 'number' ||
+		body.oauthClientRef !== undefined;
 	const credential = typeof body.credential === 'string' ? body.credential.trim() : '';
 	const hasCredential = credential.length > 0;
 
 	if (!hasSettings && !hasCredential) {
 		return json({ error: 'No valid fields to update' }, { status: 400 });
+	}
+
+	// Validate oauthClientRef if present. The UI typically pairs a Change
+	// with a reauthorize cycle, but the PATCH itself just persists the FK;
+	// the next refresh attempt picks up the new client.
+	let nextOauthClientRef: string | null | undefined = undefined;
+	if (body.oauthClientRef !== undefined) {
+		if (body.oauthClientRef === null) {
+			nextOauthClientRef = null;
+		} else if (typeof body.oauthClientRef === 'string') {
+			const ref = body.oauthClientRef.trim();
+			if (!ref) {
+				return json({ error: 'oauthClientRef cannot be empty string; use null to clear' }, { status: 400 });
+			}
+			const client = getOauthClient(ref);
+			if (!client) {
+				return json({ error: `OAuth client not found: ${ref}` }, { status: 404 });
+			}
+			if (client.provider !== account.provider) {
+				return json(
+					{ error: `OAuth client provider (${client.provider}) doesn't match account provider (${account.provider})` },
+					{ status: 400 },
+				);
+			}
+			nextOauthClientRef = ref;
+		} else {
+			return json({ error: 'oauthClientRef must be a string or null' }, { status: 400 });
+		}
 	}
 
 	// Track whether retention actually changed so we know to run an
@@ -167,6 +198,7 @@ export const PATCH: RequestHandler = async ({ request }) => {
 		updateAccountSettings(id, {
 			label: body.label as string | undefined,
 			retentionDays: newRetention,
+			oauthClientRef: nextOauthClientRef,
 		});
 
 		// Immediate prune on retention change. pruneOldMessages already

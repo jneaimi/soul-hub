@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import ChannelCard from '$lib/components/ChannelCard.svelte';
 	import PlatformEnv from '$lib/components/PlatformEnv.svelte';
+	import ConnectionsSection from '$lib/components/settings/ConnectionsSection.svelte';
 	import ExplorerRootsSection from '$lib/components/settings/ExplorerRootsSection.svelte';
 	import RoutesSection from '$lib/components/settings/RoutesSection.svelte';
 	import WhatsAppSection from '$lib/components/settings/WhatsAppSection.svelte';
@@ -488,6 +489,9 @@
 
 		<!-- Platform Environment section -->
 		<PlatformEnv />
+
+		<!-- OAuth Connections (Gmail, Outlook) -->
+		<ConnectionsSection />
 
 		<!-- Channels section -->
 		{#if channelMetas.length > 0}

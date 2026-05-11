@@ -2,24 +2,28 @@
  * OAuth2 helpers for Gmail IMAP access.
  *
  * Flow:
- *   1. User clicks "Add Gmail" → redirect to Google consent
- *   2. Google redirects back with ?code=... → exchange for tokens
- *   3. Store encrypted { accessToken, refreshToken, expiresAt } in accounts table
- *   4. Sync worker reads credential, refreshes if expired, connects with accessToken
+ *   1. User picks an OAuth client (Connections) and clicks "Sign in with Google"
+ *   2. /api/inbox/oauth?client=<uuid> builds the consent URL with that client's creds
+ *   3. Google redirects back with ?code=... → exchange for tokens
+ *   4. Store encrypted { accessToken, refreshToken, expiresAt } in accounts table,
+ *      with `oauth_client_ref` pointing at the chosen Connections row
+ *   5. Sync worker reads credential + resolves the per-account client, refreshes if
+ *      expired, connects with accessToken
  *
- * Client identity (id/secret) sources, in priority order:
- *   1. Explicit ClientCreds override passed by the caller — used for
- *      per-account custom OAuth clients (see ADR
- *      2026-05-11-per-account-oauth-clients).
- *   2. process.env.GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET — the platform
- *      default (managed via Settings → Platform Environment per
- *      ADR 2026-05-11-oauth-credentials-via-settings-ui).
+ * Client identity resolution: every flow takes an explicit ClientCreds object.
+ * See `src/lib/inbox/db.ts` for `getOauthClient`, `getDefaultOauthClient`, and
+ * `listOauthClients`. The platform-env `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`
+ * are read ONCE by migration #5 to seed the Default Connections row, then never
+ * again at runtime.
  *
  * Required scope: https://mail.google.com/ (NOT gmail.readonly — won't work for IMAP)
+ *
+ * See ADR 2026-05-11-oauth-clients-as-first-class-connections.
  */
 
 import { OAuth2Client } from 'google-auth-library';
 import { decrypt } from './crypto.js';
+import { getOauthClient, getDefaultOauthClient } from './db.js';
 
 // `mail.google.com` is the restricted IMAP/SMTP scope. `openid` + `userinfo.email`
 // are needed so the OAuth callback can call /oauth2/v2/userinfo to discover the
@@ -43,31 +47,52 @@ export interface ClientCreds {
 }
 
 /**
- * Resolve which OAuth client identity to use. Explicit override wins; falls
- * back to platform env. Throws if neither is available.
+ * Resolve ClientCreds for a stored OAuth client (Connections row) by id.
+ * Throws if the row is missing — callers should validate the ref before
+ * invoking flow steps.
  */
-function resolveClientCreds(override?: ClientCreds): ClientCreds {
-	if (override?.clientId && override?.clientSecret) {
-		return override;
+export function resolveClientCredsByRef(clientRef: string): ClientCreds {
+	const client = getOauthClient(clientRef);
+	if (!client) {
+		throw new Error(`oauth_clients row not found: ${clientRef}`);
 	}
-	const clientId = process.env.GOOGLE_CLIENT_ID;
-	const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-	if (!clientId || !clientSecret) {
-		throw new Error(
-			'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET env vars are required for Gmail OAuth2 (or provide per-account client at add time)',
-		);
-	}
-	return { clientId, clientSecret };
+	return {
+		clientId: client.clientId,
+		clientSecret: decrypt(client.clientSecretEncrypted),
+	};
 }
 
-function createClient(redirectUri: string, override?: ClientCreds): OAuth2Client {
-	const { clientId, clientSecret } = resolveClientCreds(override);
-	return new OAuth2Client(clientId, clientSecret, redirectUri);
+/**
+ * Resolve ClientCreds for an account. Uses the account's `oauthClientRef` if
+ * set; otherwise falls back to the provider's Default Connections row.
+ * Throws with an operator-actionable message if neither is available.
+ */
+export function resolveClientCredsForAccount(account: {
+	oauthClientRef: string | null;
+	provider: string;
+}): ClientCreds {
+	if (account.oauthClientRef) {
+		return resolveClientCredsByRef(account.oauthClientRef);
+	}
+	const def = getDefaultOauthClient(account.provider as 'gmail' | 'outlook' | 'icloud' | 'imap');
+	if (!def) {
+		throw new Error(
+			`No OAuth client configured for provider '${account.provider}'. Add one via Settings → Connections.`,
+		);
+	}
+	return {
+		clientId: def.clientId,
+		clientSecret: decrypt(def.clientSecretEncrypted),
+	};
+}
+
+function createClient(redirectUri: string, creds: ClientCreds): OAuth2Client {
+	return new OAuth2Client(creds.clientId, creds.clientSecret, redirectUri);
 }
 
 /** Generate the Google OAuth2 consent URL */
-export function getAuthUrl(redirectUri: string, state?: string, override?: ClientCreds): string {
-	const client = createClient(redirectUri, override);
+export function getAuthUrl(redirectUri: string, creds: ClientCreds, state?: string): string {
+	const client = createClient(redirectUri, creds);
 	return client.generateAuthUrl({
 		access_type: 'offline', // get refresh token
 		prompt: 'consent', // force consent to always get refresh token
@@ -80,9 +105,9 @@ export function getAuthUrl(redirectUri: string, state?: string, override?: Clien
 export async function exchangeCode(
 	code: string,
 	redirectUri: string,
-	override?: ClientCreds,
+	creds: ClientCreds,
 ): Promise<OAuthTokens> {
-	const client = createClient(redirectUri, override);
+	const client = createClient(redirectUri, creds);
 	const { tokens } = await client.getToken(code);
 
 	if (!tokens.access_token) {
@@ -102,10 +127,9 @@ export async function exchangeCode(
 /** Refresh an expired access token using the refresh token */
 export async function refreshAccessToken(
 	refreshToken: string,
-	override?: ClientCreds,
+	creds: ClientCreds,
 ): Promise<OAuthTokens> {
-	const { clientId, clientSecret } = resolveClientCreds(override);
-	const client = new OAuth2Client(clientId, clientSecret);
+	const client = new OAuth2Client(creds.clientId, creds.clientSecret);
 	client.setCredentials({ refresh_token: refreshToken });
 
 	const { credentials } = await client.refreshAccessToken();
@@ -121,24 +145,6 @@ export async function refreshAccessToken(
 	};
 }
 
-/**
- * Build the per-account ClientCreds override for an account, or undefined if
- * the account uses the platform-env default. Decrypts the stored secret on
- * the fly. See ADR 2026-05-11-per-account-oauth-clients.
- */
-export function accountOauthOverride(account: {
-	oauthClientId: string | null;
-	oauthClientSecretEncrypted: string | null;
-}): ClientCreds | undefined {
-	if (account.oauthClientId && account.oauthClientSecretEncrypted) {
-		return {
-			clientId: account.oauthClientId,
-			clientSecret: decrypt(account.oauthClientSecretEncrypted),
-		};
-	}
-	return undefined;
-}
-
 /** Check if tokens need refresh (expired or expiring within 5 min) */
 export function isTokenExpired(tokens: OAuthTokens): boolean {
 	return Date.now() >= tokens.expiresAt - 5 * 60 * 1000; // 5 min buffer
@@ -147,10 +153,10 @@ export function isTokenExpired(tokens: OAuthTokens): boolean {
 /** Get a valid access token, refreshing if needed. Returns updated tokens. */
 export async function getValidToken(
 	tokens: OAuthTokens,
-	override?: ClientCreds,
+	creds: ClientCreds,
 ): Promise<OAuthTokens> {
 	if (!isTokenExpired(tokens)) {
 		return tokens;
 	}
-	return refreshAccessToken(tokens.refreshToken, override);
+	return refreshAccessToken(tokens.refreshToken, creds);
 }

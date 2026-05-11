@@ -2,10 +2,11 @@
  * Inbox SQLite database — email cache with FTS5 search.
  *
  * Schema:
- *   accounts  — email account configs (credentials encrypted)
- *   messages  — cached email headers + preview
- *   sync_state — per-account/folder sync watermarks
- *   messages_fts — FTS5 virtual table for search
+ *   accounts       — email account configs (credentials encrypted)
+ *   oauth_clients  — reusable OAuth client identities (Connections)
+ *   messages       — cached email headers + preview
+ *   sync_state     — per-account/folder sync watermarks
+ *   messages_fts   — FTS5 virtual table for search
  *
  * Uses WAL mode for concurrent SvelteKit reads + sync worker writes.
  */
@@ -13,13 +14,14 @@
 import Database from 'better-sqlite3';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { InboxAccount, InboxMessage, SyncState, InboxProvider, AccountStatus } from './types.js';
+import type {
+	InboxAccount, InboxMessage, SyncState, InboxProvider, AccountStatus,
+	OauthClient,
+} from './types.js';
 import { encrypt, decrypt } from './crypto.js';
 import { soulHubDataDir } from '../paths.js';
 
 let db: Database.Database | null = null;
-
-const SCHEMA_VERSION = 2;
 
 function getDbPath(): string {
 	return resolve(soulHubDataDir(), 'inbox.db');
@@ -150,14 +152,9 @@ function migrate(db: Database.Database): void {
 	}
 
 	if (version < 3) {
-		// UNIQUE (provider, email) enforced at the storage layer. The
-		// application-level dedup in the OAuth callbacks + POST handler
-		// stays in place as the primary UX path — it returns helpful
-		// "Use Reauthorize / Reset Password" messages. The index here is
-		// belt-and-suspenders: a defense against any future code path
-		// (Layer 2 imports, batch tooling, direct SQL) that might bypass
-		// the application-level checks. Audited 2026-05-11: no existing
-		// duplicates in prod.
+		// UNIQUE (provider, email) belt-and-suspenders. The application-level
+		// dedup in OAuth callbacks + POST handler is the primary UX path
+		// (returns helpful "Use Reauthorize / Reset Password" messages).
 		db.exec(`
 			CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_provider_email
 			ON accounts(provider, email);
@@ -166,15 +163,10 @@ function migrate(db: Database.Database): void {
 	}
 
 	if (version < 4) {
-		// Per-account OAuth client override — see ADR
-		// 2026-05-11-per-account-oauth-clients. Both columns NULL means
-		// "use platform-env default" (backward compatible with the
-		// 2026-05-11-oauth-credentials-via-settings-ui ADR's pattern).
-		// Both columns set means "use this per-account pair."
-		//
-		// pending_oauth_clients holds the client_id/secret across the
-		// OAuth consent round-trip for first-time-link with a custom
-		// client. Swept on insert; 1-hour TTL.
+		// Migration #4 (per-account inline OAuth override) — see superseded
+		// ADR 2026-05-11-per-account-oauth-clients. We still run it here so
+		// any partial-deploy DBs that landed between migrations have the
+		// columns to drop in migration #5. Migration #5 is the live model.
 		db.exec(`
 			ALTER TABLE accounts ADD COLUMN oauth_client_id TEXT;
 			ALTER TABLE accounts ADD COLUMN oauth_client_secret_encrypted TEXT;
@@ -191,6 +183,109 @@ function migrate(db: Database.Database): void {
 		`);
 		db.pragma(`user_version = 4`);
 	}
+
+	if (version < 5) {
+		// Promote OAuth clients to first-class objects (Connections).
+		// See ADR 2026-05-11-oauth-clients-as-first-class-connections.
+		//
+		// 1. CREATE oauth_clients
+		// 2. ADD accounts.oauth_client_ref (FK)
+		// 3. Seed Default Gmail client from process.env if present
+		// 4. Backfill any inline overrides into oauth_clients rows + relink
+		// 5. Default-link existing Gmail accounts at the seeded Default
+		// 6. DROP pending_oauth_clients
+		// 7. DROP accounts.oauth_client_id + oauth_client_secret_encrypted
+		const tx = db.transaction(() => {
+			db.exec(`
+				CREATE TABLE IF NOT EXISTS oauth_clients (
+					id TEXT PRIMARY KEY,
+					provider TEXT NOT NULL,
+					label TEXT NOT NULL,
+					client_id TEXT NOT NULL,
+					client_secret_encrypted TEXT NOT NULL,
+					is_default INTEGER NOT NULL DEFAULT 0,
+					created_at INTEGER NOT NULL,
+					last_used_at INTEGER
+				);
+				CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_clients_provider_client_id
+					ON oauth_clients(provider, client_id);
+				CREATE INDEX IF NOT EXISTS idx_oauth_clients_provider_default
+					ON oauth_clients(provider, is_default);
+
+				ALTER TABLE accounts ADD COLUMN oauth_client_ref TEXT REFERENCES oauth_clients(id);
+			`);
+
+			const now = Date.now();
+
+			// Seed Default Gmail client from platform env, if present.
+			const envClientId = process.env.GOOGLE_CLIENT_ID?.trim();
+			const envClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
+			let defaultGmailId: string | null = null;
+			if (envClientId && envClientSecret) {
+				defaultGmailId = randomUUID();
+				db.prepare(`
+					INSERT INTO oauth_clients (id, provider, label, client_id, client_secret_encrypted, is_default, created_at)
+					VALUES (?, 'gmail', 'Default', ?, ?, 1, ?)
+				`).run(defaultGmailId, envClientId, encrypt(envClientSecret), now);
+				console.log('[inbox-migration] Seeded Default Gmail OAuth client from platform env');
+			}
+
+			// Backfill inline overrides → oauth_clients rows.
+			const inlineOverrideAccounts = db.prepare(`
+				SELECT id, label, provider, oauth_client_id, oauth_client_secret_encrypted
+				FROM accounts
+				WHERE oauth_client_id IS NOT NULL AND oauth_client_secret_encrypted IS NOT NULL
+			`).all() as Array<{
+				id: string;
+				label: string;
+				provider: string;
+				oauth_client_id: string;
+				oauth_client_secret_encrypted: string;
+			}>;
+
+			for (const acc of inlineOverrideAccounts) {
+				// Check if a row already exists for this (provider, client_id).
+				const existing = db.prepare(
+					`SELECT id FROM oauth_clients WHERE provider = ? AND client_id = ?`,
+				).get(acc.provider, acc.oauth_client_id) as { id: string } | undefined;
+				let ref: string;
+				if (existing) {
+					ref = existing.id;
+				} else {
+					ref = randomUUID();
+					db.prepare(`
+						INSERT INTO oauth_clients (id, provider, label, client_id, client_secret_encrypted, is_default, created_at)
+						VALUES (?, ?, ?, ?, ?, 0, ?)
+					`).run(ref, acc.provider, `${acc.label} client`, acc.oauth_client_id, acc.oauth_client_secret_encrypted, now);
+				}
+				db.prepare(`UPDATE accounts SET oauth_client_ref = ? WHERE id = ?`).run(ref, acc.id);
+				console.log(`[inbox-migration] Migrated inline OAuth override for account ${acc.id} → oauth_clients.${ref}`);
+			}
+
+			// Default-link existing Gmail accounts that have no override and
+			// haven't been linked yet.
+			if (defaultGmailId) {
+				db.prepare(`
+					UPDATE accounts
+					SET oauth_client_ref = ?
+					WHERE provider = 'gmail'
+					  AND oauth_client_ref IS NULL
+				`).run(defaultGmailId);
+			}
+
+			// Drop the legacy ephemeral table.
+			db.exec(`DROP TABLE IF EXISTS pending_oauth_clients;`);
+
+			// Drop the legacy inline columns. SQLite 3.35+ supports DROP COLUMN
+			// directly; better-sqlite3 ships with SQLite ≥ 3.45.
+			db.exec(`
+				ALTER TABLE accounts DROP COLUMN oauth_client_id;
+				ALTER TABLE accounts DROP COLUMN oauth_client_secret_encrypted;
+			`);
+		});
+		tx();
+		db.pragma(`user_version = 5`);
+	}
 }
 
 // ── Account CRUD ──
@@ -198,26 +293,19 @@ function migrate(db: Database.Database): void {
 export function addAccount(
 	account: Pick<InboxAccount, 'id' | 'label' | 'provider' | 'email' | 'host' | 'port'>,
 	credential: string,
-	oauthClient?: { clientId: string; clientSecret: string },
+	oauthClientRef?: string | null,
 ): InboxAccount {
 	const db = getInboxDb();
 	const now = Date.now();
 	const encrypted = encrypt(credential);
 
-	// Per-account OAuth client override — see ADR
-	// 2026-05-11-per-account-oauth-clients. Both fields together or both
-	// NULL; mixed states are rejected at the API layer before reaching here.
-	const oauthClientId = oauthClient?.clientId ?? null;
-	const oauthClientSecretEncrypted = oauthClient ? encrypt(oauthClient.clientSecret) : null;
-
 	// New accounts default to 90-day retention. The schema's column default
 	// is still 30 from migration #2 (kept untouched to avoid disturbing
-	// existing rows — see ADR thread on retention harmonization). Specifying
-	// it explicitly here makes the new-account behavior independent of the
-	// schema default.
+	// existing rows). Specifying it explicitly here makes the new-account
+	// behavior independent of the schema default.
 	db.prepare(`
-		INSERT INTO accounts (id, label, provider, email, host, port, encrypted_credential, status, retention_days, oauth_client_id, oauth_client_secret_encrypted, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 'disconnected', 90, ?, ?, ?)
+		INSERT INTO accounts (id, label, provider, email, host, port, encrypted_credential, status, retention_days, oauth_client_ref, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 'disconnected', 90, ?, ?)
 	`).run(
 		account.id,
 		account.label,
@@ -226,8 +314,7 @@ export function addAccount(
 		account.host ?? null,
 		account.port ?? null,
 		encrypted,
-		oauthClientId,
-		oauthClientSecretEncrypted,
+		oauthClientRef ?? null,
 		now,
 	);
 
@@ -240,8 +327,7 @@ export function addAccount(
 		lastError: null,
 		createdAt: now,
 		retentionDays: 90,
-		oauthClientId,
-		oauthClientSecretEncrypted,
+		oauthClientRef: oauthClientRef ?? null,
 	};
 }
 
@@ -298,69 +384,160 @@ function rowToAccount(row: Record<string, unknown>): InboxAccount {
 		lastError: row.last_error as string | null,
 		createdAt: row.created_at as number,
 		retentionDays: (row.retention_days as number) ?? 90,
-		oauthClientId: (row.oauth_client_id as string | null) ?? null,
-		oauthClientSecretEncrypted: (row.oauth_client_secret_encrypted as string | null) ?? null,
+		oauthClientRef: (row.oauth_client_ref as string | null) ?? null,
 	};
 }
 
-// ── Pending OAuth clients (ephemeral, for first-time-link with custom client) ──
+// ── OAuth Client (Connections) CRUD ──
 
-const PENDING_OAUTH_TTL_MS = 60 * 60 * 1000; // 1 hour
-
-/**
- * Insert a pending OAuth client record and return its ephemeral id. Sweeps
- * stale rows (older than TTL) before insert so the table doesn't grow
- * unbounded on abandoned flows.
- */
-export function insertPendingOauthClient(
-	provider: string,
-	clientId: string,
-	clientSecret: string,
-): string {
+export function listOauthClients(provider?: InboxProvider): OauthClient[] {
 	const db = getInboxDb();
-	sweepPendingOauthClients();
-	const ephemeralId = randomUUID();
-	db.prepare(
-		`INSERT INTO pending_oauth_clients (ephemeral_id, provider, client_id, client_secret_encrypted, created_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-	).run(ephemeralId, provider, clientId, encrypt(clientSecret), Date.now());
-	return ephemeralId;
+	const rows = provider
+		? db.prepare(`SELECT * FROM oauth_clients WHERE provider = ? ORDER BY is_default DESC, created_at`).all(provider)
+		: db.prepare(`SELECT * FROM oauth_clients ORDER BY provider, is_default DESC, created_at`).all();
+	return (rows as Record<string, unknown>[]).map(rowToOauthClient);
 }
 
-export function getPendingOauthClient(ephemeralId: string): {
-	provider: string;
-	clientId: string;
-	clientSecret: string;
-} | null {
+export function getOauthClient(id: string): OauthClient | null {
+	const db = getInboxDb();
+	const row = db.prepare(`SELECT * FROM oauth_clients WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
+	if (!row) return null;
+	return rowToOauthClient(row);
+}
+
+export function getDefaultOauthClient(provider: InboxProvider): OauthClient | null {
 	const db = getInboxDb();
 	const row = db.prepare(
-		`SELECT provider, client_id, client_secret_encrypted, created_at FROM pending_oauth_clients WHERE ephemeral_id = ?`,
-	).get(ephemeralId) as
-		| { provider: string; client_id: string; client_secret_encrypted: string; created_at: number }
-		| undefined;
+		`SELECT * FROM oauth_clients WHERE provider = ? AND is_default = 1 LIMIT 1`,
+	).get(provider) as Record<string, unknown> | undefined;
 	if (!row) return null;
-	// Defensive: reject if a stale row slipped past the sweep.
-	if (Date.now() - row.created_at > PENDING_OAUTH_TTL_MS) {
-		deletePendingOauthClient(ephemeralId);
-		return null;
-	}
+	return rowToOauthClient(row);
+}
+
+export function countAccountsUsingOauthClient(clientRef: string): number {
+	const db = getInboxDb();
+	const row = db.prepare(
+		`SELECT COUNT(*) AS c FROM accounts WHERE oauth_client_ref = ?`,
+	).get(clientRef) as { c: number };
+	return row.c;
+}
+
+/**
+ * Create a new OAuth client. If `isDefault=true`, any existing default for
+ * the same provider is automatically un-defaulted.
+ */
+export function createOauthClient(input: {
+	provider: InboxProvider;
+	label: string;
+	clientId: string;
+	clientSecret: string;
+	isDefault?: boolean;
+}): OauthClient {
+	const db = getInboxDb();
+	const now = Date.now();
+	const id = randomUUID();
+	const isDefault = input.isDefault ? 1 : 0;
+
+	const tx = db.transaction(() => {
+		if (isDefault) {
+			db.prepare(
+				`UPDATE oauth_clients SET is_default = 0 WHERE provider = ? AND is_default = 1`,
+			).run(input.provider);
+		}
+		db.prepare(`
+			INSERT INTO oauth_clients (id, provider, label, client_id, client_secret_encrypted, is_default, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`).run(id, input.provider, input.label, input.clientId, encrypt(input.clientSecret), isDefault, now);
+	});
+	tx();
+
 	return {
-		provider: row.provider,
-		clientId: row.client_id,
-		clientSecret: decrypt(row.client_secret_encrypted),
+		id,
+		provider: input.provider,
+		label: input.label,
+		clientId: input.clientId,
+		clientSecretEncrypted: encrypt(input.clientSecret),
+		isDefault: !!input.isDefault,
+		createdAt: now,
+		lastUsedAt: null,
 	};
 }
 
-export function deletePendingOauthClient(ephemeralId: string): void {
+/**
+ * Update an OAuth client. `clientId` is immutable — to change the client_id,
+ * create a new row. Pass `clientSecret` to rotate the secret. Pass
+ * `isDefault=true` to promote; the previous default in the same provider is
+ * automatically un-defaulted.
+ */
+export function updateOauthClient(
+	id: string,
+	patch: { label?: string; clientSecret?: string; isDefault?: boolean },
+): boolean {
 	const db = getInboxDb();
-	db.prepare(`DELETE FROM pending_oauth_clients WHERE ephemeral_id = ?`).run(ephemeralId);
+	const sets: string[] = [];
+	const params: unknown[] = [];
+
+	if (patch.label !== undefined) {
+		sets.push('label = ?');
+		params.push(patch.label);
+	}
+	if (patch.clientSecret !== undefined) {
+		sets.push('client_secret_encrypted = ?');
+		params.push(encrypt(patch.clientSecret));
+	}
+
+	const tx = db.transaction(() => {
+		if (patch.isDefault === true) {
+			const current = db.prepare(`SELECT provider FROM oauth_clients WHERE id = ?`).get(id) as
+				| { provider: string }
+				| undefined;
+			if (current) {
+				db.prepare(
+					`UPDATE oauth_clients SET is_default = 0 WHERE provider = ? AND is_default = 1`,
+				).run(current.provider);
+				sets.push('is_default = 1');
+			}
+		} else if (patch.isDefault === false) {
+			sets.push('is_default = 0');
+		}
+
+		if (sets.length === 0) return 0;
+		params.push(id);
+		const result = db.prepare(`UPDATE oauth_clients SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+		return result.changes;
+	});
+	return tx() > 0;
 }
 
-export function sweepPendingOauthClients(): number {
+/**
+ * Delete an OAuth client. Refuses if any account references it (returns
+ * `{ deleted: false, reason: 'in_use', accountCount }`).
+ */
+export function deleteOauthClient(id: string): { deleted: boolean; reason?: 'in_use' | 'not_found'; accountCount?: number } {
 	const db = getInboxDb();
-	const cutoff = Date.now() - PENDING_OAUTH_TTL_MS;
-	const result = db.prepare(`DELETE FROM pending_oauth_clients WHERE created_at < ?`).run(cutoff);
-	return result.changes;
+	const inUse = countAccountsUsingOauthClient(id);
+	if (inUse > 0) return { deleted: false, reason: 'in_use', accountCount: inUse };
+	const result = db.prepare(`DELETE FROM oauth_clients WHERE id = ?`).run(id);
+	if (result.changes === 0) return { deleted: false, reason: 'not_found' };
+	return { deleted: true };
+}
+
+export function touchOauthClientUsage(id: string): void {
+	const db = getInboxDb();
+	db.prepare(`UPDATE oauth_clients SET last_used_at = ? WHERE id = ?`).run(Date.now(), id);
+}
+
+function rowToOauthClient(row: Record<string, unknown>): OauthClient {
+	return {
+		id: row.id as string,
+		provider: row.provider as InboxProvider,
+		label: row.label as string,
+		clientId: row.client_id as string,
+		clientSecretEncrypted: row.client_secret_encrypted as string,
+		isDefault: (row.is_default as number) === 1,
+		createdAt: row.created_at as number,
+		lastUsedAt: (row.last_used_at as number | null) ?? null,
+	};
 }
 
 // ── Message CRUD ──
@@ -575,10 +752,7 @@ export function upsertSyncState(state: SyncState): void {
  * Delete all messages for (account, folder), optionally filtered to a specific
  * `uid_validity`. Used by the sync worker when the server reports a UIDVALIDITY
  * change — the old uid <-> message mapping is invalid and the existing rows
- * would otherwise show up in the inbox UI as orphans (messages that no longer
- * exist on the server). Re-sync re-populates with the new uid_validity.
- *
- * Returns the number of rows deleted. Idempotent.
+ * would otherwise show up in the inbox UI as orphans.
  */
 export function deleteMessagesByFolder(
 	accountId: string,
@@ -621,7 +795,10 @@ export function pruneOldMessages(accountId: string, retentionDays: number): numb
 	return result.changes;
 }
 
-export function updateAccountSettings(id: string, settings: { label?: string; retentionDays?: number }): boolean {
+export function updateAccountSettings(
+	id: string,
+	settings: { label?: string; retentionDays?: number; oauthClientRef?: string | null },
+): boolean {
 	const db = getInboxDb();
 	const sets: string[] = [];
 	const params: unknown[] = [];
@@ -639,6 +816,10 @@ export function updateAccountSettings(id: string, settings: { label?: string; re
 	) {
 		sets.push('retention_days = ?');
 		params.push(settings.retentionDays);
+	}
+	if (settings.oauthClientRef !== undefined) {
+		sets.push('oauth_client_ref = ?');
+		params.push(settings.oauthClientRef);
 	}
 	if (sets.length === 0) return false;
 

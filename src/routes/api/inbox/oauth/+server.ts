@@ -1,43 +1,64 @@
 import type { RequestHandler } from './$types';
 import { isRedirect, json, redirect } from '@sveltejs/kit';
-import { getAuthUrl, accountOauthOverride } from '$lib/inbox/oauth.js';
-import { getAccount } from '$lib/inbox/index.js';
+import { getAuthUrl, resolveClientCredsByRef, resolveClientCredsForAccount } from '$lib/inbox/oauth.js';
+import { getAccount, getOauthClient, getDefaultOauthClient } from '$lib/inbox/index.js';
 
 /**
  * GET /api/inbox/oauth — start Gmail OAuth2 flow
  *
- *   Redirects user to Google consent page.
+ * Two modes:
  *
- *   Optional ?account=<id> — re-link mode: the callback updates the existing
- *   account's credentials instead of creating a new row. Used by the
- *   "Reauthorize" button in the inbox settings modal (e.g. after Google's
- *   7-day Testing-mode refresh-token expiry).
+ *   1. ?client=<uuid> — first-time link with the named Connections client.
+ *      State becomes `client:<uuid>`. If the client ref doesn't exist, 400.
+ *      If neither client nor account is provided, falls back to the provider's
+ *      Default Connections row (legacy single-client case).
  *
- *   If the account has a per-account OAuth client override (see ADR
- *   2026-05-11-per-account-oauth-clients), the consent URL is generated
- *   against that client. Otherwise the platform-env default is used.
+ *   2. ?account=<id> — re-link an existing account (Reauthorize). State
+ *      becomes the account id. The account's `oauthClientRef` resolves the
+ *      consent client.
  *
- *   For first-time link with a custom client, use POST
- *   /api/inbox/oauth/with-custom-client instead — it stashes the creds
- *   in a pending row before redirecting.
+ * See ADR 2026-05-11-oauth-clients-as-first-class-connections.
  */
 export const GET: RequestHandler = async ({ url }) => {
 	const origin = url.origin;
 	const redirectUri = `${origin}/api/inbox/oauth/callback`;
 	const accountId = url.searchParams.get('account') || undefined;
+	const clientRef = url.searchParams.get('client') || undefined;
 
 	try {
-		// Re-link path: pull the account's per-account override (if any).
-		// For brand-new first-time link with platform default, override is
-		// undefined and getAuthUrl uses process.env (existing behavior).
-		const override = accountId
-			? accountOauthOverride(getAccount(accountId) ?? { oauthClientId: null, oauthClientSecretEncrypted: null })
-			: undefined;
-		const authUrl = getAuthUrl(redirectUri, accountId, override);
+		if (accountId) {
+			const account = getAccount(accountId);
+			if (!account) {
+				return json({ error: 'Account not found' }, { status: 404 });
+			}
+			const creds = resolveClientCredsForAccount(account);
+			const authUrl = getAuthUrl(redirectUri, creds, accountId);
+			return redirect(302, authUrl);
+		}
+
+		// First-time link: explicit client ref, or fall back to Default.
+		let chosenRef = clientRef;
+		if (!chosenRef) {
+			const def = getDefaultOauthClient('gmail');
+			if (!def) {
+				return json(
+					{ error: 'No Gmail OAuth client configured. Add one via Settings → Connections.' },
+					{ status: 412 },
+				);
+			}
+			chosenRef = def.id;
+		} else {
+			const row = getOauthClient(chosenRef);
+			if (!row) {
+				return json({ error: `OAuth client not found: ${chosenRef}` }, { status: 404 });
+			}
+		}
+
+		const creds = resolveClientCredsByRef(chosenRef);
+		const authUrl = getAuthUrl(redirectUri, creds, `client:${chosenRef}`);
 		return redirect(302, authUrl);
 	} catch (err) {
-		// SvelteKit's redirect() throws a Redirect sentinel — let it through
-		// so the framework can complete the 302. Anything else is a real error.
+		// SvelteKit's redirect() throws a Redirect sentinel — let it through.
 		if (isRedirect(err)) throw err;
 		return json(
 			{ error: err instanceof Error ? err.message : 'Failed to start OAuth flow' },

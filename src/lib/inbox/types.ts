@@ -16,12 +16,23 @@ export interface InboxAccount {
 	lastError: string | null;
 	createdAt: number;
 	retentionDays: number;
-	/** Per-account OAuth client id override. NULL means use platform env.
-	 *  Both this and `oauthClientSecretEncrypted` must be set or both NULL.
-	 *  See ADR 2026-05-11-per-account-oauth-clients. */
-	oauthClientId: string | null;
-	/** Encrypted with the same AES-256-GCM helper as `encryptedCredential`. */
-	oauthClientSecretEncrypted: string | null;
+	/** FK into `oauth_clients.id`. NULL for providers that don't use OAuth
+	 *  (e.g. iCloud app-specific password). See ADR
+	 *  2026-05-11-oauth-clients-as-first-class-connections. */
+	oauthClientRef: string | null;
+}
+
+/** A reusable OAuth client identity (provider + credentials). Accounts
+ *  reference these by FK. Managed via Settings → Connections. */
+export interface OauthClient {
+	id: string;
+	provider: InboxProvider;
+	label: string;
+	clientId: string;
+	clientSecretEncrypted: string;
+	isDefault: boolean;
+	createdAt: number;
+	lastUsedAt: number | null;
 }
 
 export interface InboxMessage {

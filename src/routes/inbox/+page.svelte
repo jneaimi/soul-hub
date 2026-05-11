@@ -10,6 +10,18 @@
 		lastSync: number | null;
 		lastError: string | null;
 		retentionDays: number;
+		oauthClientRef: string | null;
+	}
+
+	interface OauthClientDto {
+		id: string;
+		provider: 'gmail' | 'outlook';
+		label: string;
+		clientId: string;
+		isDefault: boolean;
+		accountCount: number;
+		createdAt: number;
+		lastUsedAt: number | null;
 	}
 
 	interface AttachmentMeta {
@@ -82,6 +94,12 @@
 	let keepForever = $state(false);
 	let settingsSaving = $state(false);
 
+	// OAuth client (Connections) — visible only for Gmail/Outlook accounts.
+	// Changing it persists the FK on Save; the operator should then click
+	// Reauthorize below to issue a new refresh token bound to the new client.
+	let settingsOauthClientRef = $state<string | null>(null);
+	let settingsChangeClientOpen = $state(false);
+
 	// Reset password / Reauthorize section
 	let resetOpen = $state(false);
 	let resetPassword = $state('');
@@ -153,40 +171,42 @@
 	let adding = $state(false);
 	const addHelp = $derived(providerHelp[addProvider] ?? providerHelp.imap);
 
-	// Per-account OAuth client override for Gmail Add (ADR
-	// 2026-05-11-per-account-oauth-clients). When both fields have non-empty
-	// values the "Sign in with Google" button POSTs to /api/inbox/oauth/
-	// with-custom-client instead of redirecting to /api/inbox/oauth. Default
-	// state is empty -> uses platform-env GOOGLE_CLIENT_ID/SECRET.
-	let customClientId = $state('');
-	let customClientSecret = $state('');
-	let customClientStarting = $state(false);
-	const useCustomClient = $derived(
-		customClientId.trim().length > 0 && customClientSecret.trim().length > 0,
-	);
+	// OAuth Connections (first-class clients) — see ADR
+	// 2026-05-11-oauth-clients-as-first-class-connections. The Add panel picks
+	// from this list when adding a Gmail/Outlook account.
+	let gmailClients = $state<OauthClientDto[]>([]);
+	let outlookClients = $state<OauthClientDto[]>([]);
+	let clientsLoading = $state(false);
+	let chosenGmailClientRef = $state<string | null>(null);
 
-	async function startCustomClientAdd() {
-		addError = '';
-		customClientStarting = true;
+	async function loadOauthClients() {
+		clientsLoading = true;
 		try {
-			const res = await fetch('/api/inbox/oauth/with-custom-client', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					clientId: customClientId.trim(),
-					clientSecret: customClientSecret.trim(),
-				}),
-			});
-			const data = await res.json();
-			if (res.ok && data.authUrl) {
-				window.location.href = data.authUrl;
-			} else {
-				addError = data.error || 'Failed to start custom-client OAuth flow';
+			const res = await fetch('/api/inbox/oauth/clients');
+			if (res.ok) {
+				const data = await res.json();
+				const all = (data.clients as OauthClientDto[]) ?? [];
+				gmailClients = all.filter((c) => c.provider === 'gmail');
+				outlookClients = all.filter((c) => c.provider === 'outlook');
+				// Auto-pick: default client if present, else single client, else null.
+				if (!chosenGmailClientRef || !gmailClients.some((c) => c.id === chosenGmailClientRef)) {
+					const def = gmailClients.find((c) => c.isDefault);
+					chosenGmailClientRef = def?.id ?? (gmailClients[0]?.id ?? null);
+				}
 			}
-		} catch (err) {
-			addError = (err as Error).message || 'Network error';
-		}
-		customClientStarting = false;
+		} catch { /* silent */ }
+		clientsLoading = false;
+	}
+
+	function gmailSignInHref(): string {
+		if (chosenGmailClientRef) return `/api/inbox/oauth?client=${encodeURIComponent(chosenGmailClientRef)}`;
+		return '/api/inbox/oauth'; // server picks Default; 412 if none
+	}
+
+	function clientLabelById(id: string | null): string {
+		if (!id) return 'Default';
+		const c = gmailClients.find((x) => x.id === id) ?? outlookClients.find((x) => x.id === id);
+		return c?.label ?? 'Unknown';
 	}
 
 	// URL params feedback
@@ -244,16 +264,7 @@
 	$effect(() => {
 		if (showAddForm && addProvider === 'gmail') {
 			checkGmailConfig();
-		}
-	});
-
-	// Reset the per-account OAuth client inputs when the Add form opens
-	// or the provider changes away from Gmail. Prevents stale secrets from
-	// surviving a cancel-and-reopen cycle.
-	$effect(() => {
-		if (!showAddForm || addProvider !== 'gmail') {
-			customClientId = '';
-			customClientSecret = '';
+			void loadOauthClients();
 		}
 	});
 
@@ -450,16 +461,25 @@
 			keepForever = false;
 			settingsRetention = acc.retentionDays;
 		}
+		settingsOauthClientRef = acc.oauthClientRef;
+		settingsChangeClientOpen = false;
 		resetOpen = false;
 		resetPassword = '';
 		resetError = '';
 		resetSuccess = '';
+		// Lazy-load Connections so the Change dropdown has data for OAuth providers.
+		if (acc.provider === 'gmail' || acc.provider === 'outlook') {
+			void loadOauthClients();
+		}
 	}
 
 	async function saveAccountSettings() {
 		if (!settingsAccount) return;
 		settingsSaving = true;
 		const effectiveRetention = keepForever ? 0 : settingsRetention;
+		// Only include oauthClientRef if it actually changed — keeps the
+		// patch surface tight for the common case (just label + retention).
+		const oauthClientChanged = settingsOauthClientRef !== settingsAccount.oauthClientRef;
 		try {
 			const res = await fetch('/api/inbox/accounts', {
 				method: 'PATCH',
@@ -468,6 +488,7 @@
 					id: settingsAccount.id,
 					label: settingsLabel,
 					retentionDays: effectiveRetention,
+					...(oauthClientChanged ? { oauthClientRef: settingsOauthClientRef } : {}),
 				}),
 			});
 			if (res.ok) {
@@ -618,6 +639,7 @@
 
 		loadAccounts();
 		loadMessages();
+		void loadOauthClients();
 
 		// Refresh accounts periodically to see status changes
 		const refreshInterval = setInterval(loadAccounts, 15000);
@@ -752,6 +774,9 @@
 					     "never synced" for fresh accounts that haven't completed a cycle yet. -->
 					<p class="text-[10px] text-hub-dim px-6 -mt-0.5 mb-0.5">
 						{acc.lastSync ? `synced ${timeAgo(acc.lastSync)} ago` : 'never synced'}
+						{#if (acc.provider === 'gmail' || acc.provider === 'outlook') && acc.oauthClientRef}
+							· {clientLabelById(acc.oauthClientRef)}
+						{/if}
 					</p>
 					{#if acc.status === 'error' && acc.lastError}
 						<button
@@ -846,10 +871,9 @@
 							<div class="col-span-2 space-y-3">
 								<p class="text-xs text-hub-muted">Gmail uses secure OAuth2 authentication.</p>
 
-								<!-- One-time Google Cloud Console setup. The cred values themselves
-								     are managed in Settings (Platform Environment) — this drawer
-								     only covers steps Soul Hub can't automate (creating the GCP
-								     project and OAuth client). -->
+								<!-- One-time Google Cloud Console setup. Credentials themselves live
+								     in Settings → Connections as named OAuth clients (per ADR
+								     2026-05-11-oauth-clients-as-first-class-connections). -->
 								<details class="rounded-md bg-hub-surface/60 border border-hub-border/60">
 									<summary class="px-3 py-2 text-[11px] text-hub-muted hover:text-hub-text transition-colors cursor-pointer list-none flex items-center justify-between">
 										<span>First time? Set up the Google OAuth client</span>
@@ -861,78 +885,61 @@
 										<p>In <a href="https://console.cloud.google.com" target="_blank" rel="noopener noreferrer" class="text-hub-cta hover:underline">Google Cloud Console</a>:</p>
 										<ol class="list-decimal ms-4 space-y-1">
 											<li>Create a project → enable the <span class="font-mono">Gmail API</span>.</li>
-											<li>Configure the <span class="font-mono">OAuth consent screen</span> as External, leave it in <strong>Testing</strong> mode, and add <strong>every Gmail address you plan to connect</strong> (yourself + any additional accounts) to the Test users list under the Audience tab. Scopes: <span class="font-mono">openid</span>, <span class="font-mono">userinfo.email</span>, <span class="font-mono">https://mail.google.com/</span>.</li>
+											<li>Configure the <span class="font-mono">OAuth consent screen</span> as External, leave it in <strong>Testing</strong> mode, and add every Gmail address you plan to connect to the Test users list. Scopes: <span class="font-mono">openid</span>, <span class="font-mono">userinfo.email</span>, <span class="font-mono">https://mail.google.com/</span>.</li>
 											<li>Credentials → <span class="font-mono">Create OAuth client ID</span> → Web application. Add this authorized redirect URI:
 												<code class="block mt-1 px-2 py-1 rounded bg-hub-bg/60 border border-hub-border/40 text-[10px] text-hub-text break-all select-all">{currentOrigin ? `${currentOrigin}/api/inbox/oauth/callback` : '<this app>/api/inbox/oauth/callback'}</code>
-												<span class="block mt-1 text-[10px] text-hub-dim">If you use a different OAuth client per account (advanced section below), register this same redirect URI in <em>each</em> Google Cloud project — each project has its own allowlist.</span>
+												<span class="block mt-1 text-[10px] text-hub-dim">If you register multiple OAuth clients (one per Workspace), add this redirect URI in <em>each</em> Google Cloud project — each project has its own allowlist.</span>
 											</li>
-											<li>Copy the resulting <strong>Client ID</strong> and <strong>Client Secret</strong> into <a href="/settings" class="text-hub-cta hover:underline">Settings → Platform Environment</a> (fields <span class="font-mono">GOOGLE_CLIENT_ID</span> and <span class="font-mono">GOOGLE_CLIENT_SECRET</span>) — this becomes the <em>default</em> for new Gmail accounts. To use a different OAuth client for a specific account, expand the advanced section below at Add time instead.</li>
+											<li>Copy the <strong>Client ID</strong> and <strong>Client Secret</strong> into <a href="/settings#connections" class="text-hub-cta hover:underline">Settings → Connections</a> as a new OAuth client. Mark it Default for the typical case, or pick it from the dropdown below for a specific account.</li>
 										</ol>
 										<p class="text-[10px] text-hub-dim pt-1">Heads-up: Google's Testing-mode refresh tokens expire every 7 days. If sync stops, use <em>Reauthorize</em> in the account settings to re-grant access.</p>
 									</div>
 								</details>
 
-								{#if gmailConfigChecking || gmailConfigured === null}
+								{#if gmailConfigChecking || gmailConfigured === null || clientsLoading}
 									<div class="text-[11px] text-hub-dim">Checking Gmail OAuth configuration…</div>
-								{:else if !gmailConfigured}
+								{:else if !gmailConfigured || gmailClients.length === 0}
 									<div class="rounded-md bg-amber-500/10 border border-amber-500/30 px-3 py-2.5 space-y-2">
 										<p class="text-[11px] text-amber-300">
-											Gmail OAuth isn't configured yet. Add <span class="font-mono">GOOGLE_CLIENT_ID</span> and <span class="font-mono">GOOGLE_CLIENT_SECRET</span> in Settings to enable Sign in with Google.
+											No Gmail OAuth client configured yet. Add one in Settings → Connections to enable Sign in with Google.
 										</p>
-										<a href="/settings#platform-env" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/15 text-amber-300 text-xs font-medium hover:bg-amber-500/25 transition-colors">
+										<a href="/settings#connections" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/15 text-amber-300 text-xs font-medium hover:bg-amber-500/25 transition-colors">
 											Configure in Settings
 											<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17L17 7M17 7H8M17 7v9"/></svg>
 										</a>
 									</div>
+								{:else if gmailClients.length === 1}
+									<!-- Single-client case: inline note instead of a dropdown. -->
+									<p class="text-[11px] text-hub-muted">
+										Using OAuth client: <span class="text-hub-text font-medium">{gmailClients[0].label}</span>
+										<a href="/settings#connections" class="ms-1 text-hub-cta hover:underline">Manage</a>
+									</p>
+									<a href={gmailSignInHref()} class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/15 text-red-400 text-sm font-medium hover:bg-red-500/25 transition-colors">
+										<svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12.545 10.239v3.821h5.445c-.712 2.315-2.647 3.972-5.445 3.972a6.033 6.033 0 110-12.064c1.498 0 2.866.549 3.921 1.453l2.814-2.814A9.969 9.969 0 0012.545 2C7.021 2 2.543 6.477 2.543 12s4.478 10 10.002 10c8.396 0 10.249-7.85 9.426-11.748l-9.426-.013z"/></svg>
+										{existingGmailCount === 0 ? 'Sign in with Google' : 'Add another Gmail account'}
+									</a>
 								{:else}
-									<!-- Per-account OAuth client override (ADR 2026-05-11-per-account-oauth-clients).
-									     Collapsed by default — invisible to the single-client user. When expanded
-									     and both fields are filled, the button switches from the default <a> link
-									     to a button that POSTs to /api/inbox/oauth/with-custom-client. -->
-									<details class="rounded-md bg-hub-surface/60 border border-hub-border/60">
-										<summary class="px-3 py-2 text-[11px] text-hub-muted hover:text-hub-text transition-colors cursor-pointer list-none flex items-center justify-between">
-											<span>Use a different OAuth client for this account (advanced)</span>
-											<svg class="w-3 h-3 text-hub-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-												<polyline points="6 9 12 15 18 9"/>
-											</svg>
-										</summary>
-										<div class="px-3 pb-3 border-t border-hub-border/40 pt-2 space-y-2">
-											<p class="text-[11px] text-hub-muted leading-relaxed">
-												Use this when the new Gmail account belongs to a different Google Cloud project than the default (e.g. a Workspace account on its own custom domain). Both values come from that project's OAuth client.
-												<strong class="text-hub-text">Make sure</strong> <code class="text-[10px] text-hub-text">{currentOrigin ? `${currentOrigin}/api/inbox/oauth/callback` : '<this app>/api/inbox/oauth/callback'}</code> is registered as an authorized redirect URI in that project before signing in.
-											</p>
-											<label class="block">
-												<span class="text-[10px] text-hub-dim uppercase tracking-wider">Client ID</span>
-												<input type="text" bind:value={customClientId} placeholder="123456-abc.apps.googleusercontent.com" class="w-full mt-1 px-2 py-1.5 rounded bg-hub-bg/60 border border-hub-border/60 text-xs text-hub-text placeholder:text-hub-dim focus:outline-none focus:border-hub-cta/50 font-mono" />
-											</label>
-											<label class="block">
-												<span class="text-[10px] text-hub-dim uppercase tracking-wider">Client Secret</span>
-												<input type="password" autocomplete="new-password" bind:value={customClientSecret} placeholder="GOCSPX-…" class="w-full mt-1 px-2 py-1.5 rounded bg-hub-bg/60 border border-hub-border/60 text-xs text-hub-text placeholder:text-hub-dim focus:outline-none focus:border-hub-cta/50 font-mono" />
-											</label>
-										</div>
-									</details>
-
-									{#if useCustomClient}
-										<button
-											type="button"
-											onclick={startCustomClientAdd}
-											disabled={customClientStarting}
-											class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/15 text-red-400 text-sm font-medium hover:bg-red-500/25 transition-colors cursor-pointer disabled:opacity-50"
-										>
-											<svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12.545 10.239v3.821h5.445c-.712 2.315-2.647 3.972-5.445 3.972a6.033 6.033 0 110-12.064c1.498 0 2.866.549 3.921 1.453l2.814-2.814A9.969 9.969 0 0012.545 2C7.021 2 2.543 6.477 2.543 12s4.478 10 10.002 10c8.396 0 10.249-7.85 9.426-11.748l-9.426-.013z"/></svg>
-											{customClientStarting ? 'Starting…' : 'Sign in with Google (custom client)'}
-										</button>
-									{:else}
-										<a href="/api/inbox/oauth" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/15 text-red-400 text-sm font-medium hover:bg-red-500/25 transition-colors">
-											<svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12.545 10.239v3.821h5.445c-.712 2.315-2.647 3.972-5.445 3.972a6.033 6.033 0 110-12.064c1.498 0 2.866.549 3.921 1.453l2.814-2.814A9.969 9.969 0 0012.545 2C7.021 2 2.543 6.477 2.543 12s4.478 10 10.002 10c8.396 0 10.249-7.85 9.426-11.748l-9.426-.013z"/></svg>
-											{existingGmailCount === 0 ? 'Sign in with Google' : 'Add another Gmail account'}
-										</a>
-									{/if}
-									{#if existingGmailCount > 0 && !useCustomClient}
-										<p class="text-[10px] text-hub-dim leading-relaxed">
-											Google will let you choose a different account on the consent screen. To recover an existing account whose tokens expired, use <em>Reauthorize</em> from its settings instead.
-										</p>
-									{/if}
+									<!-- Multi-client case: dropdown picker. -->
+									<label class="block">
+										<span class="text-[10px] text-hub-dim uppercase tracking-wider">OAuth client</span>
+										<select bind:value={chosenGmailClientRef} class="w-full mt-1 px-2 py-1.5 rounded bg-hub-surface border border-hub-border text-sm text-hub-text focus:outline-none focus:border-hub-cta/50">
+											{#each gmailClients as c (c.id)}
+												<option value={c.id}>{c.label}{c.isDefault ? ' · Default' : ''}</option>
+											{/each}
+										</select>
+										<span class="block mt-1 text-[10px] text-hub-dim">
+											<a href="/settings#connections" class="text-hub-cta hover:underline">+ Add new client</a> in Settings → Connections.
+										</span>
+									</label>
+									<a href={gmailSignInHref()} class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/15 text-red-400 text-sm font-medium hover:bg-red-500/25 transition-colors">
+										<svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12.545 10.239v3.821h5.445c-.712 2.315-2.647 3.972-5.445 3.972a6.033 6.033 0 110-12.064c1.498 0 2.866.549 3.921 1.453l2.814-2.814A9.969 9.969 0 0012.545 2C7.021 2 2.543 6.477 2.543 12s4.478 10 10.002 10c8.396 0 10.249-7.85 9.426-11.748l-9.426-.013z"/></svg>
+										Sign in with Google ({clientLabelById(chosenGmailClientRef)})
+									</a>
+								{/if}
+								{#if existingGmailCount > 0 && gmailClients.length > 0}
+									<p class="text-[10px] text-hub-dim leading-relaxed">
+										Google will let you choose a different account on the consent screen. To recover an existing account whose tokens expired, use <em>Reauthorize</em> from its settings instead.
+									</p>
 								{/if}
 							</div>
 						{:else if addProvider === 'outlook'}
@@ -1279,6 +1286,35 @@
 						{/if}
 					</p>
 				</div>
+
+				<!-- OAuth client (Connections) — only for Gmail/Outlook -->
+				{#if isOAuthAccount}
+					{@const providerClients = settingsAccount.provider === 'gmail' ? gmailClients : outlookClients}
+					<div class="mb-5">
+						<label for="settings-oauth-client-label" class="text-[10px] text-hub-dim uppercase tracking-wider">OAuth client</label>
+						{#if !settingsChangeClientOpen}
+							<div id="settings-oauth-client-label" class="flex items-center gap-2 mt-1">
+								<span class="text-sm text-hub-text">{clientLabelById(settingsOauthClientRef)}</span>
+								<button
+									type="button"
+									onclick={() => { settingsChangeClientOpen = true; }}
+									class="text-[10px] text-hub-cta hover:underline cursor-pointer"
+								>Change…</button>
+							</div>
+						{:else}
+							<div class="mt-1 space-y-2">
+								<select bind:value={settingsOauthClientRef} class="w-full px-2 py-1.5 rounded bg-hub-surface border border-hub-border text-sm text-hub-text focus:outline-none focus:border-hub-cta/50">
+									{#each providerClients as c (c.id)}
+										<option value={c.id}>{c.label}{c.isDefault ? ' · Default' : ''}</option>
+									{/each}
+								</select>
+								<p class="text-[10px] text-hub-dim leading-relaxed">
+									Save below to persist the change, then click <em>Reauthorize</em> — refresh tokens are bound to the issuing OAuth client.
+								</p>
+							</div>
+						{/if}
+					</div>
+				{/if}
 
 				<!-- Reset Password / Reauthorize -->
 				<div class="mb-5 border-t border-hub-border/60 pt-4">
