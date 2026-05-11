@@ -180,6 +180,33 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 		],
 	},
 	{
+		name: 'fetchPage',
+		category: 'read',
+		llm_description:
+			'Fetch the readable text of a web page (curl + Readability). ' +
+			'Use `youtubeFetch` for YouTube URLs and `tiktokFetch` for TikTok URLs FIRST — those return richer structured data. ' +
+			'Use this for any other URL: blog posts, documentation, Google Docs share links, static transcript pages, news articles, etc. ' +
+			'Returns title + extracted plain text (capped at 12k chars). ' +
+			'Honest failures via `failureClass`: ' +
+			'`js-required` (page is JavaScript-hydrated — tell the user to paste the text), ' +
+			'`auth-required` (sign-in needed), `bot-blocked` (Cloudflare/etc), ' +
+			'`unsupported-mime` (PDF/image/video — not extractable today), ' +
+			'`unsafe-url` (private/internal hosts blocked). ' +
+			'Chains naturally into `vaultSave` for saving the extracted text and `crm-attach-note` (when shipped) for linking to a contact.',
+		ui_description:
+			'Fetch a URL\'s readable text via curl + Readability. Yields to youtubeFetch / tiktokFetch for those domains; surfaces honest failure classes (js-required, auth-required, etc.) for the rest.',
+		examples: [
+			{
+				user: '"summarize https://en.wikipedia.org/wiki/SQLite"',
+				toolArgs: '{ url: "https://en.wikipedia.org/wiki/SQLite" }',
+			},
+			{
+				user: '"what does the doc at https://docs.google.com/document/d/X/edit say"',
+				toolArgs: '{ url: "https://docs.google.com/document/d/X/edit" }',
+			},
+		],
+	},
+	{
 		name: 'vaultSave',
 		category: 'write',
 		llm_description:

@@ -27,6 +27,7 @@ import { dispatchImg, rememberLastImage } from '../../img/index.js';
 import { fetchYoutube } from '../../youtube/index.js';
 import { fetchTikTok, probeCapabilities as probeTikTokCapabilities } from '../../tiktok/index.js';
 import { dispatchVaultSave } from '../../vault-save/index.js';
+import { fetchPage } from '../../fetch-page/index.js';
 import { recordToolCall, assertManifestParity } from './registry.js';
 import { setPending, formatProposal } from '../../orchestrator/pending-proposals.js';
 import {
@@ -635,6 +636,41 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 					}),
 				}
 			: {}),
+
+		fetchPage: tool({
+			description:
+				'Fetch the readable text of a web page (curl + Readability). ' +
+				'Use `youtubeFetch` for YouTube URLs and `tiktokFetch` for TikTok URLs FIRST — those return richer structured data. ' +
+				'Use this for any other URL: blog posts, documentation, Google Docs share links, static transcript pages, news articles, etc. ' +
+				'Returns title + extracted plain text (capped at 12k chars). ' +
+				'Honest failures via `failureClass`: ' +
+				'`js-required` (page is JavaScript-hydrated — tell the user to paste the text), ' +
+				'`auth-required` (sign-in needed), `bot-blocked` (Cloudflare/etc), ' +
+				'`unsupported-mime` (PDF/image/video — not extractable today), ' +
+				'`unsafe-url` (private/internal hosts blocked). ' +
+				'Chains naturally into `vaultSave` for saving the extracted text and `crm-attach-note` (when shipped) for linking to a contact.',
+			inputSchema: z.object({
+				url: z.string().url(),
+				maxChars: z.number().int().positive().max(50_000).optional(),
+				timeoutMs: z.number().int().positive().max(30_000).optional(),
+			}),
+			execute: async ({ url, maxChars, timeoutMs }): Promise<ToolResult> => {
+				logToolCall('fetchPage', { url, maxChars, timeoutMs });
+				const result = await fetchPage(url, { maxChars, timeoutMs });
+
+				// Failure branches: each produces an honest user-facing reply.
+				// The text body stays empty so the model doesn't try to summarize nothing.
+				if (result.failureClass) {
+					const honestMessage = buildFetchPageFailureMessage(result);
+					return { kind: 'reply', text: honestMessage };
+				}
+
+				const header = result.title
+					? `# ${result.title}${result.byline ? ` — ${result.byline}` : ''}\n(${result.finalUrl})\n\n`
+					: `(${result.finalUrl})\n\n`;
+				return { kind: 'reply', text: `${header}${result.text}` };
+			},
+		}),
 
 		vaultSave: tool({
 			description:
@@ -1523,6 +1559,37 @@ function logToolCall(name: string, payload: Record<string, unknown>): void {
 	console.log(`[orchestrator-v2] tool:${name}`, argPreview);
 	// ADR-015 — feed the in-memory ring buffer that powers /orchestrator/tools.
 	recordToolCall(name, argPreview.slice(0, 240));
+}
+
+/** Compose an honest user-facing reply for a fetchPage failure. Each
+ *  `failureClass` gets a tailored sentence so the LLM doesn't have to
+ *  reason about the failure shape — it just relays the message. */
+function buildFetchPageFailureMessage(result: import('../../fetch-page/index.js').FetchPageResult): string {
+	const host = (() => { try { return new URL(result.finalUrl).hostname; } catch { return result.url; } })();
+	switch (result.failureClass) {
+		case 'js-required':
+			return `This page (${host}) looks JavaScript-hydrated — I couldn't extract the text with a plain fetch. If you have the content directly (e.g., paste the transcript), I can work with that.`;
+		case 'auth-required':
+			return `This page (${host}) requires sign-in — I can only read public pages. Paste the content if you have access.`;
+		case 'bot-blocked':
+			return `${host} is blocking automated reads (looks like Cloudflare/bot protection). Paste the content if you can copy it from a browser.`;
+		case 'unsupported-mime':
+			return `That URL doesn't return HTML (likely a PDF, image, or video). I can't extract it today.`;
+		case 'unsafe-url':
+			return `I can't fetch that URL — it points at a private or internal host, which is blocked for safety.`;
+		case 'timeout':
+			return `${host} took too long to respond and I timed out. Try again or paste the content if you can.`;
+		case 'too-many-redirects':
+			return `${host} bounced through too many redirects. I gave up after 5 hops.`;
+		case 'sanitizer-stripped':
+			// This isn't a true failure — we already have text. The classifier
+			// flagged it so future logs catch the trend; we still return the text.
+			return result.text || `Fetched the page but the content looked like a prompt-injection payload — nothing usable.`;
+		case 'empty-content':
+		case 'fetch-error':
+		default:
+			return `Couldn't read ${host}: ${result.error ?? 'no extractable content'}.`;
+	}
 }
 
 /** Resolve a CRM contact id from either an explicit id or an email lookup.

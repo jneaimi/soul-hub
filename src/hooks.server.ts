@@ -20,6 +20,7 @@ import {
 	startFilterWorker, stopFilterWorker,
 } from '$lib/inbox/index.js';
 import { getCrmDb, closeCrmDb } from '$lib/crm/index.js';
+import { getFetchPageDb, closeFetchPageDb } from '$lib/fetch-page/index.js';
 import { initAgentsWatcher, shutdownAgentsWatcher } from '$lib/agents/watcher.js';
 import { seedDefaultsIfEmpty } from '$lib/explorer-roots.js';
 import { soulHubDataDir, soulHubSettingsPath } from '$lib/paths.js';
@@ -82,6 +83,16 @@ try {
 	console.log('[crm] Database initialized');
 } catch (err) {
 	console.error('[crm] Failed to initialize:', err);
+}
+
+// Initialize fetch_page database — ADR 2026-05-11-fetch-page-tool.
+// Instruments every fetchPage call for the Stagehand resurface decision
+// (≥10 distinct js-required hosts over 30 days → resurface trigger).
+try {
+	getFetchPageDb();
+	console.log('[fetch-page] Database initialized');
+} catch (err) {
+	console.error('[fetch-page] Failed to initialize:', err);
 }
 
 // Start agents lane watcher (Phase 2 — bumps store version on file change)
@@ -170,6 +181,9 @@ function gracefulShutdown(signal: string) {
 
 	// Close CRM database (no workers — schema-only at Stage A).
 	closeCrmDb();
+
+	// Close fetch_page log database.
+	closeFetchPageDb();
 
 	// Shutdown vault engine (stop file watcher)
 	const vault = getVaultEngine();
