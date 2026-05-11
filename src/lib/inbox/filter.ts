@@ -40,6 +40,9 @@ import {
 	getAccount,
 	getMessage,
 	reclassifyBySignature,
+	getExtractedData,
+	setExtractedData,
+	recordAgentAction,
 } from './db.js';
 import type { InboxMessage, FilterCategory } from './types.js';
 import { fetchImapHeaders } from './body.js';
@@ -58,6 +61,7 @@ import {
 	markFilterFailed,
 	markFilterRecovered,
 } from './filter-notifications.js';
+import { extractTransactional, inputFromMessage } from './extractor.js';
 
 // ── Module state ──
 
@@ -88,6 +92,51 @@ function isLLMDisabled(): boolean {
 }
 function isColdStartSkipped(): boolean {
 	return process.env.INBOX_FILTER_COLDSTART_SKIP === '1';
+}
+function isEagerExtractEnabled(): boolean {
+	return process.env.INBOX_TRANSACTIONAL_EAGER_EXTRACT === '1';
+}
+
+// ── Eager extraction hook (Layer 3 Stage 2 §D3) ──
+
+/** When eager mode is on AND the row was just classified as transactional,
+ *  fire the extractor in the background so S3's anomaly push has cached
+ *  `extracted_data` available without a per-tick LLM burst.
+ *
+ *  Fire-and-forget via setImmediate — matches commitments-extractor's
+ *  pattern. Errors are caught and logged so a single bad row never
+ *  blocks the worker loop. `getExtractedData` short-circuits if the
+ *  row has already been extracted (e.g. orchestrator tool ran first).
+ *
+ *  Writes an audit row with `actor='worker'` so analysts can later
+ *  distinguish eager-mode runs from tool-driven ones in agent_actions. */
+function maybeQueueEagerExtraction(
+	messageId: number,
+	category: FilterCategory,
+	msg: InboxMessage,
+): void {
+	if (!isEagerExtractEnabled()) return;
+	if (category !== 'transactional') return;
+
+	setImmediate(async () => {
+		try {
+			const existing = getExtractedData(messageId);
+			if (existing) return;
+			const result = await extractTransactional(inputFromMessage(msg));
+			setExtractedData(messageId, result.extract);
+			recordAgentAction({
+				tool: 'inbox-extract-data',
+				messageId,
+				actor: 'worker',
+				args: { mode: 'eager' },
+				result: { ok: result.ok, kind: result.extract.kind, reason: result.reason },
+			});
+		} catch (err) {
+			console.warn(
+				`[inbox-filter/eager-extract] message ${messageId}: ${(err as Error).message}`,
+			);
+		}
+	});
 }
 
 // ── Public lifecycle ──
@@ -269,6 +318,7 @@ async function processChunk(messages: InboxMessage[]): Promise<ChunkSummary> {
 				});
 				bumpFilterCacheHit(sig);
 				summary.cacheHits++;
+				maybeQueueEagerExtraction(msg.id, cached.category, msg);
 				continue;
 			}
 			remaining.push(msg);
@@ -310,6 +360,7 @@ async function processChunk(messages: InboxMessage[]): Promise<ChunkSummary> {
 					reason: result.reason,
 				});
 				summary.ruleHits++;
+				maybeQueueEagerExtraction(msg.id, result.category, msg);
 				continue;
 			}
 
@@ -349,6 +400,7 @@ async function processChunk(messages: InboxMessage[]): Promise<ChunkSummary> {
 					reason: `llm:${r.category}`,
 				});
 				summary.llmHits++;
+				maybeQueueEagerExtraction(r.id, r.category, original);
 			}
 			// Track results that did not parse — those rows stay 'new' for retry.
 			const classifiedIds = new Set(outcome.results.map((r) => r.id));
@@ -447,6 +499,7 @@ export function correctClassification(
 		reason,
 		preserveProcessed: true,
 	});
+	maybeQueueEagerExtraction(messageId, input.category, msg);
 
 	// 2. Update cache (user-corrected).
 	setFilterCache({
