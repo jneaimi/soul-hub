@@ -31,8 +31,8 @@
 		{ key: 'ELEVENLABS_API_KEY', description: 'ElevenLabs text-to-speech', usedBy: ['generate skill', 'media-creator agent'] },
 		{ key: 'RESEND_API_KEY', description: 'Resend email API for newsletters', usedBy: ['newsletter skill'] },
 		{ key: 'GOOGLE_API_KEY', description: 'Google Cloud Platform (Geocoding, Places, Maps)', usedBy: ['cafe-deals pipeline'] },
-		{ key: 'GOOGLE_CLIENT_ID', description: 'Gmail OAuth client ID (paired with GOOGLE_CLIENT_SECRET)', usedBy: ['inbox / Gmail'], link: 'https://console.cloud.google.com/apis/credentials' },
-		{ key: 'GOOGLE_CLIENT_SECRET', description: 'Gmail OAuth client secret (paired with GOOGLE_CLIENT_ID)', usedBy: ['inbox / Gmail'], link: 'https://console.cloud.google.com/apis/credentials' },
+		{ key: 'GOOGLE_CLIENT_ID', description: 'Default Gmail OAuth client ID. Individual Gmail accounts can override this with their own client at Add time.', usedBy: ['inbox / Gmail (default)'], link: 'https://console.cloud.google.com/apis/credentials' },
+		{ key: 'GOOGLE_CLIENT_SECRET', description: 'Default Gmail OAuth client secret. Individual Gmail accounts can override this with their own client at Add time.', usedBy: ['inbox / Gmail (default)'], link: 'https://console.cloud.google.com/apis/credentials' },
 		{ key: 'HF_API_TOKEN', description: 'Hugging Face Inference API (optional)', usedBy: ['research skill'] },
 		{ key: 'EODHD_API_KEY', description: 'EODHD financial data API', usedBy: ['market skill'] },
 	];

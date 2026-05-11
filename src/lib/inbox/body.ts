@@ -21,7 +21,7 @@
 
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
-import { getValidToken } from './oauth.js';
+import { getValidToken, accountOauthOverride } from './oauth.js';
 import { encrypt } from './crypto.js';
 import { getAccountCredential, getInboxDb } from './db.js';
 import type { InboxAccount, InboxMessage } from './types.js';
@@ -61,11 +61,14 @@ async function connectImap(account: InboxAccount): Promise<ImapFlow> {
 	try { parsedCred = JSON.parse(credential); } catch { /* plain password */ }
 
 	if (parsedCred?.type === 'oauth2' && parsedCred.refreshToken) {
-		const tokens = await getValidToken({
-			accessToken: parsedCred.accessToken || '',
-			refreshToken: parsedCred.refreshToken,
-			expiresAt: parsedCred.expiresAt || 0,
-		});
+		const tokens = await getValidToken(
+			{
+				accessToken: parsedCred.accessToken || '',
+				refreshToken: parsedCred.refreshToken,
+				expiresAt: parsedCred.expiresAt || 0,
+			},
+			accountOauthOverride(account),
+		);
 		// Persist refreshed tokens back to DB if changed.
 		if (tokens.accessToken !== parsedCred.accessToken) {
 			const updatedCred = JSON.stringify({

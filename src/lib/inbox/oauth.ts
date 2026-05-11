@@ -7,14 +7,19 @@
  *   3. Store encrypted { accessToken, refreshToken, expiresAt } in accounts table
  *   4. Sync worker reads credential, refreshes if expired, connects with accessToken
  *
- * Required env vars:
- *   GOOGLE_CLIENT_ID     — from Google Cloud Console
- *   GOOGLE_CLIENT_SECRET — from Google Cloud Console
+ * Client identity (id/secret) sources, in priority order:
+ *   1. Explicit ClientCreds override passed by the caller — used for
+ *      per-account custom OAuth clients (see ADR
+ *      2026-05-11-per-account-oauth-clients).
+ *   2. process.env.GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET — the platform
+ *      default (managed via Settings → Platform Environment per
+ *      ADR 2026-05-11-oauth-credentials-via-settings-ui).
  *
  * Required scope: https://mail.google.com/ (NOT gmail.readonly — won't work for IMAP)
  */
 
 import { OAuth2Client } from 'google-auth-library';
+import { decrypt } from './crypto.js';
 
 // `mail.google.com` is the restricted IMAP/SMTP scope. `openid` + `userinfo.email`
 // are needed so the OAuth callback can call /oauth2/v2/userinfo to discover the
@@ -32,23 +37,37 @@ export interface OAuthTokens {
 	expiresAt: number; // unix ms
 }
 
-function getClientConfig(): { clientId: string; clientSecret: string } {
+export interface ClientCreds {
+	clientId: string;
+	clientSecret: string;
+}
+
+/**
+ * Resolve which OAuth client identity to use. Explicit override wins; falls
+ * back to platform env. Throws if neither is available.
+ */
+function resolveClientCreds(override?: ClientCreds): ClientCreds {
+	if (override?.clientId && override?.clientSecret) {
+		return override;
+	}
 	const clientId = process.env.GOOGLE_CLIENT_ID;
 	const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
 	if (!clientId || !clientSecret) {
-		throw new Error('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET env vars are required for Gmail OAuth2');
+		throw new Error(
+			'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET env vars are required for Gmail OAuth2 (or provide per-account client at add time)',
+		);
 	}
 	return { clientId, clientSecret };
 }
 
-function createClient(redirectUri: string): OAuth2Client {
-	const { clientId, clientSecret } = getClientConfig();
+function createClient(redirectUri: string, override?: ClientCreds): OAuth2Client {
+	const { clientId, clientSecret } = resolveClientCreds(override);
 	return new OAuth2Client(clientId, clientSecret, redirectUri);
 }
 
 /** Generate the Google OAuth2 consent URL */
-export function getAuthUrl(redirectUri: string, state?: string): string {
-	const client = createClient(redirectUri);
+export function getAuthUrl(redirectUri: string, state?: string, override?: ClientCreds): string {
+	const client = createClient(redirectUri, override);
 	return client.generateAuthUrl({
 		access_type: 'offline', // get refresh token
 		prompt: 'consent', // force consent to always get refresh token
@@ -58,8 +77,12 @@ export function getAuthUrl(redirectUri: string, state?: string): string {
 }
 
 /** Exchange authorization code for tokens */
-export async function exchangeCode(code: string, redirectUri: string): Promise<OAuthTokens> {
-	const client = createClient(redirectUri);
+export async function exchangeCode(
+	code: string,
+	redirectUri: string,
+	override?: ClientCreds,
+): Promise<OAuthTokens> {
+	const client = createClient(redirectUri, override);
 	const { tokens } = await client.getToken(code);
 
 	if (!tokens.access_token) {
@@ -77,8 +100,11 @@ export async function exchangeCode(code: string, redirectUri: string): Promise<O
 }
 
 /** Refresh an expired access token using the refresh token */
-export async function refreshAccessToken(refreshToken: string): Promise<OAuthTokens> {
-	const { clientId, clientSecret } = getClientConfig();
+export async function refreshAccessToken(
+	refreshToken: string,
+	override?: ClientCreds,
+): Promise<OAuthTokens> {
+	const { clientId, clientSecret } = resolveClientCreds(override);
 	const client = new OAuth2Client(clientId, clientSecret);
 	client.setCredentials({ refresh_token: refreshToken });
 
@@ -95,15 +121,36 @@ export async function refreshAccessToken(refreshToken: string): Promise<OAuthTok
 	};
 }
 
+/**
+ * Build the per-account ClientCreds override for an account, or undefined if
+ * the account uses the platform-env default. Decrypts the stored secret on
+ * the fly. See ADR 2026-05-11-per-account-oauth-clients.
+ */
+export function accountOauthOverride(account: {
+	oauthClientId: string | null;
+	oauthClientSecretEncrypted: string | null;
+}): ClientCreds | undefined {
+	if (account.oauthClientId && account.oauthClientSecretEncrypted) {
+		return {
+			clientId: account.oauthClientId,
+			clientSecret: decrypt(account.oauthClientSecretEncrypted),
+		};
+	}
+	return undefined;
+}
+
 /** Check if tokens need refresh (expired or expiring within 5 min) */
 export function isTokenExpired(tokens: OAuthTokens): boolean {
 	return Date.now() >= tokens.expiresAt - 5 * 60 * 1000; // 5 min buffer
 }
 
 /** Get a valid access token, refreshing if needed. Returns updated tokens. */
-export async function getValidToken(tokens: OAuthTokens): Promise<OAuthTokens> {
+export async function getValidToken(
+	tokens: OAuthTokens,
+	override?: ClientCreds,
+): Promise<OAuthTokens> {
 	if (!isTokenExpired(tokens)) {
 		return tokens;
 	}
-	return refreshAccessToken(tokens.refreshToken);
+	return refreshAccessToken(tokens.refreshToken, override);
 }

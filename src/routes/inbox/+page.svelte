@@ -153,6 +153,42 @@
 	let adding = $state(false);
 	const addHelp = $derived(providerHelp[addProvider] ?? providerHelp.imap);
 
+	// Per-account OAuth client override for Gmail Add (ADR
+	// 2026-05-11-per-account-oauth-clients). When both fields have non-empty
+	// values the "Sign in with Google" button POSTs to /api/inbox/oauth/
+	// with-custom-client instead of redirecting to /api/inbox/oauth. Default
+	// state is empty -> uses platform-env GOOGLE_CLIENT_ID/SECRET.
+	let customClientId = $state('');
+	let customClientSecret = $state('');
+	let customClientStarting = $state(false);
+	const useCustomClient = $derived(
+		customClientId.trim().length > 0 && customClientSecret.trim().length > 0,
+	);
+
+	async function startCustomClientAdd() {
+		addError = '';
+		customClientStarting = true;
+		try {
+			const res = await fetch('/api/inbox/oauth/with-custom-client', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					clientId: customClientId.trim(),
+					clientSecret: customClientSecret.trim(),
+				}),
+			});
+			const data = await res.json();
+			if (res.ok && data.authUrl) {
+				window.location.href = data.authUrl;
+			} else {
+				addError = data.error || 'Failed to start custom-client OAuth flow';
+			}
+		} catch (err) {
+			addError = (err as Error).message || 'Network error';
+		}
+		customClientStarting = false;
+	}
+
 	// URL params feedback
 	let flashMessage = $state('');
 	let flashType = $state<'success' | 'error'>('success');
@@ -208,6 +244,16 @@
 	$effect(() => {
 		if (showAddForm && addProvider === 'gmail') {
 			checkGmailConfig();
+		}
+	});
+
+	// Reset the per-account OAuth client inputs when the Add form opens
+	// or the provider changes away from Gmail. Prevents stale secrets from
+	// surviving a cancel-and-reopen cycle.
+	$effect(() => {
+		if (!showAddForm || addProvider !== 'gmail') {
+			customClientId = '';
+			customClientSecret = '';
 		}
 	});
 
@@ -815,11 +861,12 @@
 										<p>In <a href="https://console.cloud.google.com" target="_blank" rel="noopener noreferrer" class="text-hub-cta hover:underline">Google Cloud Console</a>:</p>
 										<ol class="list-decimal ms-4 space-y-1">
 											<li>Create a project → enable the <span class="font-mono">Gmail API</span>.</li>
-											<li>Configure the <span class="font-mono">OAuth consent screen</span> as External, leave it in <strong>Testing</strong> mode, add yourself as a test user. Scopes: <span class="font-mono">openid</span>, <span class="font-mono">userinfo.email</span>, <span class="font-mono">https://mail.google.com/</span>.</li>
+											<li>Configure the <span class="font-mono">OAuth consent screen</span> as External, leave it in <strong>Testing</strong> mode, and add <strong>every Gmail address you plan to connect</strong> (yourself + any additional accounts) to the Test users list under the Audience tab. Scopes: <span class="font-mono">openid</span>, <span class="font-mono">userinfo.email</span>, <span class="font-mono">https://mail.google.com/</span>.</li>
 											<li>Credentials → <span class="font-mono">Create OAuth client ID</span> → Web application. Add this authorized redirect URI:
 												<code class="block mt-1 px-2 py-1 rounded bg-hub-bg/60 border border-hub-border/40 text-[10px] text-hub-text break-all select-all">{currentOrigin ? `${currentOrigin}/api/inbox/oauth/callback` : '<this app>/api/inbox/oauth/callback'}</code>
+												<span class="block mt-1 text-[10px] text-hub-dim">If you use a different OAuth client per account (advanced section below), register this same redirect URI in <em>each</em> Google Cloud project — each project has its own allowlist.</span>
 											</li>
-											<li>Copy the resulting <strong>Client ID</strong> and <strong>Client Secret</strong> into <a href="/settings" class="text-hub-cta hover:underline">Settings → Platform Environment</a> (fields <span class="font-mono">GOOGLE_CLIENT_ID</span> and <span class="font-mono">GOOGLE_CLIENT_SECRET</span>). They take effect immediately — no restart needed.</li>
+											<li>Copy the resulting <strong>Client ID</strong> and <strong>Client Secret</strong> into <a href="/settings" class="text-hub-cta hover:underline">Settings → Platform Environment</a> (fields <span class="font-mono">GOOGLE_CLIENT_ID</span> and <span class="font-mono">GOOGLE_CLIENT_SECRET</span>) — this becomes the <em>default</em> for new Gmail accounts. To use a different OAuth client for a specific account, expand the advanced section below at Add time instead.</li>
 										</ol>
 										<p class="text-[10px] text-hub-dim pt-1">Heads-up: Google's Testing-mode refresh tokens expire every 7 days. If sync stops, use <em>Reauthorize</em> in the account settings to re-grant access.</p>
 									</div>
@@ -838,11 +885,50 @@
 										</a>
 									</div>
 								{:else}
-									<a href="/api/inbox/oauth" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/15 text-red-400 text-sm font-medium hover:bg-red-500/25 transition-colors">
-										<svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12.545 10.239v3.821h5.445c-.712 2.315-2.647 3.972-5.445 3.972a6.033 6.033 0 110-12.064c1.498 0 2.866.549 3.921 1.453l2.814-2.814A9.969 9.969 0 0012.545 2C7.021 2 2.543 6.477 2.543 12s4.478 10 10.002 10c8.396 0 10.249-7.85 9.426-11.748l-9.426-.013z"/></svg>
-										{existingGmailCount === 0 ? 'Sign in with Google' : 'Add another Gmail account'}
-									</a>
-									{#if existingGmailCount > 0}
+									<!-- Per-account OAuth client override (ADR 2026-05-11-per-account-oauth-clients).
+									     Collapsed by default — invisible to the single-client user. When expanded
+									     and both fields are filled, the button switches from the default <a> link
+									     to a button that POSTs to /api/inbox/oauth/with-custom-client. -->
+									<details class="rounded-md bg-hub-surface/60 border border-hub-border/60">
+										<summary class="px-3 py-2 text-[11px] text-hub-muted hover:text-hub-text transition-colors cursor-pointer list-none flex items-center justify-between">
+											<span>Use a different OAuth client for this account (advanced)</span>
+											<svg class="w-3 h-3 text-hub-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+												<polyline points="6 9 12 15 18 9"/>
+											</svg>
+										</summary>
+										<div class="px-3 pb-3 border-t border-hub-border/40 pt-2 space-y-2">
+											<p class="text-[11px] text-hub-muted leading-relaxed">
+												Use this when the new Gmail account belongs to a different Google Cloud project than the default (e.g. a Workspace account on its own custom domain). Both values come from that project's OAuth client.
+												<strong class="text-hub-text">Make sure</strong> <code class="text-[10px] text-hub-text">{currentOrigin ? `${currentOrigin}/api/inbox/oauth/callback` : '<this app>/api/inbox/oauth/callback'}</code> is registered as an authorized redirect URI in that project before signing in.
+											</p>
+											<label class="block">
+												<span class="text-[10px] text-hub-dim uppercase tracking-wider">Client ID</span>
+												<input type="text" bind:value={customClientId} placeholder="123456-abc.apps.googleusercontent.com" class="w-full mt-1 px-2 py-1.5 rounded bg-hub-bg/60 border border-hub-border/60 text-xs text-hub-text placeholder:text-hub-dim focus:outline-none focus:border-hub-cta/50 font-mono" />
+											</label>
+											<label class="block">
+												<span class="text-[10px] text-hub-dim uppercase tracking-wider">Client Secret</span>
+												<input type="password" autocomplete="new-password" bind:value={customClientSecret} placeholder="GOCSPX-…" class="w-full mt-1 px-2 py-1.5 rounded bg-hub-bg/60 border border-hub-border/60 text-xs text-hub-text placeholder:text-hub-dim focus:outline-none focus:border-hub-cta/50 font-mono" />
+											</label>
+										</div>
+									</details>
+
+									{#if useCustomClient}
+										<button
+											type="button"
+											onclick={startCustomClientAdd}
+											disabled={customClientStarting}
+											class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/15 text-red-400 text-sm font-medium hover:bg-red-500/25 transition-colors cursor-pointer disabled:opacity-50"
+										>
+											<svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12.545 10.239v3.821h5.445c-.712 2.315-2.647 3.972-5.445 3.972a6.033 6.033 0 110-12.064c1.498 0 2.866.549 3.921 1.453l2.814-2.814A9.969 9.969 0 0012.545 2C7.021 2 2.543 6.477 2.543 12s4.478 10 10.002 10c8.396 0 10.249-7.85 9.426-11.748l-9.426-.013z"/></svg>
+											{customClientStarting ? 'Starting…' : 'Sign in with Google (custom client)'}
+										</button>
+									{:else}
+										<a href="/api/inbox/oauth" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/15 text-red-400 text-sm font-medium hover:bg-red-500/25 transition-colors">
+											<svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12.545 10.239v3.821h5.445c-.712 2.315-2.647 3.972-5.445 3.972a6.033 6.033 0 110-12.064c1.498 0 2.866.549 3.921 1.453l2.814-2.814A9.969 9.969 0 0012.545 2C7.021 2 2.543 6.477 2.543 12s4.478 10 10.002 10c8.396 0 10.249-7.85 9.426-11.748l-9.426-.013z"/></svg>
+											{existingGmailCount === 0 ? 'Sign in with Google' : 'Add another Gmail account'}
+										</a>
+									{/if}
+									{#if existingGmailCount > 0 && !useCustomClient}
 										<p class="text-[10px] text-hub-dim leading-relaxed">
 											Google will let you choose a different account on the consent screen. To recover an existing account whose tokens expired, use <em>Reauthorize</em> from its settings instead.
 										</p>

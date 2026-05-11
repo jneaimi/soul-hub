@@ -25,7 +25,7 @@ import {
 	getAccount, pruneOldMessages, deleteMessagesByFolder,
 } from './db.js';
 import { markAccountFailed, markAccountRecovered, clearAccountAlert } from './notifications.js';
-import { getValidToken, type OAuthTokens } from './oauth.js';
+import { getValidToken, accountOauthOverride, type OAuthTokens } from './oauth.js';
 import {
 	getValidOutlookToken, fetchMessagesDelta, DeltaExpiredError,
 	type OutlookTokens, type GraphMessage,
@@ -194,13 +194,18 @@ async function connectWorker(worker: AccountWorker, account: InboxAccount): Prom
 	try { parsedCred = JSON.parse(credential); } catch { /* plain password */ }
 
 	if (parsedCred?.type === 'oauth2' && parsedCred.refreshToken) {
-		// OAuth2 — refresh token if expired before connecting
+		// OAuth2 — refresh token if expired before connecting. Pass the
+		// per-account OAuth client override (if any) so accounts with their
+		// own client credentials refresh against the correct client.
 		try {
-			const tokens = await getValidToken({
-				accessToken: parsedCred.accessToken || '',
-				refreshToken: parsedCred.refreshToken,
-				expiresAt: parsedCred.expiresAt || 0,
-			});
+			const tokens = await getValidToken(
+				{
+					accessToken: parsedCred.accessToken || '',
+					refreshToken: parsedCred.refreshToken,
+					expiresAt: parsedCred.expiresAt || 0,
+				},
+				accountOauthOverride(account),
+			);
 
 			// Persist refreshed tokens back to DB (encrypted)
 			if (tokens.accessToken !== parsedCred.accessToken) {

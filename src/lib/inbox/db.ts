@@ -12,6 +12,7 @@
 
 import Database from 'better-sqlite3';
 import { resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import type { InboxAccount, InboxMessage, SyncState, InboxProvider, AccountStatus } from './types.js';
 import { encrypt, decrypt } from './crypto.js';
 import { soulHubDataDir } from '../paths.js';
@@ -163,6 +164,33 @@ function migrate(db: Database.Database): void {
 		`);
 		db.pragma(`user_version = 3`);
 	}
+
+	if (version < 4) {
+		// Per-account OAuth client override — see ADR
+		// 2026-05-11-per-account-oauth-clients. Both columns NULL means
+		// "use platform-env default" (backward compatible with the
+		// 2026-05-11-oauth-credentials-via-settings-ui ADR's pattern).
+		// Both columns set means "use this per-account pair."
+		//
+		// pending_oauth_clients holds the client_id/secret across the
+		// OAuth consent round-trip for first-time-link with a custom
+		// client. Swept on insert; 1-hour TTL.
+		db.exec(`
+			ALTER TABLE accounts ADD COLUMN oauth_client_id TEXT;
+			ALTER TABLE accounts ADD COLUMN oauth_client_secret_encrypted TEXT;
+
+			CREATE TABLE IF NOT EXISTS pending_oauth_clients (
+				ephemeral_id TEXT PRIMARY KEY,
+				provider TEXT NOT NULL,
+				client_id TEXT NOT NULL,
+				client_secret_encrypted TEXT NOT NULL,
+				created_at INTEGER NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS idx_pending_oauth_clients_created
+				ON pending_oauth_clients(created_at);
+		`);
+		db.pragma(`user_version = 4`);
+	}
 }
 
 // ── Account CRUD ──
@@ -170,10 +198,17 @@ function migrate(db: Database.Database): void {
 export function addAccount(
 	account: Pick<InboxAccount, 'id' | 'label' | 'provider' | 'email' | 'host' | 'port'>,
 	credential: string,
+	oauthClient?: { clientId: string; clientSecret: string },
 ): InboxAccount {
 	const db = getInboxDb();
 	const now = Date.now();
 	const encrypted = encrypt(credential);
+
+	// Per-account OAuth client override — see ADR
+	// 2026-05-11-per-account-oauth-clients. Both fields together or both
+	// NULL; mixed states are rejected at the API layer before reaching here.
+	const oauthClientId = oauthClient?.clientId ?? null;
+	const oauthClientSecretEncrypted = oauthClient ? encrypt(oauthClient.clientSecret) : null;
 
 	// New accounts default to 90-day retention. The schema's column default
 	// is still 30 from migration #2 (kept untouched to avoid disturbing
@@ -181,9 +216,20 @@ export function addAccount(
 	// it explicitly here makes the new-account behavior independent of the
 	// schema default.
 	db.prepare(`
-		INSERT INTO accounts (id, label, provider, email, host, port, encrypted_credential, status, retention_days, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 'disconnected', 90, ?)
-	`).run(account.id, account.label, account.provider, account.email, account.host ?? null, account.port ?? null, encrypted, now);
+		INSERT INTO accounts (id, label, provider, email, host, port, encrypted_credential, status, retention_days, oauth_client_id, oauth_client_secret_encrypted, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 'disconnected', 90, ?, ?, ?)
+	`).run(
+		account.id,
+		account.label,
+		account.provider,
+		account.email,
+		account.host ?? null,
+		account.port ?? null,
+		encrypted,
+		oauthClientId,
+		oauthClientSecretEncrypted,
+		now,
+	);
 
 	return {
 		...account,
@@ -194,6 +240,8 @@ export function addAccount(
 		lastError: null,
 		createdAt: now,
 		retentionDays: 90,
+		oauthClientId,
+		oauthClientSecretEncrypted,
 	};
 }
 
@@ -250,7 +298,69 @@ function rowToAccount(row: Record<string, unknown>): InboxAccount {
 		lastError: row.last_error as string | null,
 		createdAt: row.created_at as number,
 		retentionDays: (row.retention_days as number) ?? 90,
+		oauthClientId: (row.oauth_client_id as string | null) ?? null,
+		oauthClientSecretEncrypted: (row.oauth_client_secret_encrypted as string | null) ?? null,
 	};
+}
+
+// ── Pending OAuth clients (ephemeral, for first-time-link with custom client) ──
+
+const PENDING_OAUTH_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+/**
+ * Insert a pending OAuth client record and return its ephemeral id. Sweeps
+ * stale rows (older than TTL) before insert so the table doesn't grow
+ * unbounded on abandoned flows.
+ */
+export function insertPendingOauthClient(
+	provider: string,
+	clientId: string,
+	clientSecret: string,
+): string {
+	const db = getInboxDb();
+	sweepPendingOauthClients();
+	const ephemeralId = randomUUID();
+	db.prepare(
+		`INSERT INTO pending_oauth_clients (ephemeral_id, provider, client_id, client_secret_encrypted, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+	).run(ephemeralId, provider, clientId, encrypt(clientSecret), Date.now());
+	return ephemeralId;
+}
+
+export function getPendingOauthClient(ephemeralId: string): {
+	provider: string;
+	clientId: string;
+	clientSecret: string;
+} | null {
+	const db = getInboxDb();
+	const row = db.prepare(
+		`SELECT provider, client_id, client_secret_encrypted, created_at FROM pending_oauth_clients WHERE ephemeral_id = ?`,
+	).get(ephemeralId) as
+		| { provider: string; client_id: string; client_secret_encrypted: string; created_at: number }
+		| undefined;
+	if (!row) return null;
+	// Defensive: reject if a stale row slipped past the sweep.
+	if (Date.now() - row.created_at > PENDING_OAUTH_TTL_MS) {
+		deletePendingOauthClient(ephemeralId);
+		return null;
+	}
+	return {
+		provider: row.provider,
+		clientId: row.client_id,
+		clientSecret: decrypt(row.client_secret_encrypted),
+	};
+}
+
+export function deletePendingOauthClient(ephemeralId: string): void {
+	const db = getInboxDb();
+	db.prepare(`DELETE FROM pending_oauth_clients WHERE ephemeral_id = ?`).run(ephemeralId);
+}
+
+export function sweepPendingOauthClients(): number {
+	const db = getInboxDb();
+	const cutoff = Date.now() - PENDING_OAUTH_TTL_MS;
+	const result = db.prepare(`DELETE FROM pending_oauth_clients WHERE created_at < ?`).run(cutoff);
+	return result.changes;
 }
 
 // ── Message CRUD ──
