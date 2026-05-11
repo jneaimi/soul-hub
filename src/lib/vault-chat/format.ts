@@ -109,11 +109,39 @@ Rules:
 - **When the user asks about "the latest"/"the newest"/"my latest" something and the context contains exactly ONE note in focus mode, treat that note AS the one they mean.** Don't ask for clarification — the retrieval already narrowed to the most recently modified match. Just analyze/discuss it directly.
 - Reply in the same language the user wrote in (English or Arabic).`;
 
-export function buildSystemPrompt(contextBlock: string): string {
+/** Render a "Current time anchor" block prepended to vault-chat system
+ *  prompts. Without this the model hallucinates "today" / "last week" /
+ *  "this month" when the user asks date-relative questions about their
+ *  notes. Notes carry their own `created:` frontmatter; the anchor lets
+ *  the model compute relative ranges against those dates. Same fix
+ *  pattern as orchestrator-v2 system-prompt.ts and heartbeat.ts. */
+function timeAnchorBlock(timezone: string = 'Asia/Dubai'): string {
+	const now = new Date();
+	const localNow = new Intl.DateTimeFormat('en-GB', {
+		timeZone: timezone,
+		weekday: 'long',
+		year: 'numeric',
+		month: 'long',
+		day: 'numeric',
+		hour: '2-digit',
+		minute: '2-digit',
+		hour12: false,
+	}).format(now);
+	return [
+		'## Current time anchor',
+		`- User's local time: **${localNow}** (timezone: ${timezone})`,
+		`- UTC now: ${now.toISOString()}`,
+		'- Use these as ground truth for "today", "yesterday", "last week", "this month", weekday names, etc.',
+		'- Compute date-relative ranges against this anchor when filtering or summarizing notes.',
+	].join('\n');
+}
+
+export function buildSystemPrompt(contextBlock: string, timezone?: string): string {
+	const anchor = timeAnchorBlock(timezone);
 	if (!contextBlock) {
-		return `${SYSTEM_PREAMBLE}\n\n## Vault Context\n\n_(no relevant notes found — answer honestly that nothing matched)_`;
+		return `${anchor}\n\n${SYSTEM_PREAMBLE}\n\n## Vault Context\n\n_(no relevant notes found — answer honestly that nothing matched)_`;
 	}
-	return `${SYSTEM_PREAMBLE}\n\n## Vault Context\n\n${contextBlock}`;
+	return `${anchor}\n\n${SYSTEM_PREAMBLE}\n\n## Vault Context\n\n${contextBlock}`;
 }
 
 const MULTIMODAL_PREAMBLE = `You're chatting with the user over WhatsApp. They've attached an image, video, or document and want to discuss it. The vault context below is supporting material — facts about their projects, decisions, and prior notes — to ground the conversation when relevant.
@@ -131,9 +159,10 @@ Rules:
  *  the text-only rule "ground every claim in the context" reads, in the
  *  multimodal case, as "refuse to look at the image" — which is what
  *  the model literally did until this branch landed. */
-export function buildMultimodalSystemPrompt(contextBlock: string): string {
+export function buildMultimodalSystemPrompt(contextBlock: string, timezone?: string): string {
+	const anchor = timeAnchorBlock(timezone);
 	if (!contextBlock) {
-		return `${MULTIMODAL_PREAMBLE}\n\n## Vault Context\n\n_(no relevant notes found — engage with the attachment directly)_`;
+		return `${anchor}\n\n${MULTIMODAL_PREAMBLE}\n\n## Vault Context\n\n_(no relevant notes found — engage with the attachment directly)_`;
 	}
-	return `${MULTIMODAL_PREAMBLE}\n\n## Vault Context\n\n${contextBlock}`;
+	return `${anchor}\n\n${MULTIMODAL_PREAMBLE}\n\n## Vault Context\n\n${contextBlock}`;
 }

@@ -51,15 +51,39 @@ const ExtractionSchema = z.object({
 		),
 });
 
-const SYSTEM_PROMPT = `You read a single WhatsApp exchange and decide whether it implies a follow-up the agent should remember.
+const SYSTEM_PROMPT_TEMPLATE = `You read a single WhatsApp exchange and decide whether it implies a follow-up the agent should remember.
+
+## Current time anchor
+- User's local time: **__LOCAL_NOW__** (timezone: __TZ__)
+- UTC now: __UTC_NOW__
+- Use these as ground truth when computing \`hours_until_due\` from natural-language times like "tomorrow", "Friday", "next week".
+- "Tomorrow" relative to the local time above. "Friday" = the upcoming Friday in the user's tz. "Next week" ≈ 168 hours.
 
 Rules:
 - Only extract commitments tied to a future event the user mentioned ("I have an interview tomorrow", "I'm flying out Friday", "I'll know by next week").
 - Skip rhetorical statements, questions, and generic chitchat.
 - Skip explicit reminders ("remind me at 3pm") — those are handled by a different system.
-- Each commitment must have a clear time horizon (hours_until_due) and a natural follow-up text.
+- Each commitment must have a clear time horizon (hours_until_due) computed AGAINST THE TIME ANCHOR ABOVE, and a natural follow-up text.
 - Set confidence honestly — if you're guessing, score below 0.7 and the system will drop it.
 - Most exchanges produce zero commitments. That's the right answer when nothing surfaces.`;
+
+function buildSystemPrompt(timezone: string): string {
+	const now = new Date();
+	const localNow = new Intl.DateTimeFormat('en-GB', {
+		timeZone: timezone,
+		weekday: 'long',
+		year: 'numeric',
+		month: 'long',
+		day: 'numeric',
+		hour: '2-digit',
+		minute: '2-digit',
+		hour12: false,
+	}).format(now);
+	return SYSTEM_PROMPT_TEMPLATE
+		.replace('__LOCAL_NOW__', localNow)
+		.replace('__TZ__', timezone)
+		.replace('__UTC_NOW__', now.toISOString());
+}
 
 function readChannelConfig() {
 	const raw = soulHubConfig.channels?.whatsapp ?? {};
@@ -101,12 +125,14 @@ export async function extractCommitments(input: ExtractInput): Promise<number> {
 	}
 
 	const client = createGoogleGenerativeAI({ apiKey });
+	const timezone = cfg.heartbeat?.activeHours?.timezone ?? 'Asia/Dubai';
+	const systemPrompt = buildSystemPrompt(timezone);
 
 	let extraction: z.infer<typeof ExtractionSchema>;
 	try {
 		const result = await generateText({
 			model: client(modelId),
-			system: SYSTEM_PROMPT,
+			system: systemPrompt,
 			output: Output.object({ schema: ExtractionSchema }),
 			prompt: `User: ${input.userText}\n\nAgent: ${input.agentReply}`,
 			maxOutputTokens: 600,
