@@ -200,6 +200,17 @@
 		}
 	}
 
+	// Track active-filter state to the URL. Reads happen once on mount
+	// (below); after that this effect keeps the URL in sync as the operator
+	// changes filters or types into the search box.
+	$effect(() => {
+		// Read each reactive slot so $effect tracks them.
+		selectedAccount;
+		statusFilter;
+		search;
+		syncUrl();
+	});
+
 	// Escape closes whichever overlay is open, top-down by visual stacking
 	// (modal > drawer > mobile sidebar). Only one runs per press.
 	function onKeydown(e: KeyboardEvent) {
@@ -391,6 +402,24 @@
 		return msg.fromName || msg.fromAddress.split('@')[0];
 	}
 
+	// Mirror the active filter state to the URL so closing/reopening the tab
+	// (or sharing the link) restores the view. replaceState — not pushState —
+	// because filter changes shouldn't accumulate history entries; the URL is
+	// purely a state survival mechanism, not a navigation surface.
+	function syncUrl() {
+		if (typeof window === 'undefined') return;
+		const params = new URLSearchParams();
+		if (selectedAccount) params.set('account', selectedAccount);
+		if (statusFilter) params.set('status', statusFilter);
+		if (search) params.set('q', search);
+		const qs = params.toString();
+		const next = qs ? `/inbox?${qs}` : '/inbox';
+		// Avoid no-op replaceStates that show up as redundant history churn.
+		if (window.location.pathname + window.location.search !== next) {
+			window.history.replaceState({}, '', next);
+		}
+	}
+
 	function getAccountLabel(accountId: string): string {
 		const acc = accounts.find(a => a.id === accountId);
 		return acc?.provider || '';
@@ -409,10 +438,23 @@
 
 	onMount(() => {
 		currentOrigin = window.location.origin;
+		const urlParams = new URLSearchParams(window.location.search);
+
+		// Seed filter state from URL FIRST. This must run before the OAuth
+		// flash branch below — that branch calls replaceState('/inbox'),
+		// which would strip any inbox params it doesn't know about. After
+		// state is seeded, the $effect on selectedAccount/statusFilter/search
+		// re-writes the URL from state, so the params survive the strip.
+		const urlAccount = urlParams.get('account');
+		const urlStatus = urlParams.get('status');
+		const urlQ = urlParams.get('q');
+		if (urlAccount) selectedAccount = urlAccount;
+		if (urlStatus) statusFilter = urlStatus;
+		if (urlQ) search = urlQ;
+
 		// Handle URL params (from OAuth callbacks). Error wins over success
 		// when multiple flags arrive on the same redirect, and only one
 		// timer ever runs (see showFlash).
-		const urlParams = new URLSearchParams(window.location.search);
 		const added = urlParams.get('added');
 		const reauthorized = urlParams.get('reauthorized');
 		const error = urlParams.get('error');
