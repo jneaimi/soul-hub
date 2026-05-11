@@ -47,6 +47,7 @@
 		attachmentsMeta: AttachmentMeta[];
 		processStatus: string;
 		bodyPreview: string;
+		category: string | null;
 	}
 
 	interface MessageBody {
@@ -159,6 +160,27 @@
 		queued: 'bg-emerald-300',
 		processed: 'bg-emerald-400',
 		skipped: 'bg-hub-dim/50',
+	};
+
+	// Layer 2 category chips (ADR 2026-05-11-inbox-processing-filter-layer).
+	// Color groups the eye for fast scanning; the short label gives a textual
+	// hook; the full word goes into the title attribute for accessibility.
+	// Edit/correction UI lands with L2-U2.
+	const categoryColors: Record<string, string> = {
+		personal: 'bg-violet-500/15 text-violet-300',
+		transactional: 'bg-emerald-500/15 text-emerald-300',
+		notification: 'bg-sky-500/15 text-sky-300',
+		promotional: 'bg-amber-500/15 text-amber-300',
+		bulk: 'bg-slate-500/15 text-slate-300',
+		unclassified: 'bg-hub-surface text-hub-dim',
+	};
+	const categoryLabels: Record<string, string> = {
+		personal: 'human',
+		transactional: 'txn',
+		notification: 'note',
+		promotional: 'promo',
+		bulk: 'bulk',
+		unclassified: '?',
 	};
 
 	// Add account form
@@ -1053,6 +1075,14 @@
 									{:else if msg.hasAttachments}
 										<svg class="w-3.5 h-3.5 text-hub-dim flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
 									{/if}
+									{#if msg.category && categoryColors[msg.category]}
+										<span
+											class="text-[9px] px-1 py-0.5 rounded font-medium flex-shrink-0 {categoryColors[msg.category]}"
+											title="Category: {msg.category}"
+										>
+											{categoryLabels[msg.category] ?? msg.category}
+										</span>
+									{/if}
 									{#if msg.processStatus && processStatusColors[msg.processStatus]}
 										<span class="w-1.5 h-1.5 rounded-full flex-shrink-0 {processStatusColors[msg.processStatus]}" title="Status: {msg.processStatus}"></span>
 									{/if}
@@ -1078,8 +1108,16 @@
 											From: {msg.fromName ? `${msg.fromName} <${msg.fromAddress}>` : msg.fromAddress}
 										</p>
 										<p class="text-xs text-hub-dim">To: {msg.toAddress}</p>
-										{#if chips.length > 0}
+										{#if chips.length > 0 || (msg.category && categoryColors[msg.category])}
 											<div class="flex flex-wrap gap-1 mt-1.5">
+												{#if msg.category && categoryColors[msg.category]}
+													<span
+														class="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded font-medium {categoryColors[msg.category]}"
+														title="Layer 2 classification"
+													>
+														{msg.category}
+													</span>
+												{/if}
 												{#each chips as chip (chip)}
 													<span class="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-hub-surface text-hub-muted">{chip}</span>
 												{/each}
