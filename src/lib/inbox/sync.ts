@@ -20,10 +20,11 @@ import { ImapFlow } from 'imapflow';
 import { EventEmitter } from 'node:events';
 import {
 	getAccountCredential, listAccounts, updateAccountStatus,
-	updateAccountLastSync, upsertMessages, getSyncState,
+	upsertMessages, getSyncState,
 	upsertSyncState, getMessageCount, getInboxDb,
 	getAccount, pruneOldMessages, deleteMessagesByFolder,
 } from './db.js';
+import { markAccountFailed, markAccountRecovered, clearAccountAlert } from './notifications.js';
 import { getValidToken, type OAuthTokens } from './oauth.js';
 import {
 	getValidOutlookToken, fetchMessagesDelta, DeltaExpiredError,
@@ -157,6 +158,9 @@ export function stopAccountSync(accountId: string): void {
 		try { worker.client.close(); } catch {}
 	}
 	workers.delete(accountId);
+	// Drop any pending alert state — prevents the in-memory Set from leaking
+	// stale account ids as accounts come and go over the process lifetime.
+	clearAccountAlert(accountId);
 }
 
 async function connectWorker(worker: AccountWorker, account: InboxAccount): Promise<void> {
@@ -170,7 +174,7 @@ async function connectWorker(worker: AccountWorker, account: InboxAccount): Prom
 
 	const credential = getAccountCredential(account.id);
 	if (!credential) {
-		updateAccountStatus(account.id, 'error', 'No credential found');
+		markAccountFailed(account, 'No credential found');
 		return;
 	}
 
@@ -218,7 +222,7 @@ async function connectWorker(worker: AccountWorker, account: InboxAccount): Prom
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : 'Token refresh failed';
 			console.error(`[inbox-sync:${account.id}] OAuth2 refresh failed:`, msg);
-			updateAccountStatus(account.id, 'error', `OAuth2 refresh failed: ${msg}`);
+			markAccountFailed(account, `OAuth2 refresh failed: ${msg}`);
 			if (!worker.stopping) scheduleReconnect(worker, account);
 			return;
 		}
@@ -245,7 +249,7 @@ async function connectWorker(worker: AccountWorker, account: InboxAccount): Prom
 	client.on('error', (err: Error) => {
 		if (worker.stopping) return;
 		console.error(`[inbox-sync:${account.id}] Error:`, err.message);
-		updateAccountStatus(account.id, 'error', err.message);
+		markAccountFailed(account, err.message);
 	});
 
 	try {
@@ -258,7 +262,7 @@ async function connectWorker(worker: AccountWorker, account: InboxAccount): Prom
 		// Perform initial/incremental sync
 		await syncInbox(worker, account, client);
 
-		updateAccountLastSync(account.id);
+		markAccountRecovered(account);
 		getSyncEmitter().emit('synced', account.id);
 
 		// IDLE for push — client stays open listening for new messages
@@ -267,7 +271,7 @@ async function connectWorker(worker: AccountWorker, account: InboxAccount): Prom
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 		console.error(`[inbox-sync:${account.id}] Connect/sync failed:`, msg);
-		updateAccountStatus(account.id, 'error', msg);
+		markAccountFailed(account, msg);
 
 		if (!worker.stopping) {
 			scheduleReconnect(worker, account);
@@ -478,7 +482,7 @@ const OUTLOOK_POLL_INTERVAL = 5 * 60 * 1000; // 5 min
 async function connectOutlookWorker(worker: AccountWorker, account: InboxAccount): Promise<void> {
 	const credential = getAccountCredential(account.id);
 	if (!credential) {
-		updateAccountStatus(account.id, 'error', 'No credential found');
+		markAccountFailed(account, 'No credential found');
 		return;
 	}
 
@@ -486,7 +490,7 @@ async function connectOutlookWorker(worker: AccountWorker, account: InboxAccount
 	try { parsedCred = JSON.parse(credential); } catch {}
 
 	if (parsedCred?.type !== 'outlook-oauth2' || !parsedCred.refreshToken) {
-		updateAccountStatus(account.id, 'error', 'Invalid Outlook credential format');
+		markAccountFailed(account, 'Invalid Outlook credential format');
 		return;
 	}
 
@@ -551,7 +555,7 @@ async function connectOutlookWorker(worker: AccountWorker, account: InboxAccount
 			`).run(account.id, `delta:${result.deltaLink}`, Date.now());
 		}
 
-		updateAccountLastSync(account.id);
+		markAccountRecovered(account);
 		getSyncEmitter().emit('synced', account.id);
 
 		// Prune old messages based on retention policy
@@ -572,7 +576,7 @@ async function connectOutlookWorker(worker: AccountWorker, account: InboxAccount
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 		console.error(`[inbox-sync:${account.id}] Outlook sync failed:`, msg);
-		updateAccountStatus(account.id, 'error', msg);
+		markAccountFailed(account, msg);
 
 		if (!worker.stopping) {
 			scheduleReconnect(worker, account);
