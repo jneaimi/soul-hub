@@ -356,6 +356,30 @@ export function listContacts(options: ListContactsOptions = {}): Contact[] {
  * ordered by FTS rank. Pass the raw query string; FTS5 handles tokenization.
  * Empty query returns an empty list (no implicit "match all").
  */
+/**
+ * Total count for the same filter set as `listContacts`. The UI uses this
+ * to render pagination indicators ("12 of 240"). Mirrors listContacts'
+ * WHERE-clause logic to stay in lockstep.
+ */
+export function countContacts(options: Omit<ListContactsOptions, 'limit' | 'offset'> = {}): number {
+	const db = getCrmDb();
+	const where: string[] = [];
+	const params: unknown[] = [];
+	if (options.stage) {
+		where.push('c.stage = ?');
+		params.push(options.stage);
+	}
+	if (options.tagId !== undefined) {
+		where.push('EXISTS (SELECT 1 FROM contact_tags ct WHERE ct.contact_id = c.id AND ct.tag_id = ?)');
+		params.push(options.tagId);
+	}
+	const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+	const row = db
+		.prepare(`SELECT COUNT(*) AS total FROM contacts c ${whereClause}`)
+		.get(...params) as { total: number };
+	return row.total;
+}
+
 export function searchContacts(query: string, limit = 25): Contact[] {
 	const trimmed = query.trim();
 	if (!trimmed) return [];
@@ -410,6 +434,60 @@ export function setNextFollowup(contactId: string, dueAt: number | null): boolea
 		.prepare('UPDATE contacts SET next_followup_at = ?, updated_at = ? WHERE id = ?')
 		.run(dueAt, now, contactId);
 	return result.changes > 0;
+}
+
+/** Fields PATCH-able on a contact. `stage`, `next_followup_at`, and email
+ *  list have dedicated mutation paths (`updateContactStage`, `setNextFollowup`,
+ *  `addContactEmail`) — they're intentionally excluded here so callers must
+ *  go through those (stage_history side-effects, primary-email invariant). */
+export interface UpdateContactFields {
+	displayName?: string;
+	company?: string | null;
+	role?: string | null;
+	source?: import('./types.js').ContactSource | null;
+	dealType?: string | null;
+	dealValue?: number | null;
+	dealCurrency?: string | null;
+	notes?: string | null;
+}
+
+/**
+ * Partial UPDATE of a contact row. Only writes provided fields. Returns the
+ * fresh contact on success, or null when the id doesn't exist. Pass `null`
+ * explicitly to clear an optional field; omitting the key leaves it untouched.
+ *
+ * Does NOT trigger vault-sync — caller decides (API layer always does, the
+ * orchestrator tool path would too if we ever add one).
+ */
+export function updateContact(contactId: string, fields: UpdateContactFields): Contact | null {
+	const keys = Object.keys(fields) as (keyof UpdateContactFields)[];
+	if (keys.length === 0) return getContact(contactId);
+	const colMap: Record<keyof UpdateContactFields, string> = {
+		displayName: 'display_name',
+		company: 'company',
+		role: 'role',
+		source: 'source',
+		dealType: 'deal_type',
+		dealValue: 'deal_value',
+		dealCurrency: 'deal_currency',
+		notes: 'notes',
+	};
+	const setClauses: string[] = [];
+	const params: unknown[] = [];
+	for (const key of keys) {
+		setClauses.push(`${colMap[key]} = ?`);
+		params.push(fields[key] ?? null);
+	}
+	const now = Date.now();
+	setClauses.push('updated_at = ?');
+	params.push(now);
+	params.push(contactId);
+	const db = getCrmDb();
+	const result = db
+		.prepare(`UPDATE contacts SET ${setClauses.join(', ')} WHERE id = ?`)
+		.run(...params);
+	if (result.changes === 0) return null;
+	return getContact(contactId);
 }
 
 /**
@@ -491,6 +569,46 @@ export function listContactEmails(contactId: string): ContactEmail[] {
 		.prepare('SELECT * FROM contact_emails WHERE contact_id = ? ORDER BY is_primary DESC, created_at ASC')
 		.all(contactId) as Record<string, unknown>[];
 	return rows.map(rowToContactEmail);
+}
+
+/** Result of `removeContactEmail`. `remaining` lets the caller decide what
+ *  to do when the contact has zero emails left (the API layer refuses; the
+ *  helper itself doesn't enforce — see callers). */
+export interface RemoveContactEmailResult {
+	removed: boolean;
+	wasPrimary: boolean;
+	remaining: number;
+}
+
+/**
+ * Remove a single email from a contact. Atomic — if the removed row was the
+ * primary email AND another email exists, promotes the oldest remaining row
+ * so the "exactly one primary" invariant survives. Returns `removed=false`
+ * when the (contact_id, email) pair doesn't exist.
+ *
+ * The caller is responsible for refusing to remove the last email if the
+ * UX requires at-least-one (the API layer does this; the orchestrator path
+ * never hits it because no chat tool deletes emails today).
+ */
+export function removeContactEmail(contactId: string, email: string): RemoveContactEmailResult {
+	const db = getCrmDb();
+	const tx = db.transaction((): RemoveContactEmailResult => {
+		const target = db
+			.prepare('SELECT is_primary FROM contact_emails WHERE contact_id = ? AND email = ?')
+			.get(contactId, email) as { is_primary: number } | undefined;
+		if (!target) return { removed: false, wasPrimary: false, remaining: 0 };
+		const wasPrimary = target.is_primary === 1;
+		db.prepare('DELETE FROM contact_emails WHERE contact_id = ? AND email = ?').run(contactId, email);
+		const remainingRows = db
+			.prepare('SELECT email FROM contact_emails WHERE contact_id = ? ORDER BY created_at ASC')
+			.all(contactId) as { email: string }[];
+		if (wasPrimary && remainingRows.length > 0) {
+			db.prepare('UPDATE contact_emails SET is_primary = 1 WHERE contact_id = ? AND email = ?')
+				.run(contactId, remainingRows[0].email);
+		}
+		return { removed: true, wasPrimary, remaining: remainingRows.length };
+	});
+	return tx();
 }
 
 /**

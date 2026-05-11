@@ -108,6 +108,44 @@ export function defaultContactPath(displayName: string): string {
 	return `${CRM_CONTACTS_ZONE}/${slugifyName(displayName)}.md`;
 }
 
+/**
+ * Strip CRM-managed frontmatter keys from a vault note while preserving the
+ * prose body. Implements the ADR §"Delete semantics" behavior: when a CRM
+ * row is deleted, the vault note stays as an operator-archive entry but
+ * loses its DB linkage so the keeper agent doesn't flag it as a broken CRM
+ * link and the active CRM index can't find it.
+ *
+ * Removes: `crm_id`, `stage`, `emails`, `related_notes`, `last_synced`,
+ * `tags` (per ADR — operator can re-add).
+ * Keeps:   `type: contact`, `created`, `company`, `role`, plus any
+ *          operator-curated keys outside the managed set.
+ * Adds:    `crm_archived_at` (ISO timestamp) for traceability.
+ *
+ * No-op when the path resolves to nothing (the operator may have already
+ * deleted the note manually).
+ */
+export async function archiveCrmFrontmatter(vaultPath: string): Promise<SyncContactResult> {
+	const vault = getVaultEngine();
+	if (!vault) return { ok: false, error: 'Vault engine not initialized' };
+	const note = vault.getNote(vaultPath);
+	if (!note) return { ok: true, path: vaultPath, action: 'updated' };
+
+	const existing = note.meta as Record<string, unknown>;
+	const stripped: Record<string, unknown> = {};
+	const STRIP_KEYS = new Set(['crm_id', 'stage', 'emails', 'related_notes', 'last_synced', 'tags']);
+	for (const [k, v] of Object.entries(existing)) {
+		if (!STRIP_KEYS.has(k)) stripped[k] = v;
+	}
+	stripped.crm_archived_at = new Date().toISOString();
+	// Vault engine requires `tags` per GLOBAL_REQUIRED_FIELDS — give it an
+	// empty array rather than letting the validator reject the write.
+	stripped.tags = [];
+
+	const result = await vault.updateNote(vaultPath, { meta: stripped });
+	if (!result.success) return { ok: false, error: result.error };
+	return { ok: true, path: result.path, action: 'updated' };
+}
+
 // ─── internals ─────────────────────────────────────────────────────────────
 
 function buildManagedFrontmatter(

@@ -2,16 +2,16 @@
 
 export {
 	getCrmDb, closeCrmDb,
-	addContact, getContact, listContacts, searchContacts,
-	updateContactStage, setNextFollowup, deleteContact,
-	addContactEmail, setPrimaryEmail, listContactEmails, findContactByEmail,
+	addContact, getContact, listContacts, countContacts, searchContacts,
+	updateContact, updateContactStage, setNextFollowup, deleteContact,
+	addContactEmail, setPrimaryEmail, removeContactEmail, listContactEmails, findContactByEmail,
 	addInteraction, listInteractions,
 	addTag, tagContact, listContactTags,
 	listStageHistory, listFollowups,
 	// D10 — vault-note attachments
 	listContactNotes, attachNote, detachNote, findContactsByVaultPath,
 	type ListContactsOptions, type AddContactEmailInput, type AddInteractionInput,
-	type ListFollowupsOptions,
+	type ListFollowupsOptions, type UpdateContactFields, type RemoveContactEmailResult,
 } from './db.js';
 
 export type {
@@ -41,5 +41,6 @@ export {
 export {
 	syncContactToVault,
 	defaultContactPath,
+	archiveCrmFrontmatter,
 	type SyncContactResult,
 } from './vault-sync.js';
