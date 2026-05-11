@@ -13,6 +13,7 @@ export {
 	getFilterCache, setFilterCache, bumpFilterCacheHit,
 	applyClassification, setMessageHeaderSignals, markMessageProcessed,
 	listMessagesForFiltering, reclassifyBySignature, getFilterStats,
+	rowToMessage,
 	type MessageListOptions,
 } from './db.js';
 

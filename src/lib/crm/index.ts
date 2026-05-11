@@ -19,3 +19,22 @@ export type {
 	NewContactInput,
 } from './types.js';
 export { CONTACT_STAGES } from './types.js';
+
+// Stage B — cross-DB bridge.
+export {
+	listMessagesForContact,
+	enrichInboxRowsWithContact,
+	findWebsiteLeads,
+	isCrmContact,
+	type ListMessagesForContactOptions,
+	type InboxRowEnrichment,
+	type WebsiteLeadsOptions,
+	type WebsiteLeadCandidate,
+} from './inbox-bridge.js';
+
+// Stage B — vault frontmatter sync.
+export {
+	syncContactToVault,
+	defaultContactPath,
+	type SyncContactResult,
+} from './vault-sync.js';

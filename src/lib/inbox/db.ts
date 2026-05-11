@@ -815,7 +815,7 @@ export function getMessageCount(accountId?: string): number {
 	return row.c;
 }
 
-function rowToMessage(row: Record<string, unknown>): InboxMessage {
+export function rowToMessage(row: Record<string, unknown>): InboxMessage {
 	return {
 		id: row.id as number,
 		accountId: row.account_id as string,
