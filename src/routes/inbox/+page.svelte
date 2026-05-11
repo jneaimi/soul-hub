@@ -182,6 +182,89 @@
 		bulk: 'bulk',
 		unclassified: '?',
 	};
+	const ALL_CATEGORIES = [
+		'personal',
+		'transactional',
+		'notification',
+		'promotional',
+		'bulk',
+		'unclassified',
+	] as const;
+
+	// L2-U2 recategorize popover — exactly one open at a time. State sits at
+	// module scope (not per-row) so click-outside can close cleanly without
+	// each row carrying its own listener.
+	let recategorizeOpenId = $state<number | null>(null);
+	let recategorizeScope = $state<'pattern' | 'this'>('pattern');
+	let recategorizeSaving = $state(false);
+	let recategorizeError = $state<string | null>(null);
+
+	function openRecategorize(id: number) {
+		recategorizeError = null;
+		recategorizeOpenId = recategorizeOpenId === id ? null : id;
+	}
+
+	function deriveProcessStatus(category: string, current: string): string {
+		// Mirrors src/lib/inbox/types.ts:CATEGORY_TO_STATUS — promotional/bulk
+		// are agent-hidden; everything else is agent-visible. Recategorizing
+		// always pulls a row back into the queued pool (never auto-marks it
+		// processed); operator can still mark processed via the agent.
+		if (category === 'promotional' || category === 'bulk') return 'skipped';
+		return current === 'processed' ? 'processed' : 'queued';
+	}
+
+	async function recategorize(messageId: number, category: string) {
+		recategorizeSaving = true;
+		recategorizeError = null;
+		try {
+			const res = await fetch(`/api/inbox/messages/${messageId}/recategorize`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ category, scope: recategorizeScope }),
+			});
+			const data = await res.json();
+			if (!res.ok) {
+				recategorizeError = data.error || `HTTP ${res.status}`;
+				return;
+			}
+			// Update local state — patch the message in `messages` AND
+			// `selectedMessage` (they're distinct refs, both displayed). Re-using
+			// the array map idiom from elsewhere in this file.
+			messages = messages.map((m) =>
+				m.id === messageId
+					? { ...m, category, processStatus: deriveProcessStatus(category, m.processStatus) }
+					: m,
+			);
+			if (selectedMessage?.id === messageId) {
+				selectedMessage = {
+					...selectedMessage,
+					category,
+					processStatus: deriveProcessStatus(category, selectedMessage.processStatus),
+				};
+			}
+			recategorizeOpenId = null;
+			const sib = data.siblingsUpdated ?? 0;
+			showFlash(
+				sib > 0
+					? `Recategorized as ${category}. Re-classified ${sib} matching sibling${sib === 1 ? '' : 's'}.`
+					: `Recategorized as ${category}.`,
+				'success',
+			);
+		} catch (err) {
+			recategorizeError = (err as Error).message ?? String(err);
+		} finally {
+			recategorizeSaving = false;
+		}
+	}
+
+	function handleRecategorizeOutsideClick(e: MouseEvent) {
+		if (recategorizeOpenId === null) return;
+		const target = e.target as HTMLElement | null;
+		if (!target) return;
+		if (!target.closest('[data-recategorize]')) {
+			recategorizeOpenId = null;
+		}
+	}
 
 	// Add account form
 	let showAddForm = $state(false);
@@ -358,10 +441,12 @@
 	});
 
 	// Escape closes whichever overlay is open, top-down by visual stacking
-	// (modal > drawer > mobile sidebar). Only one runs per press.
+	// (popover > modal > drawer > mobile sidebar). Only one runs per press.
 	function onKeydown(e: KeyboardEvent) {
 		if (e.key !== 'Escape') return;
-		if (settingsAccount) {
+		if (recategorizeOpenId !== null) {
+			recategorizeOpenId = null;
+		} else if (settingsAccount) {
 			settingsAccount = null;
 		} else if (showAddForm) {
 			showAddForm = false;
@@ -676,7 +761,7 @@
 	<title>Inbox — Soul Hub</title>
 </svelte:head>
 
-<svelte:window onkeydown={onKeydown} />
+<svelte:window onkeydown={onKeydown} onclick={handleRecategorizeOutsideClick} />
 
 <div class="h-full flex flex-col">
 	<!-- Flash message -->
@@ -1109,13 +1194,85 @@
 										</p>
 										<p class="text-xs text-hub-dim">To: {msg.toAddress}</p>
 										{#if chips.length > 0 || (msg.category && categoryColors[msg.category])}
-											<div class="flex flex-wrap gap-1 mt-1.5">
+											<div class="flex flex-wrap items-center gap-1 mt-1.5">
 												{#if msg.category && categoryColors[msg.category]}
-													<span
-														class="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded font-medium {categoryColors[msg.category]}"
-														title="Layer 2 classification"
-													>
-														{msg.category}
+													<!-- L2-U2: chip + pencil opens a reclassify popover.
+													     data-recategorize opts the entire popover surface
+													     out of the window-level click-outside handler. -->
+													<span class="relative inline-flex items-center gap-1" data-recategorize>
+														<span
+															class="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded font-medium {categoryColors[msg.category]}"
+															title="Layer 2 classification — click the pencil to change"
+														>
+															{msg.category}
+														</span>
+														<button
+															type="button"
+															onclick={() => openRecategorize(msg.id)}
+															class="text-hub-dim hover:text-hub-text transition-colors p-0.5 rounded focus:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50 cursor-pointer"
+															title="Reclassify this message"
+															aria-label="Reclassify"
+															aria-expanded={recategorizeOpenId === msg.id}
+														>
+															<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+																<path d="M12 20h9"/>
+																<path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4 12.5-12.5z"/>
+															</svg>
+														</button>
+														{#if recategorizeOpenId === msg.id}
+															<div
+																class="absolute top-full left-0 mt-1 z-20 w-72 bg-hub-bg border border-hub-border rounded-lg shadow-xl p-3 space-y-3"
+																role="dialog"
+																aria-label="Reclassify message"
+															>
+																<div>
+																	<div class="text-[10px] uppercase tracking-wider text-hub-dim mb-1.5">Reclassify as</div>
+																	<div class="flex flex-wrap gap-1">
+																		{#each ALL_CATEGORIES as cat (cat)}
+																			<button
+																				type="button"
+																				onclick={() => void recategorize(msg.id, cat)}
+																				disabled={recategorizeSaving || cat === msg.category}
+																				class="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded font-medium {categoryColors[cat]} hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed transition-opacity cursor-pointer"
+																				title={cat === msg.category ? 'Current category' : `Set to ${cat}`}
+																			>
+																				{cat}
+																			</button>
+																		{/each}
+																	</div>
+																</div>
+																<div class="border-t border-hub-border/50 pt-2 space-y-1">
+																	<div class="text-[10px] uppercase tracking-wider text-hub-dim">Scope</div>
+																	<label class="flex items-start gap-2 text-xs text-hub-muted cursor-pointer py-0.5">
+																		<input
+																			type="radio"
+																			bind:group={recategorizeScope}
+																			value="pattern"
+																			class="mt-0.5 accent-hub-cta cursor-pointer"
+																		/>
+																		<span>
+																			<span class="text-hub-text">This message + similar</span>
+																			<span class="block text-hub-dim text-[10px]">Updates the cache so future matching mail gets the new category too.</span>
+																		</span>
+																	</label>
+																	<label class="flex items-start gap-2 text-xs text-hub-muted cursor-pointer py-0.5">
+																		<input
+																			type="radio"
+																			bind:group={recategorizeScope}
+																			value="this"
+																			class="mt-0.5 accent-hub-cta cursor-pointer"
+																		/>
+																		<span class="text-hub-text">This message only</span>
+																	</label>
+																</div>
+																{#if recategorizeError}
+																	<div class="text-xs text-hub-danger bg-hub-danger/10 rounded px-2 py-1">{recategorizeError}</div>
+																{/if}
+																{#if recategorizeSaving}
+																	<div class="text-xs text-hub-dim">Saving…</div>
+																{/if}
+															</div>
+														{/if}
 													</span>
 												{/if}
 												{#each chips as chip (chip)}
