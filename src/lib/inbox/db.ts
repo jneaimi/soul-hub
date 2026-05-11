@@ -479,6 +479,17 @@ export function updateAccountSettings(id: string, settings: { label?: string; re
 	return result.changes > 0;
 }
 
+export function updateAccountCredential(id: string, credential: string): boolean {
+	const db = getInboxDb();
+	const encrypted = encrypt(credential);
+	const result = db.prepare(`
+		UPDATE accounts
+		SET encrypted_credential = ?, status = 'disconnected', last_error = NULL
+		WHERE id = ?
+	`).run(encrypted, id);
+	return result.changes > 0;
+}
+
 export function getInboxStats(): { accounts: number; messages: number; lastSync: number | null } {
 	const db = getInboxDb();
 	const accounts = (db.prepare('SELECT COUNT(*) as c FROM accounts').get() as { c: number }).c;

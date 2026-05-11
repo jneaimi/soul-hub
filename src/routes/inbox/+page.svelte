@@ -46,6 +46,43 @@
 	let settingsRetention = $state(90);
 	let settingsSaving = $state(false);
 
+	// Reset password / Reauthorize section
+	let resetOpen = $state(false);
+	let resetPassword = $state('');
+	let resetSaving = $state(false);
+	let resetError = $state('');
+	let resetSuccess = $state('');
+	const isOAuthAccount = $derived(settingsAccount?.provider === 'gmail');
+
+	interface ProviderHelp {
+		label: string;
+		url: string;
+		hint: string;
+	}
+
+	const providerHelp: Record<string, ProviderHelp> = {
+		icloud: {
+			label: 'Apple ID — App-Specific Passwords',
+			url: 'https://account.apple.com/account/manage',
+			hint: 'Sign in → Sign-In and Security → App-Specific Passwords → Generate. Requires two-factor authentication.',
+		},
+		gmail: {
+			label: 'Google Account — Third-party access',
+			url: 'https://myaccount.google.com/permissions',
+			hint: 'Gmail uses OAuth2. If sync stops working (Google\'s Testing-mode refresh tokens expire after 7 days), click Reauthorize below to re-grant access. You can also revoke access at any time from your Google Account.',
+		},
+		outlook: {
+			label: 'Microsoft — App passwords',
+			url: 'https://account.microsoft.com/security',
+			hint: 'Advanced security options → App passwords → Create a new app password.',
+		},
+		imap: {
+			label: 'IMAP credential',
+			url: '',
+			hint: 'Use the password (or app-specific password) provided by your mail host.',
+		},
+	};
+
 	// Status filter
 	let statusFilter = $state('');
 	const processStatusFilters = [
@@ -71,9 +108,40 @@
 	let addLabel = $state('');
 	let addError = $state('');
 	let adding = $state(false);
+	const addHelp = $derived(providerHelp[addProvider] ?? providerHelp.imap);
 
 	// URL params feedback
 	let flashMessage = $state('');
+
+	// Origin for redirect-URI display in Gmail setup hint (client-only).
+	let currentOrigin = $state('');
+
+	// Gmail OAuth configuration status — populated when the Add form opens
+	// and the Gmail provider is selected. Drives the branch between
+	// "Configure in Settings" and "Sign in with Google".
+	let gmailConfigured = $state<boolean | null>(null); // null = not yet checked
+	let gmailConfigChecking = $state(false);
+
+	async function checkGmailConfig() {
+		gmailConfigChecking = true;
+		try {
+			const res = await fetch('/api/inbox/oauth/status');
+			if (res.ok) {
+				const data = await res.json();
+				gmailConfigured = Boolean(data.configured);
+				if (data.redirectUri) currentOrigin = new URL(data.redirectUri).origin;
+			}
+		} catch {
+			gmailConfigured = false;
+		}
+		gmailConfigChecking = false;
+	}
+
+	$effect(() => {
+		if (showAddForm && addProvider === 'gmail') {
+			checkGmailConfig();
+		}
+	});
 
 	const statusColors: Record<string, string> = {
 		connected: 'bg-emerald-400',
@@ -179,6 +247,10 @@
 		settingsAccount = acc;
 		settingsLabel = acc.label;
 		settingsRetention = 90; // default, will be overridden by API if available
+		resetOpen = false;
+		resetPassword = '';
+		resetError = '';
+		resetSuccess = '';
 	}
 
 	async function saveAccountSettings() {
@@ -200,6 +272,38 @@
 			}
 		} catch { /* silent */ }
 		settingsSaving = false;
+	}
+
+	async function resetAccountPassword() {
+		if (!settingsAccount) return;
+		resetError = '';
+		resetSuccess = '';
+		if (!resetPassword.trim()) {
+			resetError = 'Password is required';
+			return;
+		}
+		resetSaving = true;
+		try {
+			const res = await fetch('/api/inbox/accounts', {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					id: settingsAccount.id,
+					credential: resetPassword.trim(),
+				}),
+			});
+			const data = await res.json();
+			if (res.ok) {
+				resetSuccess = 'Password updated — reconnecting…';
+				resetPassword = '';
+				await loadAccounts();
+			} else {
+				resetError = data.error || 'Failed to update password';
+			}
+		} catch {
+			resetError = 'Network error';
+		}
+		resetSaving = false;
 	}
 
 	function timeAgo(ts: number): string {
@@ -234,14 +338,20 @@
 	}
 
 	onMount(() => {
+		currentOrigin = window.location.origin;
 		// Handle URL params (from OAuth callbacks)
 		const urlParams = new URLSearchParams(window.location.search);
 		const added = urlParams.get('added');
+		const reauthorized = urlParams.get('reauthorized');
 		const error = urlParams.get('error');
 		if (added) {
 			flashMessage = `${added} account connected successfully`;
 			setTimeout(() => { flashMessage = ''; }, 5000);
-			// Clean URL
+			window.history.replaceState({}, '', '/inbox');
+		}
+		if (reauthorized) {
+			flashMessage = `Reauthorized ${decodeURIComponent(reauthorized)} — reconnecting…`;
+			setTimeout(() => { flashMessage = ''; }, 5000);
 			window.history.replaceState({}, '', '/inbox');
 		}
 		if (error) {
@@ -439,12 +549,52 @@
 						</div>
 
 						{#if addProvider === 'gmail'}
-							<div class="col-span-2">
-								<p class="text-xs text-hub-muted mb-3">Gmail uses secure OAuth2 authentication.</p>
-								<a href="/api/inbox/oauth" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/15 text-red-400 text-sm font-medium hover:bg-red-500/25 transition-colors">
-									<svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12.545 10.239v3.821h5.445c-.712 2.315-2.647 3.972-5.445 3.972a6.033 6.033 0 110-12.064c1.498 0 2.866.549 3.921 1.453l2.814-2.814A9.969 9.969 0 0012.545 2C7.021 2 2.543 6.477 2.543 12s4.478 10 10.002 10c8.396 0 10.249-7.85 9.426-11.748l-9.426-.013z"/></svg>
-									Sign in with Google
-								</a>
+							<div class="col-span-2 space-y-3">
+								<p class="text-xs text-hub-muted">Gmail uses secure OAuth2 authentication.</p>
+
+								<!-- One-time Google Cloud Console setup. The cred values themselves
+								     are managed in Settings (Platform Environment) — this drawer
+								     only covers steps Soul Hub can't automate (creating the GCP
+								     project and OAuth client). -->
+								<details class="rounded-md bg-hub-surface/60 border border-hub-border/60">
+									<summary class="px-3 py-2 text-[11px] text-hub-muted hover:text-hub-text transition-colors cursor-pointer list-none flex items-center justify-between">
+										<span>First time? Set up the Google OAuth client</span>
+										<svg class="w-3 h-3 text-hub-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+											<polyline points="6 9 12 15 18 9"/>
+										</svg>
+									</summary>
+									<div class="px-3 pb-3 text-[11px] text-hub-muted leading-relaxed space-y-2 border-t border-hub-border/40 pt-2">
+										<p>In <a href="https://console.cloud.google.com" target="_blank" rel="noopener noreferrer" class="text-hub-cta hover:underline">Google Cloud Console</a>:</p>
+										<ol class="list-decimal ms-4 space-y-1">
+											<li>Create a project → enable the <span class="font-mono">Gmail API</span>.</li>
+											<li>Configure the <span class="font-mono">OAuth consent screen</span> as External, leave it in <strong>Testing</strong> mode, add yourself as a test user. Scopes: <span class="font-mono">openid</span>, <span class="font-mono">userinfo.email</span>, <span class="font-mono">https://mail.google.com/</span>.</li>
+											<li>Credentials → <span class="font-mono">Create OAuth client ID</span> → Web application. Add this authorized redirect URI:
+												<code class="block mt-1 px-2 py-1 rounded bg-hub-bg/60 border border-hub-border/40 text-[10px] text-hub-text break-all select-all">{currentOrigin ? `${currentOrigin}/api/inbox/oauth/callback` : '<this app>/api/inbox/oauth/callback'}</code>
+											</li>
+											<li>Copy the resulting <strong>Client ID</strong> and <strong>Client Secret</strong> into <a href="/settings" class="text-hub-cta hover:underline">Settings → Platform Environment</a> (fields <span class="font-mono">GOOGLE_CLIENT_ID</span> and <span class="font-mono">GOOGLE_CLIENT_SECRET</span>). They take effect immediately — no restart needed.</li>
+										</ol>
+										<p class="text-[10px] text-hub-dim pt-1">Heads-up: Google's Testing-mode refresh tokens expire every 7 days. If sync stops, use <em>Reauthorize</em> in the account settings to re-grant access.</p>
+									</div>
+								</details>
+
+								{#if gmailConfigChecking || gmailConfigured === null}
+									<div class="text-[11px] text-hub-dim">Checking Gmail OAuth configuration…</div>
+								{:else if !gmailConfigured}
+									<div class="rounded-md bg-amber-500/10 border border-amber-500/30 px-3 py-2.5 space-y-2">
+										<p class="text-[11px] text-amber-300">
+											Gmail OAuth isn't configured yet. Add <span class="font-mono">GOOGLE_CLIENT_ID</span> and <span class="font-mono">GOOGLE_CLIENT_SECRET</span> in Settings to enable Sign in with Google.
+										</p>
+										<a href="/settings#platform-env" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/15 text-amber-300 text-xs font-medium hover:bg-amber-500/25 transition-colors">
+											Configure in Settings
+											<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17L17 7M17 7H8M17 7v9"/></svg>
+										</a>
+									</div>
+								{:else}
+									<a href="/api/inbox/oauth" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/15 text-red-400 text-sm font-medium hover:bg-red-500/25 transition-colors">
+										<svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12.545 10.239v3.821h5.445c-.712 2.315-2.647 3.972-5.445 3.972a6.033 6.033 0 110-12.064c1.498 0 2.866.549 3.921 1.453l2.814-2.814A9.969 9.969 0 0012.545 2C7.021 2 2.543 6.477 2.543 12s4.478 10 10.002 10c8.396 0 10.249-7.85 9.426-11.748l-9.426-.013z"/></svg>
+										Sign in with Google
+									</a>
+								{/if}
 							</div>
 						{:else if addProvider === 'outlook'}
 							<div class="col-span-2">
@@ -468,9 +618,14 @@
 									{addProvider === 'icloud' ? 'App-Specific Password' : 'Password'}
 								</label>
 								<input type="password" bind:value={addPassword} placeholder="App-specific password" class="w-full mt-1 px-2 py-1.5 rounded bg-hub-surface border border-hub-border text-sm text-hub-text placeholder:text-hub-dim focus:outline-none" />
-								{#if addProvider === 'icloud'}
-									<p class="text-[10px] text-hub-dim mt-1">Generate at appleid.apple.com > Sign-In and Security > App-Specific Passwords</p>
-								{/if}
+								<p class="text-[10px] text-hub-dim mt-1 leading-relaxed">
+									{addHelp.hint}
+									{#if addHelp.url}
+										<a href={addHelp.url} target="_blank" rel="noopener noreferrer" class="text-hub-cta hover:underline ms-1">
+											Open {addHelp.label.split(' — ')[0]} ↗
+										</a>
+									{/if}
+								</p>
 							</div>
 						{/if}
 					</div>
@@ -647,6 +802,86 @@
 							<span class="text-[10px] text-hub-dim">days</span>
 						</div>
 					</div>
+				</div>
+
+				<!-- Reset Password / Reauthorize -->
+				<div class="mb-5 border-t border-hub-border/60 pt-4">
+					<button
+						type="button"
+						onclick={() => { resetOpen = !resetOpen; resetError = ''; resetSuccess = ''; }}
+						class="flex items-center justify-between w-full text-left cursor-pointer group"
+					>
+						<span class="text-[10px] text-hub-dim uppercase tracking-wider group-hover:text-hub-muted transition-colors">
+							{isOAuthAccount ? 'Reauthorize' : 'Reset password'}
+						</span>
+						<svg
+							class="w-3 h-3 text-hub-dim group-hover:text-hub-muted transition-transform {resetOpen ? 'rotate-180' : ''}"
+							viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+						>
+							<polyline points="6 9 12 15 18 9"/>
+						</svg>
+					</button>
+
+					{#if resetOpen}
+						{@const help = providerHelp[settingsAccount.provider] ?? providerHelp.imap}
+						<div class="mt-3 space-y-3">
+							<!-- Provider-specific instructions -->
+							<div class="rounded-md bg-hub-surface/60 border border-hub-border/60 px-3 py-2.5">
+								<p class="text-[11px] text-hub-muted leading-relaxed">
+									{help.hint}
+								</p>
+								{#if help.url}
+									<a
+										href={help.url}
+										target="_blank"
+										rel="noopener noreferrer"
+										class="inline-flex items-center gap-1 mt-2 text-[11px] text-hub-cta hover:underline"
+									>
+										{help.label}
+										<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+											<path d="M7 17L17 7M17 7H8M17 7v9"/>
+										</svg>
+									</a>
+								{/if}
+							</div>
+
+							{#if isOAuthAccount}
+								<!-- Gmail / OAuth re-link: redirect to Google consent flow -->
+								<a
+									href={`/api/inbox/oauth?account=${settingsAccount.id}`}
+									class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-red-500/15 text-red-400 text-xs font-medium hover:bg-red-500/25 transition-colors"
+								>
+									<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M12.545 10.239v3.821h5.445c-.712 2.315-2.647 3.972-5.445 3.972a6.033 6.033 0 110-12.064c1.498 0 2.866.549 3.921 1.453l2.814-2.814A9.969 9.969 0 0012.545 2C7.021 2 2.543 6.477 2.543 12s4.478 10 10.002 10c8.396 0 10.249-7.85 9.426-11.748l-9.426-.013z"/></svg>
+									Reauthorize with Google
+								</a>
+							{:else}
+								<!-- Password-based providers: in-place credential update -->
+								<input
+									type="password"
+									bind:value={resetPassword}
+									placeholder="New app-specific password"
+									autocomplete="new-password"
+									spellcheck="false"
+									class="w-full px-2 py-1.5 rounded bg-hub-surface border border-hub-border text-sm text-hub-text focus:outline-none focus:border-hub-cta/50 font-mono"
+								/>
+
+								{#if resetError}
+									<p class="text-[11px] text-hub-danger">{resetError}</p>
+								{/if}
+								{#if resetSuccess}
+									<p class="text-[11px] text-emerald-400">{resetSuccess}</p>
+								{/if}
+
+								<button
+									onclick={resetAccountPassword}
+									disabled={resetSaving || !resetPassword.trim()}
+									class="px-3 py-1.5 rounded-lg bg-hub-cta/15 text-hub-cta text-xs hover:bg-hub-cta/25 transition-colors cursor-pointer disabled:opacity-50"
+								>
+									{resetSaving ? 'Updating…' : 'Update password & reconnect'}
+								</button>
+							{/if}
+						</div>
+					{/if}
 				</div>
 
 				<!-- Actions -->

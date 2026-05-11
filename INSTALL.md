@@ -188,6 +188,83 @@ npm run doctor      # look for the "tiktok-fetch deps" row — should be OK
 
 **Cost / privacy:** Tier A (yt-dlp metadata) and Tier B (local whisper) are free and run entirely on the host. Tier C (Gemini summary) is optional, capped per-day, and only fires when the user explicitly asks for a summary. No transcripts leave the host unless the user invokes `mode='summary'`.
 
+## Optional: Gmail Inbox (OAuth2)
+
+The Inbox feature can sync Gmail accounts via IMAP using OAuth2. This requires
+a one-time Google Cloud Console setup to issue OAuth credentials for your
+self-hosted Soul Hub. Skip this section if you only use iCloud / Custom IMAP.
+
+**Why OAuth, not an app password:** as of May 1, 2025 Google removed password-
+based access for Workspace IMAP. OAuth (XOAUTH2) is now the only path. For
+personal `@gmail.com` accounts, app passwords still technically work but Soul
+Hub does not implement that path — OAuth gives you proper token refresh and a
+revocation surface in your Google Account.
+
+### Setup
+
+1. Open [Google Cloud Console](https://console.cloud.google.com) and create
+   a new project (e.g. "Soul Hub Inbox").
+2. Search for **Gmail API** in the top bar → **Enable**.
+3. Left nav → **APIs & Services → OAuth consent screen**:
+   - User Type: **External** (the only option without a Workspace org)
+   - App name: `Soul Hub` · support + developer email: your email
+   - Scopes: add `openid`, `.../auth/userinfo.email`, and the restricted
+     scope `https://mail.google.com/`. You will see a warning on the
+     restricted scope — expected.
+   - Test users: add the Gmail address you want to sync.
+   - **Leave Publishing status as "Testing"** — do NOT click "Publish App".
+     Publishing the `mail.google.com` scope triggers Google's CASA security
+     assessment, which is paid and weeks long. Testing mode is the right
+     choice for a single-user self-hosted tool.
+4. Left nav → **APIs & Services → Credentials → + Create Credentials →
+   OAuth client ID**:
+   - Application type: **Web application**
+   - Authorized redirect URIs — add **both**:
+     - `http://localhost:2400/api/inbox/oauth/callback`
+     - `https://<your-public-url>/api/inbox/oauth/callback` (e.g. your
+       Cloudflare tunnel domain)
+   - Copy the **Client ID** and **Client Secret** from the dialog.
+5. In the Soul Hub UI, open **Settings → Platform Environment**, then set the
+   two new fields:
+   - `GOOGLE_CLIENT_ID` → the value from Google Cloud Console
+   - `GOOGLE_CLIENT_SECRET` → the value from Google Cloud Console
+
+   Soul Hub stores both encrypted in `~/.soul-hub/.env` (0600) and updates
+   `process.env` in-memory, so the new values take effect on the next
+   request — **no `pm2 restart` needed.** The Add Gmail screen will detect
+   the new credentials automatically.
+6. In the Inbox UI → **Add Account** → Gmail → **Sign in with Google**.
+   Grant consent in the popup. The callback creates the account row and
+   starts the sync worker.
+
+### Token rotation (7-day Testing-mode limit)
+
+While the OAuth consent screen is in Testing status, Google forcibly expires
+refresh tokens after **7 days**. When that happens the sync worker will
+error with `invalid_grant` and stop syncing.
+
+Recovery: open the account in the Inbox settings modal → expand
+**Reauthorize** → click **Reauthorize with Google**. This redirects through
+the consent flow again, updates the existing account's encrypted tokens in
+place, and restarts the sync worker. No data is lost.
+
+You can also revoke Soul Hub's access at any time from
+[Google Account → Third-party access](https://myaccount.google.com/permissions).
+
+### Troubleshooting
+
+- **Add Gmail screen says "Gmail OAuth isn't configured yet"** — set both
+  `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` under Settings → Platform
+  Environment. The detection check runs on the next page load.
+- **`redirect_uri_mismatch`** — the redirect URI in your Google Cloud
+  Console OAuth client doesn't include the origin you're clicking from.
+  Add both `localhost:2400` and your tunnel URL.
+- **`access_denied`** — your Gmail address isn't in the Test Users list
+  on the OAuth consent screen.
+- **Sync stops after ~7 days** — Testing-mode refresh token expired.
+  Click Reauthorize. There is no permanent fix while the app is in Testing
+  mode (Google policy).
+
 ## Optional: Auto-switch Node via nvm on `cd`
 
 The project pins Node 24 (current LTS) in `.nvmrc`. The bootstrap and CI tooling honor it automatically, but your shell does not — by default, `cd ~/dev/soul-hub` keeps whatever Node version your shell was already on. If that drifts (e.g. brew updates global Node behind your back), the next `npm rebuild` you run from this directory builds native modules against the wrong Node ABI and breaks the PM2 process. The doctor's "Node ABI parity" check will catch it after the fact, but the cleanest fix is to never let drift happen in the first place.

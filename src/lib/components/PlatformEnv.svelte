@@ -17,6 +17,9 @@
 		key: string;
 		description: string;
 		usedBy: string[];
+		/** Optional setup URL — rendered as a help link next to the field.
+		 *  Falls through to adapter-declared link (api?.link) if omitted. */
+		link?: string;
 	}
 
 	const KNOWN_VARS: KnownVar[] = [
@@ -28,6 +31,8 @@
 		{ key: 'ELEVENLABS_API_KEY', description: 'ElevenLabs text-to-speech', usedBy: ['generate skill', 'media-creator agent'] },
 		{ key: 'RESEND_API_KEY', description: 'Resend email API for newsletters', usedBy: ['newsletter skill'] },
 		{ key: 'GOOGLE_API_KEY', description: 'Google Cloud Platform (Geocoding, Places, Maps)', usedBy: ['cafe-deals pipeline'] },
+		{ key: 'GOOGLE_CLIENT_ID', description: 'Gmail OAuth client ID (paired with GOOGLE_CLIENT_SECRET)', usedBy: ['inbox / Gmail'], link: 'https://console.cloud.google.com/apis/credentials' },
+		{ key: 'GOOGLE_CLIENT_SECRET', description: 'Gmail OAuth client secret (paired with GOOGLE_CLIENT_ID)', usedBy: ['inbox / Gmail'], link: 'https://console.cloud.google.com/apis/credentials' },
 		{ key: 'HF_API_TOKEN', description: 'Hugging Face Inference API (optional)', usedBy: ['research skill'] },
 		{ key: 'EODHD_API_KEY', description: 'EODHD financial data API', usedBy: ['market skill'] },
 	];
@@ -101,7 +106,7 @@
 				required: api?.required ?? false,
 				declared: api?.declared ?? false,
 				declaredBy: api?.declaredBy ?? [],
-				link: api?.link,
+				link: api?.link ?? known?.link,
 			};
 		};
 

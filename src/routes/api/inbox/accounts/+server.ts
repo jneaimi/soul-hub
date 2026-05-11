@@ -1,7 +1,7 @@
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { randomUUID } from 'node:crypto';
-import { addAccount, listAccounts, removeAccount, getAccount, updateAccountSettings, startAccountSync, stopAccountSync } from '$lib/inbox/index.js';
+import { addAccount, listAccounts, removeAccount, getAccount, updateAccountSettings, updateAccountCredential, startAccountSync, stopAccountSync } from '$lib/inbox/index.js';
 import type { InboxProvider } from '$lib/inbox/index.js';
 
 const VALID_PROVIDERS: InboxProvider[] = ['icloud', 'gmail', 'outlook', 'imap'];
@@ -104,7 +104,11 @@ export const DELETE: RequestHandler = async ({ request }) => {
 
 /**
  * PATCH /api/inbox/accounts — update account settings
- *   { id, label?, retentionDays? }
+ *   { id, label?, retentionDays?, credential? }
+ *
+ * When credential is provided, the encrypted_credential column is replaced,
+ * status is reset to disconnected, last_error cleared, and the sync worker
+ * restarted so the user immediately sees whether the new credential works.
  */
 export const PATCH: RequestHandler = async ({ request }) => {
 	let body: Record<string, unknown>;
@@ -120,12 +124,37 @@ export const PATCH: RequestHandler = async ({ request }) => {
 	const account = getAccount(id);
 	if (!account) return json({ error: `Account "${id}" not found` }, { status: 404 });
 
-	const updated = updateAccountSettings(id, {
-		label: body.label as string | undefined,
-		retentionDays: typeof body.retentionDays === 'number' ? body.retentionDays : undefined,
-	});
+	const hasSettings = body.label !== undefined || typeof body.retentionDays === 'number';
+	const credential = typeof body.credential === 'string' ? body.credential.trim() : '';
+	const hasCredential = credential.length > 0;
 
-	if (!updated) return json({ error: 'No valid fields to update' }, { status: 400 });
+	if (!hasSettings && !hasCredential) {
+		return json({ error: 'No valid fields to update' }, { status: 400 });
+	}
+
+	if (hasSettings) {
+		updateAccountSettings(id, {
+			label: body.label as string | undefined,
+			retentionDays: typeof body.retentionDays === 'number' ? body.retentionDays : undefined,
+		});
+	}
+
+	if (hasCredential) {
+		try {
+			updateAccountCredential(id, credential);
+		} catch (err) {
+			return json(
+				{ error: `Failed to update credential: ${err instanceof Error ? err.message : String(err)}` },
+				{ status: 500 },
+			);
+		}
+
+		const refreshed = getAccount(id);
+		if (refreshed) {
+			stopAccountSync(id);
+			startAccountSync(refreshed);
+		}
+	}
 
 	const refreshed = getAccount(id);
 	return json({ ok: true, account: refreshed });

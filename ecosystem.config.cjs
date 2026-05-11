@@ -1,15 +1,47 @@
 const { resolve } = require('path');
 const { homedir } = require('os');
+const fs = require('fs');
 
 const SOUL_HUB_HOME = process.env.SOUL_HUB_HOME || resolve(homedir(), '.soul-hub');
 const LOG_DIR = resolve(SOUL_HUB_HOME, 'logs');
 const SECRETS_FILE = resolve(SOUL_HUB_HOME, '.env');
+
+// Pin the Node interpreter to the version in .nvmrc (currently v24).
+// Without this, PM2's daemon falls back to PATH resolution and may pick
+// /opt/homebrew/bin/node (Homebrew's Node) instead of nvm's, which causes
+// native-addon ABI mismatches against better-sqlite3 — symptom:
+// "NODE_MODULE_VERSION N. This version of Node.js requires NODE_MODULE_VERSION M."
+// Override via PM2_NODE_BIN if your install lives elsewhere.
+function resolveNvmNodeBin() {
+  let want;
+  try { want = fs.readFileSync(resolve(__dirname, '.nvmrc'), 'utf8').trim(); }
+  catch { return null; }
+  if (!want) return null;
+  const nvmDir = resolve(homedir(), '.nvm/versions/node');
+  if (!fs.existsSync(nvmDir)) return null;
+  // Exact match first ("v24.14.0"), then major-prefix match ("24" → highest v24.*).
+  const candidates = fs.readdirSync(nvmDir).filter(d => d.startsWith('v'));
+  const exact = `v${want.replace(/^v/, '')}`;
+  const ranked = candidates
+    .filter(v => v === exact || v.startsWith(`v${want.replace(/^v/, '')}.`))
+    .sort((a, b) => {
+      const pa = a.slice(1).split('.').map(Number);
+      const pb = b.slice(1).split('.').map(Number);
+      for (let i = 0; i < 3; i++) if (pa[i] !== pb[i]) return pb[i] - pa[i];
+      return 0;
+    });
+  if (!ranked.length) return null;
+  const bin = resolve(nvmDir, ranked[0], 'bin/node');
+  return fs.existsSync(bin) ? bin : null;
+}
+const PINNED_NODE = process.env.PM2_NODE_BIN || resolveNvmNodeBin() || 'node';
 
 module.exports = {
   apps: [
     {
       name: 'soul-hub',
       script: './server.js',
+      interpreter: PINNED_NODE,
       // PM2 reads ~/.soul-hub/.env at start so child processes (Claude CLI,
       // pipeline blocks) inherit the same secrets the app writes via the
       // settings UI. The app itself ALSO loads them via src/lib/secrets.ts,
@@ -51,13 +83,15 @@ module.exports = {
         YOUTUBE_API_KEY: process.env.YOUTUBE_API_KEY || '',
       },
       // Restart policy.
-      // Bumped 512M → 1024M on 2026-05-10: TikTok mode=full path materialises
-      // a video mp4 + spawns whisper-cli + uploads to Gemini in the same
-      // process tree. Transient peak crossed 512M and PM2 SIGKILL'd mid-tool,
-      // leaving the WhatsApp turn with no reply (worker saw "fetch failed").
-      // Idle footprint is ~100-200MB so 1GB still has plenty of headroom for
-      // misbehaviour detection.
-      max_memory_restart: '1024M',
+      // Bumped 512M → 1024M → 1536M on 2026-05-10. The 1024M cap still
+      // SIGKILL'd post-vault-save at 21:38, suggesting Node v8 was hitting
+      // its default --max-old-space-size limit (~1.5GB on 64-bit) and
+      // dying internally before we could capture the peak. Diagnostic
+      // bump to 1536M + NODE_OPTIONS=--max-old-space-size=1536 (set in
+      // env block below) lets V8 actually use the full headroom and lets
+      // the in-process memory log capture the real peak.
+      max_memory_restart: '1536M',
+      node_args: '--max-old-space-size=1536',
       exp_backoff_restart_delay: 100,
       max_restarts: 10,
       min_uptime: '5s',
@@ -99,6 +133,7 @@ module.exports = {
       // into build/whatsapp-worker.js by `npm run build`.
       name: 'soul-hub-whatsapp',
       script: 'build/whatsapp-worker.js',
+      interpreter: PINNED_NODE,
       env_file: SECRETS_FILE,
       env: {
         NODE_ENV: 'production',

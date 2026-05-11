@@ -5,7 +5,7 @@ export {
 	updateAccountStatus, updateAccountLastSync, getAccountCredential,
 	upsertMessage, upsertMessages, listMessages, getMessage, getMessageCount,
 	getSyncState, upsertSyncState, getInboxStats,
-	pruneOldMessages, updateAccountSettings,
+	pruneOldMessages, updateAccountSettings, updateAccountCredential,
 	type MessageListOptions,
 } from './db.js';
 

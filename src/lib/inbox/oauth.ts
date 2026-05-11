@@ -16,7 +16,15 @@
 
 import { OAuth2Client } from 'google-auth-library';
 
-const GMAIL_IMAP_SCOPE = 'https://mail.google.com/';
+// `mail.google.com` is the restricted IMAP/SMTP scope. `openid` + `userinfo.email`
+// are needed so the OAuth callback can call /oauth2/v2/userinfo to discover the
+// authenticated user's address — without these the callback falls back to the
+// literal string "gmail-user", which then breaks XOAUTH2 IMAP auth.
+const GMAIL_SCOPES = [
+	'https://mail.google.com/',
+	'openid',
+	'https://www.googleapis.com/auth/userinfo.email',
+];
 
 export interface OAuthTokens {
 	accessToken: string;
@@ -44,7 +52,7 @@ export function getAuthUrl(redirectUri: string, state?: string): string {
 	return client.generateAuthUrl({
 		access_type: 'offline', // get refresh token
 		prompt: 'consent', // force consent to always get refresh token
-		scope: [GMAIL_IMAP_SCOPE],
+		scope: GMAIL_SCOPES,
 		state,
 	});
 }
