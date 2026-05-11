@@ -439,8 +439,14 @@ export function correctClassification(
 	const reason = input.reason ?? `user-corrected:${input.category}`;
 	const sig = cacheSignature(msg);
 
-	// 1. Always update this row.
-	applyClassification(messageId, { category: input.category, reason });
+	// 1. Always update this row. preserveProcessed=true keeps agent-handled
+	// rows in the `processed` state even when the operator reclassifies them
+	// — the agent's work doesn't get re-queued.
+	applyClassification(messageId, {
+		category: input.category,
+		reason,
+		preserveProcessed: true,
+	});
 
 	// 2. Update cache (user-corrected).
 	setFilterCache({
@@ -450,13 +456,17 @@ export function correctClassification(
 		userCorrected: true,
 	});
 
-	// 3. Sibling pass.
+	// 3. Sibling pass. Exclude the source row so the returned count is the
+	// true number of OTHER rows reclassified (no off-by-one to back out).
 	let siblingsUpdated = 0;
 	if (scope === 'pattern') {
-		siblingsUpdated = reclassifyBySignature(sig, input.category, reason, cacheSignature);
-		// reclassifyBySignature includes the source row; back out by 1 if it
-		// matched (it always will, since we just classified it with the new cat).
-		if (siblingsUpdated > 0) siblingsUpdated = Math.max(0, siblingsUpdated - 1);
+		siblingsUpdated = reclassifyBySignature(
+			sig,
+			input.category,
+			reason,
+			cacheSignature,
+			messageId,
+		);
 	}
 
 	return { ok: true, siblingsUpdated };

@@ -230,12 +230,15 @@
 	}
 
 	function deriveProcessStatus(category: string, current: string): string {
-		// Mirrors src/lib/inbox/types.ts:CATEGORY_TO_STATUS — promotional/bulk
-		// are agent-hidden; everything else is agent-visible. Recategorizing
-		// always pulls a row back into the queued pool (never auto-marks it
-		// processed); operator can still mark processed via the agent.
+		// Mirrors backend db.ts:applyClassification(preserveProcessed=true):
+		//  - If the row was already `processed` (agent acted on it), keep it
+		//    in `processed` regardless of the new category. The agent's work
+		//    record outlives any later relabel.
+		//  - Otherwise derive from CATEGORY_TO_STATUS — promotional/bulk go
+		//    to `skipped`, everything else to `queued`.
+		if (current === 'processed') return 'processed';
 		if (category === 'promotional' || category === 'bulk') return 'skipped';
-		return current === 'processed' ? 'processed' : 'queued';
+		return 'queued';
 	}
 
 	async function recategorize(messageId: number, category: string) {

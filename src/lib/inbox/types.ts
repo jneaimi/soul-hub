@@ -125,6 +125,10 @@ export interface InboxMessage {
 	filteredAt: number | null;
 	/** Raw HeaderSignals as JSON string. Populated lazily. */
 	headerSignals: string | null;
+	/** Layer 3 marker — epoch ms when an agent called inbox-mark-processed.
+	 *  NULL while the row is anything other than `processed`. Drives the
+	 *  365-day retention window for processed mail. */
+	processedAt: number | null;
 }
 
 export interface AttachmentMeta {

@@ -388,6 +388,17 @@ function migrate(db: Database.Database): void {
 		tx();
 		db.pragma(`user_version = 6`);
 	}
+
+	if (version < 7) {
+		// Layer 3 prep — track WHEN an agent processed a message, distinct
+		// from when the row was synced or classified. Used by pruneOldMessages
+		// to age the 365-day processed-retention from the action time rather
+		// than from date_received (which could be years old at action time).
+		db.exec(`
+			ALTER TABLE messages ADD COLUMN processed_at INTEGER;
+		`);
+		db.pragma(`user_version = 7`);
+	}
 }
 
 // ── Account CRUD ──
@@ -833,6 +844,7 @@ function rowToMessage(row: Record<string, unknown>): InboxMessage {
 		filterReason: (row.filter_reason as string | null) ?? null,
 		filteredAt: (row.filtered_at as number | null) ?? null,
 		headerSignals: (row.header_signals as string | null) ?? null,
+		processedAt: (row.processed_at as number | null) ?? null,
 	};
 }
 
@@ -938,13 +950,17 @@ export function pruneOldMessages(accountId: string, retentionDays: number): numb
 			total += queued.changes;
 		}
 
-		// 3. processed — 365 days
+		// 3. processed — 365 days from the agent action (processed_at).
+		// COALESCE falls back to date_received for any pre-migration-#7 rows
+		// that lack a processed_at stamp — keeps the retention window from
+		// growing unbounded if a row gets marked processed by a code path
+		// that bypassed markMessageProcessed.
 		const processedCutoff = now - 365 * 24 * 60 * 60 * 1000;
 		const processed = db.prepare(`
 			DELETE FROM messages
 			WHERE account_id = ?
 			  AND process_status = 'processed'
-			  AND date_received < ?
+			  AND COALESCE(processed_at, date_received) < ?
 			  AND is_flagged = 0
 		`).run(accountId, processedCutoff);
 		total += processed.changes;
@@ -1166,13 +1182,30 @@ export function bumpFilterCacheHit(signature: string): void {
  * Apply a classification to a message. Sets category, derives process_status
  * via CATEGORY_TO_STATUS, writes filter_reason + filtered_at = now.
  * Optionally accepts pre-parsed header_signals JSON to persist alongside.
+ *
+ * `preserveProcessed` (default false): when the source row is already
+ * `processed` (agent acted on it), the status is NOT overwritten. Used by
+ * the correction path so user reclassification doesn't undo agent work or
+ * re-queue rows the heartbeat already handled. Default-false keeps the
+ * Layer 2 classifier callers (cache/rule/LLM hits on `new` rows) unchanged.
  */
 export function applyClassification(
 	messageId: number,
-	input: { category: FilterCategory; reason: string; headerSignalsJson?: string | null },
+	input: {
+		category: FilterCategory;
+		reason: string;
+		headerSignalsJson?: string | null;
+		preserveProcessed?: boolean;
+	},
 ): boolean {
 	const db = getInboxDb();
-	const status = CATEGORY_TO_STATUS[input.category];
+	let status: string = CATEGORY_TO_STATUS[input.category];
+	if (input.preserveProcessed) {
+		const current = db
+			.prepare('SELECT process_status FROM messages WHERE id = ?')
+			.get(messageId) as { process_status: string } | undefined;
+		if (current?.process_status === 'processed') status = 'processed';
+	}
 	const sets = ['category = ?', 'process_status = ?', 'filter_reason = ?', 'filtered_at = ?'];
 	const params: unknown[] = [input.category, status, input.reason, Date.now()];
 	if (input.headerSignalsJson !== undefined) {
@@ -1197,8 +1230,10 @@ export function setMessageHeaderSignals(messageId: number, headerSignalsJson: st
 export function markMessageProcessed(messageId: number): boolean {
 	const db = getInboxDb();
 	const result = db.prepare(`
-		UPDATE messages SET process_status = 'processed' WHERE id = ? AND process_status = 'queued'
-	`).run(messageId);
+		UPDATE messages
+		SET process_status = 'processed', processed_at = ?
+		WHERE id = ? AND process_status = 'queued'
+	`).run(Date.now(), messageId);
 	return result.changes > 0;
 }
 
@@ -1230,14 +1265,19 @@ export function listMessagesForFiltering(opts: { workerStartTs?: number; limit?:
  * sharing the signature are updated in one transaction. `queued`/`processed`
  * rows are LEFT ALONE (agents may have acted on them).
  *
- * Returns the count of messages whose state actually changed (excludes the
- * row that was the source of the correction if its category is unchanged).
+ * `excludeMessageId` (optional): the source row of the correction is
+ * normally updated by the caller via `applyClassification` BEFORE this
+ * function runs. Passing the source id here excludes it from the sibling
+ * count so the returned number is the true count of OTHER rows reclassified.
+ *
+ * Returns the count of sibling rows whose state changed.
  */
 export function reclassifyBySignature(
 	signature: string,
 	category: FilterCategory,
 	reason: string,
 	signatureOf: (msg: { fromAddress: string; subject: string }) => string,
+	excludeMessageId?: number,
 ): number {
 	const db = getInboxDb();
 	const status = CATEGORY_TO_STATUS[category];
@@ -1260,6 +1300,7 @@ export function reclassifyBySignature(
 	`);
 	const tx = db.transaction(() => {
 		for (const row of candidates) {
+			if (excludeMessageId !== undefined && row.id === excludeMessageId) continue;
 			const sig = signatureOf({ fromAddress: row.from_address, subject: row.subject });
 			if (sig === signature) {
 				const r = upd.run(category, status, reason, now, row.id);
