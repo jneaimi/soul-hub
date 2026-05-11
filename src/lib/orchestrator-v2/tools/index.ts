@@ -37,7 +37,13 @@ import {
 	getMessage,
 	getAccount,
 	fetchImapBody,
+	getExtractedData,
+	setExtractedData,
+	recordAgentAction,
+	extractTransactional,
+	inputFromMessage,
 	type FilterCategory,
+	type TransactionalExtract,
 } from '../../inbox/index.js';
 import {
 	addContact,
@@ -1091,6 +1097,68 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 			},
 		}),
 
+		'inbox-extract-data': tool({
+			description:
+				"Extract structured transactional data (kind, amount, currency, merchant, date, cardLast4, referenceNumber, anomalyHint) from a queued message. Returns cached extraction if present; otherwise runs the extractor (subject + 500-char preview) and caches the result. " +
+				"Use for 'how much was that charge', 'what merchant', 'is this transaction unusual', 'what was the OTP'. " +
+				"Only operates on rows with category='transactional' — non-transactional rows return a note explaining the row's category and skip extraction. " +
+				"PROVENANCE: `messageId` MUST be a real id from a prior `inbox-list-queued` / `inbox-read-body` result. NEVER fabricate ids.",
+			inputSchema: z.object({
+				messageId: z.number().int().positive(),
+			}),
+			execute: async ({ messageId }): Promise<ToolResult> => {
+				logToolCall('inbox-extract-data', { messageId });
+				const msg = getMessage(messageId);
+				if (!msg) {
+					const reply = `ERROR: Message ${messageId} not found. Likely a hallucinated id. Call inbox-list-queued first. Do NOT report success to the user.`;
+					recordAgentAction({
+						tool: 'inbox-extract-data',
+						messageId,
+						actor: 'orchestrator',
+						args: { messageId },
+						result: { ok: false, reason: 'not-found' },
+					});
+					return { kind: 'reply', text: reply };
+				}
+
+				if (msg.category !== 'transactional') {
+					const reply = `Message ${messageId} is category '${msg.category ?? 'unclassified'}' — extraction is scoped to transactional rows only. No data extracted.`;
+					recordAgentAction({
+						tool: 'inbox-extract-data',
+						messageId,
+						actor: 'orchestrator',
+						args: { messageId },
+						result: { ok: false, reason: 'non-transactional', category: msg.category },
+					});
+					return { kind: 'reply', text: reply };
+				}
+
+				// Cache hit — return immediately, no LLM call, no new audit row
+				// (the cached extraction already has its own audit history).
+				const cached = getExtractedData<TransactionalExtract>(messageId);
+				if (cached) {
+					return {
+						kind: 'reply',
+						text: formatExtract(messageId, cached, /*fromCache*/ true),
+					};
+				}
+
+				const result = await extractTransactional(inputFromMessage(msg));
+				setExtractedData(messageId, result.extract);
+				recordAgentAction({
+					tool: 'inbox-extract-data',
+					messageId,
+					actor: 'orchestrator',
+					args: { messageId },
+					result: { ok: result.ok, kind: result.extract.kind, reason: result.reason },
+				});
+				return {
+					kind: 'reply',
+					text: formatExtract(messageId, result.extract, /*fromCache*/ false),
+				};
+			},
+		}),
+
 		'crm-add-contact': tool({
 			description:
 				"Add a new CRM contact. Use when the user says 'add X as a new lead', 'remember Sarah from Acme', " +
@@ -1809,6 +1877,33 @@ function resolveCrmContactId(input: { contactId?: string; email?: string }): str
 		return match?.contact.id ?? null;
 	}
 	return null;
+}
+
+/** Render a TransactionalExtract as a compact one-message reply. Empty
+ *  fields are skipped; failure stubs (`kind:'unknown'`) surface the note. */
+function formatExtract(
+	messageId: number,
+	extract: TransactionalExtract,
+	fromCache: boolean,
+): string {
+	const tag = fromCache ? '(cached)' : '(extracted)';
+	if (extract.kind === 'unknown') {
+		const note = extract.note ? ` — ${extract.note}` : '';
+		return `Message ${messageId}: extraction did not fit the transactional shape${note}. ${tag}`;
+	}
+	const parts: string[] = [`kind=${extract.kind}`];
+	if (extract.amount !== undefined && extract.currency) {
+		parts.push(`amount=${extract.amount} ${extract.currency}`);
+	} else if (extract.amount !== undefined) {
+		parts.push(`amount=${extract.amount}`);
+	}
+	if (extract.merchant) parts.push(`merchant="${extract.merchant}"`);
+	if (extract.date) parts.push(`date=${extract.date}`);
+	if (extract.cardLast4) parts.push(`card=••${extract.cardLast4}`);
+	if (extract.referenceNumber) parts.push(`ref=${extract.referenceNumber}`);
+	if (extract.anomalyHint) parts.push(`anomaly=true`);
+	if (extract.note) parts.push(`note="${extract.note}"`);
+	return `Message ${messageId} ${tag}: ${parts.join(', ')}.`;
 }
 
 /** Build the `invokeSkill` tool description dynamically from the registry.

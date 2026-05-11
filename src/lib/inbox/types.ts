@@ -129,6 +129,12 @@ export interface InboxMessage {
 	 *  NULL while the row is anything other than `processed`. Drives the
 	 *  365-day retention window for processed mail. */
 	processedAt: number | null;
+	/** Layer 3 Stage 2 — JSON-encoded TransactionalExtract (see extractor.ts).
+	 *  NULL when extraction has not yet run for this row. */
+	extractedData: string | null;
+	/** Epoch ms when the extractor wrote `extracted_data` (success or
+	 *  cached-failure stub). NULL until first extraction attempt. */
+	extractedAt: number | null;
 }
 
 export interface AttachmentMeta {

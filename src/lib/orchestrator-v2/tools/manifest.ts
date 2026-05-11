@@ -290,6 +290,23 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 		],
 	},
 	{
+		name: 'inbox-extract-data',
+		category: 'read',
+		llm_description:
+			"Extract structured transactional data (kind, amount, currency, merchant, date, cardLast4, referenceNumber, anomalyHint) from a queued message. Returns cached extraction if present; otherwise runs the extractor (subject + 500-char preview) and caches the result. " +
+			"Use for 'how much was that charge', 'what merchant', 'is this transaction unusual', 'what was the OTP'. " +
+			"Only operates on rows with category='transactional' — non-transactional rows return a note explaining the row's category and skip extraction. " +
+			"PROVENANCE: `messageId` MUST be a real id from a prior `inbox-list-queued` / `inbox-read-body` result. NEVER fabricate ids.",
+		ui_description:
+			'Extract structured transactional data from a queued message (subject + preview only). Results cache on the message row; subsequent calls are free. Layer 3 Stage 2.',
+		examples: [
+			{
+				user: '"how much was that Carrefour charge"',
+				toolArgs: '{ messageId: 32801 }',
+			},
+		],
+	},
+	{
 		name: 'crm-add-contact',
 		category: 'write',
 		llm_description:

@@ -399,6 +399,38 @@ function migrate(db: Database.Database): void {
 		`);
 		db.pragma(`user_version = 7`);
 	}
+
+	if (version < 8) {
+		// Layer 3 Stage 2 — structured extraction for transactional mail.
+		// Per ADR 2026-05-11-inbox-agent-workflows-layer-3 §D3:
+		//   • extracted_data: JSON-encoded TransactionalExtract (see extractor.ts)
+		//   • extracted_at: epoch ms when extraction ran (success or cached failure)
+		// Lazy by default — populated only when `inbox-extract-data` runs.
+		// Eager mode (INBOX_TRANSACTIONAL_EAGER_EXTRACT=1) lands in a follow-up.
+		//
+		// Plus Guardrail 2 (§D7): agent_actions audit log. Every Layer 3 tool
+		// invocation appends a row so we have a permanent trail of "agent did X".
+		// message_id is nullable post-CASCADE so the audit row outlives the
+		// pruned message.
+		db.exec(`
+			ALTER TABLE messages ADD COLUMN extracted_data TEXT;
+			ALTER TABLE messages ADD COLUMN extracted_at INTEGER;
+
+			CREATE TABLE IF NOT EXISTS agent_actions (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				timestamp INTEGER NOT NULL,
+				tool TEXT NOT NULL,
+				message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+				actor TEXT NOT NULL,
+				args TEXT,
+				result TEXT,
+				conversation_key TEXT
+			);
+			CREATE INDEX IF NOT EXISTS idx_agent_actions_message ON agent_actions(message_id);
+			CREATE INDEX IF NOT EXISTS idx_agent_actions_timestamp ON agent_actions(timestamp DESC);
+		`);
+		db.pragma(`user_version = 8`);
+	}
 }
 
 // ── Account CRUD ──
@@ -845,7 +877,69 @@ export function rowToMessage(row: Record<string, unknown>): InboxMessage {
 		filteredAt: (row.filtered_at as number | null) ?? null,
 		headerSignals: (row.header_signals as string | null) ?? null,
 		processedAt: (row.processed_at as number | null) ?? null,
+		extractedData: (row.extracted_data as string | null) ?? null,
+		extractedAt: (row.extracted_at as number | null) ?? null,
 	};
+}
+
+// ── Layer 3 Stage 2 — extraction + audit (ADR 2026-05-11-inbox-agent-workflows-layer-3 §D3, §D7) ──
+
+/** Return parsed extraction JSON or null if not yet extracted. Caller
+ *  decides what to do on cache miss (run extractor + setExtractedData). */
+export function getExtractedData<T = unknown>(messageId: number): T | null {
+	const db = getInboxDb();
+	const row = db
+		.prepare('SELECT extracted_data FROM messages WHERE id = ?')
+		.get(messageId) as { extracted_data: string | null } | undefined;
+	if (!row || !row.extracted_data) return null;
+	try {
+		return JSON.parse(row.extracted_data) as T;
+	} catch {
+		return null;
+	}
+}
+
+/** Cache an extraction result on the message row. Caller is responsible
+ *  for shape validation — we store whatever JSON-serialisable value was
+ *  passed (success OR failure stub like `{kind:'unknown',note}`). */
+export function setExtractedData(messageId: number, extract: unknown): void {
+	const db = getInboxDb();
+	const json = JSON.stringify(extract);
+	db.prepare(
+		`UPDATE messages SET extracted_data = ?, extracted_at = ? WHERE id = ?`,
+	).run(json, Date.now(), messageId);
+}
+
+export interface AgentActionInput {
+	tool: string;
+	messageId?: number | null;
+	actor: 'orchestrator' | 'worker' | 'operator-direct';
+	args?: unknown;
+	result?: unknown;
+	conversationKey?: string | null;
+}
+
+/** Append a row to the agent_actions audit log. Never throws — failures
+ *  are logged and swallowed so a logging error can't break the calling
+ *  tool's reply path. */
+export function recordAgentAction(input: AgentActionInput): void {
+	try {
+		const db = getInboxDb();
+		db.prepare(
+			`INSERT INTO agent_actions (timestamp, tool, message_id, actor, args, result, conversation_key)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			Date.now(),
+			input.tool,
+			input.messageId ?? null,
+			input.actor,
+			input.args === undefined ? null : JSON.stringify(input.args),
+			input.result === undefined ? null : JSON.stringify(input.result),
+			input.conversationKey ?? null,
+		);
+	} catch (err) {
+		console.warn('[inbox/agent-actions] insert failed:', (err as Error).message);
+	}
 }
 
 // ── Sync State ──

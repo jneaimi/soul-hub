@@ -14,7 +14,9 @@ export {
 	applyClassification, setMessageHeaderSignals, markMessageProcessed,
 	listMessagesForFiltering, reclassifyBySignature, getFilterStats,
 	rowToMessage,
-	type MessageListOptions,
+	// Layer 3 Stage 2 — structured extraction + agent audit log
+	getExtractedData, setExtractedData, recordAgentAction,
+	type MessageListOptions, type AgentActionInput,
 } from './db.js';
 
 export type {
@@ -50,3 +52,12 @@ export {
 
 export { fetchImapBody, fetchImapHeaders, fetchImapAttachment } from './body.js';
 export type { MessageBody, AttachmentBytes } from './body.js';
+
+// Layer 3 Stage 2 — structured extraction
+export { extractTransactional, inputFromMessage } from './extractor.js';
+export type {
+	TransactionalKind,
+	TransactionalExtract,
+	ExtractInput,
+	ExtractResult,
+} from './extractor.js';
