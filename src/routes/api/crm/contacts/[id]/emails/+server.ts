@@ -22,6 +22,7 @@ import {
 	getContact,
 	addContactEmail,
 	removeContactEmail,
+	setPrimaryEmail,
 	syncContactToVault,
 } from '$lib/crm/index.js';
 
@@ -61,6 +62,39 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		}
 		return json({ error: 'addContactEmail failed', detail: message }, { status: 500 });
 	}
+};
+
+/**
+ * Promote an existing email to primary. Body: `{ email, makePrimary: true }`.
+ * The DB helper demotes the prior primary atomically — exactly-one-primary
+ * invariant survives. Returns 404 if the (contactId, email) pair doesn't
+ * exist on this contact.
+ */
+export const PATCH: RequestHandler = async ({ params, request }) => {
+	const contactId = params.id;
+	if (!contactId) return json({ error: 'contact id required' }, { status: 400 });
+	if (!getContact(contactId)) {
+		return json({ error: `Contact ${contactId} not found` }, { status: 404 });
+	}
+
+	let body: Record<string, unknown>;
+	try {
+		body = (await request.json()) as Record<string, unknown>;
+	} catch {
+		return json({ error: 'invalid JSON body' }, { status: 400 });
+	}
+	if (typeof body.email !== 'string' || body.email.trim().length === 0) {
+		return json({ error: 'email required (non-empty string)' }, { status: 400 });
+	}
+	if (body.makePrimary !== true) {
+		return json({ error: 'only makePrimary:true is supported on PATCH today' }, { status: 400 });
+	}
+
+	const ok = setPrimaryEmail(contactId, body.email);
+	if (!ok) return json({ error: 'email not attached to this contact' }, { status: 404 });
+
+	const syncResult = await syncContactToVault(contactId);
+	return json({ promoted: true, email: body.email, syncOk: syncResult.ok });
 };
 
 export const DELETE: RequestHandler = async ({ params, url }) => {

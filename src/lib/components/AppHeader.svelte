@@ -5,6 +5,7 @@
 		{ href: '/orchestration', label: 'Orchestration', matchPrefix: '/orchestration' },
 		{ href: '/projects', label: 'Projects', matchPrefix: '/project' },
 		{ href: '/inbox', label: 'Inbox', matchPrefix: '/inbox' },
+		{ href: '/crm', label: 'CRM', matchPrefix: '/crm' },
 		{ href: '/vault', label: 'Vault', matchPrefix: '/vault' },
 		{ href: '/sessions', label: 'Sessions', matchPrefix: '/sessions' },
 	];
