@@ -167,10 +167,17 @@ async function deliver(text: string, cfg: WhatsAppChannelConfig, target: string)
 async function runAnomalyPush(
 	cfg: WhatsAppChannelConfig,
 	target: string,
+	dailyBudgetRemaining: number,
 ): Promise<number> {
 	if (process.env.INBOX_ANOMALY_DISABLED === '1') return 0;
 	const a = cfg.inboxAnomaly;
 	if (!a.enabled) return 0;
+
+	// Effective cap = min(per-tick anomaly cap, remaining daily heartbeat
+	// budget). Anomalies count against `heartbeat.maxPerDay` so a noisy
+	// mail day can't drown the operator. A zero-budget tick is a no-op.
+	const effectiveCap = Math.max(0, Math.min(a.perTickCap, dailyBudgetRemaining));
+	if (effectiveCap === 0) return 0;
 
 	const candidates = listAnomalyPushCandidates({
 		lookbackHours: a.lookbackHours,
@@ -190,7 +197,7 @@ async function runAnomalyPush(
 
 	let pushed = 0;
 	for (const msg of candidates) {
-		if (pushed >= a.perTickCap) break;
+		if (pushed >= effectiveCap) break;
 		const extract = safeParseExtract(msg.extractedData);
 		if (!extract) continue;
 
@@ -431,7 +438,12 @@ export async function runHeartbeatOnce(
 	// no LLM rephrasing), so they slot in cleanly without competing for
 	// the heartbeat ack budget. OFF by default; `cfg.inboxAnomaly.enabled`
 	// gates it. Errors are caught inside; this never throws.
-	const anomaliesPushed = await runAnomalyPush(cfg, hb.target);
+	//
+	// Anomalies count against heartbeat.maxPerDay — pass the remaining
+	// budget so the loop respects the cap mid-tick rather than burning
+	// past it and reconciling after.
+	const dailyBudgetRemaining = hb.maxPerDay - getDailyCount(hb.target, ymd);
+	const anomaliesPushed = await runAnomalyPush(cfg, hb.target, dailyBudgetRemaining);
 	if (anomaliesPushed > 0) {
 		appendLog({
 			ts: Date.now(),
@@ -439,13 +451,11 @@ export async function runHeartbeatOnce(
 			status: 'sent',
 			text: `[anomaly-push] ${anomaliesPushed} message(s) fired`,
 		});
-		// Count anomaly messages against the daily cap so the operator
-		// doesn't drown in heartbeat traffic on a busy mail day.
 		for (let i = 0; i < anomaliesPushed; i++) {
 			incrementDailyCount(hb.target, ymd);
 		}
-		// If we already hit the cap with anomalies alone, skip the rest
-		// of the tick — the LLM composition would just be noise on top.
+		// If anomalies consumed the daily cap, skip the LLM composition —
+		// would just be noise on top of the deterministic anomaly stream.
 		if (getDailyCount(hb.target, ymd) >= hb.maxPerDay) {
 			return { status: 'sent', text: `${anomaliesPushed} anomaly push(es)` };
 		}
