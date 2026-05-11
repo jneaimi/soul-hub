@@ -12,6 +12,14 @@
 		retentionDays: number;
 	}
 
+	interface AttachmentMeta {
+		filename: string;
+		size: number;
+		mimeType: string;
+		part?: string;
+		isInline: boolean;
+	}
+
 	interface Message {
 		id: number;
 		accountId: string;
@@ -24,8 +32,15 @@
 		flags: string[];
 		hasAttachments: boolean;
 		attachmentCount: number;
+		attachmentsMeta: AttachmentMeta[];
 		processStatus: string;
 		bodyPreview: string;
+	}
+
+	interface MessageBody {
+		text: string;
+		html: string | null;
+		fetchedAt: number;
 	}
 
 	let accounts = $state<Account[]>([]);
@@ -39,6 +54,15 @@
 	// Accounts whose lastError is expanded in the sidebar. Single-id slot —
 	// only one error is expanded at a time, keeps the sidebar compact.
 	let expandedErrorId = $state<string | null>(null);
+
+	// Full-message-body cache keyed by message id. Populated lazily on row
+	// expand via GET /api/inbox/messages/[id]/body — see ADR 2026-04-16 and
+	// plan Open #3. Kept in component state for the current session;
+	// refresh re-fetches on next expand.
+	let bodyCache = $state<Map<number, MessageBody>>(new Map());
+	let bodyLoading = $state(false);
+	let bodyError = $state<string | null>(null);
+	let viewHtml = $state(false); // per-selection toggle, resets on each open
 
 	// Focus targets for first-input-focus on modal/drawer open.
 	let settingsLabelInput: HTMLInputElement | undefined = $state();
@@ -199,6 +223,37 @@
 			handler();
 		}
 	}
+
+	// Lazy body loader. When a message is expanded, fetch its full body
+	// from /api/inbox/messages/[id]/body unless we've already cached it
+	// in this session. Resets the HTML-view toggle on every new selection
+	// so each open starts on the safer text view.
+	async function loadMessageBody(id: number) {
+		bodyError = null;
+		if (bodyCache.has(id)) return;
+		bodyLoading = true;
+		try {
+			const res = await fetch(`/api/inbox/messages/${id}/body`);
+			const data = await res.json();
+			if (res.ok) {
+				const next = new Map(bodyCache);
+				next.set(id, data as MessageBody);
+				bodyCache = next;
+			} else {
+				bodyError = data.error || `HTTP ${res.status}`;
+			}
+		} catch (err) {
+			bodyError = (err as Error).message || 'Network error';
+		}
+		bodyLoading = false;
+	}
+
+	$effect(() => {
+		if (selectedMessage) {
+			viewHtml = false;
+			void loadMessageBody(selectedMessage.id);
+		}
+	});
 
 	// Track active-filter state to the URL. Reads happen once on mount
 	// (below); after that this effect keeps the URL in sync as the operator
@@ -400,6 +455,20 @@
 
 	function formatFrom(msg: Message): string {
 		return msg.fromName || msg.fromAddress.split('@')[0];
+	}
+
+	function formatBytes(n: number): string {
+		if (n < 1024) return `${n} B`;
+		if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+		return `${(n / 1024 / 1024).toFixed(1)} MB`;
+	}
+
+	// Pretty IMAP flag chips: drop \Seen (the unread dot already conveys it),
+	// strip leading backslash, capitalize. Empty list = nothing rendered.
+	function flagChips(flags: string[]): string[] {
+		return flags
+			.filter((f) => f !== '\\Seen')
+			.map((f) => f.replace(/^\\/, ''));
 	}
 
 	// Mirror the active filter state to the URL so closing/reopening the tab
@@ -860,21 +929,103 @@
 						</button>
 
 						{#if selectedMessage?.id === msg.id}
+							{@const chips = flagChips(msg.flags)}
+							{@const realAttachments = (msg.attachmentsMeta || []).filter((a) => !a.isInline)}
+							{@const body = bodyCache.get(msg.id)}
 							<div class="px-4 py-4 bg-hub-surface/20 border-b border-hub-border">
-								<div class="flex items-start justify-between mb-2">
+								<!-- Header: subject + metadata + flag chips -->
+								<div class="flex items-start justify-between mb-2 gap-2">
 									<div class="min-w-0 flex-1">
 										<p class="text-sm font-medium text-hub-text">{msg.subject || '(no subject)'}</p>
 										<p class="text-xs text-hub-muted mt-0.5">
 											From: {msg.fromName ? `${msg.fromName} <${msg.fromAddress}>` : msg.fromAddress}
 										</p>
 										<p class="text-xs text-hub-dim">To: {msg.toAddress}</p>
+										{#if chips.length > 0}
+											<div class="flex flex-wrap gap-1 mt-1.5">
+												{#each chips as chip (chip)}
+													<span class="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-hub-surface text-hub-muted">{chip}</span>
+												{/each}
+											</div>
+										{/if}
 									</div>
-									<span class="text-[10px] text-hub-dim flex-shrink-0 ml-2">
+									<span class="text-[10px] text-hub-dim flex-shrink-0">
 										{new Date(msg.dateSent ?? msg.dateReceived).toLocaleString()}
 									</span>
 								</div>
-								<div class="mt-3 text-xs text-hub-muted whitespace-pre-wrap leading-relaxed max-h-60 overflow-y-auto">
-									{msg.bodyPreview || '(no preview available — full body loads when sync fetches it)'}
+
+								<!-- Real (non-inline) attachments: filename + size. Inline images
+								     are filtered out — they're cid: references embedded in HTML,
+								     not user-facing attachments. Download wiring lands with plan
+								     Open #4. -->
+								{#if realAttachments.length > 0}
+									<div class="mt-3 border-t border-hub-border/40 pt-2">
+										<p class="text-[10px] uppercase tracking-wider text-hub-dim mb-1">Attachments ({realAttachments.length})</p>
+										<ul class="space-y-1">
+											{#each realAttachments as att (att.part || att.filename)}
+												<li class="flex items-center gap-2 text-xs text-hub-muted">
+													<svg class="w-3 h-3 text-hub-dim flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+													<span class="truncate flex-1" title={att.filename}>{att.filename}</span>
+													<span class="text-[10px] text-hub-dim flex-shrink-0">{formatBytes(att.size)}</span>
+												</li>
+											{/each}
+										</ul>
+									</div>
+								{/if}
+
+								<!-- Body content: lazy fetch via /api/inbox/messages/[id]/body.
+								     Defaults to text view; "View HTML" toggle shows the html in
+								     a sandboxed iframe (no scripts, no forms, no popups). -->
+								<div class="mt-3 border-t border-hub-border/40 pt-2">
+									{#if bodyLoading}
+										<p class="text-xs text-hub-dim italic">Loading body…</p>
+									{:else if bodyError}
+										<div class="space-y-2">
+											<p class="text-xs text-hub-danger/80">{bodyError}</p>
+											<button
+												type="button"
+												onclick={() => loadMessageBody(msg.id)}
+												class="text-[11px] text-hub-cta hover:underline cursor-pointer"
+											>
+												Retry
+											</button>
+										</div>
+									{:else if body}
+										{#if body.html}
+											<div class="flex items-center justify-end mb-2">
+												<button
+													type="button"
+													onclick={() => { viewHtml = !viewHtml; }}
+													class="text-[10px] text-hub-cta hover:underline cursor-pointer"
+												>
+													{viewHtml ? 'View as text' : 'View as HTML'}
+												</button>
+											</div>
+										{/if}
+										{#if viewHtml && body.html}
+											<!-- Sandboxed iframe — no scripts, no forms, no top
+											     navigation, no popups. Inline cid: images won't
+											     resolve until plan Open #4 ships the attachment
+											     endpoint and we rewrite cid: URIs. -->
+											<iframe
+												sandbox=""
+												srcdoc={body.html}
+												title="Email HTML body"
+												class="w-full h-96 rounded border border-hub-border/40 bg-white"
+											></iframe>
+										{:else}
+											<div class="text-xs text-hub-muted whitespace-pre-wrap leading-relaxed max-h-96 overflow-y-auto">
+												{body.text || '(empty body)'}
+											</div>
+										{/if}
+									{:else}
+										<!-- Pre-fetch fallback. Should only flash for a tick before
+										     the $effect kicks loadMessageBody — keeps the panel
+										     non-empty during the initial open. -->
+										<div class="text-xs text-hub-muted whitespace-pre-wrap leading-relaxed max-h-60 overflow-y-auto">
+											{msg.bodyPreview || '(loading…)'}
+										</div>
+									{/if}
 								</div>
 							</div>
 						{/if}
