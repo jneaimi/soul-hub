@@ -203,6 +203,21 @@ export const WhatsAppCommitmentsSchema = z.object({
 	maxPerDay: z.number().int().min(1).max(20).default(5),
 });
 
+/** ADR-025 — user-explicit reminders set via the `scheduleReminder`
+ *  orchestrator tool. Reminders ride the same `commitments` table as
+ *  extractor-inferred follow-ups but are surfaced under a different
+ *  prompt section and capped independently — the user's explicit ask
+ *  shouldn't be crowded out by a noisy extractor queue.
+ *
+ *  `maxPerDay` is a per-tick slice cap (matching the `commitments`
+ *  semantics), not a true daily cap. Global daily volume is governed by
+ *  `heartbeat.maxPerDay`, which counts every delivered tick regardless
+ *  of source. */
+export const WhatsAppRemindersSchema = z.object({
+	enabled: z.boolean().default(true),
+	maxPerDay: z.number().int().min(1).max(50).default(10),
+});
+
 /** `/img` configuration — image generation + editing via Gemini Nano
  *  Banana. One slash command, no flags, system prompt sourced from a
  *  vault-watched markdown file (per ADR-002). */
@@ -349,6 +364,7 @@ export const WhatsAppChannelSchema = ChannelConfigSchema.extend({
 	worker: WhatsAppWorkerSchema.prefault({}),
 	heartbeat: WhatsAppHeartbeatSchema.prefault({}),
 	commitments: WhatsAppCommitmentsSchema.prefault({}),
+	reminders: WhatsAppRemindersSchema.prefault({}),
 	img: WhatsAppImgSchema.prefault({}),
 	youtube: WhatsAppYoutubeSchema.prefault({}),
 	tiktok: WhatsAppTiktokSchema.prefault({}),
@@ -489,6 +505,10 @@ export const ConfigSchema = z.object({
 				confidenceThreshold: 0.8,
 				dueDelayHours: 1,
 				maxPerDay: 5,
+			},
+			reminders: {
+				enabled: true,
+				maxPerDay: 10,
 			},
 			img: {
 				enabled: true,

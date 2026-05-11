@@ -22,6 +22,22 @@ export interface DecideV2Options {
 	conversationKey?: string;
 	/** Sender phone number (for per-user image quota counters). */
 	senderNumber?: string;
+	/** ADR-025 — which chat channel this turn is on. Tools that need it
+	 *  (e.g. `scheduleReminder`, which is WhatsApp-only in V1 because the
+	 *  heartbeat reader is hardcoded to `'whatsapp'`) refuse gracefully
+	 *  off-channel. Optional so legacy callers default to `undefined` →
+	 *  channel-aware tools degrade rather than crash. */
+	channel?: 'whatsapp' | 'telegram';
+	/** ADR-025 — reminders config snapshot. Gates the `scheduleReminder`
+	 *  tool: when undefined or `enabled: false`, the tool refuses with a
+	 *  graceful error and the model relays it in plain language. */
+	remindersConfig?: RemindersConfigSlice;
+	/** ADR-025 — heartbeat config snapshot. Used by `scheduleReminder` to
+	 *  surface a `cadenceNote` when `dueAt` falls outside active hours,
+	 *  inside `muteUntil`, or when `heartbeat.enabled === false` (the row
+	 *  is still inserted; the user is told it won't fire until they
+	 *  toggle heartbeat back on). */
+	heartbeatConfig?: HeartbeatConfigSlice;
 	/** Image-generation config snapshot — gates whether `generateImage`
 	 *  fires and how the daily cap is enforced. Optional so non-WhatsApp
 	 *  callers (tests, debug routes) can omit it. */
@@ -65,6 +81,26 @@ export interface TikTokConfigSlice {
 	maxPerDay: number;
 	maxDurationSec: number;
 	model?: string;
+}
+
+/** Subset of `cfg.reminders` (ADR-025) that the orchestrator needs. */
+export interface RemindersConfigSlice {
+	enabled: boolean;
+}
+
+/** Subset of `cfg.heartbeat` (ADR-025) that the `scheduleReminder` tool
+ *  needs to compose its confirmation message. Mirrors the runtime
+ *  `cadenceNote` decision: outside-active-hours → defer to start of next
+ *  active window; muteUntil in future → defer past mute; heartbeat
+ *  disabled → row stored but won't fire. */
+export interface HeartbeatConfigSlice {
+	enabled: boolean;
+	activeHours: {
+		start: string; // "HH:MM"
+		end: string;
+		timezone: string;
+	};
+	muteUntil: string | null; // ISO datetime or null
 }
 
 /** What a v2 tool actually produced — used by the inbound handler to

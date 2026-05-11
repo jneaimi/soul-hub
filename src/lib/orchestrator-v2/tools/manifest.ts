@@ -209,6 +209,28 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 		ui_description:
 			'Invoke a chat-enabled skill (research, recipe, arabic, etc.). Synchronous, seconds. Skill list is dynamic — see /orchestration/skills.',
 	},
+	{
+		name: 'scheduleReminder',
+		category: 'write',
+		llm_description:
+			'Schedule a one-time reminder for the user. ' +
+			'Use ONLY when the user explicitly asks to be reminded ("remind me to X at Y", "ping me tomorrow about Z"). ' +
+			'NEVER use for discussion ("do you remember when..."), vague intents ("I should probably do X someday"), or inferred follow-ups from the conversation. ' +
+			'Emit `dueAt` as an ISO 8601 datetime WITH timezone offset — parse natural language ' +
+			'("tomorrow 11am", "next Monday morning") relative to the user\'s timezone (Asia/Dubai unless context overrides). ' +
+			'Reminders fire on the WhatsApp heartbeat (within ~30 min of the due time) and only inside the user\'s active hours. ' +
+			'If the user names a time outside active hours (e.g. "remind me at 3 am"), the system defers to the start of the next active window — the tool result\'s `cadenceNote` tells you when it will actually fire so you can confirm honestly. ' +
+			'Reminders are WhatsApp-only today (Telegram returns `reminders-not-supported-on-this-channel`). ' +
+			'After the tool returns successfully, confirm to the user: "OK — I\'ll remind you about <text> on <date> around <time>" — include the cadenceNote when present.',
+		ui_description:
+			'Schedule a one-time reminder. Rides the WhatsApp heartbeat commitments rail (ADR-025) — fires within ~30 min of the due time during active hours; same `HEARTBEAT_OK <id>` dismissal contract as extractor-inferred follow-ups.',
+		examples: [
+			{
+				user: '"remind me tomorrow to call my dad around 11am"',
+				toolArgs: '{ text: "Call your dad", dueAt: "2026-05-12T11:00:00+04:00" }',
+			},
+		],
+	},
 ];
 
 /** Lookup helper. Returns undefined for unknown names so callers can

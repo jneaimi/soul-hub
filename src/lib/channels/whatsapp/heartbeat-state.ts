@@ -287,6 +287,24 @@ function migrate(db: Database.Database): void {
 		`);
 		db.pragma('user_version = 10');
 	}
+
+	if (version < 11) {
+		// ADR-025 — `scheduleReminder` tool. Adds a `source` discriminator to
+		// commitments so user-explicit reminders set via the orchestrator can
+		// coexist with extractor-inferred follow-ups in the same table. The
+		// heartbeat reads them as two separate slices with independent caps;
+		// future hygiene queries can split user-explicit from inferred without
+		// joining on `source_msg_id IS NULL`.
+		//
+		// Default 'extractor' is correct: every row predating this migration
+		// came from `commitments-extractor.ts`.
+		db.exec(`
+			ALTER TABLE commitments ADD COLUMN source TEXT NOT NULL DEFAULT 'extractor';
+			CREATE INDEX IF NOT EXISTS idx_commitments_source
+				ON commitments(channel, target, source, status, due_after_ts);
+		`);
+		db.pragma('user_version = 11');
+	}
 }
 
 /** Heartbeat run statuses logged to `proactive_log`. */
@@ -442,6 +460,8 @@ export function setTaskLastRun(taskName: string, at = Date.now()): void {
 
 export type CommitmentStatus = 'pending' | 'surfaced' | 'dismissed';
 
+export type CommitmentSource = 'extractor' | 'user-explicit';
+
 export interface CommitmentRow {
 	id: number;
 	channel: string;
@@ -451,6 +471,7 @@ export interface CommitmentRow {
 	status: CommitmentStatus;
 	sourceMsgId: string | null;
 	confidence: number;
+	source: CommitmentSource;
 	createdAt: number;
 	surfacedAt: number | null;
 	dismissedAt: number | null;
@@ -463,12 +484,16 @@ export interface InsertCommitmentInput {
 	dueAfterTs: number;
 	sourceMsgId: string | null;
 	confidence: number;
+	/** ADR-025 — discriminates extractor-inferred vs user-explicit (set via
+	 *  the `scheduleReminder` orchestrator tool). Defaults to 'extractor'
+	 *  in the column DDL; pass explicitly to disambiguate at the call site. */
+	source?: CommitmentSource;
 }
 
 export function insertCommitment(input: InsertCommitmentInput): number {
 	const stmt = getHeartbeatDb().prepare(
-		`INSERT INTO commitments (channel, target, suggested_text, due_after_ts, status, source_msg_id, confidence, created_at)
-		 VALUES (@channel, @target, @suggestedText, @dueAfterTs, 'pending', @sourceMsgId, @confidence, @createdAt)`,
+		`INSERT INTO commitments (channel, target, suggested_text, due_after_ts, status, source_msg_id, confidence, source, created_at)
+		 VALUES (@channel, @target, @suggestedText, @dueAfterTs, 'pending', @sourceMsgId, @confidence, @source, @createdAt)`,
 	);
 	const result = stmt.run({
 		channel: input.channel,
@@ -477,6 +502,7 @@ export function insertCommitment(input: InsertCommitmentInput): number {
 		dueAfterTs: input.dueAfterTs,
 		sourceMsgId: input.sourceMsgId,
 		confidence: input.confidence,
+		source: input.source ?? 'extractor',
 		createdAt: Date.now(),
 	});
 	return Number(result.lastInsertRowid);
@@ -489,14 +515,31 @@ const COMMITMENT_SELECT = `
 	status,
 	source_msg_id   AS sourceMsgId,
 	confidence,
+	source,
 	created_at      AS createdAt,
 	surfaced_at     AS surfacedAt,
 	dismissed_at    AS dismissedAt
 `;
 
 /** Pending commitments whose due time has arrived, scoped to one
- *  conversation so a commitment from chat A never leaks to chat B. */
-export function getDueCommitments(channel: string, target: string, now = Date.now()): CommitmentRow[] {
+ *  conversation so a commitment from chat A never leaks to chat B.
+ *  Optionally filtered by `source` so the heartbeat can cap extractor
+ *  vs user-explicit rows independently (ADR-025). */
+export function getDueCommitments(
+	channel: string,
+	target: string,
+	opts: { now?: number; source?: CommitmentSource } = {},
+): CommitmentRow[] {
+	const now = opts.now ?? Date.now();
+	if (opts.source) {
+		return getHeartbeatDb()
+			.prepare(
+				`SELECT ${COMMITMENT_SELECT} FROM commitments
+				 WHERE channel = ? AND target = ? AND source = ? AND status = 'pending' AND due_after_ts <= ?
+				 ORDER BY due_after_ts ASC, id ASC`,
+			)
+			.all(channel, target, opts.source, now) as CommitmentRow[];
+	}
 	return getHeartbeatDb()
 		.prepare(
 			`SELECT ${COMMITMENT_SELECT} FROM commitments

@@ -540,6 +540,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				history: ctx.history,
 				conversationKey,
 				senderNumber: envelope.senderNumber,
+				channel: 'whatsapp',
 				account: cfg.account,
 				timezone: cfg.heartbeat?.activeHours?.timezone ?? 'Asia/Dubai',
 				imgConfig: {
@@ -558,6 +559,18 @@ export const POST: RequestHandler = async ({ request }) => {
 					maxPerDay: cfg.tiktok.maxPerDay,
 					maxDurationSec: cfg.tiktok.maxDurationSec,
 					model: cfg.tiktok.model,
+				},
+				remindersConfig: {
+					enabled: cfg.reminders.enabled,
+				},
+				heartbeatConfig: {
+					enabled: cfg.heartbeat.enabled,
+					activeHours: {
+						start: cfg.heartbeat.activeHours.start,
+						end: cfg.heartbeat.activeHours.end,
+						timezone: cfg.heartbeat.activeHours.timezone,
+					},
+					muteUntil: cfg.heartbeat.muteUntil,
 				},
 			});
 			// Per ADR-023 Phase 1 + the WhatsApp orchestrator-v2 follow-up:

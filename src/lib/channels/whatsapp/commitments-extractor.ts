@@ -140,6 +140,7 @@ export async function extractCommitments(input: ExtractInput): Promise<number> {
 				dueAfterTs,
 				sourceMsgId: input.sourceMsgId,
 				confidence: commitment.confidence,
+				source: 'extractor',
 			});
 			inserted++;
 		} catch (err) {

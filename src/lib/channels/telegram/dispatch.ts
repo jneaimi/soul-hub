@@ -378,6 +378,7 @@ async function dispatchOrchestrated(
 			history: ctx.history,
 			conversationKey,
 			senderNumber: envelope.senderNumber,
+			channel: 'telegram',
 			account: 'personal',
 			timezone: 'Asia/Dubai',
 			imgConfig: imgCfg

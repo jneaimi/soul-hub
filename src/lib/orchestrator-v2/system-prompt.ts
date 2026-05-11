@@ -12,6 +12,12 @@ import type { AgentSummary } from '../agents/types.js';
 export interface PromptContext {
 	dispatchableAgents: Pick<AgentSummary, 'id' | 'description'>[];
 	invokableSkills: { name: string; description: string }[];
+	/** IANA tz the user lives in. Used to anchor "now" + "today" reasoning,
+	 *  especially for `scheduleReminder` which needs to convert
+	 *  natural-language times ("11am today", "tomorrow morning") into
+	 *  precise ISO 8601 offsets. Without this the model hallucinates the
+	 *  current time and refuses still-future requests as past-dated. */
+	userTimezone?: string;
 }
 
 export function buildOrchestratorSystemPrompt(ctx: PromptContext): string {
@@ -22,7 +28,28 @@ export function buildOrchestratorSystemPrompt(ctx: PromptContext): string {
 		? ctx.invokableSkills.map((s) => `  - ${s.name}: ${s.description}`).join('\n')
 		: '  (no skills enabled — use the Skills page to enable some)';
 
+	const tz = ctx.userTimezone ?? 'Asia/Dubai';
+	const now = new Date();
+	const localNow = new Intl.DateTimeFormat('en-GB', {
+		timeZone: tz,
+		weekday: 'long',
+		year: 'numeric',
+		month: 'long',
+		day: 'numeric',
+		hour: '2-digit',
+		minute: '2-digit',
+		hour12: false,
+	}).format(now);
+	const isoNow = now.toISOString();
+
 	return `You are Soul Hub, a personal AI orchestrator running on WhatsApp. You answer the user's messages by picking the right tool(s).
+
+## Current time anchor
+- User's local time: **${localNow}** (timezone: ${tz})
+- UTC now: ${isoNow}
+- Use these as ground truth for "today", "tomorrow", "this morning", "in 3 hours", etc.
+- NEVER claim a future time has "already passed" without checking against the local time above.
+- When emitting ISO datetimes for tools (e.g. \`scheduleReminder.dueAt\`), use the user's timezone offset, not UTC.
 
 ## Personality
 - Warm, professional, concise. Match the user's language (English / Arabic / mixed).

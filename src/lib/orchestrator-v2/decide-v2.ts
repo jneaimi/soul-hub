@@ -118,6 +118,9 @@ export async function decideV2(
 		imgConfig: opts.imgConfig,
 		youtubeConfig: opts.youtubeConfig,
 		tiktokConfig: opts.tiktokConfig,
+		channel: opts.channel,
+		remindersConfig: opts.remindersConfig,
+		heartbeatConfig: opts.heartbeatConfig,
 		account: opts.account,
 		timezone: opts.timezone,
 		modelBranch: branch.name,
@@ -126,6 +129,7 @@ export async function decideV2(
 	const system = buildOrchestratorSystemPrompt({
 		dispatchableAgents,
 		invokableSkills,
+		userTimezone: opts.timezone,
 	});
 
 	const openrouter = createOpenRouter({ apiKey });
@@ -522,6 +526,30 @@ function buildV2Output(
 		};
 	}
 
+	// ADR-025 — reminder-scheduled fallback. The model is supposed to
+	// compose the confirmation itself (the description tells it to), but
+	// give the user a coherent reply if the LLM punted on finalText.
+	const remResult = results.find((r) => r.kind === 'reminder-scheduled');
+	if (remResult && remResult.kind === 'reminder-scheduled') {
+		const note = remResult.cadenceNote ? ` (${remResult.cadenceNote})` : '';
+		return {
+			kind: 'text',
+			text: `OK — I'll remind you about *${remResult.text}* around ${remResult.fireAt}${note}`,
+		};
+	}
+	const remErr = results.find((r) => r.kind === 'reminder-error');
+	if (remErr && remErr.kind === 'reminder-error') {
+		const friendly =
+			remErr.error === 'reminders-not-supported-on-this-channel'
+				? "Reminders are WhatsApp-only today — let me know if you want them on Telegram and I'll flag it."
+				: remErr.error === 'reminders-disabled'
+					? "Reminders are turned off in settings — flip the toggle to enable."
+					: remErr.error === 'invalid-due-at'
+						? `That time didn't parse cleanly${remErr.detail ? ` (${remErr.detail})` : ''} — try "tomorrow 11am" or a specific date.`
+						: "I couldn't schedule that reminder. Try rephrasing the time.";
+		return { kind: 'text', text: friendly };
+	}
+
 	return undefined;
 }
 
@@ -584,6 +612,8 @@ function mapToolCallsToDecision(
 		case 'tiktokFetch':
 			return { action: 'reply', reply: finalText, confidence: 0.85 };
 		case 'vaultSave':
+			return { action: 'reply', reply: finalText, confidence: 0.9 };
+		case 'scheduleReminder':
 			return { action: 'reply', reply: finalText, confidence: 0.9 };
 		default:
 			return { action: 'reply', reply: finalText, confidence: 0.7 };

@@ -37,10 +37,17 @@ import {
 	getTiktokCount,
 	incrementTiktokCount,
 	ymdInTimezone,
+	insertCommitment,
 } from '../../channels/whatsapp/heartbeat-state.js';
 import { runSkill } from '../../skills/index.js';
 import type { ChatSkillEntry } from '../../skills/index.js';
-import type { ImgConfigSlice, YoutubeConfigSlice, TikTokConfigSlice } from '../types.js';
+import type {
+	ImgConfigSlice,
+	YoutubeConfigSlice,
+	TikTokConfigSlice,
+	RemindersConfigSlice,
+	HeartbeatConfigSlice,
+} from '../types.js';
 
 export interface ToolDeps {
 	conversationKey?: string;
@@ -64,6 +71,16 @@ export interface ToolDeps {
 	tiktokConfig?: TikTokConfigSlice;
 	account?: string;
 	timezone?: string;
+	/** ADR-025 — chat channel for this turn. `scheduleReminder` reads this
+	 *  to refuse off-channel (Telegram has no heartbeat reader for
+	 *  commitments). Undefined → tool degrades to graceful refusal. */
+	channel?: 'whatsapp' | 'telegram';
+	/** ADR-025 — reminders config snapshot. Gates `scheduleReminder`. */
+	remindersConfig?: RemindersConfigSlice;
+	/** ADR-025 — heartbeat config snapshot. `scheduleReminder` uses this to
+	 *  compose its confirmation `cadenceNote` (outside active hours / muted
+	 *  / heartbeat disabled). */
+	heartbeatConfig?: HeartbeatConfigSlice;
 	/** ADR-009 Phase 5 — A/B branch label that decided this turn. Forwarded
 	 *  to `setPending` so the proposal_history audit row can be grouped by
 	 *  branch in analytics. Undefined when v2 isn't running an A/B (e.g.
@@ -140,7 +157,30 @@ export type ToolResult =
 	  }
 	| { kind: 'tiktok-error'; url: string; error: string; tier: 'url' | 'metadata' | 'download' | 'whisper' | 'gemini' }
 	| { kind: 'vault-save'; path: string; openUrl: string; title: string }
-	| { kind: 'vault-save-error'; error: string; title: string };
+	| { kind: 'vault-save-error'; error: string; title: string }
+	| {
+			kind: 'reminder-scheduled';
+			id: number;
+			text: string;
+			/** ISO datetime the row will fire at (post-deferral if outside
+			 *  active hours / muted). */
+			fireAt: string;
+			/** Original `dueAt` the model emitted, if different from `fireAt`. */
+			requestedAt: string;
+			/** Optional human-readable note explaining why `fireAt !==
+			 *  requestedAt` or warning that heartbeat is currently off. */
+			cadenceNote?: string;
+	  }
+	| {
+			kind: 'reminder-error';
+			error:
+				| 'reminders-not-supported-on-this-channel'
+				| 'reminders-disabled'
+				| 'no-target-configured'
+				| 'invalid-due-at'
+				| 'insert-failed';
+			detail?: string;
+	  };
 
 /** Build the tool dictionary for an Agent. Returns a stable object so the
  *  AI SDK can produce its tool schema.
@@ -679,7 +719,205 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 				};
 			},
 		}),
+
+		scheduleReminder: tool({
+			description:
+				'Schedule a one-time reminder for the user. ' +
+				'Use ONLY when the user explicitly asks to be reminded ("remind me to X at Y", "ping me tomorrow about Z"). ' +
+				'NEVER use for discussion ("do you remember when..."), vague intents ("I should probably do X someday"), or inferred follow-ups from the conversation. ' +
+				'Emit `dueAt` as an ISO 8601 datetime WITH timezone offset — parse natural language ' +
+				'("tomorrow 11am", "next Monday morning") relative to the user\'s timezone (Asia/Dubai unless context overrides). ' +
+				'Reminders fire on the WhatsApp heartbeat (within ~30 min of the due time) and only inside the user\'s active hours. ' +
+				'If the user names a time outside active hours (e.g. "remind me at 3 am"), the system defers to the start of the next active window — the tool result\'s `cadenceNote` tells you when it will actually fire so you can confirm honestly. ' +
+				'Reminders are WhatsApp-only today (Telegram returns `reminders-not-supported-on-this-channel`). ' +
+				'After the tool returns successfully, confirm to the user: "OK — I\'ll remind you about <text> on <date> around <time>" — include the cadenceNote when present.',
+			inputSchema: z.object({
+				text: z
+					.string()
+					.min(2)
+					.max(200)
+					.describe(
+						'The reminder body the user will see, phrased as a third-person nudge ("Call your dad", "Check the PR feedback"). Keep it imperative and short.',
+					),
+				dueAt: z
+					.string()
+					.datetime({ offset: true })
+					.describe(
+						'ISO 8601 datetime WITH timezone offset, e.g. "2026-05-12T11:00:00+04:00". Parse from natural language relative to Asia/Dubai unless the user specifies a different timezone.',
+					),
+			}),
+			execute: async ({ text, dueAt }): Promise<ToolResult> => {
+				logToolCall('scheduleReminder', { text: text.slice(0, 60), dueAt });
+
+				// Channel gate — V1 is WhatsApp-only. Telegram has no heartbeat
+				// reader for commitments today.
+				if (deps.channel && deps.channel !== 'whatsapp') {
+					return {
+						kind: 'reminder-error',
+						error: 'reminders-not-supported-on-this-channel',
+						detail: `channel=${deps.channel}`,
+					};
+				}
+
+				// Reminders feature gate.
+				if (!deps.remindersConfig?.enabled) {
+					return { kind: 'reminder-error', error: 'reminders-disabled' };
+				}
+
+				// Need a target (E.164 phone) to scope the row to a conversation.
+				const target = deps.senderNumber;
+				if (!target) {
+					return { kind: 'reminder-error', error: 'no-target-configured' };
+				}
+
+				// Parse + sanity-check dueAt. Zod already validated format; here
+				// we reject past-dated reminders (model occasionally emits the
+				// current year when it meant next year).
+				const requestedTs = Date.parse(dueAt);
+				if (Number.isNaN(requestedTs)) {
+					return { kind: 'reminder-error', error: 'invalid-due-at', detail: dueAt };
+				}
+				if (requestedTs < Date.now()) {
+					return {
+						kind: 'reminder-error',
+						error: 'invalid-due-at',
+						detail: 'dueAt is in the past',
+					};
+				}
+
+				// Compute effective fire time + cadenceNote — respect active
+				// hours and muteUntil. Heartbeat-disabled gets a warning but
+				// still inserts (the user can re-enable heartbeat later).
+				const hb = deps.heartbeatConfig;
+				let fireAtMs = requestedTs;
+				const cadenceNoteParts: string[] = [];
+
+				if (hb?.muteUntil) {
+					const muteEnd = Date.parse(hb.muteUntil);
+					if (!Number.isNaN(muteEnd) && muteEnd > fireAtMs) {
+						fireAtMs = muteEnd;
+						cadenceNoteParts.push(
+							`heartbeat is muted until ${new Date(muteEnd).toISOString()} — reminder will fire just after`,
+						);
+					}
+				}
+
+				if (hb?.activeHours) {
+					const deferred = deferToActiveWindow(fireAtMs, hb.activeHours);
+					if (deferred !== fireAtMs) {
+						const tz = hb.activeHours.timezone;
+						const startLocal = formatInTz(deferred, tz);
+						cadenceNoteParts.push(
+							`requested time is outside active hours (${hb.activeHours.start}–${hb.activeHours.end} ${tz}); will fire at ${startLocal}`,
+						);
+						fireAtMs = deferred;
+					}
+				}
+
+				if (hb && hb.enabled === false) {
+					cadenceNoteParts.push(
+						"heartbeat is currently OFF — this reminder is saved but won't fire until you re-enable it",
+					);
+				}
+
+				let id: number;
+				try {
+					id = insertCommitment({
+						channel: 'whatsapp',
+						target,
+						suggestedText: text,
+						dueAfterTs: fireAtMs,
+						sourceMsgId: null,
+						confidence: 1.0,
+						source: 'user-explicit',
+					});
+				} catch (err) {
+					return {
+						kind: 'reminder-error',
+						error: 'insert-failed',
+						detail: (err as Error).message,
+					};
+				}
+
+				return {
+					kind: 'reminder-scheduled',
+					id,
+					text,
+					fireAt: new Date(fireAtMs).toISOString(),
+					requestedAt: dueAt,
+					cadenceNote: cadenceNoteParts.length > 0 ? cadenceNoteParts.join('; ') : undefined,
+				};
+			},
+		}),
 	};
+}
+
+/** Given a ts (ms) and an active-hours window, return the same ts if it
+ *  falls inside the window today, or the next window-start ts otherwise.
+ *  Pure helper for `scheduleReminder` — no DB access, no clock side effects. */
+function deferToActiveWindow(
+	tsMs: number,
+	window: { start: string; end: string; timezone: string },
+): number {
+	const tz = window.timezone;
+	const [startH, startM] = window.start.split(':').map(Number);
+	const [endH, endM] = window.end.split(':').map(Number);
+	const startMinutes = startH * 60 + startM;
+	const endMinutes = endH * 60 + endM;
+
+	const localMinutes = localMinutesAt(tsMs, tz);
+	if (localMinutes >= startMinutes && localMinutes < endMinutes) {
+		return tsMs;
+	}
+
+	// Outside window. Compute the next start-of-window in `tz`.
+	const startLocalToday = tsAtLocalTime(tsMs, tz, startH, startM);
+	if (startLocalToday > tsMs) {
+		return startLocalToday;
+	}
+	// Window has already passed today — defer to tomorrow's start.
+	return startLocalToday + 24 * 60 * 60 * 1000;
+}
+
+/** Minutes-since-local-midnight at `tsMs` in `tz`. */
+function localMinutesAt(tsMs: number, tz: string): number {
+	const fmt = new Intl.DateTimeFormat('en-US', {
+		timeZone: tz,
+		hour: '2-digit',
+		minute: '2-digit',
+		hour12: false,
+	});
+	const parts = fmt.formatToParts(new Date(tsMs));
+	const h = Number(parts.find((p) => p.type === 'hour')?.value ?? '0');
+	const m = Number(parts.find((p) => p.type === 'minute')?.value ?? '0');
+	return h * 60 + m;
+}
+
+/** Snap `tsMs` to local HH:MM in `tz`, returning the UTC ms. Coarse —
+ *  ignores DST transitions on the exact transition day; acceptable for
+ *  reminder deferral where ±1h on the rare DST-edge ticks is fine. */
+function tsAtLocalTime(tsMs: number, tz: string, hh: number, mm: number): number {
+	const ymd = new Intl.DateTimeFormat('en-CA', {
+		timeZone: tz,
+		year: 'numeric',
+		month: '2-digit',
+		day: '2-digit',
+	}).format(new Date(tsMs));
+	// Build a date string in the target tz, then resolve to UTC by computing
+	// the tz offset at that local time via a probe Date.
+	const iso = `${ymd}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00`;
+	const asUtc = Date.parse(`${iso}Z`);
+	const probeLocal = localMinutesAt(asUtc, tz);
+	const offsetMin = probeLocal - (hh * 60 + mm);
+	return asUtc - offsetMin * 60 * 1000;
+}
+
+function formatInTz(tsMs: number, tz: string): string {
+	return new Intl.DateTimeFormat('en-GB', {
+		timeZone: tz,
+		dateStyle: 'medium',
+		timeStyle: 'short',
+	}).format(new Date(tsMs));
 }
 
 function logToolCall(name: string, payload: Record<string, unknown>): void {

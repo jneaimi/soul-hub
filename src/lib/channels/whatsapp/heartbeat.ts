@@ -168,14 +168,31 @@ function buildUserPrompt(
 		}
 	}
 	if (dueCommitments.length > 0) {
-		const lines: string[] = [
-			'\nOpen commitments inferred from prior chats with this user:',
-			'',
-			'Decide for each whether it still warrants a check-in. If you compose a natural follow-up, weave them in — the user expects a single coherent message, not a list. If none feel relevant, reply `HEARTBEAT_OK` (with no IDs) to dismiss them all. To dismiss only specific ones while still composing about others, append the IDs: `HEARTBEAT_OK 3 7`.',
-			'',
-		];
-		for (const c of dueCommitments) {
-			lines.push(`[#${c.id}] ${c.suggestedText}`);
+		const userExplicit = dueCommitments.filter((c) => c.source === 'user-explicit');
+		const extractorInferred = dueCommitments.filter((c) => c.source !== 'user-explicit');
+		const lines: string[] = [];
+		if (userExplicit.length > 0) {
+			lines.push(
+				'\nReminders the user explicitly set (via `scheduleReminder`):',
+				'',
+				'These are first-class — surface each one naturally in your message. The user is expecting them at roughly this time. Don\'t skip or paraphrase away the subject. To dismiss after surfacing, the user replies / heartbeat-ack contract is the same as below.',
+				'',
+			);
+			for (const c of userExplicit) {
+				lines.push(`[#${c.id}] ${c.suggestedText}`);
+			}
+			lines.push('');
+		}
+		if (extractorInferred.length > 0) {
+			lines.push(
+				'\nOpen commitments inferred from prior chats with this user:',
+				'',
+				'Decide for each whether it still warrants a check-in. If you compose a natural follow-up, weave them in — the user expects a single coherent message, not a list. If none feel relevant, reply `HEARTBEAT_OK` (with no IDs) to dismiss them all. To dismiss only specific ones while still composing about others, append the IDs: `HEARTBEAT_OK 3 7`.',
+				'',
+			);
+			for (const c of extractorInferred) {
+				lines.push(`[#${c.id}] ${c.suggestedText}`);
+			}
 		}
 		parts.push(lines.join('\n'));
 	}
@@ -282,11 +299,23 @@ export async function runHeartbeatOnce(
 
 	// Slice 5 — fetch due commitments for this (channel, target) pair so
 	// the agent can weave them into a check-in. Cheap query (indexed on
-	// channel+target+status+due_after_ts). Empty when commitments are
-	// disabled or nothing's due. Capped at the per-day knob.
-	const dueCommitments = cfg.commitments.enabled && hb.target
-		? getDueCommitments('whatsapp', hb.target).slice(0, cfg.commitments.maxPerDay)
+	// channel+target+status+due_after_ts).
+	//
+	// ADR-025 — two-slice fetch. Extractor-inferred rows respect the
+	// existing `cfg.commitments.maxPerDay` per-tick slice cap and only
+	// fire when the extractor is enabled. User-explicit reminders (set
+	// via the `scheduleReminder` orchestrator tool) ride a separate cap
+	// (`cfg.reminders.maxPerDay`) and fire regardless of the extractor
+	// toggle — they're set by the user, not inferred.
+	const dueExtractor = cfg.commitments.enabled && hb.target
+		? getDueCommitments('whatsapp', hb.target, { source: 'extractor' })
+				.slice(0, cfg.commitments.maxPerDay)
 		: [];
+	const dueReminders = cfg.reminders.enabled && hb.target
+		? getDueCommitments('whatsapp', hb.target, { source: 'user-explicit' })
+				.slice(0, cfg.reminders.maxPerDay)
+		: [];
+	const dueCommitments = [...dueReminders, ...dueExtractor];
 
 	// Phase 4 / ADR-003 — voice-queue items from the inbox. Same shape
 	// of input as commitments: scoped query, capped, fed to the agent.

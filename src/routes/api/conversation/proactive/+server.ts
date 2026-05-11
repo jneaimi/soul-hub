@@ -2,9 +2,11 @@
  *  in chat_history so the next user reply has a topic anchor.
  *
  *  Per ADR-021. Called from the WhatsApp heartbeat path inside the same
- *  process (which uses `saveProactiveTurn` directly), and from external
- *  proactive senders that can't import TS — currently the
- *  `scripts/vault-review-reminder.sh` Telegram reminder.
+ *  process (which uses `saveProactiveTurn` directly). The endpoint also
+ *  exists for any future external proactive sender that can't import TS
+ *  — none in-tree today (the prior `scripts/vault-review-reminder.sh`
+ *  shell script was retired by ADR-025, which moved user-explicit
+ *  reminders onto the heartbeat commitments rail).
  *
  *  CSRF posture: same as `/api/files/*` — `Sec-Fetch-Site: cross-site` is
  *  rejected; same-origin / same-site / no-fetch-site (curl, scripts) is
