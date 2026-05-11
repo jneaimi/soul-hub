@@ -182,6 +182,16 @@
 		}
 	});
 
+	// Keyboard equivalence for rows that must remain <div> because they
+	// contain nested interactive children (gear/x buttons). Enter/Space
+	// triggers the same handler as click.
+	function onRowKey(e: KeyboardEvent, handler: () => void) {
+		if (e.key === 'Enter' || e.key === ' ') {
+			e.preventDefault();
+			handler();
+		}
+	}
+
 	// Escape closes whichever overlay is open, top-down by visual stacking
 	// (modal > drawer > mobile sidebar). Only one runs per press.
 	function onKeydown(e: KeyboardEvent) {
@@ -474,10 +484,13 @@
 
 	<div class="flex-1 overflow-hidden flex max-w-5xl mx-auto w-full">
 		<!-- Sidebar: accounts + filters -->
-		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		{#if showSidebar}
-			<div onclick={() => { showSidebar = false; }} class="fixed inset-0 bg-black/30 z-10 sm:hidden"></div>
+			<button
+				type="button"
+				onclick={() => { showSidebar = false; }}
+				aria-label="Close sidebar"
+				class="fixed inset-0 bg-black/30 z-10 sm:hidden cursor-default"
+			></button>
 		{/if}
 		<aside class="w-56 flex-shrink-0 border-r border-hub-border p-3 overflow-y-auto {showSidebar ? 'fixed inset-y-0 left-0 z-20 bg-hub-bg' : 'hidden'} sm:block sm:static sm:z-auto">
 			<!-- Search -->
@@ -502,21 +515,25 @@
 			<!-- Account list -->
 			<div class="mb-4">
 				<p class="text-[10px] text-hub-dim uppercase tracking-wider mb-2 px-1">Accounts</p>
-				<!-- svelte-ignore a11y_click_events_have_key_events -->
-				<!-- svelte-ignore a11y_no_static_element_interactions -->
-				<div
+				<button
+					type="button"
 					onclick={() => { selectedAccount = null; loadMessages(); showSidebar = false; }}
-					class="flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-colors {selectedAccount === null ? 'bg-hub-surface text-hub-text' : 'text-hub-muted hover:bg-hub-surface/50'}"
+					aria-pressed={selectedAccount === null}
+					class="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-colors text-left {selectedAccount === null ? 'bg-hub-surface text-hub-text' : 'text-hub-muted hover:bg-hub-surface/50'}"
 				>
 					<span class="text-xs">All accounts</span>
 					<span class="ml-auto text-[10px] text-hub-dim">{stats.messages}</span>
-				</div>
+				</button>
 				{#each accounts as acc (acc.id)}
-					<!-- svelte-ignore a11y_click_events_have_key_events -->
-					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					{@const selectAcc = () => { selectedAccount = acc.id; loadMessages(); showSidebar = false; }}
 					<div
-						onclick={() => { selectedAccount = acc.id; loadMessages(); showSidebar = false; }}
-						class="flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-colors group {selectedAccount === acc.id ? 'bg-hub-surface text-hub-text' : 'text-hub-muted hover:bg-hub-surface/50'}"
+						role="button"
+						tabindex="0"
+						aria-pressed={selectedAccount === acc.id}
+						aria-label="Select {acc.label}"
+						onclick={selectAcc}
+						onkeydown={(e) => onRowKey(e, selectAcc)}
+						class="flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-colors group focus:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50 {selectedAccount === acc.id ? 'bg-hub-surface text-hub-text' : 'text-hub-muted hover:bg-hub-surface/50'}"
 					>
 						<span class="w-1.5 h-1.5 rounded-full flex-shrink-0 {statusColors[acc.status] || statusColors.disconnected}" title={acc.status}></span>
 						<span class="text-[10px] px-1.5 py-0.5 rounded {providerColors[acc.provider] || providerColors.imap}">{acc.provider}</span>
@@ -572,17 +589,17 @@
 			<div>
 				<p class="text-[10px] text-hub-dim uppercase tracking-wider mb-2 px-1">Status</p>
 				{#each processStatusFilters as filter (filter.value)}
-					<!-- svelte-ignore a11y_click_events_have_key_events -->
-					<!-- svelte-ignore a11y_no_static_element_interactions -->
-					<div
+					<button
+						type="button"
 						onclick={() => { statusFilter = filter.value; loadMessages(); }}
-						class="flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-colors {statusFilter === filter.value ? 'bg-hub-surface text-hub-text' : 'text-hub-muted hover:bg-hub-surface/50'}"
+						aria-pressed={statusFilter === filter.value}
+						class="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-colors text-left {statusFilter === filter.value ? 'bg-hub-surface text-hub-text' : 'text-hub-muted hover:bg-hub-surface/50'}"
 					>
 						{#if filter.value}
 							<span class="w-1.5 h-1.5 rounded-full flex-shrink-0 {processStatusColors[filter.value] || 'bg-hub-dim/50'}"></span>
 						{/if}
 						<span class="text-xs">{filter.label}</span>
-					</div>
+					</button>
 				{/each}
 			</div>
 		</aside>
@@ -752,11 +769,11 @@
 			{:else}
 				<div class="divide-y divide-hub-border/50">
 					{#each messages as msg (msg.id)}
-						<!-- svelte-ignore a11y_click_events_have_key_events -->
-						<!-- svelte-ignore a11y_no_static_element_interactions -->
-						<div
+						<button
+							type="button"
 							onclick={() => { selectedMessage = selectedMessage?.id === msg.id ? null : msg; }}
-							class="flex items-start gap-3 px-4 py-3 hover:bg-hub-surface/30 transition-colors cursor-pointer {!msg.flags.includes('\\Seen') ? 'bg-hub-surface/10' : ''}"
+							aria-expanded={selectedMessage?.id === msg.id}
+							class="w-full text-left flex items-start gap-3 px-4 py-3 hover:bg-hub-surface/30 transition-colors cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50 {!msg.flags.includes('\\Seen') ? 'bg-hub-surface/10' : ''}"
 						>
 							<div class="flex-1 min-w-0">
 								<div class="flex items-center gap-2 mb-0.5">
@@ -785,7 +802,7 @@
 								<p class="text-xs text-hub-text truncate {!msg.flags.includes('\\Seen') ? 'font-medium' : ''}">{msg.subject || '(no subject)'}</p>
 								<p class="text-xs text-hub-dim truncate mt-0.5">{msg.bodyPreview || ''}</p>
 							</div>
-						</div>
+						</button>
 
 						{#if selectedMessage?.id === msg.id}
 							<div class="px-4 py-4 bg-hub-surface/20 border-b border-hub-border">
@@ -826,12 +843,19 @@
 
 	<!-- Account Settings Modal -->
 	{#if settingsAccount}
-		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div onclick={() => { settingsAccount = null; }} class="fixed inset-0 bg-black/40 z-30 flex items-center justify-center p-4">
-			<!-- svelte-ignore a11y_click_events_have_key_events -->
-			<!-- svelte-ignore a11y_no_static_element_interactions -->
-			<div onclick={(e) => e.stopPropagation()} class="bg-hub-card border border-hub-border rounded-xl w-full max-w-sm p-5 shadow-xl">
+		<div class="fixed inset-0 z-30 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label="Account settings">
+			<!-- Backdrop is a real button so Enter/Space closes the modal; Escape
+			     also closes via the window keydown handler (see onKeydown). -->
+			<button
+				type="button"
+				onclick={() => { settingsAccount = null; }}
+				aria-label="Close settings"
+				class="absolute inset-0 bg-black/40 cursor-default"
+			></button>
+			<!-- Content sits above the backdrop via relative z-index; no
+			     stopPropagation needed since clicks here never reach the
+			     backdrop (siblings, not parent-child). -->
+			<div class="relative bg-hub-card border border-hub-border rounded-xl w-full max-w-sm p-5 shadow-xl">
 				<div class="flex items-center justify-between mb-4">
 					<h2 class="text-sm font-medium text-hub-text">Account Settings</h2>
 					<button onclick={() => { settingsAccount = null; }} class="text-hub-dim hover:text-hub-muted cursor-pointer">
