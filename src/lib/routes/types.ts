@@ -1,7 +1,7 @@
 /** Routes layer — types only. The route engine sits between channels
  *  ("a WhatsApp DM came in") and chat providers ("call Gemini Flash"). A
  *  channel resolves an inbound message to a route name (e.g. `vault-chat`,
- *  `brain-save`); this layer maps that name to a concrete provider
+ *  `vault-save-note`); this layer maps that name to a concrete provider
  *  chain with failover, retries, timeouts, and a circuit breaker. */
 
 import type { ChatRequest, ChatResult, ProviderRef } from '../llm/types.js';

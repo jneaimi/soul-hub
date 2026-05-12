@@ -24,9 +24,9 @@ export interface PlaceholderOpts {
 
 const ROUTE_DEFAULTS: Record<string, string> = {
 	'vault-chat': '🟡 Looking through your vault…',
-	'brain-find': '🟡 Searching for matches…',
-	'brain-recent': '🟡 Fetching recent notes…',
-	'brain-save': '🟡 Saving to vault…',
+	'vault-find': '🟡 Searching for matches…',
+	'vault-recent': '🟡 Fetching recent notes…',
+	'vault-save-note': '🟡 Saving to vault…',
 	img: '🟡 Generating the image…',
 };
 

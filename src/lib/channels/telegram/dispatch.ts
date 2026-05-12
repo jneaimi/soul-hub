@@ -15,7 +15,11 @@
 
 import { dispatchRoute, RouteNotFoundError } from '../../routes/index.js';
 import { dispatchVaultChat } from '../../vault-chat/index.js';
-import { dispatchBrainSave, dispatchBrainFind, dispatchBrainRecent } from '../../brain/index.js';
+import {
+	dispatchVaultSaveNote,
+	dispatchVaultFind,
+	dispatchVaultRecent,
+} from '../../vault-actions/index.js';
 import { isResetCommand, resetConversation } from '../../vault-chat/history.js';
 import { decideV2 } from '../../orchestrator-v2/index.js';
 import { writeIntentDecision } from '../../intent/log.js';
@@ -218,7 +222,7 @@ export async function dispatchInbound(
 		const brainText = intent.body;
 		let replyText: string;
 
-		if (intent.route === 'brain-save') {
+		if (intent.route === 'vault-save-note') {
 			let buffer: Buffer | undefined;
 			let mimetype: string | undefined;
 			let mediaKind: TelegramMediaPayload['kind'] | undefined;
@@ -241,7 +245,7 @@ export async function dispatchInbound(
 					return;
 				}
 			}
-			const saveResult = await dispatchBrainSave({
+			const saveResult = await dispatchVaultSaveNote({
 				envelope: {
 					jid: envelope.chatJid,
 					isGroup: envelope.isGroup,
@@ -257,11 +261,11 @@ export async function dispatchInbound(
 				mediaKind,
 			});
 			replyText = saveResult.text;
-		} else if (intent.route === 'brain-find') {
-			const findResult = await dispatchBrainFind(brainText);
+		} else if (intent.route === 'vault-find') {
+			const findResult = await dispatchVaultFind(brainText);
 			replyText = findResult.text;
-		} else if (intent.route === 'brain-recent') {
-			const recentResult = await dispatchBrainRecent();
+		} else if (intent.route === 'vault-recent') {
+			const recentResult = await dispatchVaultRecent();
 			replyText = recentResult.text;
 		} else {
 			const result = await dispatchRoute(intent.route, {

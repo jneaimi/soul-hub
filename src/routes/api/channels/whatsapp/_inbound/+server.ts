@@ -66,7 +66,11 @@ import {
 	handleCommitmentsMetaCommand,
 } from '$lib/channels/whatsapp/heartbeat-commands.js';
 import { extractCommitmentsAsync } from '$lib/channels/whatsapp/commitments-extractor.js';
-import { dispatchBrainSave, dispatchBrainFind, dispatchBrainRecent } from '$lib/brain/index.js';
+import {
+	dispatchVaultSaveNote,
+	dispatchVaultFind,
+	dispatchVaultRecent,
+} from '$lib/vault-actions/index.js';
 import { dispatchImg, rememberLastImage, getLastImage, rememberLastUserImage, getLastUserImage } from '$lib/img/index.js';
 import {
 	applyReplyAck,
@@ -615,7 +619,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			// log the orchestrator's chosen sub-action (web-search, vault-chat,
 			// dispatch, image, proposal, reply) alongside the routeFreeForm row
 			// already written upstream. A single message can produce TWO
-			// intent_log rows — one router decision (brain-find/recent/
+			// intent_log rows — one router decision (vault-find/recent/
 			// vault-chat) and one orchestrator decision (its sub-action). The
 			// future analyst infers the layer from picked_route values: only
 			// orchestrator outputs include actions like web-search / dispatch /
@@ -786,10 +790,10 @@ export const POST: RequestHandler = async ({ request }) => {
 				}
 				// finalize logs the failure; fall through to action='reply'.
 			}
-		} else if (intent.route === 'brain-save') {
+		} else if (intent.route === 'vault-save-note') {
 			// Worker-mode binary plumbing: the worker piggybacks media bytes
 			// as base64 in `body.mediaBase64` (Slice 0). Decode here and pass
-			// a Buffer to brain.save. All four media kinds participate —
+			// a Buffer to vault-actions/save. All four media kinds participate —
 			// voice gets archived alongside its transcript (transcript is
 			// already in `workingBody`); image/video/document also fire a
 			// single Gemini Flash extraction inside save.ts.
@@ -819,7 +823,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			// image for this conversation. Real attachments win; cache is a
 			// pure fallback.
 			const cachedImage = !buffer ? getLastImage(conversationKey) : undefined;
-			const saveResult = await dispatchBrainSave({
+			const saveResult = await dispatchVaultSaveNote({
 				envelope,
 				workingBody: brainText,
 				mediaBuffer: buffer,
@@ -913,10 +917,10 @@ export const POST: RequestHandler = async ({ request }) => {
 				kind: 'image',
 				caption: imgResult.caption,
 			});
-		} else if (intent.route === 'brain-find') {
-			replyText = (await dispatchBrainFind(brainText)).text;
-		} else if (intent.route === 'brain-recent') {
-			replyText = (await dispatchBrainRecent()).text;
+		} else if (intent.route === 'vault-find') {
+			replyText = (await dispatchVaultFind(brainText)).text;
+		} else if (intent.route === 'vault-recent') {
+			replyText = (await dispatchVaultRecent()).text;
 		} else {
 			const result = await dispatchRoute(intent.route, {
 				messages: [{ role: 'user', content: userText }],

@@ -9,7 +9,7 @@ import type { SearchResult } from '../vault/types.js';
 const PUBLIC_URL = process.env.SOUL_HUB_PUBLIC_URL || 'https://soul-hub.jneaimi.com';
 const RESULT_LIMIT = 5;
 
-export interface BrainFindResult {
+export interface VaultFindResult {
 	text: string;
 	results: SearchResult[];
 }
@@ -27,7 +27,7 @@ function formatResult(idx: number, hit: SearchResult): string {
 	return `${idx + 1}. ${hit.title}${metaLine}\n   ${noteOpenUrl(hit.path)}`;
 }
 
-export async function dispatchBrainFind(query: string): Promise<BrainFindResult> {
+export async function dispatchVaultFind(query: string): Promise<VaultFindResult> {
 	const engine = getVaultEngine();
 	if (!engine) {
 		return { text: 'Vault is not initialized — /find is unavailable.', results: [] };

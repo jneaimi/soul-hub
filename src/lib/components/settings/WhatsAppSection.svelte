@@ -379,7 +379,7 @@
 							<span class="text-[10px] text-hub-dim leading-relaxed">
 								When on, non-slash messages run through a regex pre-filter and a Gemini Flash
 								fallback so phrases like "save this idea …" or "find my heartbeat notes" route
-								to <code>brain-save</code> / <code>brain-find</code> without the slash.
+								to <code>vault-save-note</code> / <code>vault-find</code> without the slash.
 								Sub-threshold confidence falls back to <code>vault-chat</code>. Decisions are
 								surfaced at <code>recentRouterDecisions[]</code> on the status endpoint.
 							</span>

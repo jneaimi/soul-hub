@@ -25,12 +25,17 @@ import { z } from 'zod';
 import { getVaultEngine } from '../vault/index.js';
 import type { InboundEnvelope, MediaPayload } from '../channels/whatsapp/types.js';
 
-type BrainMediaKind = MediaPayload['kind'];
+type VaultMediaKind = MediaPayload['kind'];
 
 const PUBLIC_URL = process.env.SOUL_HUB_PUBLIC_URL || 'https://soul-hub.jneaimi.com';
+// ADR-028 P3 — kept as `whatsapp-brain` for backwards compatibility.
+// Hundreds of vault notes already carry this agent slug in their
+// frontmatter; renaming would create asymmetry across the historical
+// archive without semantic value. The rest of the surface uses the
+// "Soul Hub vault" terminology, but persisted identifiers stay stable.
 const AGENT = 'whatsapp-brain';
 
-export interface BrainSaveInput {
+export interface VaultSaveNoteInput {
 	envelope: InboundEnvelope;
 	/** The body the dispatcher already resolved (caption text for media,
 	 *  transcript for voice, or the typed message for text). */
@@ -41,7 +46,7 @@ export interface BrainSaveInput {
 	 *  via `mediaBase64`. */
 	mediaBuffer?: Buffer;
 	mimetype?: string;
-	mediaKind?: BrainMediaKind;
+	mediaKind?: VaultMediaKind;
 	/** Slice 6 — `/img` cache fallback. When the user runs `/save` after
 	 *  an `/img` (no fresh attachment), the dispatcher passes the cached
 	 *  generated image here so it gets archived like any other capture.
@@ -51,7 +56,7 @@ export interface BrainSaveInput {
 	cachedImage?: { buffer: Buffer; mimetype: string; prompt: string };
 }
 
-export interface BrainSaveResult {
+export interface VaultSaveNoteResult {
 	text: string;
 	notePath?: string;
 	assetPath?: string;
@@ -75,7 +80,7 @@ type ExtractionOutput = z.infer<typeof ExtractionSchema>;
 /** Per-modality prompts. `voice` and `audio` skip the call entirely
  *  because the upstream transcribe pass already produced text. `sticker`
  *  also skips — stickers are emoji-shaped, no useful structured output. */
-const EXTRACTION_PROMPTS: Partial<Record<BrainMediaKind, string>> = {
+const EXTRACTION_PROMPTS: Partial<Record<VaultMediaKind, string>> = {
 	image:
 		'Extract a structured note from this image. Fill `title`, `vision_caption`, and `tags`. Keep the caption factual — no flowery language. If a caption was provided alongside the image, use it to bias the title and tags.',
 	video:
@@ -84,7 +89,7 @@ const EXTRACTION_PROMPTS: Partial<Record<BrainMediaKind, string>> = {
 		'Extract a structured note from this document. Fill `title`, `summary`, and `tags`. Surface the key claim, the audience, and any actionable bits.',
 };
 
-function shouldSkipExtraction(kind: BrainMediaKind): boolean {
+function shouldSkipExtraction(kind: VaultMediaKind): boolean {
 	return kind === 'voice' || kind === 'audio' || kind === 'sticker';
 }
 
@@ -94,7 +99,7 @@ function shouldSkipExtraction(kind: BrainMediaKind): boolean {
 async function extractFromMedia(
 	buffer: Buffer,
 	mimetype: string,
-	kind: BrainMediaKind,
+	kind: VaultMediaKind,
 	caption: string,
 ): Promise<ExtractionOutput> {
 	if (shouldSkipExtraction(kind)) return {};
@@ -204,7 +209,7 @@ function noteOpenUrl(path: string): string {
 /** Map a media kind to its asset filename extension when the source
  *  mimetype doesn't have an obvious one. Conservative defaults — the
  *  vault prefers a real extension over `.bin`. */
-function pickAssetExtension(mimetype: string, kind: BrainSaveInput['mediaKind']): string {
+function pickAssetExtension(mimetype: string, kind: VaultSaveNoteInput['mediaKind']): string {
 	const sub = mimetype.split('/')[1]?.split(';')[0]?.trim();
 	if (sub) {
 		// `image/jpeg` → `.jpg`; `audio/ogg` → `.ogg`; `application/pdf` → `.pdf`
@@ -221,7 +226,7 @@ function pickAssetExtension(mimetype: string, kind: BrainSaveInput['mediaKind'])
 	return '.bin';
 }
 
-export async function dispatchBrainSave(input: BrainSaveInput): Promise<BrainSaveResult> {
+export async function dispatchVaultSaveNote(input: VaultSaveNoteInput): Promise<VaultSaveNoteResult> {
 	const engine = getVaultEngine();
 	if (!engine) {
 		return { text: 'Vault is not initialized — /save is unavailable.' };
@@ -235,7 +240,7 @@ export async function dispatchBrainSave(input: BrainSaveInput): Promise<BrainSav
 	// just sent). Cached prompt seeds the body when the user typed nothing.
 	let mediaBuffer = input.mediaBuffer;
 	let mimetype = input.mimetype;
-	let mediaKind: BrainMediaKind | undefined = input.mediaKind;
+	let mediaKind: VaultMediaKind | undefined = input.mediaKind;
 	let workingBody = input.workingBody;
 	if (!mediaBuffer && input.cachedImage) {
 		mediaBuffer = input.cachedImage.buffer;

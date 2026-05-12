@@ -2,7 +2,7 @@
  * vaultSave — thin wrapper around `engine.createNote()` for the
  * orchestrator-v2 `vaultSave` tool (ADR-013).
  *
- * Differs from `src/lib/brain/save.ts` (which is the WhatsApp `/save`
+ * Differs from `src/lib/vault-actions/save.ts` (which is the WhatsApp `/save`
  * slash-command handler): this module takes already-synthesized fields
  * from the orchestrator LLM (title, content, type, tags, sourceUrl) and
  * writes a vault note. No multimodal extraction, no envelope coupling,
@@ -10,7 +10,7 @@
  * persists it.
  *
  * Always writes to `inbox/` so the user curates later. Filename is
- * `YYYY-MM-DD-${slug}.md` matching brain/save.ts conventions so the
+ * `YYYY-MM-DD-${slug}.md` matching vault-actions/save.ts conventions so the
  * vault watcher and graph treat them uniformly.
  */
 
@@ -27,7 +27,7 @@ export interface VaultSaveInput {
 	content: string;
 	/** Note type. `idea` maps to `draft + tag:idea` because the inbox zone's
 	 *  governance allowlist doesn't include `idea` as a type — same trick
-	 *  brain/save.ts uses for the `idea: foo` prefix. */
+	 *  vault-actions/save.ts uses for the `idea: foo` prefix. */
 	type?: VaultSaveType;
 	tags?: string[];
 	/** When the saved content was derived from a URL (e.g., YouTube), pass
@@ -51,7 +51,7 @@ export async function dispatchVaultSave(input: VaultSaveInput): Promise<VaultSav
 
 	const today = new Date().toISOString().slice(0, 10);
 
-	// `idea` is a tag, not a type — see brain/save.ts:159 for the same
+	// `idea` is a tag, not a type — see vault-actions/save.ts:159 for the same
 	// inbox-governance dance.
 	const requestedType = input.type ?? 'draft';
 	const isIdea = requestedType === 'idea';
@@ -96,7 +96,7 @@ export async function dispatchVaultSave(input: VaultSaveInput): Promise<VaultSav
 }
 
 /** Slug a string into a filesystem-safe filename stem. Mirrors
- *  brain/save.ts:142 so notes from both surfaces sort identically.
+ *  vault-actions/save.ts:142 so notes from both surfaces sort identically.
  *  Falls back to `note` when normalization strips everything. */
 function slugify(input: string): string {
 	const normalized = input

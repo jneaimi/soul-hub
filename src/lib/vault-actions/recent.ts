@@ -9,7 +9,7 @@ import type { VaultNote } from '../vault/types.js';
 const PUBLIC_URL = process.env.SOUL_HUB_PUBLIC_URL || 'https://soul-hub.jneaimi.com';
 const RESULT_LIMIT = 5;
 
-export interface BrainRecentResult {
+export interface VaultRecentResult {
 	text: string;
 	notes: VaultNote[];
 }
@@ -40,7 +40,7 @@ function formatNote(idx: number, note: VaultNote): string {
 	return `${idx + 1}. ${note.title}${metaLine}${stampLine}\n   ${noteOpenUrl(note.path)}`;
 }
 
-export async function dispatchBrainRecent(): Promise<BrainRecentResult> {
+export async function dispatchVaultRecent(): Promise<VaultRecentResult> {
 	const engine = getVaultEngine();
 	if (!engine) {
 		return { text: 'Vault is not initialized — /recent is unavailable.', notes: [] };

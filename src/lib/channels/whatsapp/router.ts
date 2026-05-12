@@ -42,16 +42,16 @@ const SAFE_DEFAULT = 'vault-chat';
 /** Per-route confidence floors. Below the floor → fall back to vault-chat
  *  (the safe default — chatting back at the user is the cheap mistake).
  *
- *  **Writes are slash-only.** The brain-save route is intentionally absent
+ *  **Writes are slash-only.** The vault-save-note route is intentionally absent
  *  from this map (and from the LLM enum below). Auto-routing a free-form
- *  "save this idea" to brain-save would create vault notes the user
+ *  "save this idea" to vault-save-note would create vault notes the user
  *  didn't explicitly ask for — including media captures the user might
  *  just want to discuss. `/save` remains the explicit handle for any
  *  capture intent. Reads are router-eligible because a wrong /find or
  *  /recent costs nothing — wrong save costs a junk note. */
 const THRESHOLDS: Record<string, number> = {
-	'brain-find': 0.6,
-	'brain-recent': 0.6,
+	'vault-find': 0.6,
+	'vault-recent': 0.6,
 	'vault-chat': 0.5,
 };
 
@@ -90,7 +90,7 @@ export function getRouterDecisions(): RouterDecision[] {
  *  email-inbox queries, bare msg-id replies, single-word
  *  acknowledgments, and explicit "find/search X" frees where X is the
  *  next noun. These ride the same source='regex' channel as the
- *  brain-* hits so latency telemetry is consistent. */
+ *  vault-* hits so latency telemetry is consistent. */
 function regexPreFilter(message: string): { route: string; reason: string } | null {
 	const trimmed = message.trim();
 	const lower = trimmed.toLowerCase();
@@ -152,7 +152,7 @@ function regexPreFilter(message: string): { route: string; reason: string } | nu
 		/\bwhat\s+do\s+you\s+(?:think|make)\b/.test(lower);
 	if (hasAnalysisIntent) return null;
 
-	// ───────── brain-* personal-vault fast paths ─────────
+	// ───────── vault-* personal-vault fast paths ─────────
 
 	// Recency markers — "what did I", "what's recent/latest/new", "show me
 	// recent". Tight enough that a vague "what's new with you" still misses.
@@ -162,7 +162,7 @@ function regexPreFilter(message: string): { route: string; reason: string } | nu
 		/\b(show\s+me\s+(?:my\s+)?(?:recent|latest|last))\b/.test(lower) ||
 		/\bwhat'?s\s+new\b/.test(lower)
 	) {
-		return { route: 'brain-recent', reason: 'recency marker' };
+		return { route: 'vault-recent', reason: 'recency marker' };
 	}
 
 	// Find / search markers — explicit search verbs with personal-vault scope.
@@ -179,7 +179,7 @@ function regexPreFilter(message: string): { route: string; reason: string } | nu
 		/\b(do\s+i\s+have|have\s+i\s+saved|did\s+i\s+(?:save|write|note))\b/.test(lower) ||
 		/\bwhere(?:'s|\s+is|\s+was)\s+my\s+\w+/.test(lower)
 	) {
-		return { route: 'brain-find', reason: 'search marker' };
+		return { route: 'vault-find', reason: 'search marker' };
 	}
 
 	return null;
@@ -190,7 +190,7 @@ function regexPreFilter(message: string): { route: string; reason: string } | nu
  *  unions and quietly drops nested objects. */
 const RouterDecisionSchema = z.object({
 	route: z
-		.enum(['brain-find', 'brain-recent', 'vault-chat'])
+		.enum(['vault-find', 'vault-recent', 'vault-chat'])
 		.describe('Which intent best matches the user message. Default to "vault-chat" when unsure — chatting back is the safe mistake. Saving to the vault is slash-only (`/save`); never route here.'),
 	confidence: z
 		.number()
@@ -205,11 +205,11 @@ const RouterDecisionSchema = z.object({
 
 const ROUTER_SYSTEM_PROMPT = `You route inbound WhatsApp messages from a single user to one of three read intents on their PERSONAL Soul Hub vault assistant. Saving is slash-only (\`/save\`) — never route here.
 
-The vault contains the user's OWN saved notes (decisions, drafts, learnings, captures from past chats). brain-find and brain-recent return lists of those personal notes. They are NOT general-purpose web search and they are NOT topical Q&A. Topical curiosity about the world goes to vault-chat, where a downstream orchestrator can dispatch research/specialist agents.
+The vault contains the user's OWN saved notes (decisions, drafts, learnings, captures from past chats). vault-find and vault-recent return lists of those personal notes. They are NOT general-purpose web search and they are NOT topical Q&A. Topical curiosity about the world goes to vault-chat, where a downstream orchestrator can dispatch research/specialist agents.
 
 Routes:
-- brain-find: user is asking about THEIR OWN past notes — something they wrote before and want surfaced. Triggers require explicit personal-vault scoping: "find my notes on X", "where's my note about X", "do I have anything saved on X", "did I write about X", "search my vault for X", "what have I written about X". The user must be referencing their personal saved knowledge.
-- brain-recent: user wants their MOST RECENTLY WRITTEN notes. Triggers: "what's new in my vault", "show me my recent decisions", "what did I work on yesterday", "my latest captures". Always personal, always recency-scoped.
+- vault-find: user is asking about THEIR OWN past notes — something they wrote before and want surfaced. Triggers require explicit personal-vault scoping: "find my notes on X", "where's my note about X", "do I have anything saved on X", "did I write about X", "search my vault for X", "what have I written about X". The user must be referencing their personal saved knowledge.
+- vault-recent: user wants their MOST RECENTLY WRITTEN notes. Triggers: "what's new in my vault", "show me my recent decisions", "what did I work on yesterday", "my latest captures". Always personal, always recency-scoped.
 - vault-chat: EVERYTHING else. Discussion, topical questions, general curiosity, greetings, ambiguous phrasing, capture-sounding phrases, media discussion. This is the safe default — the downstream orchestrator handles topical research, agent dispatch, and delegation from here.
 
 Critical disambiguation (study these — they are exactly the cases that have misrouted in production):
@@ -218,12 +218,12 @@ Critical disambiguation (study these — they are exactly the cases that have mi
 - "tell me about heartbeat design" → vault-chat (topical, even though "heartbeat" might be in the vault)
 - "how does X work" → vault-chat (topical Q&A)
 - "what's the latest on Y" → vault-chat (asking about external state, not the user's notes)
-- "find my notes on farming" → brain-find (explicit personal-note reference: "my notes")
-- "where's my heartbeat ADR" → brain-find (explicit personal scope: "my")
-- "did I save anything about chess engines" → brain-find (explicit "I save" past tense)
+- "find my notes on farming" → vault-find (explicit personal-note reference: "my notes")
+- "where's my heartbeat ADR" → vault-find (explicit personal scope: "my")
+- "did I save anything about chess engines" → vault-find (explicit "I save" past tense)
 - "what's new" alone → vault-chat (too vague, probably small talk)
-- "what's new in my drafts" → brain-recent (explicit personal scope)
-- "show me what I wrote yesterday" → brain-recent (explicit personal + recency)
+- "what's new in my drafts" → vault-recent (explicit personal scope)
+- "show me what I wrote yesterday" → vault-recent (explicit personal + recency)
 
 EMAIL INBOX DISAMBIGUATION (critical — production misroute, May 2026):
 "inbox" in this user's vocabulary almost always means the EMAIL inbox (IMAP-synced mail), NOT the vault's \`inbox/\` quick-capture folder. The vault has an unrelated folder also called \`inbox/\`, but that's an internal concept the user never names directly. ALL email queries route to vault-chat — the downstream orchestrator has dedicated tools (\`inbox-list-queued\`, \`inbox-drill-down\`, \`inbox-read-body\`) that handle the email stream.
@@ -234,7 +234,7 @@ EMAIL INBOX DISAMBIGUATION (critical — production misroute, May 2026):
 - "show me my bank alerts" / "any receipts from yesterday" → vault-chat (EMAIL category query)
 - "tell me about msg 33602" / bare "33602" → vault-chat (EMAIL drill-down by message id)
 - "what's in my email" → vault-chat (EMAIL query)
-The word "inbox" without an explicit "note" / "vault" / "folder" qualifier always means EMAIL, NEVER brain-recent.
+The word "inbox" without an explicit "note" / "vault" / "folder" qualifier always means EMAIL, NEVER vault-recent.
 
 Heuristic: if the user did NOT use a possessive pronoun (my/I) or an explicit vault verb (save/find/search/look up + personal scope), default to vault-chat. "I want to know about X" reads as retrieval to a generic LLM but in this app it means topical curiosity → vault-chat. Email-inbox queries (see above) ALWAYS route to vault-chat regardless of possessive markers.
 
@@ -244,7 +244,7 @@ Confidence calibration:
 - 0.5–0.6: ambiguous — almost always means vault-chat is safer.
 - below 0.5: vault-chat.
 
-When in doubt, vault-chat. Topical retrieval is NOT brain-find. Discussion is always the right default.`;
+When in doubt, vault-chat. Topical retrieval is NOT vault-find. Discussion is always the right default.`;
 
 async function llmRoute(
 	message: string,

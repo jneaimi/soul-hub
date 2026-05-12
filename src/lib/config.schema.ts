@@ -67,10 +67,36 @@ export const WhatsAppAccessSchema = z
 		message: '`dmPolicy: "open"` requires `allowFrom` to include "*".',
 	});
 
+/** ADR-028 Phase 3 — one-version migration shim. Persisted settings.json
+ *  files written before the 2026-05-12 rename still carry the old
+ *  `brain-*` route names. The schema rewrites them to `vault-*` at parse
+ *  time and warns once per process, so an out-of-date settings file
+ *  doesn't silently route to a dead branch (slash command falls through
+ *  to the orchestrator). Remove after a release cycle. */
+const BRAIN_VAULT_ALIAS: Record<string, string> = {
+	'brain-save': 'vault-save-note',
+	'brain-find': 'vault-find',
+	'brain-recent': 'vault-recent',
+};
+const aliasWarned = new Set<string>();
+
+function migrateRouteName(value: unknown): unknown {
+	if (typeof value !== 'string') return value;
+	const alias = BRAIN_VAULT_ALIAS[value];
+	if (!alias) return value;
+	if (!aliasWarned.has(value)) {
+		aliasWarned.add(value);
+		console.warn(
+			`[config] intentMap route "${value}" is the legacy name; auto-migrating to "${alias}" (ADR-028 P3). Update settings.json to remove this warning.`,
+		);
+	}
+	return alias;
+}
+
 export const WhatsAppIntentMapSchema = z.record(
 	z.string(),
 	z.object({
-		route: z.string(),
+		route: z.preprocess(migrateRouteName, z.string()),
 		description: z.string().optional(),
 		/** Slice 1.5 — opt-in smart routing for free-form (non-slash) messages.
 		 *  Only meaningful on the `default` entry; ignored on slash entries
@@ -333,7 +359,8 @@ export const TelegramAccessSchema = z
 export const TelegramIntentMapSchema = z.record(
 	z.string(),
 	z.object({
-		route: z.string(),
+		// ADR-028 P3 — same one-version migration shim as the WhatsApp side.
+		route: z.preprocess(migrateRouteName, z.string()),
 		description: z.string().optional(),
 		dynamic: z.boolean().optional(),
 	}),
@@ -376,9 +403,9 @@ export const TelegramChannelSchema = ChannelConfigSchema.extend({
 	delivery: TelegramDeliverySchema.prefault({}),
 	webhook: TelegramWebhookSchema.prefault({}),
 	intentMap: TelegramIntentMapSchema.default({
-		'/save': { route: 'brain-save', description: 'Capture a note (text/image/voice/video) into the vault inbox.' },
-		'/find': { route: 'brain-find', description: 'Search the vault — top 5 matches.' },
-		'/recent': { route: 'brain-recent', description: 'List the 5 most-recently-touched notes.' },
+		'/save': { route: 'vault-save-note', description: 'Capture a note (text/image/voice/video) into the vault inbox.' },
+		'/find': { route: 'vault-find', description: 'Search the vault — top 5 matches.' },
+		'/recent': { route: 'vault-recent', description: 'List the 5 most-recently-touched notes.' },
 		'/img': { route: 'img', description: 'Generate an image (no attachment) or edit one (attach the source).' },
 		default: { route: 'vault-chat', dynamic: false },
 	}),
@@ -400,9 +427,9 @@ export const WhatsAppChannelSchema = ChannelConfigSchema.extend({
 	youtube: WhatsAppYoutubeSchema.prefault({}),
 	tiktok: WhatsAppTiktokSchema.prefault({}),
 	intentMap: WhatsAppIntentMapSchema.default({
-		'/save': { route: 'brain-save', description: 'Capture a note (text/image/voice/video) into the vault inbox.' },
-		'/find': { route: 'brain-find', description: 'Search the vault — top 5 matches.' },
-		'/recent': { route: 'brain-recent', description: 'List the 5 most-recently-touched notes.' },
+		'/save': { route: 'vault-save-note', description: 'Capture a note (text/image/voice/video) into the vault inbox.' },
+		'/find': { route: 'vault-find', description: 'Search the vault — top 5 matches.' },
+		'/recent': { route: 'vault-recent', description: 'List the 5 most-recently-touched notes.' },
 		'/img': { route: 'img', description: 'Generate an image (no attachment) or edit one (attach the source).' },
 		default: { route: 'vault-chat', dynamic: false },
 	}),
@@ -482,9 +509,9 @@ export const ConfigSchema = z.object({
 			},
 			webhook: {},
 			intentMap: {
-				'/save': { route: 'brain-save', description: 'Capture a note (text/image/voice/video) into the vault inbox.' },
-				'/find': { route: 'brain-find', description: 'Search the vault — top 5 matches.' },
-				'/recent': { route: 'brain-recent', description: 'List the 5 most-recently-touched notes.' },
+				'/save': { route: 'vault-save-note', description: 'Capture a note (text/image/voice/video) into the vault inbox.' },
+				'/find': { route: 'vault-find', description: 'Search the vault — top 5 matches.' },
+				'/recent': { route: 'vault-recent', description: 'List the 5 most-recently-touched notes.' },
 				'/img': { route: 'img', description: 'Generate an image (no attachment) or edit one (attach the source).' },
 				default: { route: 'vault-chat', dynamic: false },
 			},
@@ -548,9 +575,9 @@ export const ConfigSchema = z.object({
 				systemPromptPath: 'operations/whatsapp/IMG.md',
 			},
 			intentMap: {
-				'/save': { route: 'brain-save', description: 'Capture a note (text/image/voice/video) into the vault inbox.' },
-				'/find': { route: 'brain-find', description: 'Search the vault — top 5 matches.' },
-				'/recent': { route: 'brain-recent', description: 'List the 5 most-recently-touched notes.' },
+				'/save': { route: 'vault-save-note', description: 'Capture a note (text/image/voice/video) into the vault inbox.' },
+				'/find': { route: 'vault-find', description: 'Search the vault — top 5 matches.' },
+				'/recent': { route: 'vault-recent', description: 'List the 5 most-recently-touched notes.' },
 				'/img': { route: 'img', description: 'Generate an image (no attachment) or edit one (attach the source).' },
 				default: { route: 'vault-chat', dynamic: false },
 			},
@@ -568,7 +595,7 @@ export const ConfigSchema = z.object({
 			retries: 1,
 			onError: ['timeout', '5xx', 'rate_limit', 'network'],
 		},
-		'brain-save': {
+		'vault-save-note': {
 			description: 'Multimodal extraction for `/save` — Gemini Flash directly (cheap + supports image/video/document).',
 			default: 'gemini:gemini-2.5-flash',
 			failover: ['openrouter:google/gemini-2.5-flash'],
@@ -576,7 +603,7 @@ export const ConfigSchema = z.object({
 			retries: 1,
 			onError: ['timeout', '5xx', 'rate_limit', 'network'],
 		},
-		'brain-find': {
+		'vault-find': {
 			description: 'Lexical vault search for `/find` — no LLM call; route registered for telemetry symmetry.',
 			default: 'gemini:gemini-2.5-flash',
 			failover: [],
@@ -584,7 +611,7 @@ export const ConfigSchema = z.object({
 			retries: 0,
 			onError: ['timeout', '5xx', 'rate_limit', 'network'],
 		},
-		'brain-recent': {
+		'vault-recent': {
 			description: 'Recency listing for `/recent` — no LLM call; route registered for telemetry symmetry.',
 			default: 'gemini:gemini-2.5-flash',
 			failover: [],
