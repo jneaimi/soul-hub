@@ -42,6 +42,7 @@ import {
 	recordAgentAction,
 	extractTransactional,
 	inputFromMessage,
+	composeDrillDown,
 	type FilterCategory,
 	type TransactionalExtract,
 } from '../../inbox/index.js';
@@ -1161,6 +1162,27 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 					kind: 'reply',
 					text: formatExtract(messageId, result.extract, /*fromCache*/ false),
 				};
+			},
+		}),
+
+		'inbox-drill-down': tool({
+			description:
+				"Show everything cheap-to-fetch about a single inbox message: envelope (from/subject/when), cached extracted_data, agent-action history, and a 200-char body preview. Use this when the user references a specific msg id ('what about msg 33602', 'tell me about 33425', '33877') — typically a reply to a digest or anomaly push that called out a msg id. " +
+				"Does NOT fetch the full body — call `inbox-read-body` next if the preview is insufficient. " +
+				"PROVENANCE: `messageId` MUST be a real id from a prior `inbox-list-queued`, `inbox-anomaly-push`, or `inbox-digest` (or a number the user explicitly typed in their reply). NEVER fabricate.",
+			inputSchema: z.object({
+				messageId: z.number().int().positive(),
+			}),
+			execute: async ({ messageId }): Promise<ToolResult> => {
+				logToolCall('inbox-drill-down', { messageId });
+				const text = composeDrillDown(messageId);
+				if (!text) {
+					return {
+						kind: 'reply',
+						text: `ERROR: Message ${messageId} not found in inbox.db. Likely a hallucinated id. Do NOT report success to the user.`,
+					};
+				}
+				return { kind: 'reply', text };
 			},
 		}),
 

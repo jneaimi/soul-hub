@@ -942,6 +942,53 @@ export function recordAgentAction(input: AgentActionInput): void {
 	}
 }
 
+export interface AgentActionRow {
+	id: number;
+	timestamp: number;
+	tool: string;
+	messageId: number | null;
+	actor: string;
+	args: unknown;
+	result: unknown;
+	conversationKey: string | null;
+}
+
+/** Fetch agent_actions rows for a given message, newest first. Used by
+ *  inbox-drill-down to show "what's the agent done with this row" —
+ *  e.g. "anomaly-pushed at 07:25", "extract ran with body fallback".
+ *  Args/result JSON is parsed so callers don't have to. */
+export function listAgentActions(messageId: number, limit = 20): AgentActionRow[] {
+	const db = getInboxDb();
+	const rows = db
+		.prepare(
+			`SELECT id, timestamp, tool, message_id, actor, args, result, conversation_key
+			 FROM agent_actions
+			 WHERE message_id = ?
+			 ORDER BY id DESC
+			 LIMIT ?`,
+		)
+		.all(messageId, limit) as Record<string, unknown>[];
+	return rows.map((r) => ({
+		id: r.id as number,
+		timestamp: r.timestamp as number,
+		tool: r.tool as string,
+		messageId: r.message_id as number | null,
+		actor: r.actor as string,
+		args: safeJsonParse(r.args as string | null),
+		result: safeJsonParse(r.result as string | null),
+		conversationKey: r.conversation_key as string | null,
+	}));
+}
+
+function safeJsonParse(s: string | null): unknown {
+	if (!s) return null;
+	try {
+		return JSON.parse(s);
+	} catch {
+		return null;
+	}
+}
+
 // ── Sync State ──
 
 export function getSyncState(accountId: string, folder: string): SyncState | null {

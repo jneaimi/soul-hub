@@ -307,6 +307,20 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 		],
 	},
 	{
+		name: 'inbox-drill-down',
+		category: 'read',
+		llm_description:
+			"Show everything cheap-to-fetch about a single inbox message: envelope (from/subject/when), cached extracted_data, agent-action history, and a 200-char body preview. Use this when the user references a specific msg id ('what about msg 33602', 'tell me about 33425', '33877') — typically a reply to a digest or anomaly push that called out a msg id. " +
+			"Does NOT fetch the full body — call `inbox-read-body` next if the preview is insufficient. " +
+			"PROVENANCE: `messageId` MUST be a real id from a prior `inbox-list-queued`, `inbox-anomaly-push`, or `inbox-digest` (or a number the user explicitly typed in their reply). NEVER fabricate.",
+		ui_description:
+			"Composite drill-down on one message — envelope + cached extract + agent_actions audit history + body preview snippet. Server-formatted, no LLM in the path. Closes the digest/anomaly-push reply loop.",
+		examples: [
+			{ user: '"what about msg 33602"', toolArgs: '{ messageId: 33602 }' },
+			{ user: '"tell me more about 33877"', toolArgs: '{ messageId: 33877 }' },
+		],
+	},
+	{
 		name: 'crm-add-contact',
 		category: 'write',
 		llm_description:

@@ -15,8 +15,8 @@ export {
 	listMessagesForFiltering, reclassifyBySignature, getFilterStats,
 	rowToMessage,
 	// Layer 3 Stage 2 — structured extraction + agent audit log
-	getExtractedData, setExtractedData, recordAgentAction,
-	type MessageListOptions, type AgentActionInput,
+	getExtractedData, setExtractedData, recordAgentAction, listAgentActions,
+	type MessageListOptions, type AgentActionInput, type AgentActionRow,
 } from './db.js';
 
 export type {
@@ -74,3 +74,6 @@ export type {
 	AnomalyDecision,
 	ListAnomalyCandidatesOptions,
 } from './anomaly.js';
+
+// Layer 3 — composite drill-down (envelope + extract + audit + preview)
+export { composeDrillDown } from './drill-down.js';
