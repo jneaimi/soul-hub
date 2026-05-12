@@ -1104,16 +1104,17 @@
 							</div>
 						{:else if addProvider === 'outlook'}
 							<div class="col-span-2 space-y-3">
-								<p class="text-xs text-hub-muted">Outlook uses secure OAuth2 authentication.</p>
+								<p class="text-xs text-hub-muted">Outlook uses secure OAuth2 authentication. Works with Microsoft 365 (work / school) and personal Microsoft accounts (Outlook.com, Hotmail.com, Live.com).</p>
 								<a href="/api/inbox/outlook" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-sky-500/15 text-sky-400 text-sm font-medium hover:bg-sky-500/25 transition-colors">
 									<svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M11.4 24H0V12.6L11.4 24zM24 24H12.6V12.6L24 24zM11.4 11.4H0V0l11.4 11.4zM24 11.4H12.6V0L24 11.4z"/></svg>
 									{existingOutlookCount === 0 ? 'Sign in with Microsoft' : 'Add another Microsoft account'}
 								</a>
 								{#if existingOutlookCount > 0}
 									<p class="text-[10px] text-hub-dim leading-relaxed">
-										Microsoft will let you choose a different account on the consent screen. Re-grant for an existing account is currently routed through Remove + re-add (in-place reauthorize lands with plan Open #2).
+										Microsoft will let you choose a different account on the consent screen. To recover an existing account whose tokens expired, use <em>Reauthorize</em> from its settings instead.
 									</p>
 								{/if}
+								<p class="text-[10px] text-hub-dim pt-1">Heads-up: Microsoft refresh tokens stay valid for 90 days of inactivity. If sync stops, use <em>Reauthorize</em> in the account settings to re-grant access.</p>
 							</div>
 						{:else}
 							{#if existingProviderCount > 0}
@@ -1622,19 +1623,15 @@
 									Reauthorize with Google
 								</a>
 							{:else if isOAuthAccount && settingsAccount.provider === 'outlook'}
-								<!-- Outlook in-place reauthorize isn't wired yet (inbox-plan Open #2).
-								     Direct the operator at the only working recovery: remove + re-add. -->
-								<div class="rounded-md bg-amber-500/10 border border-amber-500/30 px-3 py-2.5 space-y-2">
-									<p class="text-[11px] text-amber-300 leading-relaxed">
-										In-place Outlook reauthorize isn't wired yet. To recover this account, remove it below and re-add via <span class="font-medium">Add Account → Outlook → Sign in with Microsoft</span>. Tracked in the inbox plan.
-									</p>
-									<button
-										onclick={() => { if (settingsAccount) { const id = settingsAccount.id; settingsAccount = null; removeAccount(id); } }}
-										class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/15 text-amber-300 text-xs font-medium hover:bg-amber-500/25 transition-colors cursor-pointer"
-									>
-										Remove this account
-									</button>
-								</div>
+								<!-- Outlook OAuth re-link: redirect to Microsoft consent flow.
+								     Mirrors the Gmail pattern above (inbox-plan Open #2 shipped 2026-05-12). -->
+								<a
+									href={`/api/inbox/outlook?account=${settingsAccount.id}`}
+									class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-sky-500/15 text-sky-400 text-xs font-medium hover:bg-sky-500/25 transition-colors"
+								>
+									<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zm12.6 0H12.6V0H24v11.4z"/></svg>
+									Reauthorize with Microsoft
+								</a>
 							{:else}
 								<!-- Password-based providers: in-place credential update -->
 								<input

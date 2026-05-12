@@ -50,34 +50,68 @@ function createMsalApp(redirectUri?: string): ConfidentialClientApplication {
 	});
 }
 
-/** Generate the Microsoft OAuth2 consent URL */
-export async function getOutlookAuthUrl(redirectUri: string): Promise<string> {
+/** Generate the Microsoft OAuth2 consent URL.
+ *
+ *  `state` threads through the round-trip — the callback uses it to
+ *  distinguish first-time link (`undefined`) from Reauthorize on an
+ *  existing account (`state=<accountId>`). Mirrors `getAuthUrl` in
+ *  `oauth.ts` for Gmail.
+ *
+ *  Authority is `/common`, which accepts both work/school (Microsoft 365)
+ *  and personal Microsoft Accounts (Outlook.com, Hotmail.com, Live.com).
+ *  `offline_access` in GRAPH_SCOPES is what causes Microsoft to return a
+ *  refresh_token in the code-exchange response. */
+export async function getOutlookAuthUrl(redirectUri: string, state?: string): Promise<string> {
 	const app = createMsalApp();
 	const url = await app.getAuthCodeUrl({
 		scopes: GRAPH_SCOPES,
 		redirectUri,
 		prompt: 'consent',
+		state,
 	});
 	return url;
 }
 
-/** Exchange authorization code for tokens */
+/** Exchange authorization code for tokens.
+ *
+ *  Uses the raw `/oauth2/v2.0/token` endpoint instead of MSAL's
+ *  `acquireTokenByCode` because MSAL doesn't expose the refresh_token
+ *  directly (it stashes it in an in-process cache that doesn't survive a
+ *  process restart). The raw POST mirrors what `refreshOutlookToken`
+ *  already does and gives us the refresh_token explicitly — required for
+ *  the Reauthorize round-trip per inbox-plan Open #2. */
 export async function exchangeOutlookCode(code: string, redirectUri: string): Promise<OutlookTokens> {
-	const app = createMsalApp();
-	const result = await app.acquireTokenByCode({
+	const { clientId, clientSecret } = getConfig();
+
+	const params = new URLSearchParams({
+		client_id: clientId,
+		client_secret: clientSecret,
 		code,
-		scopes: GRAPH_SCOPES,
-		redirectUri,
+		redirect_uri: redirectUri,
+		grant_type: 'authorization_code',
+		scope: GRAPH_SCOPES.join(' '),
 	});
 
-	if (!result?.accessToken) {
+	const res = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+		body: params.toString(),
+	});
+
+	if (!res.ok) {
+		const err = await res.text();
+		throw new Error(`Outlook code exchange failed: ${res.status} ${err}`);
+	}
+
+	const data = await res.json();
+	if (!data.access_token) {
 		throw new Error('No access token received from Microsoft');
 	}
 
 	return {
-		accessToken: result.accessToken,
-		refreshToken: '', // MSAL manages refresh internally via cache, but we store for manual refresh
-		expiresAt: result.expiresOn ? result.expiresOn.getTime() : Date.now() + 3600_000,
+		accessToken: data.access_token,
+		refreshToken: data.refresh_token || '',
+		expiresAt: Date.now() + (data.expires_in || 3600) * 1000,
 	};
 }
 
