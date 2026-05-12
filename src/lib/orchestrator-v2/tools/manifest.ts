@@ -82,7 +82,7 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 		name: 'vaultSearch',
 		category: 'read',
 		llm_description:
-			'Search the user\'s Obsidian vault for the user\'s OWN saved notes. Use for "do we have research on X", "what did we save about Y", "find my notes on Z", "did I write anything about W". Do NOT use for current events, news, headlines, weather, live scores, or any question about the outside world — those go to webSearch. Vault returning a topic-adjacent note does not satisfy a news / current-events question.',
+			'Search the user\'s Obsidian vault for the user\'s OWN saved notes. Use for "do we have research on X", "what did we save about Y", "find my notes on Z", "did I write anything about W". Do NOT use for current events, news, headlines, weather, live scores, or any question about the outside world — those go to webSearch. Do NOT use for inbox/email queries — "msg <N>", "what about msg N", "tell me about N", or any bare 4-6 digit number after a digest/anomaly push goes to `inbox-drill-down` (NOT here). Vault returning a topic-adjacent note does not satisfy a news / current-events / inbox question.',
 		ui_description:
 			'Search the user\'s Obsidian vault notes (lexical / MiniSearch). Used for "do we have notes on..." style questions.',
 		examples: [
@@ -310,9 +310,10 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 		name: 'inbox-drill-down',
 		category: 'read',
 		llm_description:
-			"Show everything cheap-to-fetch about a single inbox message: envelope (from/subject/when), cached extracted_data, agent-action history, and a 200-char body preview. Use this when the user references a specific msg id ('what about msg 33602', 'tell me about 33425', '33877') — typically a reply to a digest or anomaly push that called out a msg id. " +
-			"Does NOT fetch the full body — call `inbox-read-body` next if the preview is insufficient. " +
-			"PROVENANCE: `messageId` MUST be a real id from a prior `inbox-list-queued`, `inbox-anomaly-push`, or `inbox-digest` (or a number the user explicitly typed in their reply). NEVER fabricate.",
+			"STRICT ROUTING: any user mention of 'msg <N>', 'message <N>', 'about <N>', or a bare 4-6 digit number that appears in the recent conversation context (digest / anomaly push / list-queued result) routes HERE. NOT vaultSearch — that's for vault notes, NOT inbox rows. NOT reply — drill-down composes the answer for you. " +
+			"Returns everything cheap-to-fetch about a single inbox message: envelope (from/subject/when), cached extracted_data, agent-action history, and a 200-char body preview. Typical triggers: 'what about msg 33602', 'tell me about 33425', 'more on 33877', or just the bare number '33877' as a reply to a digest. " +
+			"Does NOT fetch the full body — call `inbox-read-body` next if the user wants more after seeing the preview. " +
+			"PROVENANCE: `messageId` MUST be a real id from a prior `inbox-list-queued`, `inbox-anomaly-push`, `inbox-digest`, or a number the user explicitly typed in their reply. NEVER fabricate.",
 		ui_description:
 			"Composite drill-down on one message — envelope + cached extract + agent_actions audit history + body preview snippet. Server-formatted, no LLM in the path. Closes the digest/anomaly-push reply loop.",
 		examples: [
