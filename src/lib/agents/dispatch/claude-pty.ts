@@ -72,13 +72,24 @@ export const claudePtyDispatcher: BackendDispatcher = {
 		const budget = resolveBudget(opts.mode, agent.budget);
 		const stallMs = resolveStallMs(budget.timeout_ms);
 
-		const prompt = composePrompt(opts.task, opts.context);
+		// ADR-031 — goal-mode: when the agent's frontmatter sets a
+		// `goal_condition`, the dispatcher sends `/goal <condition>` into
+		// the PTY FIRST (so Claude Code's session manager picks up the
+		// convergence directive), then injects the task as a second turn
+		// after a short wait for the "Goal set:" acknowledgment. The
+		// `prompt_sent` event from spawnSession fires after the FIRST
+		// injection; we use it as the cue to schedule the second.
+		const goalCondition = agent.goal_condition?.trim();
+		const goalActive = !!goalCondition;
+		const taskPayload = composePrompt(opts.task, opts.context);
+		const initialPrompt = goalActive ? `/goal ${goalCondition}` : taskPayload;
+
 		const model = agent.model || 'sonnet';
 
 		let session;
 		try {
 			session = spawnSession({
-				prompt,
+				prompt: initialPrompt,
 				agentId: agent.id, // Claude Code loads system_prompt from ~/.claude/agents/<id>.md
 				cwd: config.resolved.vaultDir,
 				shell: false,
@@ -92,6 +103,11 @@ export const claudePtyDispatcher: BackendDispatcher = {
 		}
 
 		yield { type: 'started', backend: 'claude-pty', model, runId, ts: started };
+		if (goalActive) {
+			console.log(
+				`[agents/claude-pty] goal-mode active for ${agent.id}: "${goalCondition!.slice(0, 80)}${goalCondition!.length > 80 ? '…' : ''}"`,
+			);
+		}
 
 		// Buffer stdout chunks and a stripped accumulator for the final result.
 		const queue: string[] = [];
@@ -118,6 +134,26 @@ export const claudePtyDispatcher: BackendDispatcher = {
 		session.emitter.on('output', onOutput);
 		session.emitter.on('exit', onExit);
 		session.emitter.on('prompt_sent', onPromptSent);
+
+		// ADR-031 — second-stage injection. Once spawnSession has typed
+		// `/goal <condition>` and Enter, wait briefly for Claude Code to
+		// acknowledge the goal (TUI prints "Goal set: …"), then write the
+		// task as a fresh turn. If the session already exited (unlikely
+		// in 1.5s) we no-op. The 1500ms is empirical — `/goal` registers
+		// near-instantly in v2.1.139 but the TUI's input box needs a tick
+		// to settle before accepting the next message.
+		const goalTimers: { taskWrite?: ReturnType<typeof setTimeout>; enterWrite?: ReturnType<typeof setTimeout> } = {};
+		if (goalActive) {
+			session.emitter.once('prompt_sent', () => {
+				goalTimers.taskWrite = setTimeout(() => {
+					if (exited) return;
+					session.pty.write(taskPayload);
+					goalTimers.enterWrite = setTimeout(() => {
+						if (!exited) session.pty.write('\r');
+					}, 200);
+				}, 1500);
+			});
+		}
 
 		const onAbort = () => {
 			killSession(session.id);
@@ -184,6 +220,8 @@ export const claudePtyDispatcher: BackendDispatcher = {
 			session.emitter.off('output', onOutput);
 			session.emitter.off('exit', onExit);
 			session.emitter.off('prompt_sent', onPromptSent);
+			if (goalTimers.taskWrite) clearTimeout(goalTimers.taskWrite);
+			if (goalTimers.enterWrite) clearTimeout(goalTimers.enterWrite);
 			opts.signal?.removeEventListener('abort', onAbort);
 			killSession(session.id);
 		}

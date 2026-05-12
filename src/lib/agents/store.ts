@@ -63,6 +63,8 @@ interface ClaudeMdFrontmatter {
 	backend?: string;
 	provenance?: string;
 	chat_dispatchable?: boolean;
+	/** ADR-031 — convergence condition for `/goal`. PTY-only effect today. */
+	goal_condition?: string;
 	/** Soul Hub extension. Claude Code ignores unknown frontmatter keys, so
 	 *  this travels safely alongside the agent's main spec. */
 	budget?: { max_usd?: number; max_turns?: number; timeout_sec?: number };
@@ -125,6 +127,9 @@ function parseLaneA(filePath: string): AgentSummary | null {
 		source_path: filePath,
 		system_prompt: parsed.content.trim(),
 		chat_dispatchable: fm.chat_dispatchable === true,
+		goal_condition: typeof fm.goal_condition === 'string' && fm.goal_condition.trim().length > 0
+			? fm.goal_condition.trim()
+			: undefined,
 		budget: extractBudget(fm.budget),
 	};
 }
@@ -166,6 +171,8 @@ interface LaneBFile {
 	provenance?: string;
 	system_prompt?: string;
 	chat_dispatchable?: boolean;
+	/** ADR-031 — convergence condition for `/goal`. PTY-only effect today. */
+	goal_condition?: string;
 	spec?:
 		| { backend: 'claude-pty'; [k: string]: unknown }
 		| { backend: 'claude-cli-flag' }
@@ -219,6 +226,9 @@ function parseLaneB(filePath: string): AgentSummary | null {
 		source_path: filePath,
 		system_prompt: String(doc.system_prompt ?? '').trim(),
 		chat_dispatchable: doc.chat_dispatchable === true,
+		goal_condition: typeof doc.goal_condition === 'string' && doc.goal_condition.trim().length > 0
+			? doc.goal_condition.trim()
+			: undefined,
 		budget: extractBudget((doc as Record<string, unknown>).budget),
 	};
 }
@@ -366,6 +376,9 @@ function writeLaneA(draft: AgentDraft): string {
 		backend: draft.spec.backend, // Soul Hub extension
 		provenance: draft.provenance,
 		chat_dispatchable: draft.chat_dispatchable === true ? true : undefined,
+		goal_condition: draft.goal_condition && draft.goal_condition.trim().length > 0
+			? draft.goal_condition.trim()
+			: undefined,
 		// Soul Hub extension — Claude Code ignores unknown frontmatter keys.
 		// Persist the budget block so per-agent timeout/turn overrides survive
 		// a save round-trip from the wizard.
@@ -397,6 +410,9 @@ function writeLaneB(draft: AgentDraft): string {
 		budget: draft.budget,
 		provenance: draft.provenance,
 		chat_dispatchable: draft.chat_dispatchable === true,
+		goal_condition: draft.goal_condition && draft.goal_condition.trim().length > 0
+			? draft.goal_condition.trim()
+			: undefined,
 		spec: draft.spec,
 		system_prompt: draft.system_prompt,
 	};

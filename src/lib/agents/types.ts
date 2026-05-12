@@ -91,6 +91,13 @@ export const AgentSummarySchema = z.object({
 	 *  by default; user opts in via /agents wizard. Replaces the Phase 1
 	 *  `tools.includes('Bash')` heuristic. */
 	chat_dispatchable: z.boolean().default(false),
+	/** ADR-031 — when set, the `claude-pty` dispatcher sends `/goal <condition>`
+	 *  into the PTY session BEFORE the task, so the agent self-iterates until
+	 *  the condition is met or `budget.timeout_sec` fires. WhatsApp-only-shaped
+	 *  in v1 since `claude-cli-flag` and `ai-sdk` backends don't support
+	 *  `/goal` today. Leave undefined for one-shot agents (author / scribe /
+	 *  artifact-producers). Example: "all tests pass and no type-check errors". */
+	goal_condition: z.string().optional(),
 	/** Per-agent budget override read from frontmatter (Lane A) or YAML
 	 *  (Lane B). Partial — any subset of fields. Missing fields fall through
 	 *  to `PRODUCTION_DEFAULTS` in `dispatch/budget.ts` at runtime. */
@@ -138,6 +145,11 @@ export const AgentDraftSchema = z.object({
 	system_prompt: z.string().default(''),
 	provenance: Provenance.default('user-created'),
 	chat_dispatchable: z.boolean().default(false),
+	/** ADR-031 — optional convergence condition for the `/goal` command on
+	 *  PTY-backed agents. Empty string or omitted → one-shot dispatch (today's
+	 *  behavior). Non-empty string → goal-mode. Only applied on
+	 *  `claude-pty` backend; ignored on the other two with a warn log. */
+	goal_condition: z.string().optional(),
 	spec: z.discriminatedUnion('backend', [
 		ClaudePtyDraftSpec,
 		ClaudeCliFlagDraftSpec,

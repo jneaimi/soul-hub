@@ -22,6 +22,10 @@
 		system_prompt?: string;
 		backend?: Backend;
 		chat_dispatchable?: boolean;
+		/** ADR-031 — when set, the PTY dispatcher sends `/goal <condition>`
+		 *  into the session before the task so the agent self-iterates
+		 *  until the condition is met or the budget timeout fires. */
+		goal_condition?: string;
 		// ai-sdk-specific
 		provider?: Provider;
 		// pty-specific
@@ -188,6 +192,10 @@
 	// from a single WhatsApp message.
 	let chatDispatchable = $state(seed.chat_dispatchable ?? false);
 
+	// ADR-031 — convergence condition for `/goal`. PTY-only effect today.
+	// Empty string → one-shot (legacy behavior). Non-empty → goal-mode.
+	let goalCondition = $state(seed.goal_condition ?? '');
+
 	// ─── derived validation ──────────────────────────────────────────────────
 	const idValid = $derived(/^[a-z0-9][a-z0-9_-]*$/.test(id));
 	const nameValid = $derived(name.trim().length > 0);
@@ -221,6 +229,7 @@
 			system_prompt: systemPrompt,
 			provenance: 'user-created',
 			chat_dispatchable: chatDispatchable,
+			goal_condition: goalCondition.trim() || undefined,
 		};
 
 		if (backend === 'claude-pty') {
@@ -585,6 +594,21 @@
 					</span>
 				</span>
 			</label>
+		</div>
+
+		<!-- Goal condition (ADR-031) -->
+		<div>
+			<div class="text-xs text-hub-muted mb-1.5">Goal condition <span class="text-hub-dim font-normal">(optional)</span></div>
+			<input
+				id="agent-goal"
+				type="text"
+				bind:value={goalCondition}
+				placeholder="e.g. all tests pass and no type-check errors"
+				class="w-full px-2.5 py-1.5 rounded bg-hub-bg border border-hub-border text-xs text-hub-text placeholder:text-hub-dim focus:outline-none focus:ring-1 focus:ring-hub-cta/50"
+			/>
+			<p class="text-[10px] text-hub-dim mt-1 leading-snug">
+				When set, the PTY dispatcher sends <code class="font-mono">/goal &lt;condition&gt;</code> into the Claude Code session before the task so the agent self-iterates until the condition is met or the budget timeout fires. PTY backend only today — has no effect on <code class="font-mono">claude-cli-flag</code> or <code class="font-mono">ai-sdk</code> agents. Best for agents whose deliverable is "code that works" (inspector, developer, security-reviewer); leave empty for one-shot artifact producers.
+			</p>
 		</div>
 
 		<!-- Budget -->
