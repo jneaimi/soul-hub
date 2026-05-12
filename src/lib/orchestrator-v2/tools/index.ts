@@ -130,9 +130,18 @@ export interface ToolDeps {
 }
 
 /** Tagged-union return type for all tool `execute()` bodies. decide-v2's
- *  result walker discriminates on `kind` to assemble the `V2Output`. */
+ *  result walker discriminates on `kind` to assemble the `V2Output`.
+ *
+ *  `reply` vs `verbatim`: both carry pre-formatted text, but `reply` is a
+ *  fallback used only when the LLM's `finalText` is junk-short — the LLM
+ *  is free to creatively reformat the result during composition. Use
+ *  `verbatim` when the tool's structured output IS the answer and any
+ *  LLM rewrite removes information (e.g. list-style outputs where row
+ *  ids must survive intact). `verbatim` wins over `usefulFinal` in
+ *  buildV2Output, bypassing LLM narration entirely. */
 export type ToolResult =
 	| { kind: 'reply'; text: string }
+	| { kind: 'verbatim'; text: string }
 	| { kind: 'web-search'; text: string; query: string }
 	| { kind: 'web-search-error'; error: string; query: string }
 	| { kind: 'vault-search'; text: string; query: string }
@@ -928,10 +937,12 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 
 		'inbox-list-queued': tool({
 			description:
+				"STRICT ROUTING: any user mention of 'my inbox', 'queued', 'new emails', 'new mail', 'what came in', 'mail today', 'any bank alerts', 'show me my receipts', or similar list-style email queries routes HERE — these are EMAIL queries against the IMAP-synced messages table. NOT vaultSearch — that's for Soul Hub vault markdown notes; the vault has an unrelated `inbox/` folder for quick note captures and the name collision MUST be ignored. The word 'inbox' without an explicit 'note'/'vault' qualifier always means EMAIL. " +
 				"List the user's queued inbox messages (post-Layer-2 filter, agent-relevant only). " +
 				"Use when the user asks 'what's in my inbox', 'any new emails', 'show me bank alerts', 'what came in today'. " +
 				"Filter by category for targeted queries: personal (human mail), transactional (bank/orders/receipts), notification (service alerts), unclassified (filter wasn't confident). " +
-				"Returns newest first.",
+				"Returns newest first. " +
+				"OUTPUT FORMAT: when rendering rows to the user, you MUST preserve the `(msg N)` annotation next to each row — those ids are how the user drills down with phrases like 'tell me about msg N' or 'what about N'. Dropping the ids breaks the follow-up loop. If you summarize or group rows by category, still include `(msg N)` on every row.",
 			inputSchema: z.object({
 				category: z
 					.enum(['personal', 'transactional', 'notification', 'unclassified'])
@@ -970,12 +981,14 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 					const sender = m.fromName || m.fromAddress;
 					const cat = m.category ?? '?';
 					const when = formatRelativeDate(m.dateReceived);
-					return `${i + 1}. [${cat}] ${sender} — ${m.subject}  · ${when}  (id ${m.id})`;
+					return `${i + 1}. [${cat}] ${sender} — ${m.subject}  · ${when}  (msg ${m.id})`;
 				});
-				const head = `${result.total} queued message${result.total === 1 ? '' : 's'}` +
-					(category ? ` in ${category}` : '') +
-					':';
-				return { kind: 'reply', text: `${head}\n${lines.join('\n')}` };
+				const head =
+					`📥 *${result.total} queued message${result.total === 1 ? '' : 's'}*` +
+					(category ? ` in *${category}*` : '') +
+					` — showing newest ${result.messages.length}:`;
+				const footer = '\n\n(reply with `msg N` to drill down)';
+				return { kind: 'verbatim', text: `${head}\n\n${lines.join('\n')}${footer}` };
 			},
 		}),
 

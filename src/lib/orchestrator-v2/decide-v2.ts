@@ -471,6 +471,14 @@ function buildV2Output(
 			}
 		: undefined;
 
+	// `verbatim` wins over `usefulFinal` — tools that return verbatim text
+	// have already composed the final reply; LLM narration here only removes
+	// information (e.g. list-style outputs where row ids must survive).
+	const verbatimResult = results.find((r) => r.kind === 'verbatim');
+	if (verbatimResult && verbatimResult.kind === 'verbatim') {
+		return { kind: 'text', text: verbatimResult.text };
+	}
+
 	if (usefulFinal) return { kind: 'text', text: usefulFinal, youtubeContext };
 
 	const replyResult = results.find((r) => r.kind === 'reply');

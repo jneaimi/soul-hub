@@ -244,7 +244,8 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 			"List the user's queued inbox messages (post-Layer-2 filter, agent-relevant only). " +
 			"Use when the user asks 'what's in my inbox', 'any new emails', 'show me bank alerts', 'what came in today'. " +
 			"Filter by category for targeted queries: personal (human mail), transactional (bank/orders/receipts), notification (service alerts), unclassified (filter wasn't confident). " +
-			"Returns newest first.",
+			"Returns newest first. " +
+			"OUTPUT FORMAT: when rendering rows to the user, you MUST preserve the `(msg N)` annotation next to each row — those ids are how the user drills down with phrases like 'tell me about msg N' or 'what about N'. Dropping the ids breaks the follow-up loop. If you summarize or group rows by category, still include `(msg N)` on every row.",
 		ui_description:
 			'List queued inbox messages, optionally filtered by category. The queued stream is what Layer 2 deemed agent-relevant.',
 		examples: [
