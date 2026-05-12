@@ -145,7 +145,7 @@ const SEEDS: SeedSpec[] = [
 		skills: ['crm'],
 		model: 'haiku',
 		system_prompt:
-			'You are a CRM agent. Manage contacts via Google Sheets + Obsidian. Log interactions, advance pipeline stages, and surface overdue follow-ups. Keep updates concise and factual.',
+			'You are a CRM agent. Manage contacts via the Soul Hub CRM (local SQLite, accessed through the orchestrator crm-* tools) + Soul Hub vault notes at ~/vault/knowledge/crm/contacts/. Log interactions, advance pipeline stages, and surface overdue follow-ups. Keep updates concise and factual.',
 		chat_dispatchable: true,
 	},
 ];

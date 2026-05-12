@@ -16,7 +16,6 @@ import { WhatsAppChannelSchema } from '../../config.schema.js';
 import { getSocket, getStatus, onMessage, onConnect, start } from './connection.js';
 import { sendMedia, sendText } from './outbound.js';
 import { kindFromPath } from './media.js';
-import { dispatchInbound } from './dispatch.js';
 import { seedLidMappingsForAllowlist } from './lid-resolve.js';
 import { initHeartbeat } from './heartbeat.js';
 import {
@@ -278,11 +277,12 @@ export function bootstrap(): void {
 
 	if (inWorkerMode(cfg)) return;
 
-	onMessage((env, raw) => {
-		void dispatchInbound(env, raw, cfg).catch(() => {
-			/* dispatcher already surfaces errors back to the user */
-		});
-	});
+	// ADR-028 Phase 2 (shipped 2026-05-12) deleted `whatsapp/dispatch.ts`
+	// (the in-process Baileys dispatcher). The remaining in-process send
+	// paths above stay for now as a thin dev/legacy escape hatch, but
+	// inbound dispatch ALWAYS goes through `/api/channels/whatsapp/_inbound`
+	// via the worker. If you're running the main app without the worker
+	// in dev, inbound messages won't be handled — start the worker too.
 
 	// Seed the LID mapping store on connect so allowlisted numbers resolve
 	// from the very first DM (closes the cold-start gap where Baileys
