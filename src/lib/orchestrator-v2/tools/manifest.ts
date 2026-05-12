@@ -82,9 +82,9 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 		name: 'vaultSearch',
 		category: 'read',
 		llm_description:
-			'Search the user\'s Obsidian vault for the user\'s OWN saved notes. Use for "do we have research on X", "what did we save about Y", "find my notes on Z", "did I write anything about W". Do NOT use for current events, news, headlines, weather, live scores, or any question about the outside world — those go to webSearch. Do NOT use for inbox/email queries — "msg <N>", "what about msg N", "tell me about N", or any bare 4-6 digit number after a digest/anomaly push goes to `inbox-drill-down` (NOT here). Vault returning a topic-adjacent note does not satisfy a news / current-events / inbox question.',
+			'Search the user\'s Soul Hub vault (standalone markdown knowledge store at ~/vault/) for the user\'s OWN saved notes. Use for "do we have research on X", "what did we save about Y", "find my notes on Z", "did I write anything about W". Do NOT use for current events, news, headlines, weather, live scores, or any question about the outside world — those go to webSearch. Do NOT use for inbox/email queries of ANY kind — "what\'s in my inbox", "what\'s queued", "any new emails", "new mail", "what came in today", "any bank alerts", "msg <N>", "what about msg N", "tell me about N", or any bare 4-6 digit id after a digest/anomaly push. ALL email queries route to `inbox-list-queued` (lists) or `inbox-drill-down` (single id), NEVER here. The vault has an unrelated `inbox/` folder for quick note captures — ignore that name collision; the word "inbox" without an explicit "note"/"vault" qualifier always means EMAIL. Vault returning a topic-adjacent note does not satisfy a news / current-events / inbox question.',
 		ui_description:
-			'Search the user\'s Obsidian vault notes (lexical / MiniSearch). Used for "do we have notes on..." style questions.',
+			'Search the Soul Hub vault notes (lexical / MiniSearch). Used for "do we have notes on..." style questions.',
 		examples: [
 			{ user: '"what did we save about hydroponics"', toolArgs: '{ query: "hydroponics" }' },
 		],
@@ -210,7 +210,7 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 		name: 'vaultSave',
 		category: 'write',
 		llm_description:
-			"Save composed content to the user's Obsidian vault as a markdown note. " +
+			"Save composed content to the user's Soul Hub vault (standalone markdown store at ~/vault/) as a markdown note. " +
 			'Use ONLY when the user explicitly asks to save / capture / remember / add to notes / write down / store. ' +
 			'NEVER call this for discussion-only requests. ' +
 			'For multi-step flows (e.g. user asks to save a YouTube video), call the upstream tool first ' +
@@ -240,6 +240,7 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 		name: 'inbox-list-queued',
 		category: 'read',
 		llm_description:
+			"STRICT ROUTING: any user mention of 'my inbox', 'queued', 'new emails', 'new mail', 'what came in', 'mail today', 'any bank alerts', 'show me my receipts', or similar list-style email queries routes HERE — these are EMAIL queries against the IMAP-synced messages table. NOT vaultSearch — that's for Soul Hub vault markdown notes; the vault has an unrelated `inbox/` folder for quick note captures and the name collision MUST be ignored. The word 'inbox' without an explicit 'note'/'vault' qualifier always means EMAIL. " +
 			"List the user's queued inbox messages (post-Layer-2 filter, agent-relevant only). " +
 			"Use when the user asks 'what's in my inbox', 'any new emails', 'show me bank alerts', 'what came in today'. " +
 			"Filter by category for targeted queries: personal (human mail), transactional (bank/orders/receipts), notification (service alerts), unclassified (filter wasn't confident). " +

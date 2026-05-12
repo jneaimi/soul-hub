@@ -289,7 +289,7 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 
 		vaultSearch: tool({
 			description:
-				'Search the user\'s Obsidian vault for the user\'s OWN saved notes. Use for "do we have research on X", "what did we save about Y", "find my notes on Z", "did I write anything about W". Do NOT use for current events, news, headlines, weather, live scores, or any question about the outside world — those go to webSearch. Do NOT use for inbox/email queries — "msg <N>", "what about msg N", "tell me about N", or any bare 4-6 digit number after a digest/anomaly push goes to `inbox-drill-down` (NOT here). Vault returning a topic-adjacent note does not satisfy a news / current-events / inbox question.',
+				'Search the user\'s Soul Hub vault (standalone markdown knowledge store at ~/vault/) for the user\'s OWN saved notes. Use for "do we have research on X", "what did we save about Y", "find my notes on Z", "did I write anything about W". Do NOT use for current events, news, headlines, weather, live scores, or any question about the outside world — those go to webSearch. Do NOT use for inbox/email queries of ANY kind — "what\'s in my inbox", "what\'s queued", "any new emails", "new mail", "what came in today", "any bank alerts", "msg <N>", "what about msg N", "tell me about N", or any bare 4-6 digit id after a digest/anomaly push. ALL email queries route to `inbox-list-queued` (lists) or `inbox-drill-down` (single id), NEVER here. The vault has an unrelated `inbox/` folder for quick note captures — ignore that name collision; the word "inbox" without an explicit "note"/"vault" qualifier always means EMAIL. Vault returning a topic-adjacent note does not satisfy a news / current-events / inbox question.',
 			inputSchema: z.object({
 				query: z.string().min(2).max(400),
 			}),
@@ -687,7 +687,7 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 
 		vaultSave: tool({
 			description:
-				"Save composed content to the user's Obsidian vault as a markdown note. " +
+				"Save composed content to the user's Soul Hub vault (standalone markdown store at ~/vault/) as a markdown note. " +
 				"Use ONLY when the user explicitly asks to save / capture / remember / add to notes / write down / store. " +
 				"NEVER call this for discussion-only requests. " +
 				"For multi-step flows (e.g. user asks to save a YouTube video), call the upstream tool first (youtubeFetch with mode=summary), then synthesize a clean note body, THEN call vaultSave with the synthesized title + body. " +
