@@ -188,7 +188,11 @@ export async function selectTools(userMessage: string): Promise<SelectorOutput> 
 	try {
 		const openrouter = createOpenRouter({ apiKey });
 		const result = await generateText({
-			model: openrouter(SELECTOR_MODEL),
+			// ADR-028 Phase 4d — `sort: 'latency'` asks OpenRouter to route the
+			// request to whichever upstream provider currently has the lowest
+			// measured TTFT for this model. Cuts tail latency when one provider
+			// is degraded (200-500ms typical; 2-3s on a bad day). Free win.
+			model: openrouter(SELECTOR_MODEL, { provider: { sort: 'latency' } }),
 			output: Output.object({ schema: SelectionSchema }),
 			system: SYSTEM_PROMPT,
 			messages: [{ role: 'user', content: userMessage }],

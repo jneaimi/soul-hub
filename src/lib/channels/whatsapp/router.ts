@@ -83,9 +83,62 @@ export function getRouterDecisions(): RouterDecision[] {
  *  routed via slash only so the regex set covers reads only.
  *
  *  Save/capture verbs are deliberately absent here — see THRESHOLDS
- *  comment for rationale. */
+ *  comment for rationale.
+ *
+ *  ADR-028 Phase 4b expanded the regex set to also fire `vault-chat`
+ *  for high-confidence routes that previously paid the 5-15s LLM hop:
+ *  email-inbox queries, bare msg-id replies, single-word
+ *  acknowledgments, and explicit "find/search X" frees where X is the
+ *  next noun. These ride the same source='regex' channel as the
+ *  brain-* hits so latency telemetry is consistent. */
 function regexPreFilter(message: string): { route: string; reason: string } | null {
-	const lower = message.toLowerCase();
+	const trimmed = message.trim();
+	const lower = trimmed.toLowerCase();
+
+	// ───────── vault-chat fast paths (ADR-028 P4b, May 2026) ─────────
+
+	// Bare msg-id replies after a digest / anomaly push / list-queued result.
+	// These are unambiguously inbox-drill-down lookups handled by the
+	// orchestrator under vault-chat. Patterns cover `msg 33602`, `message
+	// 33602`, `about 33602`, and bare `33602` (4-6 digits, no other text).
+	if (
+		/^(?:msg|message|#)\s*\d{3,7}$/.test(lower) ||
+		/^about\s+\d{3,7}$/.test(lower) ||
+		/^\d{4,7}$/.test(lower)
+	) {
+		return { route: 'vault-chat', reason: 'bare msg-id reply' };
+	}
+
+	// Email inbox queries — the user's "inbox" almost always means EMAIL
+	// (the IMAP-synced messages table), not the vault's `inbox/` quick-
+	// capture folder. Routes to vault-chat where the orchestrator picks
+	// `inbox-list-queued` etc. (production misroute 2026-05-12 codified).
+	// Same disambiguation rule as the LLM router prompt: "inbox" without
+	// an explicit "note"/"vault"/"folder" qualifier always means EMAIL.
+	if (
+		/\b(my|the)?\s*(email\s+)?inbox\b/.test(lower) ||
+		/\b(new|any)\s+(emails?|mail|mails)\b/.test(lower) ||
+		/\b(what(?:'s|\s+is|\s+was)?|any)\s+(queued|came\s+in|arrived)\b/.test(lower) ||
+		/\b(bank\s+alerts?|receipts?|otp|verification\s+(?:code|email))\b/.test(lower)
+	) {
+		// Defensive guard — "inbox" with an explicit note/vault qualifier
+		// is a vault-folder query and belongs in the LLM lane.
+		const isVaultFolderReference = /\b(inbox|email)\s+(notes?|folder)\b/.test(lower);
+		if (!isVaultFolderReference) {
+			return { route: 'vault-chat', reason: 'email-inbox query' };
+		}
+	}
+
+	// Short acknowledgments / control words. These route to vault-chat
+	// where the orchestrator either replies tersely or treats them as
+	// follow-up signals. Either way no LLM router hop required.
+	if (
+		/^(?:ok(?:ay)?|sure|yes|no|nope|thanks?|thx|cool|cheers|cancel|stop|continue|go(?:\s+ahead)?|done|noted)[!.?]?$/.test(lower)
+	) {
+		return { route: 'vault-chat', reason: 'acknowledgment' };
+	}
+
+	// ───────── original analysis-intent disqualifier (preserved) ─────────
 
 	// Analysis-intent disqualifier — if the user is asking for opinion,
 	// quality assessment, or critique of content, defer to the LLM router
@@ -98,6 +151,8 @@ function regexPreFilter(message: string): { route: string; reason: string } | nu
 		/\bhow\s+(?:does|do|is)\b/.test(lower) ||
 		/\bwhat\s+do\s+you\s+(?:think|make)\b/.test(lower);
 	if (hasAnalysisIntent) return null;
+
+	// ───────── brain-* personal-vault fast paths ─────────
 
 	// Recency markers — "what did I", "what's recent/latest/new", "show me
 	// recent". Tight enough that a vague "what's new with you" still misses.
@@ -170,7 +225,7 @@ Critical disambiguation (study these — they are exactly the cases that have mi
 - "what's new in my drafts" → brain-recent (explicit personal scope)
 - "show me what I wrote yesterday" → brain-recent (explicit personal + recency)
 
-EMAIL INBOX DISAMBIGUATION (critical — production misroute 2026-05-12):
+EMAIL INBOX DISAMBIGUATION (critical — production misroute, May 2026):
 "inbox" in this user's vocabulary almost always means the EMAIL inbox (IMAP-synced mail), NOT the vault's \`inbox/\` quick-capture folder. The vault has an unrelated folder also called \`inbox/\`, but that's an internal concept the user never names directly. ALL email queries route to vault-chat — the downstream orchestrator has dedicated tools (\`inbox-list-queued\`, \`inbox-drill-down\`, \`inbox-read-body\`) that handle the email stream.
 - "what's in my inbox" → vault-chat (EMAIL query — orchestrator handles via inbox-list-queued)
 - "what's queued in my inbox" → vault-chat (EMAIL query, "queued" is email-filter state)
@@ -203,7 +258,11 @@ async function llmRoute(
 	try {
 		const openrouter = createOpenRouter({ apiKey });
 		const result = await generateText({
-			model: openrouter(ROUTER_MODEL),
+			// ADR-028 Phase 4d — latency-sort the provider routing so a
+			// degraded upstream doesn't drag this hop. Free win, no caching
+			// implication (GLM-4.6 caching isn't passed through OpenRouter
+			// anyway — see ADR-028 §4e).
+			model: openrouter(ROUTER_MODEL, { provider: { sort: 'latency' } }),
 			output: Output.object({ schema: RouterDecisionSchema }),
 			system: ROUTER_SYSTEM_PROMPT,
 			messages: [{ role: 'user', content: message }],

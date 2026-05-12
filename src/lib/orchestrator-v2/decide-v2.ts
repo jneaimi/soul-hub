@@ -133,7 +133,14 @@ export async function decideV2(
 	});
 
 	const openrouter = createOpenRouter({ apiKey });
-	const model = openrouter(modelId);
+	// ADR-028 Phase 4d — `provider.sort: 'latency'` asks OpenRouter to route
+	// to whichever upstream (Anthropic, Vertex, Zhipu, etc.) currently has
+	// the lowest measured TTFT for this model. Trades reproducibility (the
+	// same modelId can land on different upstreams turn-to-turn) for tail
+	// latency — acceptable on the chat path where a 2-3s saving beats
+	// strict upstream pinning. Caching paths that need a fixed provider
+	// should pass `provider.order` instead.
+	const model = openrouter(modelId, { provider: { sort: 'latency' } });
 
 	const ac = new AbortController();
 	const onAbort = () => ac.abort();

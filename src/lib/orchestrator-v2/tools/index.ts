@@ -21,6 +21,7 @@
 import { tool } from 'ai';
 import { z } from 'zod';
 
+import { withToolCache } from './cache.js';
 import { dispatchWebSearch, formatWebSearchForChat } from '../../web-search/index.js';
 import { dispatchVaultChat } from '../../vault-chat/index.js';
 import { dispatchImg, rememberLastImage } from '../../img/index.js';
@@ -283,7 +284,7 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 			inputSchema: z.object({
 				query: z.string().min(2).max(400).describe('The search query — natural language is fine'),
 			}),
-			execute: async ({ query }): Promise<ToolResult> => {
+			execute: withToolCache('webSearch', async ({ query }): Promise<ToolResult> => {
 				logToolCall('webSearch', { query });
 				try {
 					const r = await dispatchWebSearch(query);
@@ -293,7 +294,7 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 					const error = (err as Error).message ?? String(err);
 					return { kind: 'web-search-error', error, query };
 				}
-			},
+			}),
 		}),
 
 		vaultSearch: tool({
@@ -302,16 +303,20 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 			inputSchema: z.object({
 				query: z.string().min(2).max(400),
 			}),
-			execute: async ({ query }): Promise<ToolResult> => {
-				logToolCall('vaultSearch', { query });
-				try {
-					const r = await dispatchVaultChat(query, deps.conversationKey);
-					return { kind: 'vault-search', text: r.text || '(no reply)', query };
-				} catch (err) {
-					const error = (err as Error).message ?? String(err);
-					return { kind: 'vault-search-error', error, query };
-				}
-			},
+			execute: withToolCache(
+				'vaultSearch',
+				async ({ query }): Promise<ToolResult> => {
+					logToolCall('vaultSearch', { query });
+					try {
+						const r = await dispatchVaultChat(query, deps.conversationKey);
+						return { kind: 'vault-search', text: r.text || '(no reply)', query };
+					} catch (err) {
+						const error = (err as Error).message ?? String(err);
+						return { kind: 'vault-search-error', error, query };
+					}
+				},
+				{ scope: () => deps.conversationKey ?? '' },
+			),
 		}),
 
 		generateImage: tool({
@@ -964,32 +969,53 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 					.optional()
 					.describe('Restrict to one inbox account (rare — usually omit).'),
 			}),
-			execute: async ({ category, since, limit, accountId }): Promise<ToolResult> => {
-				logToolCall('inbox-list-queued', { category, since, limit, accountId });
-				const sinceMs = parseSinceArg(since);
-				const result = listMessages({
-					status: 'queued',
-					category,
-					since: sinceMs,
-					limit: limit ?? 20,
-					accountId,
-				});
-				if (result.messages.length === 0) {
-					return { kind: 'reply', text: 'No queued messages match.' };
-				}
-				const lines = result.messages.map((m, i) => {
-					const sender = m.fromName || m.fromAddress;
-					const cat = m.category ?? '?';
-					const when = formatRelativeDate(m.dateReceived);
-					return `${i + 1}. [${cat}] ${sender} — ${m.subject}  · ${when}  (msg ${m.id})`;
-				});
-				const head =
-					`📥 *${result.total} queued message${result.total === 1 ? '' : 's'}*` +
-					(category ? ` in *${category}*` : '') +
-					` — showing newest ${result.messages.length}:`;
-				const footer = '\n\n(reply with `msg N` to drill down)';
-				return { kind: 'verbatim', text: `${head}\n\n${lines.join('\n')}${footer}` };
-			},
+			execute: withToolCache(
+				'inbox-list-queued',
+				async ({ category, since, limit, accountId }): Promise<ToolResult> => {
+					logToolCall('inbox-list-queued', { category, since, limit, accountId });
+					const sinceMs = parseSinceArg(since);
+					const result = listMessages({
+						status: 'queued',
+						category,
+						since: sinceMs,
+						limit: limit,
+						accountId,
+					});
+					if (result.messages.length === 0) {
+						return { kind: 'reply', text: 'No queued messages match.' };
+					}
+					const lines = result.messages.map((m, i) => {
+						const sender = m.fromName || m.fromAddress;
+						const cat = m.category ?? '?';
+						const when = formatRelativeDate(m.dateReceived);
+						return `${i + 1}. [${cat}] ${sender} — ${m.subject}  · ${when}  (msg ${m.id})`;
+					});
+					const head =
+						`📥 *${result.total} queued message${result.total === 1 ? '' : 's'}*` +
+						(category ? ` in *${category}*` : '') +
+						` — showing newest ${result.messages.length}:`;
+					const footer = '\n\n(reply with `msg N` to drill down)';
+					return { kind: 'verbatim', text: `${head}\n\n${lines.join('\n')}${footer}` };
+				},
+				{
+					// 60s — orchestrator turns run 30-60s and the user often refires
+					// the same query right after. 20s was too short: empirical
+					// measurement 2026-05-12 showed two `what's queued in my inbox?`
+					// turns landed 67s apart, missing each other's cache. New mail
+					// arrives every few minutes in typical use, so 60s of staleness
+					// is well below the freshness floor.
+					ttlMs: 60_000,
+					// GLM-4.6 picks tool args non-deterministically — sometimes it
+					// passes `{ limit: 20 }`, sometimes `{}`. Fill the schema
+					// default before hashing so both shapes share a cache slot.
+					normalizeArgs: ({ category, since, limit, accountId }) => ({
+						category,
+						since,
+						limit: limit ?? 20,
+						accountId,
+					}),
+				},
+			),
 		}),
 
 		'inbox-mark-processed': tool({
@@ -1187,17 +1213,24 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 			inputSchema: z.object({
 				messageId: z.number().int().positive(),
 			}),
-			execute: async ({ messageId }): Promise<ToolResult> => {
-				logToolCall('inbox-drill-down', { messageId });
-				const text = composeDrillDown(messageId);
-				if (!text) {
-					return {
-						kind: 'reply',
-						text: `ERROR: Message ${messageId} not found in inbox.db. Likely a hallucinated id. Do NOT report success to the user.`,
-					};
-				}
-				return { kind: 'reply', text };
-			},
+			execute: withToolCache(
+				'inbox-drill-down',
+				async ({ messageId }): Promise<ToolResult> => {
+					logToolCall('inbox-drill-down', { messageId });
+					const text = composeDrillDown(messageId);
+					if (!text) {
+						return {
+							kind: 'reply',
+							text: `ERROR: Message ${messageId} not found in inbox.db. Likely a hallucinated id. Do NOT report success to the user.`,
+						};
+					}
+					return { kind: 'reply', text };
+				},
+				// 30s — a message's envelope/extracted_data/preview doesn't change
+				// in the typical follow-up burst ("tell me about 33877" → "and the
+				// merchant?" → "anomaly?"). On a true change (re-classification)
+				// the cache simply ages out.
+			),
 		}),
 
 		'crm-add-contact': tool({
