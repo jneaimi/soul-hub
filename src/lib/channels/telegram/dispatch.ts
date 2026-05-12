@@ -39,6 +39,10 @@ import { sendText, sendMedia, sendTypingIndicator, editText, chunkText } from '.
 import { startTypingLoop } from '../_shared/typing.js';
 import { isFocusQuery, placeholderTextForRoute } from '../_shared/placeholder.js';
 import { startPresence, type PresenceSession } from '../_shared/presence.js';
+import {
+	progressTextForTool,
+	composingTextForTool,
+} from '../_shared/tool-progress-text.js';
 import { telegramPresenceAdapter } from './presence-adapter.js';
 import { downloadMedia, saveMediaToDisk } from './media.js';
 import { transcribeVoiceNote } from './transcribe.js';
@@ -418,6 +422,20 @@ async function dispatchOrchestrated(
 						model: ttCfg.model,
 					}
 				: undefined,
+			// ADR-029 — bubble morphs through tool-execution stages. Same
+			// shape as the WhatsApp wire-up; Telegram's editMessageText is
+			// the more reliable of the two channels so this rarely fails.
+			onStreamEvent: (event) => {
+				if (!presence) return;
+				if (event.kind === 'tool-call-start') {
+					void presence.update(progressTextForTool(event.toolName));
+				} else if (event.kind === 'tool-result') {
+					const text = event.ok
+						? composingTextForTool(event.toolName)
+						: `🟡 ${event.toolName} hit an error — composing…`;
+					void presence.update(text);
+				}
+			},
 		});
 		// Per ADR-023 Phase 1: persist orchestrator-v2's routing decision so
 		// the future Claude analyst can mine patterns alongside the WhatsApp

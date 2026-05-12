@@ -39,6 +39,7 @@ import type {
 	DecideV2Options,
 	DecideV2Telemetry,
 	OrchestratorDecision,
+	OrchestratorStreamEvent,
 	V2Output,
 } from './types.js';
 
@@ -169,16 +170,62 @@ export async function decideV2(
 	let llmNote: string | undefined;
 
 	try {
-		const result = await agent.generate({
+		// ADR-029 — switched from `agent.generate()` to `agent.stream()` so we
+		// can emit `tool-call-start` / `tool-result` events to the channel's
+		// presence layer during a long-running turn. The result shape is the
+		// same (steps/text/usage are PromiseLike on StreamTextResult), so the
+		// downstream walking logic below stays identical.
+		const result = await agent.stream({
 			messages,
 			abortSignal: ac.signal,
 		});
-		finalText = result.text ?? '';
-		stepsUsed = result.steps?.length ?? 0;
-		inputTokens = result.usage?.inputTokens;
-		outputTokens = result.usage?.outputTokens;
 
-		for (const step of result.steps ?? []) {
+		// Drain fullStream first — emitting events as we go. Awaiting the
+		// promised fields below (text/steps/usage) auto-consumes the stream
+		// internally, but iterating `fullStream` explicitly is the supported
+		// way to observe per-event transitions. We filter to user-meaningful
+		// types only; text-delta/tool-input-delta would blow the edit budget.
+		const emitEvent = (event: OrchestratorStreamEvent) => {
+			if (!opts.onStreamEvent) return;
+			try {
+				opts.onStreamEvent(event);
+			} catch (err) {
+				console.warn(
+					`[orchestrator-v2] onStreamEvent threw (${(err as Error).message}); continuing`,
+				);
+			}
+		};
+		const seenToolStarts = new Set<string>(); // dedup tool-input-start by id
+		for await (const part of result.fullStream) {
+			if (part.type === 'tool-input-start') {
+				// `id` is the AI SDK's per-call id — guards against double-fire
+				// when streaming variants emit start twice for the same call.
+				if (seenToolStarts.has(part.id)) continue;
+				seenToolStarts.add(part.id);
+				emitEvent({ kind: 'tool-call-start', toolName: part.toolName });
+			} else if (part.type === 'tool-result') {
+				emitEvent({
+					kind: 'tool-result',
+					toolName: part.toolName,
+					ok: true,
+				});
+			} else if (part.type === 'tool-error') {
+				emitEvent({
+					kind: 'tool-result',
+					toolName: part.toolName ?? 'unknown',
+					ok: false,
+				});
+			}
+		}
+
+		finalText = (await result.text) ?? '';
+		const resolvedSteps = await result.steps;
+		stepsUsed = resolvedSteps?.length ?? 0;
+		const usage = await result.usage;
+		inputTokens = usage?.inputTokens;
+		outputTokens = usage?.outputTokens;
+
+		for (const step of resolvedSteps ?? []) {
 			for (const call of step.toolCalls ?? []) {
 				toolCalls.push({
 					name: call.toolName,

@@ -50,6 +50,10 @@ import { dispatchWebSearch, formatWebSearchForChat } from '$lib/web-search/index
 import { workerSend as workerSendForOrchestrator } from '$lib/channels/whatsapp/worker-client.js';
 import { isFocusQuery, placeholderTextForRoute } from '$lib/channels/_shared/placeholder.js';
 import { startPresence } from '$lib/channels/_shared/presence.js';
+import {
+	progressTextForTool,
+	composingTextForTool,
+} from '$lib/channels/_shared/tool-progress-text.js';
 import { whatsappPresenceAdapter } from '$lib/channels/whatsapp/presence-adapter.js';
 import { writeIntentDecision } from '$lib/intent/log.js';
 import { normalizeSignature } from '$lib/intent/normalize.js';
@@ -590,6 +594,21 @@ export const POST: RequestHandler = async ({ request }) => {
 						timezone: cfg.heartbeat.activeHours.timezone,
 					},
 					muteUntil: cfg.heartbeat.muteUntil,
+				},
+				// ADR-029 — morph the bubble through tool-execution stages so
+				// the user sees forward progress during 30-60s orchestrator
+				// turns. `presence` may be null if we never reached the bubble
+				// path (early-route shortcuts); guard the call.
+				onStreamEvent: (event) => {
+					if (!presence) return;
+					if (event.kind === 'tool-call-start') {
+						void presence.update(progressTextForTool(event.toolName));
+					} else if (event.kind === 'tool-result') {
+						const text = event.ok
+							? composingTextForTool(event.toolName)
+							: `🟡 ${event.toolName} hit an error — composing…`;
+						void presence.update(text);
+					}
 				},
 			});
 			// Per ADR-023 Phase 1 + the WhatsApp orchestrator-v2 follow-up:

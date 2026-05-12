@@ -54,7 +54,39 @@ export interface DecideV2Options {
 	account?: string;
 	/** Timezone for the daily image-quota window (defaults Asia/Dubai). */
 	timezone?: string;
+	/** ADR-029 — fired during streaming as the orchestrator picks tools and
+	 *  receives their results. Channel adapters wire this to
+	 *  `presence.update()` to morph the placeholder bubble through stages
+	 *  ("🟡 Running inbox-list-queued…" → "🟡 Inbox read — composing…").
+	 *
+	 *  Best-effort callback — exceptions are caught and logged, never
+	 *  propagated. Decorative only: the orchestrator's correctness must
+	 *  not depend on the callback succeeding. Most callsites pass nothing
+	 *  (the orchestrator's existing return shape is unaffected). */
+	onStreamEvent?: (event: OrchestratorStreamEvent) => void;
 }
+
+/** ADR-029 — stream events surfaced from the AI SDK's `fullStream` after
+ *  filtering to user-meaningful transitions. `tool-call-delta`,
+ *  `text-delta`, and other high-volume events are dropped at the source
+ *  (we'd blow Baileys' edit budget rendering them). */
+export type OrchestratorStreamEvent =
+	| {
+			kind: 'tool-call-start';
+			/** Tool name as registered in `buildOrchestratorTools()`. The
+			 *  channel adapter looks this up in TOOL_PROGRESS to render the
+			 *  user-friendly placeholder text. */
+			toolName: string;
+	  }
+	| {
+			kind: 'tool-result';
+			toolName: string;
+			/** `false` when the tool's `execute()` threw or returned an
+			 *  `*-error` ToolResult variant. The channel adapter renders a
+			 *  cautious "tool errored — composing…" placeholder so the user
+			 *  knows the orchestrator is still trying. */
+			ok: boolean;
+	  };
 
 /** Subset of `cfg.img` that the orchestrator needs. Decoupled from the
  *  full settings shape so tests can construct it without loading config. */
