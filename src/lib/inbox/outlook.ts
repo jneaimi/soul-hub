@@ -1,28 +1,32 @@
 /**
- * Outlook / Microsoft 365 integration via MS Graph API + MSAL OAuth2.
+ * Outlook / Microsoft 365 integration via MS Graph API + OAuth2.
  *
- * Flow:
- *   1. User clicks "Connect Outlook" → redirect to Microsoft consent
- *   2. Microsoft redirects back with ?code=... → MSAL exchanges for tokens
- *   3. Store encrypted { accessToken, refreshToken, expiresAt, type: 'outlook-oauth2' }
- *   4. Sync worker uses Graph API delta query for incremental sync
+ * Flow (mirrors Gmail in `oauth.ts`):
+ *   1. User picks an OAuth client (Connections) and clicks "Sign in with Microsoft"
+ *   2. /api/inbox/outlook?client=<uuid> builds the consent URL with that client's creds
+ *   3. Microsoft redirects back with ?code=... → exchange for tokens
+ *   4. Store encrypted { accessToken, refreshToken, expiresAt } in accounts table,
+ *      with `oauth_client_ref` pointing at the chosen Connections row
+ *   5. Sync worker reads credential + resolves the per-account client, refreshes if
+ *      expired, connects with accessToken
  *
- * Required env vars:
- *   AZURE_CLIENT_ID     — from Azure Portal > App registrations
- *   AZURE_CLIENT_SECRET — from Azure Portal > Certificates & secrets
+ * Authority is `/common`, which accepts both work/school (Microsoft 365)
+ * AND personal Microsoft accounts (Outlook.com, Hotmail.com, Live.com).
  *
- * Required scope: Mail.Read (delegated)
+ * Required scopes: Mail.Read, User.Read, offline_access (refresh_token).
  *
  * Edge cases:
- *   - Delta tokens expire in ~7 days → catch syncStateNotFound, full re-sync
- *   - Rate limits → respect Retry-After header with exp backoff
+ *   - Refresh token: returned because `offline_access` is in scope. Tokens stay
+ *     valid for 90 days of inactivity.
  *   - Personal vs work accounts → both supported via /common authority
  */
 
-import { ConfidentialClientApplication } from '@azure/msal-node';
+import type { ClientCreds } from './oauth.js';
 
 const GRAPH_SCOPES = ['Mail.Read', 'User.Read', 'offline_access'];
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
+const AUTH_ENDPOINT = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize';
+const TOKEN_ENDPOINT = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
 
 export interface OutlookTokens {
 	accessToken: string;
@@ -30,69 +34,47 @@ export interface OutlookTokens {
 	expiresAt: number;
 }
 
-function getConfig(): { clientId: string; clientSecret: string } {
-	const clientId = process.env.AZURE_CLIENT_ID;
-	const clientSecret = process.env.AZURE_CLIENT_SECRET;
-	if (!clientId || !clientSecret) {
-		throw new Error('AZURE_CLIENT_ID and AZURE_CLIENT_SECRET env vars are required for Outlook');
-	}
-	return { clientId, clientSecret };
-}
-
-function createMsalApp(redirectUri?: string): ConfidentialClientApplication {
-	const { clientId, clientSecret } = getConfig();
-	return new ConfidentialClientApplication({
-		auth: {
-			clientId,
-			clientSecret,
-			authority: 'https://login.microsoftonline.com/common',
-		},
-	});
-}
-
 /** Generate the Microsoft OAuth2 consent URL.
  *
- *  `state` threads through the round-trip — the callback uses it to
- *  distinguish first-time link (`undefined`) from Reauthorize on an
- *  existing account (`state=<accountId>`). Mirrors `getAuthUrl` in
- *  `oauth.ts` for Gmail.
+ *  Built manually (not via MSAL) so the flow stays symmetric with the
+ *  Gmail path in `oauth.ts:getAuthUrl` — same shape, same plumbing.
  *
- *  Authority is `/common`, which accepts both work/school (Microsoft 365)
- *  and personal Microsoft Accounts (Outlook.com, Hotmail.com, Live.com).
- *  `offline_access` in GRAPH_SCOPES is what causes Microsoft to return a
- *  refresh_token in the code-exchange response. */
-export async function getOutlookAuthUrl(redirectUri: string, state?: string): Promise<string> {
-	const app = createMsalApp();
-	const url = await app.getAuthCodeUrl({
-		scopes: GRAPH_SCOPES,
-		redirectUri,
+ *  `state` threads through the round-trip — the callback uses it to
+ *  distinguish first-time link (`client:<uuid>`) from Reauthorize
+ *  (`<accountId>`). */
+export function getOutlookAuthUrl(redirectUri: string, creds: ClientCreds, state?: string): string {
+	const params = new URLSearchParams({
+		client_id: creds.clientId,
+		response_type: 'code',
+		redirect_uri: redirectUri,
+		response_mode: 'query',
+		scope: GRAPH_SCOPES.join(' '),
 		prompt: 'consent',
-		state,
 	});
-	return url;
+	if (state) params.set('state', state);
+	return `${AUTH_ENDPOINT}?${params.toString()}`;
 }
 
 /** Exchange authorization code for tokens.
  *
- *  Uses the raw `/oauth2/v2.0/token` endpoint instead of MSAL's
- *  `acquireTokenByCode` because MSAL doesn't expose the refresh_token
- *  directly (it stashes it in an in-process cache that doesn't survive a
- *  process restart). The raw POST mirrors what `refreshOutlookToken`
- *  already does and gives us the refresh_token explicitly — required for
- *  the Reauthorize round-trip per inbox-plan Open #2. */
-export async function exchangeOutlookCode(code: string, redirectUri: string): Promise<OutlookTokens> {
-	const { clientId, clientSecret } = getConfig();
-
+ *  Uses the raw token endpoint so `refresh_token` is returned explicitly
+ *  (MSAL's `acquireTokenByCode` stashes it in an in-process cache that
+ *  doesn't survive a process restart). */
+export async function exchangeOutlookCode(
+	code: string,
+	redirectUri: string,
+	creds: ClientCreds,
+): Promise<OutlookTokens> {
 	const params = new URLSearchParams({
-		client_id: clientId,
-		client_secret: clientSecret,
+		client_id: creds.clientId,
+		client_secret: creds.clientSecret,
 		code,
 		redirect_uri: redirectUri,
 		grant_type: 'authorization_code',
 		scope: GRAPH_SCOPES.join(' '),
 	});
 
-	const res = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+	const res = await fetch(TOKEN_ENDPOINT, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
 		body: params.toString(),
@@ -115,20 +97,20 @@ export async function exchangeOutlookCode(code: string, redirectUri: string): Pr
 	};
 }
 
-/** Refresh an expired access token */
-export async function refreshOutlookToken(refreshToken: string): Promise<OutlookTokens> {
-	const { clientId, clientSecret } = getConfig();
-
-	// Use direct token endpoint for refresh since MSAL cache is per-instance
+/** Refresh an expired access token. */
+export async function refreshOutlookToken(
+	refreshToken: string,
+	creds: ClientCreds,
+): Promise<OutlookTokens> {
 	const params = new URLSearchParams({
-		client_id: clientId,
-		client_secret: clientSecret,
+		client_id: creds.clientId,
+		client_secret: creds.clientSecret,
 		refresh_token: refreshToken,
 		grant_type: 'refresh_token',
 		scope: GRAPH_SCOPES.join(' '),
 	});
 
-	const res = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+	const res = await fetch(TOKEN_ENDPOINT, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
 		body: params.toString(),
@@ -153,93 +135,72 @@ export function isOutlookTokenExpired(tokens: OutlookTokens): boolean {
 }
 
 /** Get a valid access token, refreshing if needed */
-export async function getValidOutlookToken(tokens: OutlookTokens): Promise<OutlookTokens> {
+export async function getValidOutlookToken(
+	tokens: OutlookTokens,
+	creds: ClientCreds,
+): Promise<OutlookTokens> {
 	if (!isOutlookTokenExpired(tokens)) return tokens;
-	return refreshOutlookToken(tokens.refreshToken);
+	return refreshOutlookToken(tokens.refreshToken, creds);
 }
 
-// ── Graph API helpers ──
-
-export interface GraphMessage {
-	id: string;
-	subject: string;
-	from: { emailAddress: { name: string; address: string } } | null;
-	toRecipients: { emailAddress: { name: string; address: string } }[];
-	receivedDateTime: string;
-	sentDateTime: string | null;
-	isRead: boolean;
-	hasAttachments: boolean;
-	bodyPreview: string;
-	internetMessageId: string | null;
-	conversationId: string | null;
-}
-
-export interface GraphDeltaResult {
-	messages: GraphMessage[];
-	deltaLink: string | null;
-	nextLink: string | null;
-}
-
-/** Fetch messages via Graph API delta query (incremental sync) */
-export async function fetchMessagesDelta(
-	accessToken: string,
-	deltaLink?: string,
-): Promise<GraphDeltaResult> {
-	const url = deltaLink || `${GRAPH_BASE}/me/mailFolders/inbox/messages/delta?$select=subject,from,toRecipients,receivedDateTime,sentDateTime,isRead,hasAttachments,bodyPreview,internetMessageId,conversationId&$top=100`;
-
-	const messages: GraphMessage[] = [];
-	let currentUrl: string | null = url;
-	let finalDeltaLink: string | null = null;
-
-	while (currentUrl) {
-		const res: Response = await fetch(currentUrl, {
-			headers: { Authorization: `Bearer ${accessToken}` },
-		});
-
-		if (res.status === 429) {
-			// Rate limited — respect Retry-After
-			const retryAfter = parseInt(res.headers.get('Retry-After') || '30', 10);
-			console.log(`[outlook] Rate limited, waiting ${retryAfter}s`);
-			await new Promise((r) => setTimeout(r, retryAfter * 1000));
-			continue;
-		}
-
-		if (res.status === 410 || res.status === 404) {
-			// Delta token expired (syncStateNotFound) — caller must full re-sync
-			throw new DeltaExpiredError('Delta token expired — full re-sync required');
-		}
-
-		if (!res.ok) {
-			throw new Error(`Graph API error: ${res.status} ${await res.text()}`);
-		}
-
-		const data: Record<string, unknown> = await res.json();
-		const pageMessages = (data.value || []) as GraphMessage[];
-		messages.push(...pageMessages);
-
-		// Follow pagination
-		currentUrl = (data['@odata.nextLink'] as string) || null;
-		if (data['@odata.deltaLink']) {
-			finalDeltaLink = data['@odata.deltaLink'] as string;
-		}
-	}
-
-	return { messages, deltaLink: finalDeltaLink, nextLink: null };
-}
-
-/** Get user email from Graph API */
+/** Fetch the Microsoft-authenticated user's email via Graph /me */
 export async function getOutlookUserEmail(accessToken: string): Promise<string> {
 	const res = await fetch(`${GRAPH_BASE}/me`, {
 		headers: { Authorization: `Bearer ${accessToken}` },
 	});
-	if (!res.ok) return 'outlook-user';
+	if (!res.ok) {
+		throw new Error(`Failed to fetch user email: ${res.status}`);
+	}
 	const data = await res.json();
 	return data.mail || data.userPrincipalName || 'outlook-user';
 }
 
+/** Fetch messages from a user's mailbox via delta query (initial sync) */
+export interface GraphMessage {
+	id: string;
+	subject: string;
+	from: { emailAddress: { address: string; name?: string } };
+	receivedDateTime: string;
+	bodyPreview: string;
+	hasAttachments: boolean;
+	isRead: boolean;
+	isDraft: boolean;
+	flag?: { flagStatus: string };
+}
+
+export interface OutlookDeltaResponse {
+	value: GraphMessage[];
+	'@odata.nextLink'?: string;
+	'@odata.deltaLink'?: string;
+}
+
 export class DeltaExpiredError extends Error {
-	constructor(message: string) {
-		super(message);
+	constructor() {
+		super('Delta link expired (>7 days)');
 		this.name = 'DeltaExpiredError';
 	}
+}
+
+/** Fetch messages using delta query.
+ *  Pass deltaLink for incremental sync, or null for initial sync. */
+export async function fetchMessagesDelta(
+	accessToken: string,
+	deltaLink: string | null,
+): Promise<OutlookDeltaResponse> {
+	const url = deltaLink || `${GRAPH_BASE}/me/messages/delta?$select=subject,from,receivedDateTime,bodyPreview,hasAttachments,isRead,isDraft,flag&$top=50`;
+
+	const res = await fetch(url, {
+		headers: { Authorization: `Bearer ${accessToken}` },
+	});
+
+	if (res.status === 410) {
+		throw new DeltaExpiredError();
+	}
+
+	if (!res.ok) {
+		const err = await res.text();
+		throw new Error(`Failed to fetch messages: ${res.status} ${err}`);
+	}
+
+	return res.json();
 }

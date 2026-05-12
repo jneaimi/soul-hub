@@ -508,13 +508,15 @@ async function connectOutlookWorker(worker: AccountWorker, account: InboxAccount
 	updateAccountStatus(account.id, 'syncing');
 
 	try {
-		// Refresh token if needed
+		// Refresh token if needed. Resolve OAuth client creds per-account
+		// (Connections), falling back to the provider's Default Connection.
+		const outlookCreds = resolveClientCredsForAccount(account);
 		let tokens: OutlookTokens = {
 			accessToken: parsedCred.accessToken || '',
 			refreshToken: parsedCred.refreshToken,
 			expiresAt: parsedCred.expiresAt || 0,
 		};
-		tokens = await getValidOutlookToken(tokens);
+		tokens = await getValidOutlookToken(tokens, outlookCreds);
 
 		// Persist refreshed tokens
 		const updatedCred = JSON.stringify({

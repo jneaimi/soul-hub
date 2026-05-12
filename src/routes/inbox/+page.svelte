@@ -311,6 +311,7 @@
 	let outlookClients = $state<OauthClientDto[]>([]);
 	let clientsLoading = $state(false);
 	let chosenGmailClientRef = $state<string | null>(null);
+	let chosenOutlookClientRef = $state<string | null>(null);
 
 	async function loadOauthClients() {
 		clientsLoading = true;
@@ -326,6 +327,10 @@
 					const def = gmailClients.find((c) => c.isDefault);
 					chosenGmailClientRef = def?.id ?? (gmailClients[0]?.id ?? null);
 				}
+				if (!chosenOutlookClientRef || !outlookClients.some((c) => c.id === chosenOutlookClientRef)) {
+					const def = outlookClients.find((c) => c.isDefault);
+					chosenOutlookClientRef = def?.id ?? (outlookClients[0]?.id ?? null);
+				}
 			}
 		} catch { /* silent */ }
 		clientsLoading = false;
@@ -334,6 +339,11 @@
 	function gmailSignInHref(): string {
 		if (chosenGmailClientRef) return `/api/inbox/oauth?client=${encodeURIComponent(chosenGmailClientRef)}`;
 		return '/api/inbox/oauth'; // server picks Default; 412 if none
+	}
+
+	function outlookSignInHref(): string {
+		if (chosenOutlookClientRef) return `/api/inbox/outlook?client=${encodeURIComponent(chosenOutlookClientRef)}`;
+		return '/api/inbox/outlook'; // server picks Default; 412 if none
 	}
 
 	function clientLabelById(id: string | null): string {
@@ -397,6 +407,9 @@
 	$effect(() => {
 		if (showAddForm && addProvider === 'gmail') {
 			checkGmailConfig();
+			void loadOauthClients();
+		}
+		if (showAddForm && addProvider === 'outlook') {
 			void loadOauthClients();
 		}
 	});
@@ -1105,16 +1118,78 @@
 						{:else if addProvider === 'outlook'}
 							<div class="col-span-2 space-y-3">
 								<p class="text-xs text-hub-muted">Outlook uses secure OAuth2 authentication. Works with Microsoft 365 (work / school) and personal Microsoft accounts (Outlook.com, Hotmail.com, Live.com).</p>
-								<a href="/api/inbox/outlook" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-sky-500/15 text-sky-400 text-sm font-medium hover:bg-sky-500/25 transition-colors">
-									<svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M11.4 24H0V12.6L11.4 24zM24 24H12.6V12.6L24 24zM11.4 11.4H0V0l11.4 11.4zM24 11.4H12.6V0L24 11.4z"/></svg>
-									{existingOutlookCount === 0 ? 'Sign in with Microsoft' : 'Add another Microsoft account'}
-								</a>
-								{#if existingOutlookCount > 0}
+
+								<!-- One-time Azure Portal setup. Credentials themselves live
+								     in Settings → Connections as named OAuth clients (per ADR
+								     2026-05-11-oauth-clients-as-first-class-connections). -->
+								<details class="rounded-md bg-hub-surface/60 border border-hub-border/60">
+									<summary class="px-3 py-2 text-[11px] text-hub-muted hover:text-hub-text transition-colors cursor-pointer list-none flex items-center justify-between">
+										<span>First time? Set up the Microsoft OAuth client</span>
+										<svg class="w-3 h-3 text-hub-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+											<polyline points="6 9 12 15 18 9"/>
+										</svg>
+									</summary>
+									<div class="px-3 pb-3 text-[11px] text-hub-muted leading-relaxed space-y-2 border-t border-hub-border/40 pt-2">
+										<p>In the <a href="https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener noreferrer" class="text-hub-cta hover:underline">Microsoft Entra admin center</a> (or <a href="https://portal.azure.com" target="_blank" rel="noopener noreferrer" class="text-hub-cta hover:underline">Azure Portal</a>):</p>
+										<ol class="list-decimal ms-4 space-y-1">
+											<li><span class="font-mono">App registrations</span> → <span class="font-mono">New registration</span>. Name it anything. <strong>Supported account types:</strong> "Accounts in any organizational directory and personal Microsoft accounts" (covers Microsoft 365 + Outlook.com + Hotmail.com + Live.com).</li>
+											<li>Add this <strong>Redirect URI</strong> as a <span class="font-mono">Web</span> platform:
+												<code class="block mt-1 px-2 py-1 rounded bg-hub-bg/60 border border-hub-border/40 text-[10px] text-hub-text break-all select-all">{currentOrigin ? `${currentOrigin}/api/inbox/outlook/callback` : '<this app>/api/inbox/outlook/callback'}</code>
+												<span class="block mt-1 text-[10px] text-hub-dim">If you register multiple OAuth clients (one per tenant), add this redirect URI in <em>each</em> registration.</span>
+											</li>
+											<li><span class="font-mono">API permissions</span> → <span class="font-mono">Add a permission</span> → <span class="font-mono">Microsoft Graph</span> → <span class="font-mono">Delegated</span>. Add: <span class="font-mono">Mail.Read</span>, <span class="font-mono">User.Read</span>, <span class="font-mono">offline_access</span>.</li>
+											<li><span class="font-mono">Certificates &amp; secrets</span> → <span class="font-mono">New client secret</span>. Copy the secret <em>value</em> (not the ID) immediately — it's only shown once.</li>
+											<li>Copy the <strong>Application (client) ID</strong> and the <strong>secret value</strong> into <a href="/settings#connections" class="text-hub-cta hover:underline">Settings → Connections</a> as a new OAuth client (provider: Outlook). Mark it Default for the typical case, or pick it from the dropdown below for a specific account.</li>
+										</ol>
+										<p class="text-[10px] text-hub-dim pt-1">Heads-up: Microsoft refresh tokens stay valid for 90 days of inactivity. If sync stops, use <em>Reauthorize</em> in the account settings to re-grant access.</p>
+									</div>
+								</details>
+
+								{#if clientsLoading}
+									<div class="text-[11px] text-hub-dim">Loading Outlook OAuth clients…</div>
+								{:else if outlookClients.length === 0}
+									<div class="rounded-md bg-amber-500/10 border border-amber-500/30 px-3 py-2.5 space-y-2">
+										<p class="text-[11px] text-amber-300">
+											No Outlook OAuth client configured yet. Add one in Settings → Connections to enable Sign in with Microsoft.
+										</p>
+										<a href="/settings#connections" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/15 text-amber-300 text-xs font-medium hover:bg-amber-500/25 transition-colors">
+											Configure in Settings
+											<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17L17 7M17 7H8M17 7v9"/></svg>
+										</a>
+									</div>
+								{:else if outlookClients.length === 1}
+									<!-- Single-client case: inline note instead of a dropdown. -->
+									<p class="text-[11px] text-hub-muted">
+										Using OAuth client: <span class="text-hub-text font-medium">{outlookClients[0].label}</span>
+										<a href="/settings#connections" class="ms-1 text-hub-cta hover:underline">Manage</a>
+									</p>
+									<a href={outlookSignInHref()} class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-sky-500/15 text-sky-400 text-sm font-medium hover:bg-sky-500/25 transition-colors">
+										<svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M11.4 24H0V12.6L11.4 24zM24 24H12.6V12.6L24 24zM11.4 11.4H0V0l11.4 11.4zM24 11.4H12.6V0L24 11.4z"/></svg>
+										{existingOutlookCount === 0 ? 'Sign in with Microsoft' : 'Add another Microsoft account'}
+									</a>
+								{:else}
+									<!-- Multi-client case: dropdown picker. -->
+									<label class="block">
+										<span class="text-[10px] text-hub-dim uppercase tracking-wider">OAuth client</span>
+										<select bind:value={chosenOutlookClientRef} class="w-full mt-1 px-2 py-1.5 rounded bg-hub-surface border border-hub-border text-sm text-hub-text focus:outline-none focus:border-hub-cta/50">
+											{#each outlookClients as c (c.id)}
+												<option value={c.id}>{c.label}{c.isDefault ? ' · Default' : ''}</option>
+											{/each}
+										</select>
+										<span class="block mt-1 text-[10px] text-hub-dim">
+											<a href="/settings#connections" class="text-hub-cta hover:underline">+ Add new client</a> in Settings → Connections.
+										</span>
+									</label>
+									<a href={outlookSignInHref()} class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-sky-500/15 text-sky-400 text-sm font-medium hover:bg-sky-500/25 transition-colors">
+										<svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M11.4 24H0V12.6L11.4 24zM24 24H12.6V12.6L24 24zM11.4 11.4H0V0l11.4 11.4zM24 11.4H12.6V0L24 11.4z"/></svg>
+										Sign in with Microsoft ({clientLabelById(chosenOutlookClientRef)})
+									</a>
+								{/if}
+								{#if existingOutlookCount > 0 && outlookClients.length > 0}
 									<p class="text-[10px] text-hub-dim leading-relaxed">
 										Microsoft will let you choose a different account on the consent screen. To recover an existing account whose tokens expired, use <em>Reauthorize</em> from its settings instead.
 									</p>
 								{/if}
-								<p class="text-[10px] text-hub-dim pt-1">Heads-up: Microsoft refresh tokens stay valid for 90 days of inactivity. If sync stops, use <em>Reauthorize</em> in the account settings to re-grant access.</p>
 							</div>
 						{:else}
 							{#if existingProviderCount > 0}

@@ -1,24 +1,36 @@
 import type { RequestHandler } from './$types';
 import { isRedirect, json, redirect } from '@sveltejs/kit';
 import { getOutlookAuthUrl } from '$lib/inbox/outlook.js';
-import { getAccount } from '$lib/inbox/index.js';
+import {
+	getAccount,
+	getOauthClient,
+	getDefaultOauthClient,
+} from '$lib/inbox/index.js';
+import {
+	resolveClientCredsByRef,
+	resolveClientCredsForAccount,
+} from '$lib/inbox/oauth.js';
 
 /**
  * GET /api/inbox/outlook — start Outlook OAuth2 flow
  *
- * Two modes, mirroring the Gmail handler:
+ * Three modes (mirroring the Gmail handler at /api/inbox/oauth):
  *
- *   1. No params — first-time link. `state` is omitted; the callback
- *      treats the absence of state as "create a new account."
+ *   1. ?client=<uuid> — first-time link with the named Connections client.
+ *      State becomes `client:<uuid>`. If the client ref doesn't exist, 404.
  *   2. ?account=<id> — re-link an existing account (Reauthorize). State
- *      becomes the account id; the callback's Mode 2 branch updates the
- *      existing row's credential instead of creating a new account.
+ *      becomes the account id; the account's `oauthClientRef` resolves
+ *      the consent client.
+ *   3. No params — falls back to the provider's Default Connections row
+ *      (legacy single-client case). State becomes `client:<default-id>`.
  */
 export const GET: RequestHandler = async ({ url }) => {
 	const redirectUri = `${url.origin}/api/inbox/outlook/callback`;
 	const accountId = url.searchParams.get('account') || undefined;
+	const clientRef = url.searchParams.get('client') || undefined;
 
 	try {
+		// ── Mode 2: Re-link existing account ──
 		if (accountId) {
 			const account = getAccount(accountId);
 			if (!account) {
@@ -30,11 +42,38 @@ export const GET: RequestHandler = async ({ url }) => {
 					{ status: 400 },
 				);
 			}
-			const authUrl = await getOutlookAuthUrl(redirectUri, accountId);
+			const creds = resolveClientCredsForAccount(account);
+			const authUrl = getOutlookAuthUrl(redirectUri, creds, accountId);
 			return redirect(302, authUrl);
 		}
 
-		const authUrl = await getOutlookAuthUrl(redirectUri);
+		// ── Mode 1: First-time link with explicit Connection ──
+		// ── Mode 3: First-time link with Default Connection ──
+		let chosenRef = clientRef;
+		if (!chosenRef) {
+			const def = getDefaultOauthClient('outlook');
+			if (!def) {
+				return json(
+					{ error: 'No Outlook OAuth client configured. Add one via Settings → Connections.' },
+					{ status: 412 },
+				);
+			}
+			chosenRef = def.id;
+		} else {
+			const row = getOauthClient(chosenRef);
+			if (!row) {
+				return json({ error: `OAuth client not found: ${chosenRef}` }, { status: 404 });
+			}
+			if (row.provider !== 'outlook') {
+				return json(
+					{ error: `OAuth client ${chosenRef} is not an Outlook client` },
+					{ status: 400 },
+				);
+			}
+		}
+
+		const creds = resolveClientCredsByRef(chosenRef);
+		const authUrl = getOutlookAuthUrl(redirectUri, creds, `client:${chosenRef}`);
 		return redirect(302, authUrl);
 	} catch (err) {
 		// SvelteKit's redirect() throws a Redirect sentinel — let it through.

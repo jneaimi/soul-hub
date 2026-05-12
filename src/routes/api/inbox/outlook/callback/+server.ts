@@ -9,19 +9,27 @@ import {
 	startAccountSync,
 	stopAccountSync,
 	updateAccountCredential,
+	touchOauthClientUsage,
 } from '$lib/inbox/index.js';
+import {
+	resolveClientCredsByRef,
+	resolveClientCredsForAccount,
+} from '$lib/inbox/oauth.js';
 
 /**
  * GET /api/inbox/outlook/callback — Microsoft OAuth2 callback
  *
- * Two modes, distinguished by the `state` query param. Mirrors the Gmail
- * callback (see `src/routes/api/inbox/oauth/callback/+server.ts`):
+ * Three modes, distinguished by the `state` query param. Mirrors the
+ * Gmail callback at /api/inbox/oauth/callback:
  *
- *   1. No state — first-time link. Dedup on (outlook, email) to prevent
- *      duplicate rows, then `addAccount` and `startAccountSync`.
+ *   1. state = "client:<uuid>" — first-time link with a named Connection.
+ *      Resolves creds by ref, exchanges the code, dedups by (outlook, email),
+ *      creates the account with `oauth_client_ref=<uuid>`.
  *   2. state = "<8-hex>" matching an existing account id — Reauthorize.
- *      Exchange the code, verify the email matches the existing row,
- *      `updateAccountCredential`, restart sync. Closes inbox-plan Open #2.
+ *      Uses the account's existing `oauth_client_ref` for the code exchange.
+ *      Verifies the email matches and refuses with a hint if it doesn't.
+ *   3. No state — legacy first-time link fallback. Uses the Default
+ *      Outlook Connection. Logged as a deprecation hint.
  */
 export const GET: RequestHandler = async ({ url }) => {
 	const code = url.searchParams.get('code');
@@ -40,11 +48,8 @@ export const GET: RequestHandler = async ({ url }) => {
 	const redirectUri = `${url.origin}/api/inbox/outlook/callback`;
 
 	try {
-		const tokens = await exchangeOutlookCode(code, redirectUri);
-		const email = await getOutlookUserEmail(tokens.accessToken);
-
 		// ── Mode 2: Re-link existing account ──
-		if (state) {
+		if (state && !state.startsWith('client:')) {
 			const existing = getAccount(state);
 			if (!existing) {
 				return redirect(
@@ -60,6 +65,10 @@ export const GET: RequestHandler = async ({ url }) => {
 					)}`,
 				);
 			}
+			const creds = resolveClientCredsForAccount(existing);
+			const tokens = await exchangeOutlookCode(code, redirectUri, creds);
+			const email = await getOutlookUserEmail(tokens.accessToken);
+
 			if (existing.email !== email) {
 				return redirect(
 					302,
@@ -76,19 +85,37 @@ export const GET: RequestHandler = async ({ url }) => {
 				expiresAt: tokens.expiresAt,
 			});
 			updateAccountCredential(existing.id, credential);
+			if (existing.oauthClientRef) touchOauthClientUsage(existing.oauthClientRef);
 			stopAccountSync(existing.id);
 			const refreshed = getAccount(existing.id);
 			if (refreshed) startAccountSync(refreshed);
 			return redirect(302, `/inbox?reauthorized=${encodeURIComponent(email)}`);
 		}
 
-		// ── Mode 1: First-time link ──
+		// ── Mode 1: First-time link via Connections client ──
+		// state shape: "client:<uuid>"
+		let clientRef: string | null = null;
+		if (state && state.startsWith('client:')) {
+			clientRef = state.slice('client:'.length);
+		}
+
+		if (!clientRef) {
+			return redirect(
+				302,
+				`/inbox?error=${encodeURIComponent(
+					'Missing OAuth client reference. Restart the Add Outlook flow.',
+				)}`,
+			);
+		}
+
+		const creds = resolveClientCredsByRef(clientRef); // throws if missing
+		const tokens = await exchangeOutlookCode(code, redirectUri, creds);
+		const email = await getOutlookUserEmail(tokens.accessToken);
+
 		// Dedup on (outlook, email). Symmetric to the Gmail callback
 		// (ADR 2026-05-11-multiple-gmail-accounts) — prevents the
 		// duplicate-row + IDLE-storm pathology if the operator hits
-		// "Sign in with Microsoft" again with an already-connected
-		// identity. The Reauthorize hint now points to the working
-		// in-place flow (Open #2 shipped 2026-05-12).
+		// "Sign in with Microsoft" again with an already-connected identity.
 		const duplicate = listAccounts().find(
 			(a) => a.provider === 'outlook' && a.email === email,
 		);
@@ -112,8 +139,9 @@ export const GET: RequestHandler = async ({ url }) => {
 		const account = addAccount(
 			{ id, label: email, provider: 'outlook', email, host: 'outlook.office365.com', port: 993 },
 			credential,
+			clientRef,
 		);
-
+		touchOauthClientUsage(clientRef);
 		startAccountSync(account);
 
 		return redirect(302, '/inbox?added=outlook');

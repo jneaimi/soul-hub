@@ -431,6 +431,53 @@ function migrate(db: Database.Database): void {
 		`);
 		db.pragma(`user_version = 8`);
 	}
+
+	if (version < 9) {
+		// Migration 9 — seed Default Outlook OAuth client from platform env,
+		// mirroring migration #5 for Gmail. Inbox-plan Open #2 follow-up:
+		// Outlook now uses the Connections system instead of reading env
+		// at every auth-flow callsite. Existing Outlook accounts without an
+		// oauth_client_ref get linked to the newly-seeded Default row.
+		db.transaction(() => {
+			const now = Date.now();
+			const envClientId = process.env.AZURE_CLIENT_ID?.trim();
+			const envClientSecret = process.env.AZURE_CLIENT_SECRET?.trim();
+
+			// Skip if no env present OR a Default Outlook row already exists
+			// (idempotent — re-running the migration must not duplicate).
+			const existingDefault = db.prepare(
+				`SELECT id FROM oauth_clients WHERE provider = 'outlook' AND is_default = 1 LIMIT 1`,
+			).get() as { id: string } | undefined;
+
+			let defaultOutlookId: string | null = existingDefault?.id ?? null;
+
+			if (!defaultOutlookId && envClientId && envClientSecret) {
+				defaultOutlookId = randomUUID();
+				db.prepare(`
+					INSERT INTO oauth_clients (id, provider, label, client_id, client_secret_encrypted, is_default, created_at)
+					VALUES (?, 'outlook', 'Default', ?, ?, 1, ?)
+				`).run(defaultOutlookId, envClientId, encrypt(envClientSecret), now);
+				console.log('[inbox-migration] Seeded Default Outlook OAuth client from platform env');
+			}
+
+			// Default-link existing Outlook accounts that haven't been
+			// linked yet — only when a Default row is available.
+			if (defaultOutlookId) {
+				const linked = db.prepare(`
+					UPDATE accounts
+					SET oauth_client_ref = ?
+					WHERE provider = 'outlook'
+					  AND oauth_client_ref IS NULL
+				`).run(defaultOutlookId);
+				if (linked.changes > 0) {
+					console.log(
+						`[inbox-migration] Linked ${linked.changes} existing Outlook account(s) to Default Connection`,
+					);
+				}
+			}
+		})();
+		db.pragma(`user_version = 9`);
+	}
 }
 
 // ── Account CRUD ──
