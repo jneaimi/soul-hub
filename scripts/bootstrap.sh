@@ -254,6 +254,38 @@ case "$ACTION" in
   *)         warn "Could not patch $CLAUDE_MD (action: ${ACTION:-unknown})" ;;
 esac
 
+# ── 7b. ~/.claude/rules/vault.md — vault write-side rule ────────
+# The read-side rule lives in CLAUDE.md (step 7 above). The write-side
+# rule — what to save to vault vs memory-only, the pointer pattern, the
+# template list — lives in ~/.claude/rules/vault.md so Claude Code loads
+# it as an always-loaded rule (mirrors rules/testing.md + rules/git.md).
+# Soul Hub ships the canonical copy at scripts/templates/claude-rules-vault.md.
+step "Seeding ~/.claude/rules/vault.md (write-side vault discipline)"
+RULES_DIR="$CLAUDE_DIR/rules"
+RULES_VAULT="$RULES_DIR/vault.md"
+TEMPLATE_VAULT="$REPO_ROOT/scripts/templates/claude-rules-vault.md"
+mkdir -p "$RULES_DIR"
+if [ ! -f "$TEMPLATE_VAULT" ]; then
+  warn "Template missing: $TEMPLATE_VAULT (skipped)"
+elif [ -f "$RULES_VAULT" ]; then
+  # File exists — only overwrite if Soul Hub manages it (header marker
+  # present). Hand-edited rule files are left alone so operators can
+  # customize without losing their work on re-bootstrap.
+  if grep -q "^# Vault-first long-term memory$" "$RULES_VAULT"; then
+    if cmp -s "$TEMPLATE_VAULT" "$RULES_VAULT"; then
+      ok "$RULES_VAULT (already current)"
+    else
+      cp "$TEMPLATE_VAULT" "$RULES_VAULT"
+      ok "$RULES_VAULT (updated to current template)"
+    fi
+  else
+    warn "$RULES_VAULT exists and looks hand-edited — left untouched"
+  fi
+else
+  cp "$TEMPLATE_VAULT" "$RULES_VAULT"
+  ok "$RULES_VAULT (installed)"
+fi
+
 # ── 8. Vault git history (ADR-019) ───────────────────────────────
 step "Initializing vault git repo"
 if [ -d "$VAULT_DIR_DEFAULT/.git" ]; then
