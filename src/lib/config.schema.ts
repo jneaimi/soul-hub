@@ -274,6 +274,62 @@ export const WhatsAppInboxAnomalySchema = z.object({
 	perTickCap: z.number().int().min(1).max(20).default(5),
 });
 
+/** ADR 2026-05-11-inbox-agent-workflows-layer-3 §D5 — Stage 4 auto-route.
+ *
+ *  Worker periodically picks queued messages and, when their category +
+ *  cached `extracted_data` match an enabled per-category rule, saves them
+ *  to the vault and marks them processed. ALL rules default OFF — the
+ *  operator opts in per-category after eyeballing the extracted-data
+ *  stream from S2.
+ *
+ *  Kill switches: `INBOX_AUTO_ROUTE_DISABLED=1` (worker-specific) and
+ *  `INBOX_AGENT_DISABLED=1` (all Layer 3) override the schema even if
+ *  the operator enabled rules in settings.json. */
+const InboxAutoRouteAmountRuleSchema = z.object({
+	enabled: z.boolean().default(false),
+	/** Inclusive minimum amount required to route. `0` means "any amount". */
+	minAmount: z.number().min(0).default(0),
+	/** ISO currency code (e.g. "AED"). Rows in other currencies are skipped. */
+	currency: z.string().default('AED'),
+});
+
+const InboxAutoRouteAnomalyRuleSchema = z.object({
+	enabled: z.boolean().default(false),
+	/** When true, only routes rows where the extractor flagged
+	 *  `anomalyHint=true`. False routes all matching rows. */
+	anomalyOnly: z.boolean().default(true),
+});
+
+const InboxAutoRouteSimpleRuleSchema = z.object({
+	enabled: z.boolean().default(false),
+});
+
+export const InboxAutoRouteSchema = z.object({
+	/** Master switch. OFF by default — operator opts in. */
+	enabled: z.boolean().default(false),
+	/** Worker tick cadence. 60s is fast enough for "feels live" without
+	 *  hammering SQLite or vault writes. */
+	intervalMs: z.number().int().min(10_000).max(3_600_000).default(60_000),
+	/** How far back the worker looks for queued rows on each tick. The
+	 *  agent_actions exclusion clause is the real dedup — this is a
+	 *  safety net to skip ancient rows on cold-start. */
+	lookbackHours: z.number().int().min(1).max(168).default(24),
+	/** Max routes per tick. Prevents a category-mass-relabel from
+	 *  flooding the vault. */
+	perTickCap: z.number().int().min(1).max(50).default(10),
+	receipts: InboxAutoRouteAmountRuleSchema.prefault({ minAmount: 50 }),
+	payments: InboxAutoRouteAmountRuleSchema.prefault({ minAmount: 200 }),
+	alerts: InboxAutoRouteAnomalyRuleSchema.prefault({}),
+	shipping: InboxAutoRouteSimpleRuleSchema.prefault({}),
+	serviceAlerts: InboxAutoRouteAnomalyRuleSchema.prefault({}),
+});
+
+export type InboxAutoRouteConfig = z.infer<typeof InboxAutoRouteSchema>;
+
+export const InboxSchema = z.object({
+	autoRoute: InboxAutoRouteSchema.prefault({}),
+});
+
 /** `/img` configuration — image generation + editing via Gemini Nano
  *  Banana. One slash command, no flags, system prompt sourced from a
  *  vault-watched markdown file (per ADR-002). */
@@ -483,6 +539,11 @@ export const ConfigSchema = z.object({
 	interface: InterfaceSchema.prefault({}),
 	paths: PathsSchema.prefault({}),
 	server: ServerSchema.prefault({}),
+	/** ADR 2026-05-11-inbox-agent-workflows-layer-3 — top-level inbox
+	 *  config. v1 hosts only the Layer 3 Stage 4 auto-route block. Future
+	 *  cycles can hang the L2 filter knobs here too (today they're env-
+	 *  driven) without disrupting the channel namespaces. */
+	inbox: InboxSchema.prefault({}),
 	// Channels store base fields strictly + allow per-channel extensions to
 	// flow through; each adapter Zod-validates its own slice on read (e.g.
 	// WhatsAppChannelSchema for the `whatsapp` entry).

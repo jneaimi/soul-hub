@@ -34,6 +34,17 @@ export {
 } from './filter.js';
 export { cacheSignature } from './filter-rules.js';
 
+export {
+	routeMessageToVault,
+	type RouteToVaultResult,
+	type RouteToVaultOptions,
+} from './route-to-vault.js';
+export {
+	startAutoRouteWorker, stopAutoRouteWorker,
+	runAutoRouteTick, listAutoRouteCandidates, evaluateAutoRouteRule,
+	type AutoRouteDecision, type AutoRouteReason, type AutoRouteTickResult,
+} from './auto-route.js';
+
 export { encrypt, decrypt } from './crypto.js';
 
 export {

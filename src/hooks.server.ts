@@ -19,6 +19,7 @@ import { extractProxyPort, proxyRequest } from '$lib/proxy.js';
 import {
 	getInboxDb, closeInboxDb, startSync, stopSync,
 	startFilterWorker, stopFilterWorker,
+	startAutoRouteWorker, stopAutoRouteWorker,
 } from '$lib/inbox/index.js';
 import { getCrmDb, closeCrmDb } from '$lib/crm/index.js';
 import { getFetchPageDb, closeFetchPageDb } from '$lib/fetch-page/index.js';
@@ -71,6 +72,10 @@ try {
 	// startFilterWorker() only after cold-start completes.
 	startFilterWorker().then(() => console.log('[inbox] Filter worker started'))
 		.catch((err) => console.error('[inbox] Filter start failed:', err));
+	// Layer 3 Stage 4 auto-route worker — ADR §D5. Idempotent; honors
+	// INBOX_AGENT_DISABLED / INBOX_AUTO_ROUTE_DISABLED / cfg.inbox.autoRoute.enabled
+	// internally so an unconfigured operator never has rows routed by surprise.
+	startAutoRouteWorker(() => config.inbox.autoRoute);
 	console.log('[inbox] Database initialized');
 } catch (err) {
 	console.error('[inbox] Failed to initialize:', err);
@@ -180,9 +185,10 @@ function gracefulShutdown(signal: string) {
 	const systemHealth = getSystemHealth();
 	if (systemHealth) systemHealth.shutdown();
 
-	// Shutdown inbox sync + filter workers, then close database.
+	// Shutdown inbox sync + filter + auto-route workers, then close database.
 	stopSync().catch(() => {});
 	stopFilterWorker().catch(() => {});
+	stopAutoRouteWorker();
 	closeInboxDb();
 
 	// Close CRM database (no workers — schema-only at Stage A).
