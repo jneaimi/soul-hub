@@ -125,6 +125,7 @@ export async function decideV2(
 		account: opts.account,
 		timezone: opts.timezone,
 		modelBranch: branch.name,
+		slowDispatch: opts.slowDispatch,
 	});
 
 	const system = buildOrchestratorSystemPrompt({
@@ -431,6 +432,14 @@ function buildV2Output(
 			return { kind: 'error', text: GENERIC_RETRY };
 		}
 		return undefined;
+	}
+
+	// ADR-030 — slow-dispatched short-circuits the turn. The background
+	// skill-worker has already started; the LLM's final reply (if any) is
+	// stale because the user's question is being answered by the worker.
+	const slowResult = results.find((r) => r.kind === 'slow-dispatched');
+	if (slowResult && slowResult.kind === 'slow-dispatched') {
+		return { kind: 'slow-dispatched', toolName: slowResult.toolName, ack: slowResult.ack };
 	}
 
 	// Confirmed dispatch is the highest-stakes action — fire it first.

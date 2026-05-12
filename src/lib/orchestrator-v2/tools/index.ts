@@ -26,6 +26,8 @@ import { dispatchWebSearch, formatWebSearchForChat } from '../../web-search/inde
 import { dispatchVaultChat } from '../../vault-chat/index.js';
 import { dispatchImg, rememberLastImage } from '../../img/index.js';
 import { fetchYoutube } from '../../youtube/index.js';
+import { formatYoutubeForChat } from '../../youtube/format-for-chat.js';
+import { runSkillInBackground } from '../../orchestrator/skill-worker.js';
 import { fetchTikTok, probeCapabilities as probeTikTokCapabilities } from '../../tiktok/index.js';
 import { dispatchVaultSave } from '../../vault-save/index.js';
 import { fetchPage } from '../../fetch-page/index.js';
@@ -128,6 +130,32 @@ export interface ToolDeps {
 	 *  branch in analytics. Undefined when v2 isn't running an A/B (e.g.
 	 *  `ORCHESTRATOR_V2_MODEL` legacy override). */
 	modelBranch?: string;
+	/** ADR-030 — slow-skill dispatch hook. When set, slow tools (per the
+	 *  manifest's `latencyClass`) short-circuit their execute() to a
+	 *  background worker that edits the presence bubble when complete.
+	 *  When undefined, slow tools fall back to inline execution — useful
+	 *  for UI test harnesses, REPL invocations, and the Telegram path
+	 *  until v2 wires it. WhatsApp inbound handler is the primary
+	 *  populator. */
+	slowDispatch?: SlowDispatchDeps;
+}
+
+/** ADR-030 — runtime deps the slow-tool background worker needs to deliver
+ *  a result back to the chat. WhatsApp-only in v1; channel handlers that
+ *  can't satisfy this contract leave it undefined and slow tools degrade
+ *  to inline execution. */
+export interface SlowDispatchDeps {
+	jid: string;
+	channel: 'whatsapp' | 'telegram';
+	/** The presence bubble's message id — slow worker edits this in place
+	 *  with the final formatted result. Undefined → worker sends a fresh
+	 *  message instead. */
+	progressMessageId?: string;
+	/** Opaque worker handle — WhatsAppWorkerConfig today. Typed as
+	 *  `unknown` here so this file doesn't import the channel module
+	 *  directly. The skill-worker dynamic-imports `worker-client` and
+	 *  narrows on `channel`. */
+	worker?: unknown;
 }
 
 /** Tagged-union return type for all tool `execute()` bodies. decide-v2's
@@ -231,6 +259,16 @@ export type ToolResult =
 				| 'invalid-due-at'
 				| 'insert-failed';
 			detail?: string;
+	  }
+	/** ADR-030 — slow tool was redirected to background dispatch.
+	 *  The orchestrator should NOT compose a final reply this turn; the
+	 *  background worker will edit the progress bubble + send follow-ups
+	 *  when the tool completes. `ack` is the in-place edit text the
+	 *  channel handler applies to the presence bubble. */
+	| {
+			kind: 'slow-dispatched';
+			toolName: string;
+			ack: string;
 	  };
 
 /** Build the tool dictionary for an Agent. Returns a stable object so the
@@ -498,68 +536,35 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 			execute: async ({ url, mode }): Promise<ToolResult> => {
 				logToolCall('youtubeFetch', { url, mode });
 
-				// Per-target Gemini quota check happens BEFORE the call so we
-				// short-circuit to metadata-only when the cap is hit. Increments
-				// happen AFTER a successful Gemini turn (failures don't burn
-				// the cap).
-				let transcriptQuotaExceeded = false;
-				const willCallGemini =
-					mode !== 'metadata' &&
-					(deps.youtubeConfig?.enabled ?? false) &&
-					!!deps.senderNumber;
-				if (willCallGemini && deps.youtubeConfig && deps.senderNumber) {
-					const tz = deps.timezone ?? 'Asia/Dubai';
-					const today = ymdInTimezone(tz);
-					const count = getYoutubeCount(deps.senderNumber, today);
-					if (count >= deps.youtubeConfig.maxPerDay) {
-						transcriptQuotaExceeded = true;
-					}
-				}
-
-				const outcome = await fetchYoutube(url, {
-					mode,
-					youtubeConfig: deps.youtubeConfig,
-					transcriptQuotaExceeded,
-				});
-
-				if (!outcome.ok) {
+				// ADR-030 — slow-dispatch path. When the caller wired
+				// `deps.slowDispatch` AND the requested mode hits Gemini
+				// (everything except `metadata`), fire the actual fetch in a
+				// background worker that edits the channel's presence bubble
+				// when it completes. The inline path stays available for
+				// metadata-only saves (instant) and for callers that didn't
+				// wire slow-dispatch (REPL, UI test routes).
+				const isSlowCall = mode !== 'metadata';
+				if (isSlowCall && deps.slowDispatch && deps.slowDispatch.channel === 'whatsapp') {
+					const { jid, channel, progressMessageId, worker } = deps.slowDispatch;
+					const conversationKey = deps.conversationKey;
+					runSkillInBackground({
+						jid,
+						channel,
+						toolName: 'youtubeFetch',
+						worker,
+						progressMessageId,
+						conversationKey,
+						executeFn: () => runYoutubeFetchInline({ url, mode, deps }),
+						formatFn: formatYoutubeForChat,
+					});
 					return {
-						kind: 'youtube-error',
-						url: outcome.error.url,
-						error: outcome.error.error,
-						tier: outcome.error.tier,
+						kind: 'slow-dispatched',
+						toolName: 'youtubeFetch',
+						ack: `🟡 Fetching YouTube video — I'll send the summary here in ~30s.`,
 					};
 				}
 
-				const r = outcome.result;
-				// Increment quota only when Gemini actually produced content.
-				// `transcriptSource === 'gemini'` is the truthful signal — covers
-				// both summary and transcript modes (any mode that hit Tier B).
-				if (
-					r.transcriptSource === 'gemini' &&
-					deps.senderNumber &&
-					deps.youtubeConfig &&
-					!transcriptQuotaExceeded
-				) {
-					const tz = deps.timezone ?? 'Asia/Dubai';
-					incrementYoutubeCount(deps.senderNumber, ymdInTimezone(tz));
-				}
-
-				return {
-					kind: 'youtube',
-					url: r.url,
-					videoId: r.videoId,
-					title: r.metadata.title,
-					channel: r.metadata.channel,
-					thumbnailUrl: r.metadata.thumbnailUrl,
-					durationSec: r.metadata.durationSec,
-					description: r.metadata.description,
-					summary: r.summary,
-					transcript: r.transcript,
-					transcriptSource: r.transcriptSource,
-					costUsd: r.costUsd,
-					note: r.note,
-				};
+				return runYoutubeFetchInline({ url, mode, deps });
 			},
 		}),
 
@@ -1978,6 +1983,74 @@ function formatExtract(
 	if (extract.anomalyHint) parts.push(`anomaly=true`);
 	if (extract.note) parts.push(`note="${extract.note}"`);
 	return `Message ${messageId} ${tag}: ${parts.join(', ')}.`;
+}
+
+/** ADR-030 — shared youtubeFetch execution. Both the inline path
+ *  (metadata mode + REPL callers) and the slow-dispatch closure run
+ *  through here; the only divergence is whether the closure runs in the
+ *  AI SDK's tool-execute tick or in `runSkillInBackground`. */
+async function runYoutubeFetchInline(args: {
+	url: string;
+	mode: 'metadata' | 'summary' | 'transcript' | 'full';
+	deps: ToolDeps;
+}): Promise<ToolResult> {
+	const { url, mode, deps } = args;
+
+	let transcriptQuotaExceeded = false;
+	const willCallGemini =
+		mode !== 'metadata' &&
+		(deps.youtubeConfig?.enabled ?? false) &&
+		!!deps.senderNumber;
+	if (willCallGemini && deps.youtubeConfig && deps.senderNumber) {
+		const tz = deps.timezone ?? 'Asia/Dubai';
+		const today = ymdInTimezone(tz);
+		const count = getYoutubeCount(deps.senderNumber, today);
+		if (count >= deps.youtubeConfig.maxPerDay) {
+			transcriptQuotaExceeded = true;
+		}
+	}
+
+	const outcome = await fetchYoutube(url, {
+		mode,
+		youtubeConfig: deps.youtubeConfig,
+		transcriptQuotaExceeded,
+	});
+
+	if (!outcome.ok) {
+		return {
+			kind: 'youtube-error',
+			url: outcome.error.url,
+			error: outcome.error.error,
+			tier: outcome.error.tier,
+		};
+	}
+
+	const r = outcome.result;
+	if (
+		r.transcriptSource === 'gemini' &&
+		deps.senderNumber &&
+		deps.youtubeConfig &&
+		!transcriptQuotaExceeded
+	) {
+		const tz = deps.timezone ?? 'Asia/Dubai';
+		incrementYoutubeCount(deps.senderNumber, ymdInTimezone(tz));
+	}
+
+	return {
+		kind: 'youtube',
+		url: r.url,
+		videoId: r.videoId,
+		title: r.metadata.title,
+		channel: r.metadata.channel,
+		thumbnailUrl: r.metadata.thumbnailUrl,
+		durationSec: r.metadata.durationSec,
+		description: r.metadata.description,
+		summary: r.summary,
+		transcript: r.transcript,
+		transcriptSource: r.transcriptSource,
+		costUsd: r.costUsd,
+		note: r.note,
+	};
 }
 
 /** Build the `invokeSkill` tool description dynamically from the registry.

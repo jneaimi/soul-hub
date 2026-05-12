@@ -64,6 +64,19 @@ export interface DecideV2Options {
 	 *  not depend on the callback succeeding. Most callsites pass nothing
 	 *  (the orchestrator's existing return shape is unaffected). */
 	onStreamEvent?: (event: OrchestratorStreamEvent) => void;
+	/** ADR-030 — when set, slow tools (per the manifest's `latencyClass`)
+	 *  short-circuit to background dispatch instead of awaiting inline.
+	 *  Channel handlers populate this with the presence bubble's
+	 *  messageId and the WhatsApp worker handle so the slow-tool worker
+	 *  can edit the same bubble when the work completes. WhatsApp only
+	 *  in v1; Telegram leaves this undefined → slow tools degrade to
+	 *  inline (and the user sees a long "🟡 …" wait). */
+	slowDispatch?: {
+		jid: string;
+		channel: 'whatsapp' | 'telegram';
+		progressMessageId?: string;
+		worker?: unknown;
+	};
 }
 
 /** ADR-029 — stream events surfaced from the AI SDK's `fullStream` after
@@ -190,6 +203,15 @@ export type V2Output =
 			kind: 'error';
 			/** User-facing error text from a failed tool execution. */
 			text: string;
+	  }
+	/** ADR-030 — a slow tool dispatched in the background. The presence
+	 *  bubble should morph to `ack`; the LLM's final reply is suppressed
+	 *  this turn because the background skill-worker will edit the same
+	 *  bubble with the full result when complete. */
+	| {
+			kind: 'slow-dispatched';
+			toolName: string;
+			ack: string;
 	  };
 
 /** Per-call telemetry surfaced to the inbound handler for analytics. */

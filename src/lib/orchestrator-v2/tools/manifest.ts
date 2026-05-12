@@ -36,6 +36,20 @@ export interface ToolExample {
 	toolArgs: string;
 }
 
+/** ADR-030 — latency class for the orchestrator-v2 tool catalog.
+ *
+ *  `fast`  p95 ≤ 5s. Runs synchronously inside the orchestrator turn.
+ *          The presence bubble + typing tick keep the chat alive.
+ *          Default — `latencyClass` absent === `fast`.
+ *  `slow`  p95 > 5s. The tool's execute() short-circuits to background
+ *          dispatch (`runSkillInBackground`); the chat bubble gets an
+ *          immediate ack and the formatted result lands as an edit when
+ *          the background worker completes. Reuses the agent-dispatch
+ *          message-id holding pattern. WhatsApp only in v1 — Telegram
+ *          falls back to inline. See [[adr-030-fast-vs-slow-skill-dispatch-budget]].
+ */
+export type LatencyClass = 'fast' | 'slow';
+
 export interface ToolManifest {
 	/** Tool name as registered in `buildOrchestratorTools()`. Matches the
 	 *  key the AI SDK will report in step.toolCalls. */
@@ -47,11 +61,23 @@ export interface ToolManifest {
 	/** Short, user-facing one-liner for the /orchestrator/tools page list.
 	 *  Plain language, no model-prompt-engineering. */
 	ui_description: string;
+	/** ADR-030 — latency class. Omit for fast tools (the default). Set
+	 *  `'slow'` when the tool's p95 exceeds 5s under normal conditions
+	 *  (Gemini summary, full transcript, Veo video, etc.) — the
+	 *  orchestrator will dispatch it via `runSkillInBackground` instead
+	 *  of awaiting inline. */
+	latencyClass?: LatencyClass;
 	/** Pointer to a settings panel for tools whose behavior the user can
 	 *  tune (e.g. youtube cap). Undefined when the tool has no knobs. */
 	has_config?: ToolConfigPointer;
 	/** Optional usage examples — surfaced in the row's expanded view. */
 	examples?: ToolExample[];
+}
+
+/** Lookup the static latency class for a tool. Returns `'fast'` by default. */
+export function getLatencyClass(toolName: string): LatencyClass {
+	const entry = TOOL_MANIFESTS.find((t) => t.name === toolName);
+	return entry?.latencyClass ?? 'fast';
 }
 
 export const TOOL_MANIFESTS: ToolManifest[] = [
@@ -92,6 +118,7 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 	{
 		name: 'generateImage',
 		category: 'write',
+		latencyClass: 'slow',
 		llm_description:
 			'Generate a single text-to-image via Gemini Nano Banana. Use ONLY for "make me a picture of X" with NO text overlay, NO video, NO voiceover, NO carousel, NO Arabic text. If the user wants any of those, use dispatchAgent with agentId="media-generator".',
 		ui_description:
@@ -110,6 +137,7 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 	{
 		name: 'dispatchAgent',
 		category: 'agent',
+		latencyClass: 'slow',
 		llm_description:
 			'Dispatch a heavy specialist agent (runs minutes). OMIT confirmed (or set false) to PROPOSE the dispatch — the user replies "yes" to run it. Set confirmed=true ONLY when the user explicitly confirmed a prior proposal OR used an unambiguous command verb ("research X for me", "draft Y about Z", "review this code", "audit Q").',
 		ui_description:
@@ -118,6 +146,7 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 	{
 		name: 'youtubeFetch',
 		category: 'read',
+		latencyClass: 'slow',
 		llm_description:
 			'Fetch a YouTube video — title, channel, duration, thumbnail, and (when needed) transcript or summary. ' +
 			'Use whenever the user shares a YouTube URL (youtube.com, youtu.be, share.google/...) — ' +
@@ -145,6 +174,7 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 	{
 		name: 'tiktokFetch',
 		category: 'read',
+		latencyClass: 'slow',
 		llm_description:
 			'Fetch a TikTok video — author, caption, engagement, duration, and (when needed) speech transcript or summary. ' +
 			'Use whenever the user shares a TikTok URL (tiktok.com, vm.tiktok.com, vt.tiktok.com, tiktok.com/t/...) — ' +

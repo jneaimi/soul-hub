@@ -512,6 +512,19 @@ async function dispatchOrchestrated(
 			return;
 		}
 
+		if (out.kind === 'slow-dispatched') {
+			// ADR-030 — Telegram doesn't pass `slowDispatch` deps in v1, so a
+			// slow-dispatched V2Output shouldn't appear on this channel.
+			// Defensive: if it ever does (future channel adapter, manual
+			// orchestrator call), surface the ack as the final reply so the
+			// user sees *something*; the background worker won't fire because
+			// the upstream tool's `deps.slowDispatch.channel` check excluded
+			// non-whatsapp dispatches.
+			await presence.morph(out.ack);
+			saveTurn(conversationKey, 'assistant', out.ack, turnNow + 1);
+			return;
+		}
+
 		if (out.kind === 'proposal') {
 			// Proposal needs an inline keyboard that the presence layer's
 			// `finalize` (text-only edit) can't carry. Morph the bubble to

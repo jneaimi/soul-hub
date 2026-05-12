@@ -562,6 +562,13 @@ export const POST: RequestHandler = async ({ request }) => {
 				hasMedia: !!envelope.media,
 			});
 
+			// ADR-030 — capture the bubble id NOW so the orchestrator's
+			// slow-dispatch path can hand it to `runSkillInBackground`
+			// (background worker edits the SAME bubble when the slow tool
+			// completes). Undefined when the bubble's initial send failed —
+			// the slow worker degrades to a fresh send in that case.
+			const bubbleIdForSlowDispatch = presence.state().bubbleId;
+
 			const decideStart = Date.now();
 			const orch = await decideV2(workingBody, {
 				history: ctx.history,
@@ -570,6 +577,12 @@ export const POST: RequestHandler = async ({ request }) => {
 				channel: 'whatsapp',
 				account: cfg.account,
 				timezone: cfg.heartbeat?.activeHours?.timezone ?? 'Asia/Dubai',
+				slowDispatch: {
+					jid: envelope.chatJid,
+					channel: 'whatsapp',
+					progressMessageId: bubbleIdForSlowDispatch,
+					worker: cfg.worker,
+				},
 				imgConfig: {
 					enabled: cfg.img.enabled,
 					maxPerDay: cfg.img.maxPerDay,
@@ -658,6 +671,18 @@ export const POST: RequestHandler = async ({ request }) => {
 				console.log(
 					`[orchestrator] v2 action=${decision.action} v2Output=${out.kind} confidence=${decision.confidence.toFixed(2)}${decision.agent ? ` agent=${decision.agent}` : ''}`,
 				);
+				if (out.kind === 'slow-dispatched') {
+					// ADR-030 — slow tool fired in the background. The
+					// orchestrator already kicked off `runSkillInBackground`;
+					// here we morph the presence bubble to the ack and drop
+					// the response. The background worker will edit the same
+					// bubble with the formatted result when it lands.
+					saveTurn(conversationKey, 'assistant', out.ack, turnNow + 1);
+					const morphed = await presence!.morph(out.ack);
+					return morphed
+						? json({ ok: true, action: 'drop' })
+						: json({ ok: true, action: 'reply', text: out.ack });
+				}
 				if (out.kind === 'image') {
 					// Morph the bubble into a brief "generated" line; the image
 					// itself lands as a separate WhatsApp media message below.
