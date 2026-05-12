@@ -11,6 +11,7 @@ import { triggerPipelineFactory } from '$lib/scheduler/handlers/trigger-pipeline
 import { shellScriptFactory } from '$lib/scheduler/handlers/shell-script.js';
 import { dailyFocusFactory } from '$lib/scheduler/handlers/daily-focus.js';
 import { vaultScoutFactory } from '$lib/scheduler/handlers/vault-scout.js';
+import { inboxDigestFactory } from '$lib/scheduler/handlers/inbox-digest.js';
 import { initVault, getVaultEngine } from '$lib/vault/index.js';
 import { initSystemHealth, getSystemHealth } from '$lib/system/index.js';
 import { listSessions, killSession } from '$lib/pty/manager.js';
@@ -125,6 +126,11 @@ try {
 		'vault-scout',
 		vaultScoutFactory,
 		'Daily AI-driven vault scout — extracts milestones, synthesizes via Gemini Flash, queues voice-eligible inbox notes.',
+	);
+	registerTaskHandler(
+		'inbox-digest',
+		inboxDigestFactory,
+		'Daily inbox digest — server-formatted summary of queued mail from the lookback window, excludes already anomaly-pushed rows (Layer 3 Stage 3b).',
 	);
 } catch (err) {
 	console.error('[scheduler] handler registration failed:', err);
