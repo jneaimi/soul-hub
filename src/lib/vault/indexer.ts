@@ -151,7 +151,7 @@ export class VaultIndexer {
 		const notesByZone: Record<string, number> = {};
 		let totalLinks = 0;
 		let unresolvedLinks = 0;
-		const ORPHAN_EXEMPT = new Set(['inbox', 'archive']);
+		const ORPHAN_EXEMPT = new Set(['inbox', 'archive', 'finance', 'security']);
 		const orphanNotes = allNotes.filter((n) => {
 			if (n.links.length > 0 || n.backlinks.length > 0) return false;
 			const zone = n.path.split('/')[0];
@@ -185,7 +185,7 @@ export class VaultIndexer {
 
 	health(): VaultHealth {
 		const allNotes = this.all();
-		const ORPHAN_EXEMPT = new Set(['inbox', 'archive']);
+		const ORPHAN_EXEMPT = new Set(['inbox', 'archive', 'finance', 'security']);
 		const orphanNotes = allNotes
 			.filter((n) => {
 				if (n.links.length > 0 || n.backlinks.length > 0) return false;

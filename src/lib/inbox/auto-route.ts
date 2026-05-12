@@ -26,8 +26,8 @@
  *    cfg.inbox.autoRoute.enabled=false — operator master toggle
  */
 
-import { getInboxDb, rowToMessage } from './db.js';
-import { routeMessageToVault } from './route-to-vault.js';
+import { getInboxDb, rowToMessage, markMessageProcessed, recordAgentAction } from './db.js';
+import { routeMessageToVault, SHIPPING_PATTERN } from './route-to-vault.js';
 import type { InboxMessage } from './types.js';
 import type { TransactionalExtract } from './extractor.js';
 import type { InboxAutoRouteConfig } from '../config.schema.js';
@@ -54,6 +54,14 @@ export interface ListAutoRouteCandidatesOptions {
 export function listAutoRouteCandidates(opts: ListAutoRouteCandidatesOptions): InboxMessage[] {
 	const db = getInboxDb();
 	const sinceMs = Date.now() - opts.lookbackHours * 3600 * 1000;
+	// ORDER DESC so the worker evaluates newest-first — operator sees signal
+	// on the freshest mail immediately. The LIMIT must be high enough that
+	// the worker can reach matching rows even when the lookback window
+	// contains hundreds of no-match candidates: route attempts on no-match
+	// rows don't write to agent_actions (we don't want a rule change to be
+	// blocked by historical "skipped" rows), so the candidate query returns
+	// the same set every tick. Without a generous limit, the worker would
+	// re-scan the same N oldest no-match rows forever and never advance.
 	const rows = db
 		.prepare(
 			`SELECT m.* FROM messages m
@@ -66,7 +74,7 @@ export function listAutoRouteCandidates(opts: ListAutoRouteCandidatesOptions): I
 				   AND a.tool = 'inbox-route-to-vault'
 				   AND json_extract(a.result, '$.ok') = 1
 			   )
-			 ORDER BY m.date_received ASC
+			 ORDER BY m.date_received DESC
 			 LIMIT ?`,
 		)
 		.all(sinceMs, opts.limit) as Record<string, unknown>[];
@@ -76,13 +84,21 @@ export function listAutoRouteCandidates(opts: ListAutoRouteCandidatesOptions): I
 export type AutoRouteReason =
 	| 'receipt.over-threshold'
 	| 'payment.over-threshold'
+	| 'refund.over-threshold'
+	| 'subscription-renewal.over-threshold'
+	| 'statement.always'
 	| 'alert.anomaly'
 	| 'shipping.always'
 	| 'service-alert.anomaly'
+	| 'otp.auto-delete'
 	| 'no-match';
 
+/** Worker decision per candidate row. `route` writes a vault note; `delete`
+ *  marks the message processed and skips the vault write — used for short-
+ *  lived categories where a vault note is noise (OTPs). `no-match` leaves
+ *  the row queued for the next prune sweep. */
 export interface AutoRouteDecision {
-	route: boolean;
+	action: 'route' | 'delete' | 'skip';
 	reason: AutoRouteReason;
 }
 
@@ -94,25 +110,48 @@ export function evaluateAutoRouteRule(
 	cfg: InboxAutoRouteConfig,
 ): AutoRouteDecision {
 	if (message.category === 'transactional') {
-		if (!extract) return { route: false, reason: 'no-match' };
+		if (!extract) return { action: 'skip', reason: 'no-match' };
 
+		// OTPs come FIRST — they're auto-deleted regardless of amount.
+		// Saving a one-time password to the vault is noise; it expires
+		// within minutes of arrival.
+		if (extract.kind === 'otp' && cfg.otps.enabled) {
+			return { action: 'delete', reason: 'otp.auto-delete' };
+		}
 		if (extract.kind === 'receipt' && cfg.receipts.enabled) {
 			if (matchesAmount(extract, cfg.receipts.minAmount, cfg.receipts.currency)) {
-				return { route: true, reason: 'receipt.over-threshold' };
+				return { action: 'route', reason: 'receipt.over-threshold' };
 			}
 		}
 		if (extract.kind === 'payment' && cfg.payments.enabled) {
 			if (matchesAmount(extract, cfg.payments.minAmount, cfg.payments.currency)) {
-				return { route: true, reason: 'payment.over-threshold' };
+				return { action: 'route', reason: 'payment.over-threshold' };
 			}
+		}
+		if (extract.kind === 'refund' && cfg.refunds.enabled) {
+			if (matchesAmount(extract, cfg.refunds.minAmount, cfg.refunds.currency)) {
+				return { action: 'route', reason: 'refund.over-threshold' };
+			}
+		}
+		if (extract.kind === 'subscription-renewal' && cfg.subscriptionRenewals.enabled) {
+			if (matchesAmount(extract, cfg.subscriptionRenewals.minAmount, cfg.subscriptionRenewals.currency)) {
+				return { action: 'route', reason: 'subscription-renewal.over-threshold' };
+			}
+		}
+		if (extract.kind === 'statement' && cfg.statements.enabled) {
+			// Statements always route — there's no amount to threshold; the
+			// file itself IS the record (bank PDF attached). Operator can
+			// disable the rule entirely if they don't want statements in
+			// the vault.
+			return { action: 'route', reason: 'statement.always' };
 		}
 		if (extract.kind === 'alert' && cfg.alerts.enabled) {
 			if (!cfg.alerts.anomalyOnly || extract.anomalyHint === true) {
-				return { route: true, reason: 'alert.anomaly' };
+				return { action: 'route', reason: 'alert.anomaly' };
 			}
 		}
-		// OTPs, refunds, subscription-renewals, unknown — no v1 rule. Defer.
-		return { route: false, reason: 'no-match' };
+		// Unknown — defer (operator may want to manually classify).
+		return { action: 'skip', reason: 'no-match' };
 	}
 
 	if (message.category === 'notification') {
@@ -123,33 +162,39 @@ export function evaluateAutoRouteRule(
 		const looksLikeShipping = SHIPPING_PATTERN.test(message.subject)
 			|| SHIPPING_PATTERN.test(message.fromAddress);
 		if (looksLikeShipping && cfg.shipping.enabled) {
-			return { route: true, reason: 'shipping.always' };
+			return { action: 'route', reason: 'shipping.always' };
 		}
 		if (!looksLikeShipping && cfg.serviceAlerts.enabled) {
 			// service-alerts can require anomaly-only when the extractor
 			// has populated data for the row (rare for notification today
 			// but the gate stays consistent if S2 expands to notifications).
 			if (!cfg.serviceAlerts.anomalyOnly || extract?.anomalyHint === true) {
-				return { route: true, reason: 'service-alert.anomaly' };
+				return { action: 'route', reason: 'service-alert.anomaly' };
 			}
 		}
-		return { route: false, reason: 'no-match' };
+		return { action: 'skip', reason: 'no-match' };
 	}
 
-	return { route: false, reason: 'no-match' };
+	return { action: 'skip', reason: 'no-match' };
 }
 
-/** Shipping subject/sender heuristic. The keywords are conservative —
- *  better to under-route shipping than mislabel a service-alert. */
-const SHIPPING_PATTERN = /\b(shipped|shipment|tracking|delivery|out for delivery|in transit|arriving|noon|amazon|aramex|dhl|fedex|fetchr)\b/i;
-
 function matchesAmount(extract: TransactionalExtract, minAmount: number, currency: string): boolean {
-	if (typeof extract.amount !== 'number' || !Number.isFinite(extract.amount)) return false;
-	if (extract.amount < minAmount) return false;
 	const expectedCur = currency.trim().toUpperCase();
 	const actualCur = (extract.currency || '').trim().toUpperCase();
-	// Empty currency on the row means we don't know — defer rather than route
-	// against the wrong currency. Empty-config currency means "any" (rare).
+
+	// "Route everything" mode: when the operator zeroed the threshold, the
+	// kind already qualified the message (it IS a receipt/payment/refund —
+	// the L2 extractor said so). Currency/amount become advisory. Route
+	// regardless so the operator gets the full ledger; sub-AED Microsoft
+	// invoices or USD top-ups still land in finance/ where they belong.
+	if (minAmount <= 0) return true;
+
+	// Threshold-mode: amount + currency must BOTH be present and match.
+	if (typeof extract.amount !== 'number' || !Number.isFinite(extract.amount)) return false;
+	if (extract.amount < minAmount) return false;
+	// Empty actual currency = unknown — can't compare a threshold without
+	// units. Defer. Empty config currency = wildcard (rare; means "any
+	// currency at or above this number").
 	if (!actualCur) return false;
 	if (expectedCur && expectedCur !== actualCur) return false;
 	return true;
@@ -158,6 +203,7 @@ function matchesAmount(extract: TransactionalExtract, minAmount: number, currenc
 export interface AutoRouteTickResult {
 	considered: number;
 	routed: number;
+	deleted: number;
 	skipped: number;
 	errors: number;
 	stopReason?: 'kill-switch' | 'master-disabled' | 'empty';
@@ -169,32 +215,55 @@ let intervalHandle: ReturnType<typeof setInterval> | null = null;
 /** Run one auto-route tick. Returns counts for telemetry. */
 export async function runAutoRouteTick(cfg: InboxAutoRouteConfig): Promise<AutoRouteTickResult> {
 	if (killSwitchActive()) {
-		return { considered: 0, routed: 0, skipped: 0, errors: 0, stopReason: 'kill-switch' };
+		return { considered: 0, routed: 0, deleted: 0, skipped: 0, errors: 0, stopReason: 'kill-switch' };
 	}
 	if (!cfg.enabled) {
-		return { considered: 0, routed: 0, skipped: 0, errors: 0, stopReason: 'master-disabled' };
+		return { considered: 0, routed: 0, deleted: 0, skipped: 0, errors: 0, stopReason: 'master-disabled' };
 	}
 
 	const candidates = listAutoRouteCandidates({
 		lookbackHours: cfg.lookbackHours,
-		limit: cfg.perTickCap * 4, // overfetch — many won't match rules
+		// Hard ceiling of 500 — bounds the SQL cost while still covering the
+		// realistic backlog (497 candidates over 30 days in the operator's
+		// inbox at ship time). The perTickCap cuts off routing AFTER matches
+		// are found, so even with 500 evaluated rows, only `perTickCap`
+		// vault writes happen per tick.
+		limit: 500,
 	});
 	if (candidates.length === 0) {
-		return { considered: 0, routed: 0, skipped: 0, errors: 0, stopReason: 'empty' };
+		return { considered: 0, routed: 0, deleted: 0, skipped: 0, errors: 0, stopReason: 'empty' };
 	}
 
 	let routed = 0;
+	let deleted = 0;
 	let skipped = 0;
 	let errors = 0;
 
 	for (const msg of candidates) {
-		if (routed >= cfg.perTickCap) break;
+		// `routed + deleted` together gate the per-tick cap so a flood of
+		// OTPs can't starve real vault routes (and vice versa). Both are
+		// "actions taken" from the operator's perspective.
+		if (routed + deleted >= cfg.perTickCap) break;
 		const extract = parseExtractedData(msg);
 		const decision = evaluateAutoRouteRule(msg, extract, cfg);
-		if (!decision.route) {
+		if (decision.action === 'skip') {
 			skipped += 1;
 			continue;
 		}
+		if (decision.action === 'delete') {
+			try {
+				const result = deleteMessageFromInbox(msg.id, decision.reason);
+				if (result.ok) deleted += 1;
+				else errors += 1;
+			} catch (err) {
+				console.warn(
+					`[inbox-auto-route] delete threw for msg ${msg.id}: ${(err as Error).message}`,
+				);
+				errors += 1;
+			}
+			continue;
+		}
+		// decision.action === 'route'
 		try {
 			const result = await routeMessageToVault(msg.id, {
 				actor: 'worker',
@@ -210,7 +279,37 @@ export async function runAutoRouteTick(cfg: InboxAutoRouteConfig): Promise<AutoR
 		}
 	}
 
-	return { considered: candidates.length, routed, skipped, errors };
+	return { considered: candidates.length, routed, deleted, skipped, errors };
+}
+
+/** Mark a queued message processed without writing a vault note. Used for
+ *  OTPs and similar short-lived categories where a vault note is noise. The
+ *  message stays in inbox.db (with `process_status='processed'`) and is
+ *  pruned out by `pruneOldMessages` at the 365-day audit retention — the
+ *  trail "this was an OTP, auto-deleted" survives long enough that the
+ *  operator can audit the policy without retaining the OTP body. */
+function deleteMessageFromInbox(messageId: number, reason: AutoRouteReason): { ok: boolean; error?: string } {
+	try {
+		markMessageProcessed(messageId);
+		recordAgentAction({
+			tool: 'inbox-route-to-vault',
+			messageId,
+			actor: 'worker',
+			args: { reason, action: 'delete' },
+			result: { ok: true, messageId, reason, action: 'delete' },
+		});
+		return { ok: true };
+	} catch (err) {
+		const msg = (err as Error).message;
+		recordAgentAction({
+			tool: 'inbox-route-to-vault',
+			messageId,
+			actor: 'worker',
+			args: { reason, action: 'delete' },
+			result: { ok: false, messageId, error: msg, action: 'delete' },
+		});
+		return { ok: false, error: msg };
+	}
 }
 
 function parseExtractedData(message: InboxMessage): TransactionalExtract | null {
@@ -254,9 +353,16 @@ export function startAutoRouteWorker(getConfig: () => InboxAutoRouteConfig): voi
 			const cfg = safeGetConfig(getConfig);
 			if (!cfg) return;
 			const result = await runAutoRouteTick(cfg);
-			if (result.routed > 0 || result.errors > 0) {
+			// Always log a tick line. The earlier "silent when idle" behavior
+			// made the worker look dead during long stretches of no-match
+			// candidates — the operator couldn't tell the difference between
+			// "worker crashed" and "all 422 candidates correctly skipped."
+			// Verbose IDLE lines for stop-reasons keep the dashboard honest.
+			if (result.stopReason) {
+				console.log(`[inbox-auto-route] tick: idle (${result.stopReason})`);
+			} else {
 				console.log(
-					`[inbox-auto-route] tick: considered=${result.considered} routed=${result.routed} skipped=${result.skipped} errors=${result.errors}`,
+					`[inbox-auto-route] tick: considered=${result.considered} routed=${result.routed} deleted=${result.deleted} skipped=${result.skipped} errors=${result.errors}`,
 				);
 			}
 		} catch (err) {

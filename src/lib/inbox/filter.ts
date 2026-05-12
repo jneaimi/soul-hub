@@ -46,6 +46,31 @@ import {
 } from './db.js';
 import type { InboxMessage, FilterCategory } from './types.js';
 import { fetchImapHeaders } from './body.js';
+import { SHIPPING_PATTERN } from './route-to-vault.js';
+
+/** Carrier domains we trust to send delivery / shipping notifications. */
+const CARRIER_DOMAINS = /\b(amazon\.(com|ae|sa)|noon\.com|aramex\.com|dhl\.com|fedex\.com|fetchr\.com|ups\.com|talabat\.com|deliveroo\.com|careem\.com)\b/i;
+
+/** Post-classification heuristic correction.
+ *
+ *  The LLM (and operator-added rules) sometimes label delivery confirmations
+ *  as `transactional` because the body mentions an order total. They're
+ *  clearly `notification` (shipping subtype) — the L3 auto-route worker only
+ *  fires the shipping rule for `category=notification`, so a mis-categorized
+ *  Amazon delivery sits forever in the queue. This deterministic override
+ *  catches that pattern after classification and corrects it.
+ *
+ *  Trigger: subject matches the shipping regex AND sender is a known carrier
+ *  domain. False-positive risk is low — a real bank email about an order
+ *  rarely has both signals together.
+ */
+function correctCategoryHeuristic(message: { fromAddress: string; subject: string }, category: FilterCategory): FilterCategory {
+	if (category !== 'transactional') return category;
+	const subjMatch = SHIPPING_PATTERN.test(message.subject || '');
+	const senderMatch = CARRIER_DOMAINS.test(message.fromAddress || '');
+	if (subjMatch && senderMatch) return 'notification';
+	return category;
+}
 import {
 	classifyByRules,
 	parseHeaderSignals,
@@ -317,13 +342,14 @@ async function processChunk(messages: InboxMessage[]): Promise<ChunkSummary> {
 			const sig = cacheSignature(msg);
 			const cached = getFilterCache(sig);
 			if (cached) {
+				const correctedCategory = correctCategoryHeuristic(msg, cached.category);
 				applyClassification(msg.id, {
-					category: cached.category,
-					reason: 'cache:hit',
+					category: correctedCategory,
+					reason: correctedCategory === cached.category ? 'cache:hit' : 'cache:hit+shipping-override',
 				});
 				bumpFilterCacheHit(sig);
 				summary.cacheHits++;
-				maybeQueueEagerExtraction(msg.id, cached.category, msg);
+				maybeQueueEagerExtraction(msg.id, correctedCategory, msg);
 				continue;
 			}
 			remaining.push(msg);
@@ -354,18 +380,20 @@ async function processChunk(messages: InboxMessage[]): Promise<ChunkSummary> {
 			const sig = cacheSignature(msg);
 			const result = classifyByRules(rules, msg, rawHeaders);
 			if (result) {
+				const correctedCategory = correctCategoryHeuristic(msg, result.category);
+				const correctedReason = correctedCategory === result.category ? result.reason : `${result.reason}+shipping-override`;
 				applyClassification(msg.id, {
-					category: result.category,
-					reason: result.reason,
+					category: correctedCategory,
+					reason: correctedReason,
 					headerSignalsJson: signalsJson,
 				});
 				setFilterCache({
 					signature: sig,
-					category: result.category,
-					reason: result.reason,
+					category: correctedCategory,
+					reason: correctedReason,
 				});
 				summary.ruleHits++;
-				maybeQueueEagerExtraction(msg.id, result.category, msg);
+				maybeQueueEagerExtraction(msg.id, correctedCategory, msg);
 				continue;
 			}
 
@@ -395,17 +423,19 @@ async function processChunk(messages: InboxMessage[]): Promise<ChunkSummary> {
 			for (const r of outcome.results) {
 				const original = grayMessages.get(r.id);
 				if (!original) continue;
+				const correctedCategory = correctCategoryHeuristic(original, r.category);
+				const correctedReason = correctedCategory === r.category ? `llm:${r.category}` : `llm:${r.category}+shipping-override`;
 				applyClassification(r.id, {
-					category: r.category,
-					reason: `llm:${r.category}`,
+					category: correctedCategory,
+					reason: correctedReason,
 				});
 				setFilterCache({
 					signature: cacheSignature(original),
-					category: r.category,
-					reason: `llm:${r.category}`,
+					category: correctedCategory,
+					reason: correctedReason,
 				});
 				summary.llmHits++;
-				maybeQueueEagerExtraction(r.id, r.category, original);
+				maybeQueueEagerExtraction(r.id, correctedCategory, original);
 			}
 			// Track results that did not parse — those rows stay 'new' for retry.
 			const classifiedIds = new Set(outcome.results.map((r) => r.id));

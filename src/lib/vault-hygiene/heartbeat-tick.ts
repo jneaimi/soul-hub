@@ -119,6 +119,14 @@ function isActionable(report: HygieneReport, threshold: HygieneThreshold): boole
 	if (t.orphans + t.statusContradictions >= threshold.orphansPlusContradictions) return true;
 	if (t.staleInbox >= threshold.staleInbox) return true;
 	if (t.governanceViolations >= threshold.governanceViolations) return true;
+	// Misplaced notes — fire whenever even one HIGH-confidence misplacement
+	// is present. Keeper's job here is fast (just `mv` + reindex), so we
+	// don't want to let clutter build up across multiple ticks.
+	if (t.misplacedNotes >= 1 && report.misplacedNotes.some(n => n.confidence === 'high')) return true;
+	// Inbox decisions — fire when there are aging queued personal mails or
+	// stuck-unknown transactional rows. Keeper surfaces the list to Telegram
+	// so the operator can decide (save / archive / reply / mark processed).
+	if (t.inboxDecisions >= 1) return true;
 	return false;
 }
 
@@ -131,7 +139,7 @@ function buildKeeperTask(report: HygieneReport): string {
 		'',
 		`Health score: ${report.healthScore}/100`,
 		`Indexed: ${t.indexed} notes`,
-		`Issues: orphans=${t.orphans}, unresolved=${t.unresolved}, stale-inbox=${t.staleInbox}, status-contradictions=${t.statusContradictions}, governance-violations=${t.governanceViolations}`,
+		`Issues: orphans=${t.orphans}, unresolved=${t.unresolved}, stale-inbox=${t.staleInbox}, status-contradictions=${t.statusContradictions}, governance-violations=${t.governanceViolations}, misplaced-notes=${t.misplacedNotes}, inbox-decisions=${t.inboxDecisions}`,
 		'',
 		'Auto-fix scope (per ADR-010): orphans (add to nearest index.md), stale-inbox notes with valid `type` (file by zone), governance violations that are missing-but-derivable frontmatter fields.',
 		'Escalate (do NOT auto-fix): dead links (could be a typo OR a renamed file), status contradictions, inbox notes with no `type`.',

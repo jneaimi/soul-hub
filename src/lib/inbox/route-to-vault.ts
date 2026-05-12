@@ -25,6 +25,13 @@ import type { InboxMessage, TransactionalExtract } from './types.js';
 import { getMessage, markMessageProcessed, recordAgentAction } from './db.js';
 import { getExtractedData } from './db.js';
 import { dispatchVaultSave } from '../vault-save/index.js';
+
+/** Shipping subject/sender heuristic — shared between `pickZone` (where to
+ *  write) and `composeNote` (what to title). Conservative keyword list; the
+ *  cost of mis-labeling a service-alert as shipping is bigger than missing
+ *  some shipping notes. Exported so the worker's evaluator can re-use the
+ *  same definition without drift. */
+export const SHIPPING_PATTERN = /\b(shipped|shipment|tracking|delivery|out for delivery|in transit|arriving|noon|amazon|aramex|dhl|fedex|fetchr)\b/i;
 import type { VaultSaveType } from '../vault-save/index.js';
 
 export interface RouteToVaultResult {
@@ -44,6 +51,15 @@ export interface RouteToVaultOptions {
 	actor: 'worker' | 'operator-direct';
 	/** Match rule string for audit (e.g. 'receipts.amount>50'). Optional. */
 	reason?: string;
+	/** Override the zone that `pickZone()` would choose. Used by the
+	 *  operator-driven accept/advise path so they can correct an obvious
+	 *  mis-zone without editing the file after-the-fact. When omitted,
+	 *  `pickZone()` runs as normal. */
+	zoneOverride?: string;
+	/** Additional tags merged into composeNote's defaults. Used by the
+	 *  accept/advise loop so an operator can pin extra tags ("kyc",
+	 *  "high-priority") at the moment of routing. */
+	extraTags?: string[];
 }
 
 /** Route one message to vault. Returns success/failure; never throws.
@@ -80,6 +96,13 @@ export async function routeMessageToVault(
 
 	const extract = parseExtractedData(message);
 	const composed = composeNote(message, extract);
+	// Operator overrides — zoneOverride wins outright; extraTags merge into
+	// the composer's defaults (de-duped via Set semantics on join).
+	const zone = options.zoneOverride ?? pickZone(message, extract);
+	if (options.extraTags && options.extraTags.length > 0) {
+		const merged = new Set([...composed.tags, ...options.extraTags.map(t => t.toLowerCase().replace(/^#/, '').trim()).filter(Boolean)]);
+		composed.tags = [...merged];
+	}
 
 	try {
 		const saveResult = await dispatchVaultSave({
@@ -87,9 +110,54 @@ export async function routeMessageToVault(
 			content: composed.body,
 			type: composed.type,
 			tags: composed.tags,
+			// Dedicated worker identity — keeps the auto-route 50-200/hr pool
+			// separate from `orchestrator-v2-vaultSave` (chat-driven /save).
+			// Required so a first-time replay batch doesn't starve chat saves
+			// of vault writes during the same window.
+			sourceAgent: 'inbox-auto-route',
+			// One inbox message = one filename. Without this, 38 Emirates NBD
+			// transaction alerts in a day collapse to the same slug and only
+			// the first one persists — the rest hammer the worker forever
+			// with "File already exists". The msg id keeps each note distinct
+			// while leaving the title human-readable.
+			filenameSuffix: `msg-${messageId}`,
+			// Category-aware zone: receipts/payments to inbox/finance, alerts
+			// to inbox/security, shipping to inbox/shipping. Keeps inbox/ root
+			// for human captures so the operator can see signal at a glance
+			// without 73 transactional rows drowning it out.
+			zone,
 		});
 
 		if (!saveResult.ok) {
+			// Content-dedup is a deliberate-success outcome for L3 S4: when 5
+			// look-alike security alerts arrive (same body, different msg ids),
+			// we want exactly ONE vault note, and the remaining 4 should be
+			// marked processed so the worker doesn't keep re-trying them
+			// against the same dedup rejection forever. Treat dedup hits as a
+			// soft-success: mark processed, return ok=true with a reason.
+			const isDedupHit = saveResult.error.toLowerCase().includes('duplicate content');
+			if (isDedupHit) {
+				try {
+					markMessageProcessed(messageId);
+				} catch (err) {
+					console.warn(
+						`[inbox-route-to-vault] markMessageProcessed(${messageId}) after dedup hit failed: ${(err as Error).message}`,
+					);
+				}
+				const result: RouteToVaultResult = {
+					ok: true,
+					messageId,
+					reason: 'duplicate-content-skipped',
+				};
+				recordAgentAction({
+					tool: 'inbox-route-to-vault',
+					messageId,
+					actor: options.actor,
+					args: { reason: options.reason },
+					result,
+				});
+				return result;
+			}
 			const result: RouteToVaultResult = {
 				ok: false,
 				messageId,
@@ -172,6 +240,21 @@ function composeNote(message: InboxMessage, extract: TransactionalExtract | null
 	const tags = new Set<string>(['inbox-auto-route']);
 	if (message.category) tags.add(message.category);
 	if (extract?.kind && extract.kind !== 'unknown') tags.add(extract.kind);
+	// Sender-domain tag — `alert@emiratesnbd.com` → `enbd`,
+	// `noreply@vercel.com` → `vercel`, etc. Surfaces "all Vercel notifications"
+	// or "all ENBD activity" via the vault tag filter without a fragile
+	// merchant-slug match (merchant field is empty more often than the domain).
+	const domainTag = senderDomainTag(message.fromAddress);
+	if (domainTag) tags.add(domainTag);
+
+	// Cross-cut zone tags so the operator can filter by purpose, not just by
+	// path. `finance` tag on every money-flow note (receipt/payment/refund/
+	// renewal). `security` tag on real security alerts (transactional/alert
+	// kind). `service` tag on Vercel/app/marketing notifications routed to
+	// the same `security/` zone — same folder, distinct via tag.
+	const FINANCE_KINDS = new Set(['receipt', 'payment', 'refund', 'subscription-renewal', 'statement']);
+	if (extract && FINANCE_KINDS.has(extract.kind as string)) tags.add('finance');
+	if (extract?.kind === 'statement') tags.add('statement');
 
 	let title: string;
 	let header: string[];
@@ -188,19 +271,53 @@ function composeNote(message: InboxMessage, extract: TransactionalExtract | null
 		title = amountLabel ? `Payment — ${merchant} (${amountLabel})` : `Payment — ${merchant}`;
 		header = transactionalHeader(extract, fromLabel, receivedIso);
 		if (extract.merchant) tags.add(slugTag(extract.merchant));
+	} else if (message.category === 'transactional' && extract?.kind === 'refund') {
+		const merchant = extract.merchant || 'Unknown merchant';
+		const amountLabel = formatAmount(extract.amount, extract.currency);
+		title = amountLabel ? `Refund — ${merchant} (${amountLabel})` : `Refund — ${merchant}`;
+		header = transactionalHeader(extract, fromLabel, receivedIso);
+		if (extract.merchant) tags.add(slugTag(extract.merchant));
+	} else if (message.category === 'transactional' && extract?.kind === 'subscription-renewal') {
+		const merchant = extract.merchant || 'Unknown merchant';
+		const amountLabel = formatAmount(extract.amount, extract.currency);
+		title = amountLabel ? `Renewal — ${merchant} (${amountLabel})` : `Renewal — ${merchant}`;
+		header = transactionalHeader(extract, fromLabel, receivedIso);
+		if (extract.merchant) tags.add(slugTag(extract.merchant));
+	} else if (message.category === 'transactional' && extract?.kind === 'statement') {
+		const merchant = extract.merchant || 'Unknown bank';
+		// Surface the subject as the title so the period (e.g. "May 2026")
+		// stays human-readable. Frontmatter merchant tag is the durable
+		// filter handle.
+		title = `Statement — ${merchant}: ${shortenSubject(subject)}`;
+		header = transactionalHeader(extract, fromLabel, receivedIso);
+		if (extract.merchant) tags.add(slugTag(extract.merchant));
 	} else if (message.category === 'transactional' && extract?.kind === 'alert') {
 		title = `Security alert — ${shortenSubject(subject)}`;
 		header = transactionalHeader(extract, fromLabel, receivedIso);
 		tags.add('security');
 	} else if (message.category === 'notification') {
-		// Shipping is the headline notification subtype we auto-route.
-		title = `Shipping — ${shortenSubject(subject)}`;
+		// Split shipping vs service-alert here so the title and tag match the
+		// zone the worker writes into (inbox/shipping vs security/).
+		// Same heuristic as pickZone() — keep them in sync.
+		const looksLikeShipping = SHIPPING_PATTERN.test(message.subject)
+			|| SHIPPING_PATTERN.test(message.fromAddress);
+		if (looksLikeShipping) {
+			title = `Shipping — ${shortenSubject(subject)}`;
+			tags.add('shipping');
+		} else {
+			title = `Service alert — ${shortenSubject(subject)}`;
+			// `service` is the cross-cut tag for filtering security/ to
+			// non-security-event notifications. `service-alert` is the
+			// narrower kind tag. Operator can filter security/ by tag:security
+			// (real alerts) vs tag:service (Vercel/app notifs) cleanly.
+			tags.add('service-alert');
+			tags.add('service');
+		}
 		header = [
 			`**From:** ${fromLabel}`,
 			`**Received:** ${receivedIso}`,
 			`**Subject:** ${subject}`,
 		];
-		tags.add('shipping');
 	} else {
 		// Fallback — covers any category that slipped past the rule check.
 		title = shortenSubject(subject);
@@ -263,6 +380,53 @@ function shortenSubject(subject: string): string {
 	return trimmed.length <= 80 ? trimmed : trimmed.slice(0, 77) + '…';
 }
 
+/** Extract a short sender-domain tag from a from-address. Maps common bank +
+ *  vendor domains to canonical short names; falls back to the apex-domain
+ *  label for everything else. Returns `null` for unparseable addresses
+ *  (don't add a garbage tag).
+ *
+ *  Examples:
+ *    alert@emiratesnbd.com           → 'enbd'
+ *    notifications@vercel.com        → 'vercel'
+ *    noreply@apple.com               → 'apple'
+ *    receipt@example.co.uk           → 'example'
+ *    invalid-no-at                   → null
+ */
+function senderDomainTag(fromAddress: string): string | null {
+	if (!fromAddress || !fromAddress.includes('@')) return null;
+	const domain = fromAddress.split('@')[1]?.toLowerCase().trim();
+	if (!domain) return null;
+
+	// Canonical short names for high-frequency senders. Keep the list short —
+	// only add aliases the operator would actually filter by. Generic apex
+	// fallback handles the long tail without bloating this map.
+	const ALIASES: Record<string, string> = {
+		'emiratesnbd.com': 'enbd',
+		'mail.emiratesnbd.com': 'enbd',
+		'alert.emiratesnbd.com': 'enbd',
+		'amazon.com': 'amazon',
+		'amazon.ae': 'amazon',
+		'noon.com': 'noon',
+		'aramex.com': 'aramex',
+		'dhl.com': 'dhl',
+		'fedex.com': 'fedex',
+	};
+	if (ALIASES[domain]) return ALIASES[domain];
+
+	// Generic apex extraction — `mail.vercel.com` → `vercel`. Strip common
+	// subdomain prefixes, drop the TLD, take the last meaningful label.
+	const parts = domain.split('.').filter(Boolean);
+	if (parts.length < 2) return null;
+	// Drop TLD (last) and any common ccTLD second-level (`co.uk`, `com.au`).
+	const TWO_PART_TLDS = new Set(['co.uk', 'com.au', 'co.in', 'com.sg']);
+	const lastTwo = parts.slice(-2).join('.');
+	const apex = TWO_PART_TLDS.has(lastTwo)
+		? parts.at(-3)
+		: parts.at(-2);
+	if (!apex || apex.length > 20) return null;
+	return slugTag(apex);
+}
+
 function slugTag(input: string): string {
 	return input
 		.toLowerCase()
@@ -271,6 +435,52 @@ function slugTag(input: string): string {
 		.replace(/\s+/g, '-')
 		.replace(/-+/g, '-')
 		.replace(/^-|-$/g, '');
+}
+
+/** Category → vault zone. Durable records get their own top-level zones so
+ *  they show up as siblings of `inbox/` in the sidebar; ephemeral pools stay
+ *  nested under `inbox/`.
+ *
+ *  - receipts/payments → `finance` (top-level — durable ledger, sidebar zone)
+ *  - security alerts   → `security` (top-level — audit trail, sidebar zone)
+ *  - shipping          → `inbox/shipping` (ephemeral, nested under inbox)
+ *  - service-alerts    → `inbox/service-alerts` (ephemeral, nested under inbox)
+ *  - fallback          → `inbox` root — should be rare; means a rule fired
+ *    for a category that doesn't have an explicit destination.
+ *
+ *  When adding a new top-level zone here, update these allowlists in lockstep:
+ *    src/lib/vault/graph.ts:148
+ *    src/lib/vault/indexer.ts (ORPHAN_EXEMPT)
+ *    src/lib/system/healers/vault-healer.ts (VALID_ZONES)
+ *    src/lib/system/health.ts (VALID_ZONES, EXEMPT_ZONES)
+ *    src/lib/components/vault/VaultSidebar.svelte (zoneOrder, zoneColors)
+ *    src/lib/components/vault/VaultSmartViews.svelte (ZONES)
+ *    src/lib/components/vault/VaultBulkBar.svelte (zones, zoneColors)
+ *  …and create a `CLAUDE.md` under the new zone with allowed types + naming. */
+function pickZone(message: InboxMessage, extract: TransactionalExtract | null): string {
+	if (message.category === 'transactional' && extract) {
+		// Every money-movement kind goes to the finance ledger so the
+		// operator's "this month's spend" query sees the whole picture
+		// (positive: receipts/payments/renewals; negative: refunds).
+		// Statements (eStatement PDFs, monthly summaries) live in finance/
+		// too — same zone, distinguished via the `statement` tag.
+		const FINANCE_KINDS = new Set(['receipt', 'payment', 'refund', 'subscription-renewal', 'statement']);
+		if (FINANCE_KINDS.has(extract.kind as string)) return 'finance';
+		if (extract.kind === 'alert') return 'security';
+	}
+	if (message.category === 'notification') {
+		if (SHIPPING_PATTERN.test(message.subject) || SHIPPING_PATTERN.test(message.fromAddress)) {
+			return 'inbox/shipping';
+		}
+		// Service-alerts (Vercel incidents, app installs, marketing-ish notifs)
+		// share the `security/` zone with real security alerts. Operator
+		// preference: fewer top-level zones, distinguish via TAG instead.
+		// Filename composer adds `service-alert` tag in this branch; real
+		// security alerts (account-deletion, password-reset) flow from the
+		// transactional/alert branch and carry the `security` tag.
+		return 'security';
+	}
+	return 'inbox';
 }
 
 function parseExtractedData(message: InboxMessage): TransactionalExtract | null {

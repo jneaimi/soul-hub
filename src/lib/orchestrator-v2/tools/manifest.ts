@@ -294,6 +294,17 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 			'Mark a queued inbox message as processed. Agents call this after handling.',
 	},
 	{
+		name: 'inbox-apply-recommendation',
+		category: 'write',
+		llm_description:
+			"Apply the keeper's recommendation for a stuck-transactional inbox message — operator's accept/advise loop. " +
+			"Use when the operator replies 'accept #N' / 'yes route N' / 'archive N' / 'advise: kind=X, zone=Y' after the keeper surfaced an inboxDecisions item with a recommendation. " +
+			"Two action modes: 'route' (default) — patches extract.kind, routes to vault (overrideable zone + tags), marks processed. 'archive' — marks processed without saving (for junk/bounces). " +
+			"PROVENANCE: `messageId` MUST be a real id from a prior keeper escalation, inboxDecisions report, or `inbox-list-queued` result. NEVER fabricate ids.",
+		ui_description:
+			"Apply or override the keeper's recommendation for a stuck inbox message — accept the suggested kind/zone/tags, or correct them in-line.",
+	},
+	{
 		name: 'inbox-correct-classification',
 		category: 'write',
 		llm_description:

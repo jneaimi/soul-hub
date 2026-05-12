@@ -1108,7 +1108,7 @@ export function deleteMessagesByFolder(
  *
  * Returns total messages affected (deleted + promoted).
  */
-export function pruneOldMessages(accountId: string, retentionDays: number): number {
+export function pruneOldMessages(accountId: string, retentionDays: number, opts?: { queuedNoMatchDays?: number }): number {
 	const db = getInboxDb();
 	const now = Date.now();
 	let total = 0;
@@ -1125,7 +1125,38 @@ export function pruneOldMessages(accountId: string, retentionDays: number): numb
 		`).run(accountId, skippedCutoff);
 		total += skipped.changes;
 
-		// 2. queued — operator-configured retention (skip if 0 = never delete)
+		// 2a. queued + L3-evaluated + no rule match — tight retention.
+		// These are messages the auto-route worker SAW and chose NOT to act
+		// on (no agent_actions row at all, or only failed attempts). Keeping
+		// them for 30/90 days bloats the candidate query and doesn't help
+		// the operator. Personal is exempt — humans curate it themselves.
+		// `unknown` is exempt — the operator may want to manually classify.
+		if (opts?.queuedNoMatchDays && opts.queuedNoMatchDays > 0) {
+			const noMatchCutoff = now - opts.queuedNoMatchDays * 24 * 60 * 60 * 1000;
+			const noMatch = db.prepare(`
+				DELETE FROM messages
+				WHERE account_id = ?
+				  AND process_status = 'queued'
+				  AND category IN ('transactional', 'notification')
+				  AND date_received < ?
+				  AND is_flagged = 0
+				  AND NOT EXISTS (
+				    SELECT 1 FROM agent_actions a
+				    WHERE a.message_id = messages.id
+				      AND a.tool = 'inbox-route-to-vault'
+				      AND json_extract(a.result, '$.ok') = 1
+				  )
+			`).run(accountId, noMatchCutoff);
+			total += noMatch.changes;
+			if (noMatch.changes > 0) {
+				console.log(
+					`[inbox-prune:${accountId}] Deleted ${noMatch.changes} queued no-match rows (>${opts.queuedNoMatchDays}d old)`,
+				);
+			}
+		}
+
+		// 2b. queued — operator-configured retention (the legacy long window)
+		// catches personal mail + unclassified that bypassed the 2a cutoff.
 		if (retentionDays > 0) {
 			const queuedCutoff = now - retentionDays * 24 * 60 * 60 * 1000;
 			const queued = db.prepare(`

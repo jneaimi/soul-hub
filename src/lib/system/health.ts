@@ -336,8 +336,11 @@ export class SystemHealth {
 		const unresolved = vault.getUnresolved();
 		const stats = vault.getStats();
 
-		const VALID_ZONES = new Set(['inbox', 'projects', 'knowledge', 'content', 'operations', 'archive']);
-		const EXEMPT_ZONES = new Set(['inbox', 'archive']);
+		const VALID_ZONES = new Set(['inbox', 'projects', 'knowledge', 'content', 'operations', 'archive', 'finance', 'security']);
+		// Auto-routed financial + security records carry no body links by design
+		// (one-note-per-email format), so exempt them from orphan flagging the
+		// same way inbox + archive are exempted.
+		const EXEMPT_ZONES = new Set(['inbox', 'archive', 'finance', 'security']);
 
 		// ── Orphan Notes ──
 		if (orphans.length > 0) {

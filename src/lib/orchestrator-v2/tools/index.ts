@@ -49,6 +49,7 @@ import {
 	type FilterCategory,
 	type TransactionalExtract,
 } from '../../inbox/index.js';
+import { applyRecommendation } from '../../inbox/apply-recommendation.js';
 import {
 	addContact,
 	getContact,
@@ -1054,6 +1055,52 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 						`Message ${messageId} exists but is in state '${msg.processStatus}' (not 'queued'), so no change was made. ` +
 						`This is usually fine — it just means the message was already handled, skipped, or never queued.`,
 				};
+			},
+		}),
+
+		'inbox-apply-recommendation': tool({
+			description:
+				"Apply the keeper's recommendation for a stuck-transactional inbox message — operator's accept/advise loop. " +
+				"Use when the operator replies 'accept #N' / 'yes route N' / 'archive N' / 'advise: kind=X, zone=Y, tag=Z' after the keeper surfaced an inboxDecisions item. " +
+				"Two action modes: 'route' (default) — patches extract.kind, routes to vault, marks processed. 'archive' — marks processed without saving (for junk/bounces). " +
+				"Override fields (kind/zone/tags) let the operator correct the recommendation in-line — leave undefined to accept the system's suggested values. " +
+				"PROVENANCE: `messageId` MUST be a real id from a prior keeper escalation, inboxDecisions report, or `inbox-list-queued` result. NEVER fabricate ids. Returns ERROR for non-existent ids — do NOT report fake success.",
+			inputSchema: z.object({
+				messageId: z.number().int().positive(),
+				action: z.enum(['route', 'archive']).optional().describe("Default 'route'. Use 'archive' for junk/bounces that shouldn't land in the vault."),
+				kind: z.string().optional().describe("Override the recommendation's kind (e.g., 'statement', 'payment', 'alert'). Empty = accept the system's recommendation."),
+				zone: z.string().optional().describe("Override target zone (e.g., 'finance', 'security', 'inbox'). Empty = pickZone() decides from kind."),
+				tags: z.array(z.string()).optional().describe("Additional tags to merge into composeNote's defaults. Operator can pin 'kyc', 'high-priority', etc."),
+				reason: z.string().max(200).optional().describe("Audit note — what the operator said ('accepted recommendation' / 'advised: was=unknown, now=statement')."),
+			}),
+			execute: async ({ messageId, action, kind, zone, tags, reason }): Promise<ToolResult> => {
+				logToolCall('inbox-apply-recommendation', { messageId, action: action ?? 'route', hasOverrides: !!(kind || zone || tags) });
+				const result = await applyRecommendation({ messageId, action, kind, zone, tags, reason });
+				if (!result.ok) {
+					const msg = getMessage(messageId);
+					if (!msg) {
+						return {
+							kind: 'reply',
+							text:
+								`ERROR: messageId ${messageId} does not exist in the inbox — likely a hallucinated id. ` +
+								`Call inbox-list-queued first and use a real id. Do NOT report success.`,
+						};
+					}
+					return {
+						kind: 'reply',
+						text: `ERROR: ${result.error ?? 'apply-recommendation failed'} for message ${messageId}.`,
+					};
+				}
+				if (result.action === 'archive') {
+					return { kind: 'reply', text: `Message ${messageId} archived (marked processed, no vault note).` };
+				}
+				if (result.vaultPath) {
+					return {
+						kind: 'reply',
+						text: `Routed message ${messageId} → ${result.vaultPath}${result.openUrl ? ` (${result.openUrl})` : ''}`,
+					};
+				}
+				return { kind: 'reply', text: `Message ${messageId} handled (${result.action}).` };
 			},
 		}),
 

@@ -43,6 +43,12 @@ export class VaultEngine {
 		// 50/hr cuts off a power user mid-sentence. 200/hr leaves headroom
 		// without removing the floor entirely.
 		'whatsapp-brain': 200,
+		// L3 S4 inbox auto-route worker. perTickCap=10 with a 60s tick
+		// gives a natural design ceiling of 600/hr; we set the limiter
+		// halfway down so a first-time replay batch (88 candidates over
+		// 9 ticks) clears without tripping, but a runaway loop still
+		// trips. Background-only — only the worker writes under this ID.
+		'inbox-auto-route': 200,
 	};
 
 	private static rateLimitFor(agent: string): number {
@@ -102,6 +108,13 @@ export class VaultEngine {
 	}
 
 	// ── Read Operations ──
+
+	/** All indexed notes. Used by hygiene scanners that need to walk the
+	 *  full vault (orphan-style detectors, misplacement detector). For
+	 *  search use `getNotes(query)` instead. */
+	getAllNotes(): VaultNote[] {
+		return this.indexer.all();
+	}
 
 	getNote(path: string): VaultNote | undefined {
 		return this.indexer.get(path);

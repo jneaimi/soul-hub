@@ -122,7 +122,7 @@ export async function healMissingRootIndex(
 	}
 
 	// Discover zones — only recognized vault zones
-	const VALID_ZONES = new Set(['inbox', 'projects', 'knowledge', 'content', 'operations', 'archive']);
+	const VALID_ZONES = new Set(['inbox', 'projects', 'knowledge', 'content', 'operations', 'archive', 'finance', 'security']);
 	const zones = new Set<string>();
 	for (const note of allNotes) {
 		const zone = note.path.split('/')[0];

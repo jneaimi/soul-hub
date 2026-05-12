@@ -141,6 +141,8 @@
 
   const zoneColors: Record<string, string> = {
     inbox: 'text-amber-400',
+    finance: 'text-emerald-400',
+    security: 'text-rose-400',
     projects: 'text-indigo-400',
     knowledge: 'text-cyan-400',
     content: 'text-violet-400',
@@ -148,7 +150,7 @@
     archive: 'text-gray-400',
   };
 
-  const zoneOrder = ['inbox', 'projects', 'knowledge', 'content', 'operations', 'archive'];
+  const zoneOrder = ['inbox', 'finance', 'security', 'projects', 'knowledge', 'content', 'operations', 'archive'];
   // Legacy zones to hide from sidebar (still exist on disk but being migrated)
   const legacyZones = new Set(['patterns', 'research', 'sessions']);
 

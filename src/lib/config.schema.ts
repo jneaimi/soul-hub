@@ -304,6 +304,14 @@ const InboxAutoRouteSimpleRuleSchema = z.object({
 	enabled: z.boolean().default(false),
 });
 
+/** Auto-delete rule: when matched, the message is marked processed in
+ *  inbox.db WITHOUT writing a vault note. For categories that are useless
+ *  shortly after arrival (e.g., OTPs expire in minutes — saving them to
+ *  the vault is just noise that needs curating later). */
+const InboxAutoRouteDeleteRuleSchema = z.object({
+	enabled: z.boolean().default(false),
+});
+
 export const InboxAutoRouteSchema = z.object({
 	/** Master switch. OFF by default — operator opts in. */
 	enabled: z.boolean().default(false),
@@ -312,16 +320,32 @@ export const InboxAutoRouteSchema = z.object({
 	intervalMs: z.number().int().min(10_000).max(3_600_000).default(60_000),
 	/** How far back the worker looks for queued rows on each tick. The
 	 *  agent_actions exclusion clause is the real dedup — this is a
-	 *  safety net to skip ancient rows on cold-start. */
-	lookbackHours: z.number().int().min(1).max(168).default(24),
+	 *  safety net to skip ancient rows on cold-start. Cap is 30 days
+	 *  (720h) — large enough for a one-shot backfill of the existing
+	 *  queued backlog when an operator first enables auto-route. */
+	lookbackHours: z.number().int().min(1).max(720).default(24),
 	/** Max routes per tick. Prevents a category-mass-relabel from
 	 *  flooding the vault. */
 	perTickCap: z.number().int().min(1).max(50).default(10),
+	/** Per-account `retention_days` controls overall queued-row lifetime,
+	 *  but it's set conservatively (30/90d) to preserve personal mail. For
+	 *  messages that the worker SKIPPED every tick (no rule fired), 30 days
+	 *  of churn is wasteful. After this many days a queued+no-route row
+	 *  gets pruned aggressively. Personal messages keep the original
+	 *  per-account retention. */
+	queuedNoMatchPruneDays: z.number().int().min(1).max(90).default(7),
 	receipts: InboxAutoRouteAmountRuleSchema.prefault({ minAmount: 50 }),
 	payments: InboxAutoRouteAmountRuleSchema.prefault({ minAmount: 200 }),
+	refunds: InboxAutoRouteAmountRuleSchema.prefault({ minAmount: 0 }),
+	subscriptionRenewals: InboxAutoRouteAmountRuleSchema.prefault({ minAmount: 0 }),
+	statements: InboxAutoRouteSimpleRuleSchema.prefault({}),
 	alerts: InboxAutoRouteAnomalyRuleSchema.prefault({}),
 	shipping: InboxAutoRouteSimpleRuleSchema.prefault({}),
 	serviceAlerts: InboxAutoRouteAnomalyRuleSchema.prefault({}),
+	/** OTPs are short-lived by design — saving them to the vault is noise.
+	 *  When enabled, the worker marks them processed without a vault write
+	 *  so they exit the queue cleanly. */
+	otps: InboxAutoRouteDeleteRuleSchema.prefault({}),
 });
 
 export type InboxAutoRouteConfig = z.infer<typeof InboxAutoRouteSchema>;

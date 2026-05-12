@@ -15,10 +15,12 @@
   let actionLoading = $state(false);
   let toast = $state<string | null>(null);
 
-  const zones = ['inbox', 'projects', 'knowledge', 'content', 'operations', 'archive'];
+  const zones = ['inbox', 'finance', 'security', 'projects', 'knowledge', 'content', 'operations', 'archive'];
 
   const zoneColors: Record<string, string> = {
     inbox: 'text-amber-400',
+    finance: 'text-emerald-400',
+    security: 'text-rose-400',
     projects: 'text-indigo-400',
     knowledge: 'text-cyan-400',
     content: 'text-violet-400',

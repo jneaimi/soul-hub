@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { getVaultStore } from '$lib/vault/store.svelte.js';
   import { TYPE_COLORS, ZONE_COLORS } from '$lib/vault/types';
   import type { GraphNode } from '$lib/vault/types';
@@ -101,10 +100,15 @@
   });
 
   // Infinite scroll: when the sentinel enters the viewport, load the next page.
+  // Using $effect (not onMount) because the sentinel lives inside {#if hasMore}
+  // and graphNodes load asynchronously after the component mounts — onMount
+  // would fire before graphNodes arrived and find sentinel === undefined.
   // Yield one frame via requestAnimationFrame so the spinner row paints before
   // the slice grows — without it, large jumps feel like teleportation.
-  onMount(() => {
-    if (!scrollContainer || !sentinel) return;
+  $effect(() => {
+    const root = scrollContainer;
+    const target = sentinel;
+    if (!root || !target) return;
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
@@ -117,9 +121,9 @@
           }
         }
       },
-      { root: scrollContainer, rootMargin: '300px 0px' }
+      { root, rootMargin: '300px 0px' }
     );
-    observer.observe(sentinel);
+    observer.observe(target);
     return () => observer.disconnect();
   });
 </script>

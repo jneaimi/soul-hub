@@ -36,6 +36,7 @@ const TRANSACTIONAL_KINDS = [
 	'otp',
 	'alert',
 	'subscription-renewal',
+	'statement',
 	'unknown',
 ] as const;
 export type TransactionalKind = (typeof TRANSACTIONAL_KINDS)[number];
@@ -62,7 +63,7 @@ const TransactionalExtractSchema = z.object({
 	kind: z
 		.enum(TRANSACTIONAL_KINDS)
 		.describe(
-			'Best-fit category for this transactional mail. "payment" = money left your account. "refund" = money returned. "receipt" = purchase confirmation. "otp" = one-time-password / verification code. "alert" = security or fraud alert. "subscription-renewal" = recurring charge confirmation. "unknown" when the shape does not fit.',
+			'Best-fit category for this transactional mail. "payment" = money left your account. "refund" = money returned. "receipt" = purchase confirmation. "otp" = one-time-password / verification code. "alert" = security or fraud alert. "subscription-renewal" = recurring charge confirmation. "statement" = periodic account statement (eStatement, monthly statement, year-end summary) — typically attached as PDF with no per-transaction body. "unknown" when the shape does not fit.',
 		),
 	amount: z
 		.number()
@@ -186,6 +187,34 @@ async function runExtraction(
 	if (raw.referenceNumber.trim()) extract.referenceNumber = raw.referenceNumber.trim();
 	if (raw.anomalyHint) extract.anomalyHint = true;
 	if (raw.note.trim()) extract.note = raw.note.trim();
+
+	// Deterministic override: "Transaction Alert" / "Purchase Alert" are
+	// bank payment-confirmation subject conventions (Emirates NBD style),
+	// NOT security alerts. The LLM consistently mis-labels these as
+	// `kind='alert'` because the word "alert" is salient. If the message
+	// has a card or merchant attached, it's a transaction — route to
+	// finance, not security.
+	const subjectLc = subject.toLowerCase();
+	const looksLikeTxnAlert =
+		/\b(transaction|purchase|payment|debit|credit)\s*(alert|notification)\b/.test(subjectLc) ||
+		/\balert\b.*\b(card|account|debit|credit)\b/.test(subjectLc);
+	const hasFinanceSignals = !!(extract.cardLast4 || extract.merchant || (extract.amount && extract.amount > 0));
+	if (extract.kind === 'alert' && looksLikeTxnAlert && hasFinanceSignals) {
+		extract.kind = 'payment';
+		// Drop anomalyHint — these are routine notifications, not fraud alerts.
+		delete extract.anomalyHint;
+	}
+
+	// Deterministic override: bank statement subjects (eStatement, monthly
+	// statement, account statement) typically have the txn data in an
+	// attached PDF — no body, so the LLM returns `kind='unknown'`. Catch
+	// the subject pattern + merchant signal explicitly so they route to
+	// `finance/` with `statement` tag instead of rotting in the queue.
+	const looksLikeStatement =
+		/\b(e[- ]?statement|monthly statement|account statement|year[- ]end summary|annual statement)\b/.test(subjectLc);
+	if (looksLikeStatement && (extract.merchant || hasFinanceSignals)) {
+		extract.kind = 'statement';
+	}
 
 	return { ok: true, extract };
 }

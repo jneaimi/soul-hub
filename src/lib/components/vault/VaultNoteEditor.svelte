@@ -12,7 +12,17 @@
 
 	let { note, onSave, onCancel }: Props = $props();
 
-	const NOTE_TYPES = ['learning', 'decision', 'debugging', 'pattern', 'research', 'output', 'snippet', 'report', 'daily'];
+	// Canonical superset across all zones — must include every type that any
+	// zone's `Allowed Types` lists in its CLAUDE.md governance file. Missing a
+	// type here means notes of that type lose their type when the editor saves.
+	// `reference` (used by L3 S4 auto-route in finance/security), `draft`,
+	// `recipe`, `task`, `project`, `index`, `idea`, `contact` were all missing
+	// before — added 2026-05-12 when finance/security became top-level zones.
+	const NOTE_TYPES = [
+		'learning', 'decision', 'debugging', 'pattern', 'research', 'output',
+		'snippet', 'report', 'daily', 'reference', 'draft', 'recipe', 'task',
+		'project', 'index', 'idea', 'contact'
+	];
 
 	let editType = $state(note.meta.type || 'learning');
 	let editStatus = $state(note.meta.status || '');

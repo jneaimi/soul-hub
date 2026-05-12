@@ -7,6 +7,8 @@
 import { getVaultEngine } from '../vault/index.js';
 import { getStaleInbox } from './stale-inbox.js';
 import { getStatusContradictions } from './status-contradictions.js';
+import { getMisplacedNotes } from './misplaced-notes.js';
+import { getInboxDecisions } from './inbox-decisions.js';
 import { computeHealthScore } from './health-score.js';
 import { ISSUE_LIST_CAP } from './types.js';
 import type { HygieneReport, OrphanIssue, UnresolvedIssue } from './types.js';
@@ -64,6 +66,8 @@ export async function getHygieneReport(): Promise<HygieneReport> {
 		path: v.path,
 		violations: v.violations,
 	}));
+	const misplacedNotes = getMisplacedNotes(engine);
+	const inboxDecisions = getInboxDecisions();
 
 	const totals = {
 		indexed: stats.totalNotes,
@@ -72,6 +76,8 @@ export async function getHygieneReport(): Promise<HygieneReport> {
 		staleInbox: staleInbox.length,
 		statusContradictions: statusContradictions.length,
 		governanceViolations: governanceViolations.length,
+		misplacedNotes: misplacedNotes.length,
+		inboxDecisions: inboxDecisions.length,
 	};
 
 	return {
@@ -86,5 +92,7 @@ export async function getHygieneReport(): Promise<HygieneReport> {
 		staleInbox: staleInbox.slice(0, ISSUE_LIST_CAP),
 		statusContradictions: statusContradictions.slice(0, ISSUE_LIST_CAP),
 		governanceViolations: governanceViolations.slice(0, ISSUE_LIST_CAP),
+		misplacedNotes: misplacedNotes.slice(0, ISSUE_LIST_CAP),
+		inboxDecisions: inboxDecisions.slice(0, ISSUE_LIST_CAP),
 	};
 }

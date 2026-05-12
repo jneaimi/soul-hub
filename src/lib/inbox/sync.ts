@@ -31,6 +31,7 @@ import {
 	type OutlookTokens, type GraphMessage,
 } from './outlook.js';
 import { encrypt } from './crypto.js';
+import { config } from '../config.js';
 import type { InboxAccount, InboxMessage, SyncState, AttachmentMeta } from './types.js';
 
 const MAX_RECONNECT_DELAY = 5 * 60 * 1000; // 5 min cap
@@ -476,7 +477,9 @@ async function syncInbox(
 		// Prune old messages based on retention policy
 		const accountData = getAccount(account.id);
 		if (accountData?.retentionDays && accountData.retentionDays > 0) {
-			pruneOldMessages(account.id, accountData.retentionDays);
+			pruneOldMessages(account.id, accountData.retentionDays, {
+				queuedNoMatchDays: config.inbox.autoRoute.queuedNoMatchPruneDays,
+			});
 		}
 
 		const totalCount = getMessageCount(account.id);
@@ -574,7 +577,9 @@ async function connectOutlookWorker(worker: AccountWorker, account: InboxAccount
 		// Prune old messages based on retention policy
 		const accountData = getAccount(account.id);
 		if (accountData?.retentionDays && accountData.retentionDays > 0) {
-			pruneOldMessages(account.id, accountData.retentionDays);
+			pruneOldMessages(account.id, accountData.retentionDays, {
+				queuedNoMatchDays: config.inbox.autoRoute.queuedNoMatchPruneDays,
+			});
 		}
 
 		const totalCount = getMessageCount(account.id);

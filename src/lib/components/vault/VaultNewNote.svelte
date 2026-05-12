@@ -17,7 +17,10 @@
   let loadingTemplates = $state(true);
   let selectedTemplate = $state<VaultTemplate | null>(null);
 
-  let zone = $state('');
+  // Default to `inbox` — the canonical landing zone for human captures.
+  // Falls back to whatever the server returns first if `inbox` is somehow
+  // missing from store.zones (e.g., empty vault).
+  let zone = $state('inbox');
   let title = $state('');
   let tags = $state('');
   let content = $state('');
@@ -102,9 +105,11 @@
       .replace(/\{\{date\}\}/g, today)
       .replace(/\{\{title\}\}/g, '')
       .replace(/\{\{content\}\}/g, '');
-    if (store.zones.length > 0) {
-      zone = store.zones[0].path;
-    }
+    // Prefer `inbox` (most natural place for a fresh capture). Fall through
+    // to first available zone only if `inbox` is somehow missing.
+    const inboxZone = store.zones.find(z => z.path === 'inbox');
+    if (inboxZone) zone = inboxZone.path;
+    else if (store.zones.length > 0) zone = store.zones[0].path;
   }
 
   // Substitute project/language placeholders when zone changes

@@ -145,7 +145,7 @@ function getZone(path: string): string {
 	const segments = path.split('/');
 	if (segments.length <= 1) return DEFAULT_ZONE;
 	const first = segments[0];
-	return ['inbox', 'projects', 'knowledge', 'content', 'operations', 'archive'].includes(first)
+	return ['inbox', 'projects', 'knowledge', 'content', 'operations', 'archive', 'finance', 'security'].includes(first)
 		? first
 		: DEFAULT_ZONE;
 }
