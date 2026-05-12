@@ -49,6 +49,8 @@ import {
 import { dispatchWebSearch, formatWebSearchForChat } from '$lib/web-search/index.js';
 import { workerSend as workerSendForOrchestrator } from '$lib/channels/whatsapp/worker-client.js';
 import { isFocusQuery, placeholderTextForRoute } from '$lib/channels/_shared/placeholder.js';
+import { startPresence } from '$lib/channels/_shared/presence.js';
+import { whatsappPresenceAdapter } from '$lib/channels/whatsapp/presence-adapter.js';
 import { writeIntentDecision } from '$lib/intent/log.js';
 import { normalizeSignature } from '$lib/intent/normalize.js';
 import { isResetCommand, resetConversation, saveTurn } from '$lib/vault-chat/history.js';
@@ -300,6 +302,12 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ ok: true, action: 'help', text: helpReply(cfg.intentMap) });
 	}
 
+	// ADR-028 Phase 1 — presence session lives at the outer try scope so
+	// the SAME bubble id is reused across the orchestrator-v2 path AND
+	// the dispatchVaultChat fallback. Started lazily when entering the
+	// vault-chat-no-media branch (cancel/reset/proposal-confirm shortcuts
+	// don't need it). Cleared in `finally`.
+	let presence: import('$lib/channels/_shared/presence.js').PresenceSession | null = null;
 	try {
 		// vault-chat wants a placeholder when the user just sent `/<route>` with
 		// no body; brain commands handle empty natively. Keep both shapes in
@@ -535,6 +543,17 @@ export const POST: RequestHandler = async ({ request }) => {
 			// turns + recent agent runs on this jid.
 			const ctx = getConversationContext(conversationKey, { jid: envelope.chatJid });
 
+			// ADR-028 Phase 1 — start the presence session NOW (before the
+			// slow orchestrator LLM call) and fire the bubble immediately so
+			// the user sees feedback within ~1s of inbound. Same session
+			// covers BOTH the orchestrator-v2 path AND the dispatchVaultChat
+			// fallback below; the outer `finally` clears the typing loop.
+			presence = startPresence(whatsappPresenceAdapter(cfg.worker, envelope.chatJid));
+			await presence.bubble('vault-chat', {
+				isFocusQuery: isFocusQuery(workingBody),
+				hasMedia: !!envelope.media,
+			});
+
 			const decideStart = Date.now();
 			const orch = await decideV2(workingBody, {
 				history: ctx.history,
@@ -617,6 +636,9 @@ export const POST: RequestHandler = async ({ request }) => {
 					`[orchestrator] v2 action=${decision.action} v2Output=${out.kind} confidence=${decision.confidence.toFixed(2)}${decision.agent ? ` agent=${decision.agent}` : ''}`,
 				);
 				if (out.kind === 'image') {
+					// Morph the bubble into a brief "generated" line; the image
+					// itself lands as a separate WhatsApp media message below.
+					await presence!.morph('🟡 Image generated — sending…');
 					saveTurn(
 						conversationKey,
 						'assistant',
@@ -632,8 +654,9 @@ export const POST: RequestHandler = async ({ request }) => {
 					});
 				}
 				if (out.kind === 'dispatch') {
-					// Confirmed agent dispatch: capacity gate → worker ack
-					// (capture messageId for progress edits) → fire-and-forget
+					// Confirmed agent dispatch: capacity gate → morph the
+					// presence bubble into the ack (reuse the same bubble id
+					// for downstream progress edits) → fire-and-forget
 					// `runInBackground` with `agentContext` from the
 					// conversation context → return `drop` so the worker
 					// doesn't double-respond.
@@ -641,22 +664,32 @@ export const POST: RequestHandler = async ({ request }) => {
 					if (!capacity.ok) {
 						const rejection = formatCapacityRejection(capacity);
 						saveTurn(conversationKey, 'assistant', rejection, turnNow + 1);
-						return json({ ok: true, action: 'reply', text: rejection });
+						const edited = await presence!.finalize(rejection);
+						return edited
+							? json({ ok: true, action: 'drop' })
+							: json({ ok: true, action: 'reply', text: rejection });
 					}
 					const ackText = `On it — running *${out.agentId}*. I'll send the summary here when it's ready (reply *cancel* to stop).`;
-					let progressMessageId: string | undefined;
-					try {
-						const sendResult = await workerSendForOrchestrator(cfg.worker, {
-							to: envelope.chatJid,
-							text: ackText,
-						});
-						if (sendResult.ok && sendResult.messageId) {
-							progressMessageId = sendResult.messageId;
+					const morphed = await presence!.morph(ackText);
+					let progressMessageId: string | undefined = morphed
+						? presence!.state().bubbleId
+						: undefined;
+					if (!progressMessageId) {
+						// Bubble morph failed (edits disabled / send never landed) — send
+						// the ack fresh so the agent's progress-edit handle has a target.
+						try {
+							const sendResult = await workerSendForOrchestrator(cfg.worker, {
+								to: envelope.chatJid,
+								text: ackText,
+							});
+							if (sendResult.ok && sendResult.messageId) {
+								progressMessageId = sendResult.messageId;
+							}
+						} catch (err) {
+							console.warn(
+								`[orchestrator-v2] dispatch-ack fallback send failed (${(err as Error).message}); continuing without progress handle`,
+							);
 						}
-					} catch (err) {
-						console.warn(
-							`[orchestrator-v2] initial ack send failed (${(err as Error).message}); continuing without it`,
-						);
 					}
 					const agentContext = buildAgentContextBrief(ctx);
 					orchestratorDispatch({
@@ -672,9 +705,14 @@ export const POST: RequestHandler = async ({ request }) => {
 					return json({ ok: true, action: 'drop' });
 				}
 				// `text` / `proposal` / `error` — all carry `out.text` as the
-				// pre-formatted user-facing string.
+				// pre-formatted user-facing string. Edit the presence bubble
+				// in place; on edit failure fall back to a fresh send so the
+				// user always gets the reply.
 				saveTurn(conversationKey, 'assistant', out.text, turnNow + 1);
-				return json({ ok: true, action: 'reply', text: out.text });
+				const edited = await presence!.finalize(out.text);
+				return edited
+					? json({ ok: true, action: 'drop' })
+					: json({ ok: true, action: 'reply', text: out.text });
 			}
 
 			// No usable v2 output (timeout, model abstain, etc.) — fall through
@@ -712,58 +750,22 @@ export const POST: RequestHandler = async ({ request }) => {
 					console.warn(`[_inbound] mediaBase64 decode for vault-chat failed: ${(err as Error).message}`);
 				}
 			}
-			// Per ADR-022 Layer B (worker-mode parallel of dispatch.ts): send a
-			// placeholder bubble via workerSend, capture the messageId, run the
-			// slow LLM call, then edit the bubble in place. Return action='drop'
-			// when the edit lands so the worker doesn't double-send the answer
-			// as a fresh message. If anything in the placeholder/edit chain
-			// fails, fall through to the normal action='reply' path so the
-			// user always gets the answer.
-			const placeholderText = placeholderTextForRoute('vault-chat', {
-				isFocusQuery: isFocusQuery(userText),
-				hasMedia: chatMedia !== undefined,
-			});
-			let placeholderId: string | undefined;
-			try {
-				const sendPlaceholder = await workerSendForOrchestrator(cfg.worker, {
-					to: envelope.chatJid,
-					text: placeholderText,
-				});
-				if (sendPlaceholder.ok && sendPlaceholder.messageId) {
-					placeholderId = sendPlaceholder.messageId;
-				}
-			} catch (err) {
-				console.warn(
-					`[_inbound] vault-chat placeholder send failed (${(err as Error).message}); falling back to plain reply`,
-				);
-			}
-
+			// ADR-028 Phase 1 — the presence session opened around decideV2
+			// is still alive. Run the fallback `dispatchVaultChat` then edit
+			// the bubble in place via presence.finalize(). On edit failure,
+			// fall back to action='reply' so the worker delivers fresh.
 			const result = await dispatchVaultChat(userText, conversationKey, chatMedia);
 			replyText = result.text || '(no reply)';
 
-			// Edit-in-place path. Baileys edit takes one text payload; if the
-			// reply is too long for a single message, this returns an error
-			// and we fall through to the normal chunked sendText path (the
-			// placeholder bubble lingers as cosmetic noise — acceptable
-			// trade-off for the v0 simplicity).
-			if (placeholderId && replyText && replyText !== '(no reply)') {
-				try {
-					const edit = await workerSendForOrchestrator(cfg.worker, {
-						to: envelope.chatJid,
-						text: replyText,
-						editId: placeholderId,
-					});
-					if (edit.ok) {
-						return json({ ok: true, action: 'drop' });
-					}
-					console.warn(
-						`[_inbound] vault-chat edit failed (${edit.error ?? 'unknown'}); falling back to plain reply`,
-					);
-				} catch (err) {
-					console.warn(
-						`[_inbound] vault-chat edit threw (${(err as Error).message}); falling back to plain reply`,
-					);
+			if (replyText && replyText !== '(no reply)') {
+				// presence may be null when we entered the fallback path
+				// without going through the orchestrator-v2 branch (e.g.
+				// envelope.media truthy). On null, skip the edit attempt.
+				const edited = presence ? await presence.finalize(replyText) : false;
+				if (edited) {
+					return json({ ok: true, action: 'drop' });
 				}
+				// finalize logs the failure; fall through to action='reply'.
 			}
 		} else if (intent.route === 'brain-save') {
 			// Worker-mode binary plumbing: the worker piggybacks media bytes
@@ -921,6 +923,17 @@ export const POST: RequestHandler = async ({ request }) => {
 			err instanceof RouteNotFoundError
 				? `Route "${intent.route}" is not configured. Edit settings.json or remove this command from intentMap.`
 				: `Sorry, I hit an error: ${(err as Error).message}`;
+		// On error: try to edit the presence bubble to the error text so
+		// the user sees the failure in-place. If finalize fails (no bubble
+		// or edits disabled), fall through to action='reply' below.
+		if (presence) {
+			const edited = await presence.finalizeError(message);
+			if (edited) {
+				return json({ ok: true, action: 'drop' });
+			}
+		}
 		return json({ ok: true, action: 'reply', text: message });
+	} finally {
+		presence?.stop();
 	}
 };

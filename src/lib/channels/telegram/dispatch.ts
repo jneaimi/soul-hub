@@ -38,6 +38,8 @@ import { resolveIntent } from './intent.js';
 import { sendText, sendMedia, sendTypingIndicator, editText, chunkText } from './outbound.js';
 import { startTypingLoop } from '../_shared/typing.js';
 import { isFocusQuery, placeholderTextForRoute } from '../_shared/placeholder.js';
+import { startPresence, type PresenceSession } from '../_shared/presence.js';
+import { telegramPresenceAdapter } from './presence-adapter.js';
 import { downloadMedia, saveMediaToDisk } from './media.js';
 import { transcribeVoiceNote } from './transcribe.js';
 import { setMessageReaction } from './client.js';
@@ -359,6 +361,18 @@ async function dispatchOrchestrated(
 		resolvePending(conversationKey, 'unrelated');
 	}
 
+	// ADR-028 Phase 1 — start the presence session NOW (after pending-
+	// proposal early returns, before the slow orchestrator LLM call) so
+	// the user sees the 🟡 bubble within ~1s of sending. The same session
+	// covers both the orchestrator-v2 path AND the fallbackToVaultChat
+	// fallback — we pass it in below.
+	const presence = startPresence(telegramPresenceAdapter(envelope.chatJid, config.delivery));
+	try {
+	await presence.bubble('vault-chat', {
+		isFocusQuery: isFocusQuery(workingBody),
+		hasMedia: !!envelope.media,
+	});
+
 	// 2. Run orchestrator-v2.
 	const ctx = getConversationContext(conversationKey, { jid: envelope.chatJid });
 	let orch: Awaited<ReturnType<typeof decideV2>>;
@@ -425,7 +439,7 @@ async function dispatchOrchestrated(
 		}
 	} catch (err) {
 		console.warn(`[telegram] decideV2 threw: ${(err as Error).message}`);
-		await fallbackToVaultChat(envelope, workingBody, conversationKey, config, transcriptionBuffer);
+		await fallbackToVaultChat(envelope, workingBody, conversationKey, config, transcriptionBuffer, presence);
 		return;
 	}
 
@@ -438,6 +452,9 @@ async function dispatchOrchestrated(
 		);
 
 		if (out.kind === 'image') {
+			// Morph the bubble to a brief "generated" then send the media
+			// as a separate Telegram message (sendMedia doesn't edit).
+			await presence.morph('🟡 Image generated — sending…');
 			if (out.text && out.text.trim()) {
 				await sendText(envelope.chatJid, out.text, config.delivery);
 			}
@@ -456,6 +473,10 @@ async function dispatchOrchestrated(
 		}
 
 		if (out.kind === 'dispatch') {
+			// Morph the bubble into the dispatch ack so the user sees the
+			// same bubble morph from "🟡 Looking…" → "On it — running *X*…".
+			const ackText = `On it — running *${out.agentId}*. I'll send the summary here when it's ready (reply *cancel* to stop).`;
+			await presence.morph(ackText);
 			const agentContext = buildAgentContextBrief(ctx);
 			runInBackground({
 				chatId: envelope.chatJid,
@@ -470,10 +491,12 @@ async function dispatchOrchestrated(
 		}
 
 		if (out.kind === 'proposal') {
-			// The orchestrator already wrote `setPending` via its tool exec;
-			// re-rendering with buttons here means we don't need to touch
-			// the orchestrator-v2 tool surface. Look up the live row to
-			// recover the structured fields the keyboard handler needs.
+			// Proposal needs an inline keyboard that the presence layer's
+			// `finalize` (text-only edit) can't carry. Morph the bubble to
+			// a brief lead-in, then send the proposal+keyboard as a fresh
+			// message. Two messages on this path — acceptable for v0;
+			// future polish: extend edit() to carry reply_markup.
+			await presence.morph('🟡 Preparing a proposal…');
 			const proposal = getPending(conversationKey);
 			if (proposal) {
 				saveTurn(conversationKey, 'assistant', formatProposal(proposal), turnNow + 1);
@@ -498,25 +521,35 @@ async function dispatchOrchestrated(
 
 		// kind: 'text' | 'error' — already-formatted text payload.
 		// ADR-014: when a youtubeFetch turn produced a summary, attach a
-		// follow-up keyboard (Save / Full transcript / Skip). The
-		// orchestrator-v2 only sets `youtubeContext` on `kind: 'text'`, not
-		// `error`, so the type narrowing falls out naturally.
+		// follow-up keyboard (Save / Full transcript / Skip).
 		const ytCtx = out.kind === 'text' ? out.youtubeContext : undefined;
 		saveTurn(conversationKey, 'assistant', out.text, turnNow + 1);
-		const sendResult = await sendText(envelope.chatJid, out.text, config.delivery, {
-			replyMarkup: ytCtx ? buildYoutubeKeyboard(conversationKey) : undefined,
-		});
-		if (ytCtx && sendResult.ok && sendResult.messageIds.length > 0) {
-			const last = sendResult.messageIds[sendResult.messageIds.length - 1];
-			rememberYoutubeButtons({
-				conversationKey,
-				chatJid: envelope.chatJid,
-				senderId: envelope.senderNumber,
-				messageId: last,
-				videoUrl: ytCtx.videoUrl,
-				title: ytCtx.title,
-				summary: ytCtx.summary,
+		if (ytCtx) {
+			// YouTube turns need the keyboard, which `edit` can't attach.
+			// Morph the bubble to brief lead-in, then send fresh with kb.
+			await presence.morph('🟡 Composing summary…');
+			const sendResult = await sendText(envelope.chatJid, out.text, config.delivery, {
+				replyMarkup: buildYoutubeKeyboard(conversationKey),
 			});
+			if (sendResult.ok && sendResult.messageIds.length > 0) {
+				const last = sendResult.messageIds[sendResult.messageIds.length - 1];
+				rememberYoutubeButtons({
+					conversationKey,
+					chatJid: envelope.chatJid,
+					senderId: envelope.senderNumber,
+					messageId: last,
+					videoUrl: ytCtx.videoUrl,
+					title: ytCtx.title,
+					summary: ytCtx.summary,
+				});
+			}
+		} else {
+			// Plain text / error — edit the bubble in place; fall back to a
+			// fresh send if the edit fails.
+			const edited = await presence.finalize(out.text);
+			if (!edited) {
+				await sendText(envelope.chatJid, out.text, config.delivery);
+			}
 		}
 		return;
 	}
@@ -526,8 +559,12 @@ async function dispatchOrchestrated(
 	}
 
 	// 3. Fall through to lexical vault-chat — orchestrator abstained or
-	//    didn't produce a usable v2 output.
-	await fallbackToVaultChat(envelope, workingBody, conversationKey, config, transcriptionBuffer);
+	//    didn't produce a usable v2 output. Same presence session covers
+	//    the fallback's slow LLM call.
+	await fallbackToVaultChat(envelope, workingBody, conversationKey, config, transcriptionBuffer, presence);
+	} finally {
+		presence.stop();
+	}
 }
 
 async function fallbackToVaultChat(
@@ -536,6 +573,7 @@ async function fallbackToVaultChat(
 	conversationKey: string,
 	config: TelegramChannelConfig,
 	_transcriptionBuffer: Buffer | undefined,
+	presence: PresenceSession,
 ): Promise<void> {
 	const userText = workingBody || '(empty message)';
 	// Per ADR-023 Phase 1: log the abstain → vault-chat fallback as a
@@ -571,66 +609,41 @@ async function fallbackToVaultChat(
 			);
 		}
 	}
-	// Per ADR-022 Layer B: send a placeholder bubble before the slow LLM
-	// call so we can edit it in place when the answer is ready (one bubble
-	// per turn). Placeholder text picks up focus-query / multimodal hints
-	// from the message body. Best-effort: a failed placeholder send falls
-	// through to a normal sendText below.
-	const placeholderText = placeholderTextForRoute('vault-chat', {
-		isFocusQuery: isFocusQuery(userText),
-		hasMedia: chatMedia !== undefined,
-	});
-	const sentPlaceholder = await sendText(envelope.chatJid, placeholderText, config.delivery);
-	const placeholderId =
-		sentPlaceholder.ok && sentPlaceholder.messageIds.length > 0
-			? sentPlaceholder.messageIds[0]
-			: null;
-
+	// ADR-028 Phase 1 — presence session was started in dispatchOrchestrated
+	// before decideV2; its bubble is still on screen. Run the slow LLM call
+	// then edit the bubble in place via presence.finalize. On error,
+	// presence.finalizeError morphs the bubble into the error text.
 	try {
 		const result = await dispatchVaultChat(userText, conversationKey, chatMedia);
 		const replyText = result.text || '(no reply)';
-		if (placeholderId !== null && replyText !== '(no reply)') {
-			const chunks = chunkText(
-				replyText,
-				config.delivery.textChunkLimit,
-				config.delivery.chunkMode,
-			);
-			if (chunks.length > 0) {
-				const editResult = await editText(
-					envelope.chatJid,
-					placeholderId,
-					chunks[0],
-					config.delivery.parseMode,
-				);
-				if (editResult.ok) {
-					for (let i = 1; i < chunks.length; i++) {
-						await sendText(envelope.chatJid, chunks[i], config.delivery);
-					}
-				} else {
-					await sendText(envelope.chatJid, replyText, config.delivery);
-				}
-			} else {
-				await sendText(envelope.chatJid, replyText, config.delivery);
+		if (replyText === '(no reply)') {
+			await sendText(envelope.chatJid, replyText, config.delivery);
+			return;
+		}
+		const chunks = chunkText(
+			replyText,
+			config.delivery.textChunkLimit,
+			config.delivery.chunkMode,
+		);
+		if (chunks.length === 0) {
+			await sendText(envelope.chatJid, replyText, config.delivery);
+			return;
+		}
+		const edited = await presence.finalize(chunks[0]);
+		if (edited) {
+			// First chunk landed via edit; send remaining chunks fresh.
+			for (let i = 1; i < chunks.length; i++) {
+				await sendText(envelope.chatJid, chunks[i], config.delivery);
 			}
 		} else {
+			// Edit failed (no bubble / edits disabled) — send the full reply
+			// fresh so the user always gets the answer.
 			await sendText(envelope.chatJid, replyText, config.delivery);
 		}
 	} catch (err) {
 		const message = `Sorry, I hit an error: ${(err as Error).message}`;
-		// On error: edit the placeholder bubble (if any) to the error so
-		// the chat doesn't accumulate a stale "🟡 …" bubble next to the
-		// fresh error.
-		if (placeholderId !== null) {
-			const ed = await editText(
-				envelope.chatJid,
-				placeholderId,
-				message,
-				config.delivery.parseMode,
-			);
-			if (!ed.ok) {
-				await sendText(envelope.chatJid, message, config.delivery);
-			}
-		} else {
+		const edited = await presence.finalizeError(message);
+		if (!edited) {
 			await sendText(envelope.chatJid, message, config.delivery);
 		}
 	}
