@@ -170,7 +170,18 @@ Critical disambiguation (study these — they are exactly the cases that have mi
 - "what's new in my drafts" → brain-recent (explicit personal scope)
 - "show me what I wrote yesterday" → brain-recent (explicit personal + recency)
 
-Heuristic: if the user did NOT use a possessive pronoun (my/I) or an explicit vault verb (save/find/search/look up + personal scope), default to vault-chat. "I want to know about X" reads as retrieval to a generic LLM but in this app it means topical curiosity → vault-chat.
+EMAIL INBOX DISAMBIGUATION (critical — production misroute 2026-05-12):
+"inbox" in this user's vocabulary almost always means the EMAIL inbox (IMAP-synced mail), NOT the vault's \`inbox/\` quick-capture folder. The vault has an unrelated folder also called \`inbox/\`, but that's an internal concept the user never names directly. ALL email queries route to vault-chat — the downstream orchestrator has dedicated tools (\`inbox-list-queued\`, \`inbox-drill-down\`, \`inbox-read-body\`) that handle the email stream.
+- "what's in my inbox" → vault-chat (EMAIL query — orchestrator handles via inbox-list-queued)
+- "what's queued in my inbox" → vault-chat (EMAIL query, "queued" is email-filter state)
+- "any new emails" → vault-chat (EMAIL query)
+- "what came in today" → vault-chat (EMAIL query, even though "today" sounds recency-flavoured)
+- "show me my bank alerts" / "any receipts from yesterday" → vault-chat (EMAIL category query)
+- "tell me about msg 33602" / bare "33602" → vault-chat (EMAIL drill-down by message id)
+- "what's in my email" → vault-chat (EMAIL query)
+The word "inbox" without an explicit "note" / "vault" / "folder" qualifier always means EMAIL, NEVER brain-recent.
+
+Heuristic: if the user did NOT use a possessive pronoun (my/I) or an explicit vault verb (save/find/search/look up + personal scope), default to vault-chat. "I want to know about X" reads as retrieval to a generic LLM but in this app it means topical curiosity → vault-chat. Email-inbox queries (see above) ALWAYS route to vault-chat regardless of possessive markers.
 
 Confidence calibration:
 - 0.9–1.0: unambiguous personal-note retrieval ("find my notes about heartbeat", "show me my recent decisions").
