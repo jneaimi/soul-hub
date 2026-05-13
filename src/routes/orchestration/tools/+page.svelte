@@ -13,11 +13,23 @@
 		description: string;
 	}
 
+	type LatencyClass = 'fast' | 'slow' | 'auto';
+
+	interface LatencyInfo {
+		explicit_class: LatencyClass;
+		samples: number;
+		p95_ms: number | null;
+		suggested_class: 'fast' | 'slow' | null;
+		suggestion_disagrees: boolean;
+	}
+
 	interface ToolListing {
 		name: string;
 		category: Category;
 		llm_description: string;
 		ui_description: string;
+		latencyClass?: LatencyClass;
+		latency?: LatencyInfo;
 		has_config?: { settingsKey: string; label: string };
 		examples?: { user: string; toolArgs: string }[];
 		last_invoked_at?: number;
@@ -59,6 +71,18 @@
 		skill: 'bg-amber-500',
 		reply: 'bg-slate-400',
 	};
+
+	const LATENCY_BADGE: Record<LatencyClass, string> = {
+		fast: 'bg-emerald-500/15 text-emerald-300',
+		slow: 'bg-amber-500/15 text-amber-300',
+		auto: 'bg-slate-500/20 text-slate-300',
+	};
+
+	function fmtLatencyMs(ms: number | null): string {
+		if (ms === null) return '—';
+		if (ms < 1000) return `${ms}ms`;
+		return `${(ms / 1000).toFixed(1)}s`;
+	}
 
 	async function load() {
 		try {
@@ -219,6 +243,27 @@
 										{#if t.has_config}
 											<span class="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-300">configurable</span>
 										{/if}
+										{#if t.latency}
+											{@const cls = t.latency.explicit_class}
+											<span
+												class="text-[10px] px-1.5 py-0.5 rounded {LATENCY_BADGE[cls]}"
+												title={cls === 'slow'
+													? 'Slow tool — background-dispatched via runSkillInBackground'
+													: cls === 'auto'
+														? 'Unclassified — runs inline; suggestion surfaces after 20 samples'
+														: 'Fast tool — runs inline inside the orchestrator turn'}
+											>
+												{cls}
+											</span>
+											{#if t.latency.suggestion_disagrees && t.latency.suggested_class}
+												<span
+													class="text-[10px] px-1.5 py-0.5 rounded bg-orange-500/15 text-orange-300"
+													title={`Rolling p95 ${fmtLatencyMs(t.latency.p95_ms)} over ${t.latency.samples} samples — operator-approval needed to flip the manifest`}
+												>
+													→ suggest {t.latency.suggested_class}
+												</span>
+											{/if}
+										{/if}
 									</div>
 									<p class="text-xs text-hub-muted mt-1">{t.ui_description}</p>
 									<div class="text-[11px] text-hub-muted mt-1 flex gap-3">
@@ -250,6 +295,40 @@
 										</div>
 										<p class="text-xs text-hub-text whitespace-pre-wrap">{t.llm_description}</p>
 									</div>
+									{#if t.latency}
+										<div>
+											<div class="text-[10px] uppercase tracking-wide text-hub-muted mb-1">
+												Latency (ADR-030)
+											</div>
+											<div class="text-xs text-hub-text space-y-0.5">
+												<div>
+													Manifest class:
+													<span class="font-mono">{t.latency.explicit_class}</span>
+												</div>
+												<div class="text-hub-muted">
+													Rolling p95: <span class="font-mono">{fmtLatencyMs(t.latency.p95_ms)}</span>
+													over <span class="font-mono">{t.latency.samples}</span> sample{t.latency.samples === 1 ? '' : 's'}
+													{#if t.latency.samples < 20}
+														<span class="text-[10px]">(need 20 for a suggestion)</span>
+													{/if}
+												</div>
+												{#if t.latency.suggested_class}
+													<div class="text-orange-300">
+														Suggestion:
+														<span class="font-mono">{t.latency.suggested_class}</span>
+														{#if t.latency.suggestion_disagrees}
+															— disagrees with the manifest. Flip
+															<code class="font-mono">latencyClass</code> in
+															<code class="font-mono">tools/manifest.ts</code>
+															to apply.
+														{:else}
+															— matches the manifest. Nothing to change.
+														{/if}
+													</div>
+												{/if}
+											</div>
+										</div>
+									{/if}
 									{#if t.has_config}
 										<div>
 											<div class="text-[10px] uppercase tracking-wide text-hub-muted mb-1">

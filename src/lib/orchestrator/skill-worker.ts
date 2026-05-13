@@ -14,26 +14,37 @@
  *      sees this and the channel handler skips its final reply send.
  *   3. This worker awaits `executeFn()`, formats the structured result
  *      via `formatFn`, and edits the bubble's `progressMessageId`
- *      in place. If the body exceeds the edit cap, the bubble gets a
- *      short status line and the full body lands as a follow-up.
+ *      in place via the channel-agnostic `deliver` adapter. If the
+ *      body exceeds the edit cap, the bubble gets a short status line
+ *      and the full body lands as a follow-up.
  *
  * Cancellation: registers in `active-runs` keyed by a synthetic runId
  * (`skill:<toolName>:<rand>`), so `cancelByJid(jid)` reaches it.
  *
- * v1 scope: WhatsApp only. Telegram callers don't populate
- * `slowDispatch.worker` — slow tools degrade to inline on that channel.
+ * v2 scope (2026-05-13): WhatsApp + Telegram. Both channels build a
+ * `SkillDeliveryAdapter` from their respective transport — the worker
+ * is channel-agnostic and only cares about `send`/`edit`.
  */
 
-import { workerSend } from '$lib/channels/whatsapp/worker-client.js';
-import type { WhatsAppWorkerConfig } from '$lib/channels/whatsapp/types.js';
 import { saveTurn } from '$lib/vault-chat/history.js';
 import { setActive, clearActive } from './active-runs.js';
 
+/** Minimal transport contract the skill worker needs: send a fresh
+ *  message, or edit a previously-sent one in place. Subset of
+ *  `PresenceAdapter` (no typingTick) so callers can plug in either the
+ *  presence adapter directly or a lighter-weight closure. */
+export interface SkillDeliveryAdapter {
+	channel: 'whatsapp' | 'telegram';
+	send: (text: string) => Promise<{ ok: boolean; messageId?: string; error?: string }>;
+	edit: (messageId: string, text: string) => Promise<{ ok: boolean; error?: string }>;
+}
+
 export interface RunSkillInBackgroundArgs {
 	jid: string;
-	channel: 'whatsapp' | 'telegram';
 	toolName: string;
-	worker?: unknown;
+	/** Channel-agnostic delivery transport. Both WhatsApp and Telegram
+	 *  callsites build this from their presence adapter. */
+	deliver: SkillDeliveryAdapter;
 	/** Channel-side bubble id from the presence layer — edited in place
 	 *  with the formatted result. Omit to send a fresh message instead. */
 	progressMessageId?: string;
@@ -58,27 +69,14 @@ const MAX_EDIT_BODY_CHARS = 1800;
 export function runSkillInBackground(args: RunSkillInBackgroundArgs): void {
 	const {
 		jid,
-		channel,
 		toolName,
-		worker,
+		deliver,
 		progressMessageId,
 		conversationKey,
 		executeFn,
 		formatFn,
 		timeoutMs,
 	} = args;
-
-	if (channel !== 'whatsapp') {
-		console.warn(
-			`[skill-worker] slow dispatch only supports WhatsApp in v1; ${toolName} on ${channel} degraded to inline upstream`,
-		);
-		return;
-	}
-	if (!worker || typeof worker !== 'object') {
-		console.warn(`[skill-worker] missing worker handle for ${toolName}; aborting background dispatch`);
-		return;
-	}
-	const waWorker = worker as WhatsAppWorkerConfig;
 
 	const controller = new AbortController();
 	const startedAt = Date.now();
@@ -91,14 +89,14 @@ export function runSkillInBackground(args: RunSkillInBackgroundArgs): void {
 		try {
 			const result = await executeFn();
 			if (controller.signal.aborted) {
-				await deliverEdit(waWorker, jid, progressMessageId, `🚫 *${toolName}* — cancelled.`);
+				await deliverText(deliver, progressMessageId, `🚫 *${toolName}* — cancelled.`);
 				return;
 			}
 			const body = formatFn(result);
 			const finalText = body.length > MAX_EDIT_BODY_CHARS
 				? body.slice(0, MAX_EDIT_BODY_CHARS - 16) + '\n…(truncated)'
 				: body;
-			await deliverEdit(waWorker, jid, progressMessageId, finalText);
+			await deliverText(deliver, progressMessageId, finalText);
 
 			if (conversationKey) {
 				try {
@@ -114,7 +112,7 @@ export function runSkillInBackground(args: RunSkillInBackgroundArgs): void {
 			const message = aborted
 				? `🚫 *${toolName}* — cancelled or timed out.`
 				: `⚠️ *${toolName}* — ${(err as Error).message}`;
-			await deliverEdit(waWorker, jid, progressMessageId, message);
+			await deliverText(deliver, progressMessageId, message);
 		} finally {
 			clearTimeout(timeoutHandle);
 			clearActive(runId);
@@ -122,21 +120,26 @@ export function runSkillInBackground(args: RunSkillInBackgroundArgs): void {
 	})();
 }
 
-async function deliverEdit(
-	worker: WhatsAppWorkerConfig,
-	jid: string,
+async function deliverText(
+	deliver: SkillDeliveryAdapter,
 	editId: string | undefined,
 	text: string,
 ): Promise<void> {
 	try {
 		if (editId) {
-			await workerSend(worker, { to: jid, editId, text });
+			const result = await deliver.edit(editId, text);
+			if (!result.ok) {
+				console.warn(
+					`[skill-worker/${deliver.channel}] edit failed (${result.error ?? 'unknown'}); falling back to fresh send`,
+				);
+				await deliver.send(text);
+			}
 		} else {
-			await workerSend(worker, { to: jid, text });
+			await deliver.send(text);
 		}
 	} catch (err) {
 		console.error(
-			`[skill-worker] settle send failed for jid=${jid} editId=${editId ?? 'none'}: ${(err as Error).message}`,
+			`[skill-worker/${deliver.channel}] settle send failed editId=${editId ?? 'none'}: ${(err as Error).message}`,
 		);
 	}
 }

@@ -374,12 +374,17 @@ async function dispatchOrchestrated(
 	// the user sees the 🟡 bubble within ~1s of sending. The same session
 	// covers both the orchestrator-v2 path AND the fallbackToVaultChat
 	// fallback — we pass it in below.
-	const presence = startPresence(telegramPresenceAdapter(envelope.chatJid, config.delivery));
+	const presenceAdapter = telegramPresenceAdapter(envelope.chatJid, config.delivery);
+	const presence = startPresence(presenceAdapter);
 	try {
 	await presence.bubble('vault-chat', {
 		isFocusQuery: isFocusQuery(workingBody),
 		hasMedia: !!envelope.media,
 	});
+
+	// ADR-030 v2 — capture bubble id for slow-tool dispatch (background
+	// worker edits the SAME bubble when the slow tool completes).
+	const bubbleIdForSlowDispatch = presence.state().bubbleId;
 
 	// 2. Run orchestrator-v2.
 	const ctx = getConversationContext(conversationKey, { jid: envelope.chatJid });
@@ -403,6 +408,16 @@ async function dispatchOrchestrated(
 			channel: 'telegram',
 			account: 'personal',
 			timezone: 'Asia/Dubai',
+			slowDispatch: {
+				jid: envelope.chatJid,
+				channel: 'telegram',
+				progressMessageId: bubbleIdForSlowDispatch,
+				deliver: {
+					channel: 'telegram',
+					send: (text) => presenceAdapter.send(text),
+					edit: (id, text) => presenceAdapter.edit(id, text),
+				},
+			},
 			imgConfig: imgCfg
 				? {
 						enabled: imgCfg.enabled,
@@ -513,13 +528,10 @@ async function dispatchOrchestrated(
 		}
 
 		if (out.kind === 'slow-dispatched') {
-			// ADR-030 — Telegram doesn't pass `slowDispatch` deps in v1, so a
-			// slow-dispatched V2Output shouldn't appear on this channel.
-			// Defensive: if it ever does (future channel adapter, manual
-			// orchestrator call), surface the ack as the final reply so the
-			// user sees *something*; the background worker won't fire because
-			// the upstream tool's `deps.slowDispatch.channel` check excluded
-			// non-whatsapp dispatches.
+			// ADR-030 v2 — Telegram now wires the slow-dispatch adapter, so
+			// the background worker is already running. Morph the bubble to
+			// the ack; the worker will edit the same bubble with the final
+			// result when the slow tool completes.
 			await presence.morph(out.ack);
 			saveTurn(conversationKey, 'assistant', out.ack, turnNow + 1);
 			return;

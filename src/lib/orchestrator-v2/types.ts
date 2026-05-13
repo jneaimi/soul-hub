@@ -67,15 +67,14 @@ export interface DecideV2Options {
 	/** ADR-030 — when set, slow tools (per the manifest's `latencyClass`)
 	 *  short-circuit to background dispatch instead of awaiting inline.
 	 *  Channel handlers populate this with the presence bubble's
-	 *  messageId and the WhatsApp worker handle so the slow-tool worker
-	 *  can edit the same bubble when the work completes. WhatsApp only
-	 *  in v1; Telegram leaves this undefined → slow tools degrade to
-	 *  inline (and the user sees a long "🟡 …" wait). */
+	 *  messageId and a channel-agnostic `deliver` adapter so the
+	 *  background worker can edit the same bubble when the work
+	 *  completes. v2 (2026-05-13) supports WhatsApp + Telegram. */
 	slowDispatch?: {
 		jid: string;
 		channel: 'whatsapp' | 'telegram';
 		progressMessageId?: string;
-		worker?: unknown;
+		deliver?: import('../orchestrator/skill-worker.js').SkillDeliveryAdapter;
 	};
 }
 

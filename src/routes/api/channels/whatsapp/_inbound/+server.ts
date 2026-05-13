@@ -556,7 +556,8 @@ export const POST: RequestHandler = async ({ request }) => {
 			// the user sees feedback within ~1s of inbound. Same session
 			// covers BOTH the orchestrator-v2 path AND the dispatchVaultChat
 			// fallback below; the outer `finally` clears the typing loop.
-			presence = startPresence(whatsappPresenceAdapter(cfg.worker, envelope.chatJid));
+			const presenceAdapter = whatsappPresenceAdapter(cfg.worker, envelope.chatJid);
+			presence = startPresence(presenceAdapter);
 			await presence.bubble('vault-chat', {
 				isFocusQuery: isFocusQuery(workingBody),
 				hasMedia: !!envelope.media,
@@ -581,7 +582,11 @@ export const POST: RequestHandler = async ({ request }) => {
 					jid: envelope.chatJid,
 					channel: 'whatsapp',
 					progressMessageId: bubbleIdForSlowDispatch,
-					worker: cfg.worker,
+					deliver: {
+						channel: 'whatsapp',
+						send: (text) => presenceAdapter.send(text),
+						edit: (id, text) => presenceAdapter.edit(id, text),
+					},
 				},
 				imgConfig: {
 					enabled: cfg.img.enabled,

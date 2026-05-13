@@ -45,10 +45,14 @@ export interface ToolExample {
  *          dispatch (`runSkillInBackground`); the chat bubble gets an
  *          immediate ack and the formatted result lands as an edit when
  *          the background worker completes. Reuses the agent-dispatch
- *          message-id holding pattern. WhatsApp only in v1 — Telegram
- *          falls back to inline. See [[adr-030-fast-vs-slow-skill-dispatch-budget]].
+ *          message-id holding pattern. v2 supports WhatsApp + Telegram.
+ *  `auto`  Unclassified. Routes inline (same as `fast`) but the rolling
+ *          latency buffer surfaces a suggestion on /orchestration/tools
+ *          once ≥20 samples land. Operator approves the manifest flip
+ *          manually — the auto signal is informational, never applied.
+ *          See [[adr-030-fast-vs-slow-skill-dispatch-budget]].
  */
-export type LatencyClass = 'fast' | 'slow';
+export type LatencyClass = 'fast' | 'slow' | 'auto';
 
 export interface ToolManifest {
 	/** Tool name as registered in `buildOrchestratorTools()`. Matches the
@@ -74,7 +78,10 @@ export interface ToolManifest {
 	examples?: ToolExample[];
 }
 
-/** Lookup the static latency class for a tool. Returns `'fast'` by default. */
+/** Lookup the static latency class for a tool. Returns `'fast'` by default
+ *  (preserving the v1 routing contract — absent === fast). The dispatcher
+ *  treats `'auto'` as `'fast'` for routing; the auto state only affects
+ *  the UI badge and the suggestion column. */
 export function getLatencyClass(toolName: string): LatencyClass {
 	const entry = TOOL_MANIFESTS.find((t) => t.name === toolName);
 	return entry?.latencyClass ?? 'fast';

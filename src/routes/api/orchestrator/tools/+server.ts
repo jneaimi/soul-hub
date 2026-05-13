@@ -18,6 +18,7 @@
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { listTools, listRecentToolCalls } from '$lib/orchestrator-v2/tools/registry.js';
+import { getLatencyStats } from '$lib/orchestrator-v2/tools/latency-tracker.js';
 import { listChatSkills } from '$lib/skills/index.js';
 import { listAgents } from '$lib/agents/store.js';
 
@@ -38,9 +39,26 @@ export const GET: RequestHandler = async () => {
 		}));
 
 	const tools = baseTools.map((t) => {
-		if (t.name === 'invokeSkill') return { ...t, live_skills: liveSkills };
-		if (t.name === 'dispatchAgent') return { ...t, live_agents: liveAgents };
-		return t;
+		// ADR-030 v2 — surface the rolling latency stats + auto-class
+		// suggestion alongside the manifest's explicit class. The page
+		// renders a small badge per tool and a "→ suggest slow (p95
+		// 8.2s)" hint when the suggestion disagrees with the manifest.
+		const stats = getLatencyStats(t.name);
+		const explicitClass = t.latencyClass ?? 'auto';
+		const enriched = {
+			...t,
+			latency: {
+				explicit_class: explicitClass,
+				samples: stats.samples,
+				p95_ms: stats.p95Ms,
+				suggested_class: stats.suggestedClass,
+				suggestion_disagrees:
+					stats.suggestedClass !== null && stats.suggestedClass !== explicitClass,
+			},
+		};
+		if (enriched.name === 'invokeSkill') return { ...enriched, live_skills: liveSkills };
+		if (enriched.name === 'dispatchAgent') return { ...enriched, live_agents: liveAgents };
+		return enriched;
 	});
 
 	return json({

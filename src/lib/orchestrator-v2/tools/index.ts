@@ -33,6 +33,7 @@ import { formatTiktokForChat } from '../../tiktok/format-for-chat.js';
 import { dispatchVaultSave } from '../../vault-save/index.js';
 import { fetchPage } from '../../fetch-page/index.js';
 import { recordToolCall, assertManifestParity } from './registry.js';
+import { withLatencyTracking } from './latency-tracker.js';
 import { setPending, formatProposal } from '../../orchestrator/pending-proposals.js';
 import {
 	listMessages,
@@ -143,9 +144,11 @@ export interface ToolDeps {
 }
 
 /** ADR-030 — runtime deps the slow-tool background worker needs to deliver
- *  a result back to the chat. WhatsApp-only in v1; channel handlers that
- *  can't satisfy this contract leave it undefined and slow tools degrade
- *  to inline execution. */
+ *  a result back to the chat. v2 supports both channels via a
+ *  `SkillDeliveryAdapter`; channel handlers build the adapter from their
+ *  respective send/edit primitives. Channel handlers that can't satisfy
+ *  this contract leave it undefined and slow tools degrade to inline
+ *  execution (REPL, UI test routes). */
 export interface SlowDispatchDeps {
 	jid: string;
 	channel: 'whatsapp' | 'telegram';
@@ -153,11 +156,9 @@ export interface SlowDispatchDeps {
 	 *  with the final formatted result. Undefined → worker sends a fresh
 	 *  message instead. */
 	progressMessageId?: string;
-	/** Opaque worker handle — WhatsAppWorkerConfig today. Typed as
-	 *  `unknown` here so this file doesn't import the channel module
-	 *  directly. The skill-worker dynamic-imports `worker-client` and
-	 *  narrows on `channel`. */
-	worker?: unknown;
+	/** Channel-agnostic transport. WhatsApp + Telegram each build this
+	 *  from their presence adapter (send + edit). */
+	deliver?: import('../../orchestrator/skill-worker.js').SkillDeliveryAdapter;
 }
 
 /** Tagged-union return type for all tool `execute()` bodies. decide-v2's
@@ -282,7 +283,9 @@ export type ToolResult =
 export function buildOrchestratorTools(deps: ToolDeps) {
 	const tools = buildOrchestratorToolsImpl(deps);
 	assertManifestParity(Object.keys(tools));
-	return tools;
+	// ADR-030 v2 — wrap each tool's execute() so the rolling per-tool
+	// latency buffer powers the `auto` suggestion on /orchestration/tools.
+	return withLatencyTracking(tools);
 }
 
 function buildOrchestratorToolsImpl(deps: ToolDeps) {
@@ -539,21 +542,21 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 				logToolCall('youtubeFetch', { url, mode });
 
 				// ADR-030 — slow-dispatch path. When the caller wired
-				// `deps.slowDispatch` AND the requested mode hits Gemini
-				// (everything except `metadata`), fire the actual fetch in a
-				// background worker that edits the channel's presence bubble
-				// when it completes. The inline path stays available for
-				// metadata-only saves (instant) and for callers that didn't
-				// wire slow-dispatch (REPL, UI test routes).
+				// `deps.slowDispatch.deliver` AND the requested mode hits
+				// Gemini (everything except `metadata`), fire the actual
+				// fetch in a background worker that edits the channel's
+				// presence bubble when it completes. Channel-agnostic since
+				// v2 — both WhatsApp and Telegram wire `deliver`. The
+				// inline path stays for metadata-only saves and callers
+				// that didn't wire slow-dispatch (REPL, UI test routes).
 				const isSlowCall = mode !== 'metadata';
-				if (isSlowCall && deps.slowDispatch && deps.slowDispatch.channel === 'whatsapp') {
-					const { jid, channel, progressMessageId, worker } = deps.slowDispatch;
+				if (isSlowCall && deps.slowDispatch?.deliver) {
+					const { jid, progressMessageId, deliver } = deps.slowDispatch;
 					const conversationKey = deps.conversationKey;
 					runSkillInBackground({
 						jid,
-						channel,
 						toolName: 'youtubeFetch',
-						worker,
+						deliver,
 						progressMessageId,
 						conversationKey,
 						executeFn: () => runYoutubeFetchInline({ url, mode, deps }),
@@ -600,24 +603,21 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 						execute: async ({ url, mode }): Promise<ToolResult> => {
 							logToolCall('tiktokFetch', { url, mode });
 
-							// ADR-030 v2 — slow-dispatch path. Mirrors youtubeFetch
-							// above. `metadata` is instant (no whisper, no Gemini)
-							// so it stays inline; `transcript` / `summary` / `full`
-							// fire 7-25s of compute and get dispatched in a
+							// ADR-030 v2 — slow-dispatch path. Mirrors youtubeFetch.
+							// `metadata` is instant (no whisper, no Gemini) so
+							// it stays inline; `transcript` / `summary` / `full`
+							// run 7-25s of compute and get dispatched in a
 							// background worker that edits the presence bubble
-							// when complete. The inline path stays available for
-							// metadata-only saves and for callers that didn't
-							// wire slow-dispatch (REPL, UI test routes, Telegram
-							// until v3 wires it).
+							// when complete. Channel-agnostic — both channels
+							// wire `deliver`.
 							const isSlowCall = mode !== 'metadata';
-							if (isSlowCall && deps.slowDispatch && deps.slowDispatch.channel === 'whatsapp') {
-								const { jid, channel, progressMessageId, worker } = deps.slowDispatch;
+							if (isSlowCall && deps.slowDispatch?.deliver) {
+								const { jid, progressMessageId, deliver } = deps.slowDispatch;
 								const conversationKey = deps.conversationKey;
 								runSkillInBackground({
 									jid,
-									channel,
 									toolName: 'tiktokFetch',
-									worker,
+									deliver,
 									progressMessageId,
 									conversationKey,
 									executeFn: () => runTiktokFetchInline({ url, mode, deps }),
