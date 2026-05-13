@@ -19,7 +19,7 @@
  * branch assignment.
  */
 
-import { ToolLoopAgent, stepCountIs, NoOutputGeneratedError } from 'ai';
+import { ToolLoopAgent, stepCountIs, NoOutputGeneratedError, type StopCondition } from 'ai';
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 
 import { listAgents } from '../agents/store.js';
@@ -48,6 +48,38 @@ import type {
  *  the branch from `pickBranchForKey()` instead. */
 const FIXED_MODEL_OVERRIDE = process.env.ORCHESTRATOR_V2_MODEL;
 const MAX_STEPS = 5;
+
+/** ADR-030 v2 — stop the agent loop the moment a slow tool dispatches.
+ *
+ *  Without this, the model sees `{kind:'slow-dispatched',ack:'🟡 …'}` as a
+ *  tool result, can't tell that the actual work is now running in a
+ *  background worker, and retries the same tool — observed live 2026-05-13
+ *  on a TikTok turn where the model fired tiktokFetch three times in a
+ *  row (each kicking off its own worker that delivered the formatted
+ *  result to the user — triple bubble), then ran out of steps before
+ *  ever calling vaultSave.
+ *
+ *  Firing this condition at the end of any step whose toolResults include
+ *  a `slow-dispatched` output ends the loop cleanly. The model never
+ *  composes a final text in that branch; buildV2Output finds the
+ *  slow-dispatched marker in the resolved steps and returns the ack so
+ *  the channel handler can morph the presence bubble. */
+const hasSlowDispatched: StopCondition<Record<string, never>> = ({ steps }) => {
+	const last = steps[steps.length - 1];
+	if (!last) return false;
+	for (const tr of last.toolResults ?? []) {
+		const output = (tr as { output?: unknown }).output;
+		if (
+			output &&
+			typeof output === 'object' &&
+			'kind' in output &&
+			(output as { kind?: string }).kind === 'slow-dispatched'
+		) {
+			return true;
+		}
+	}
+	return false;
+};
 // 100s — must accommodate the slowest tool, which is `youtubeFetch` Tier B
 // (Gemini multimodal video ingestion, 15-90s depending on length). The
 // previous 25s aborted youtube turns mid-Gemini-call and surfaced a generic
@@ -153,7 +185,7 @@ export async function decideV2(
 		model,
 		instructions: system,
 		tools,
-		stopWhen: stepCountIs(MAX_STEPS),
+		stopWhen: [stepCountIs(MAX_STEPS), hasSlowDispatched],
 	});
 
 	const messages = [

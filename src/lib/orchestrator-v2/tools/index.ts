@@ -562,7 +562,7 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 					return {
 						kind: 'slow-dispatched',
 						toolName: 'youtubeFetch',
-						ack: `🟡 Fetching YouTube video — I'll send the summary here in ~30s.`,
+						ack: `🟡 Fetching YouTube video — I'll send the summary here in ~30s. (If you wanted me to save it, ask again once the summary lands.)`,
 					};
 				}
 
@@ -626,7 +626,7 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 								return {
 									kind: 'slow-dispatched',
 									toolName: 'tiktokFetch',
-									ack: `🟡 Fetching that TikTok — I'll send the result here in ~30s.`,
+									ack: `🟡 Fetching that TikTok — I'll send the result here in ~30s. (If you wanted me to save it, ask again once the summary lands.)`,
 								};
 							}
 
