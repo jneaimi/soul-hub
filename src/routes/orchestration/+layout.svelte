@@ -9,6 +9,7 @@
 		{ href: '/orchestration/skills', label: 'Skills', matchPrefix: '/orchestration/skills' },
 		{ href: '/orchestration/tools', label: 'Tools', matchPrefix: '/orchestration/tools' },
 		{ href: '/orchestration/metrics', label: 'Metrics', matchPrefix: '/orchestration/metrics' },
+		{ href: '/orchestration/audit', label: 'Audit', matchPrefix: '/orchestration/audit' },
 	];
 
 	const path = $derived($page.url.pathname);
