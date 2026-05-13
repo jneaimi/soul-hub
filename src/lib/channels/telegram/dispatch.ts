@@ -37,6 +37,7 @@ import {
 import { getConversationContext, buildAgentContextBrief } from '../../conversation/index.js';
 import { dispatchWebSearch, formatWebSearchForChat } from '../../web-search/index.js';
 import { saveTurn } from '../../vault-chat/history.js';
+import { markMessageProcessed, recordAgentAction } from '../../inbox/index.js';
 import { checkAccess } from './access.js';
 import { resolveIntent } from './intent.js';
 import { sendText, sendMedia, sendTypingIndicator, editText, chunkText } from './outbound.js';
@@ -327,6 +328,35 @@ async function dispatchOrchestrated(
 		if (replyKind === 'confirm') {
 			resolvePending(conversationKey, 'confirm');
 			saveTurn(conversationKey, 'user', workingBody, turnNow);
+
+			// ADR-L3 §D7 Guardrail 1 — `inbox-mark-processed` proposals
+			// take the inbox path, not orchestratorDispatch. The audit row
+			// increments the trust-trainer counter.
+			if (pending.agentId === 'inbox-mark-processed') {
+				const messageId = Number.parseInt(pending.task, 10);
+				if (!Number.isFinite(messageId)) {
+					const text = `Internal error: the stored proposal had an invalid message id (${pending.task}). Ask me to list the inbox again and try once more.`;
+					saveTurn(conversationKey, 'assistant', text, turnNow + 1);
+					await sendText(envelope.chatJid, text, config.delivery);
+					return;
+				}
+				const ok = markMessageProcessed(messageId);
+				recordAgentAction({
+					tool: 'inbox-mark-processed',
+					messageId,
+					actor: 'orchestrator',
+					args: { messageId, confirmed: true },
+					result: { ok, source: 'proposal-confirm' },
+					conversationKey,
+				});
+				const text = ok
+					? `Message ${messageId} marked processed.`
+					: `Message ${messageId} couldn't be marked — it may have already been handled or is no longer queued.`;
+				saveTurn(conversationKey, 'assistant', text, turnNow + 1);
+				await sendText(envelope.chatJid, text, config.delivery);
+				return;
+			}
+
 			const ctx = getConversationContext(conversationKey, {
 				jid: envelope.chatJid,
 			});

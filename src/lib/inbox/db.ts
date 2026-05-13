@@ -1007,6 +1007,31 @@ export interface AgentActionInput {
 	conversationKey?: string | null;
 }
 
+/** Count successful `inbox-mark-processed` actions in the audit log. Used
+ *  by the L3 confirmation gate (ADR-L3 §D7 Guardrail 1) — until this count
+ *  reaches 50, the tool returns a proposal instead of executing directly.
+ *
+ *  Cumulative from agent_actions (not per-process). The ADR's "resets on
+ *  PM2 restart" phrasing is overridden by its own next sentence — "track
+ *  in agent_actions log" — which makes the durable tally load-bearing.
+ *  Operator forces the gate back on via `INBOX_MARK_PROCESSED_CONFIRM=always`. */
+export function countConfirmedMarkProcessed(): number {
+	try {
+		const db = getInboxDb();
+		const row = db
+			.prepare(
+				`SELECT COUNT(*) AS c FROM agent_actions
+				 WHERE tool = 'inbox-mark-processed'
+				   AND result LIKE '%"ok":true%'`,
+			)
+			.get() as { c: number };
+		return row.c;
+	} catch (err) {
+		console.warn('[inbox/agent-actions] count failed:', (err as Error).message);
+		return 0;
+	}
+}
+
 /** Append a row to the agent_actions audit log. Never throws — failures
  *  are logged and swallowed so a logging error can't break the calling
  *  tool's reply path. */

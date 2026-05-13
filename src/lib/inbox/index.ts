@@ -16,6 +16,7 @@ export {
 	rowToMessage,
 	// Layer 3 Stage 2 — structured extraction + agent audit log
 	getExtractedData, setExtractedData, recordAgentAction, listAgentActions,
+	countConfirmedMarkProcessed,
 	type MessageListOptions, type AgentActionInput, type AgentActionRow,
 } from './db.js';
 

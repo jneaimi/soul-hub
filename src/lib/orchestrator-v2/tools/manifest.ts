@@ -296,9 +296,10 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 		llm_description:
 			"Mark an inbox message as processed (agent has handled it). The message transitions queued → processed; it stays cached for 365 days as audit trail but stops appearing in queued listings. " +
 			"Use after summarizing, routing-to-vault, replying, or otherwise handling a message. " +
+			"CONFIRMATION GATE (ADR-L3 §D7 Guardrail 1): until the operator has confirmed 50 successful mark-processed calls (audit trail in `agent_actions`), OMIT `confirmed` (or set false) to PROPOSE the action — the user replies 'yes' to confirm. After 50 confirmed calls the gate lifts and the tool executes directly. The operator can also force the gate back on via `INBOX_MARK_PROCESSED_CONFIRM=always`. Set `confirmed=true` ONLY when the user explicitly confirmed a prior proposal in this turn's history OR used an unambiguous command verb ('mark N as done', 'archive N', 'process N'). " +
 			"PROVENANCE: `messageId` MUST be a REAL id returned by a prior `inbox-list-queued`, `inbox-read-body`, or `inbox-correct-classification` call in the SAME conversation. NEVER invent ids. If you don't have one from a prior tool result, call `inbox-list-queued` first to discover real ids. The tool returns an ERROR when the id doesn't exist — that error means you hallucinated; do NOT relay a fake 'success' to the user.",
 		ui_description:
-			'Mark a queued inbox message as processed. Agents call this after handling.',
+			'Mark a queued inbox message as processed. Gated by a 50-call confirmation trust-trainer (ADR-L3) — first 50 calls propose, then auto-confirm. Force-on via INBOX_MARK_PROCESSED_CONFIRM=always.',
 	},
 	{
 		name: 'inbox-apply-recommendation',

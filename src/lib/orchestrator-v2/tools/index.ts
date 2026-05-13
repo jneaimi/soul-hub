@@ -45,6 +45,7 @@ import {
 	getExtractedData,
 	setExtractedData,
 	recordAgentAction,
+	countConfirmedMarkProcessed,
 	extractTransactional,
 	inputFromMessage,
 	composeDrillDown,
@@ -995,17 +996,43 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 			description:
 				"Mark an inbox message as processed (agent has handled it). The message transitions queued → processed; it stays cached for 365 days as audit trail but stops appearing in queued listings. " +
 				"Use after summarizing, routing-to-vault, replying, or otherwise handling a message. " +
+				"CONFIRMATION GATE (ADR-L3 §D7 Guardrail 1): until the operator has confirmed 50 successful mark-processed calls (audit trail in `agent_actions`), OMIT `confirmed` (or set false) to PROPOSE the action — the user replies 'yes' to confirm. After 50 confirmed calls the gate lifts and the tool executes directly. The operator can also force the gate back on via `INBOX_MARK_PROCESSED_CONFIRM=always`. Set `confirmed=true` ONLY when the user explicitly confirmed a prior proposal in this turn's history OR used an unambiguous command verb ('mark N as done', 'archive N', 'process N'). " +
 				"PROVENANCE: `messageId` MUST be a REAL id returned by a prior `inbox-list-queued`, `inbox-read-body`, or `inbox-correct-classification` call in the SAME conversation. NEVER invent ids. If you don't have one from a prior tool result, call `inbox-list-queued` first to discover real ids. The tool returns an ERROR when the id doesn't exist — that error means you hallucinated; do NOT relay a fake 'success' to the user.",
 			inputSchema: z.object({
 				messageId: z.number().int().positive(),
+				// Same Zod 4 + GLM string-boolean preprocess shape as dispatchAgent.
+				confirmed: z
+					.preprocess(
+						(v) => {
+							if (typeof v === 'string') {
+								const lower = v.toLowerCase().trim();
+								if (lower === 'true' || lower === 'yes' || lower === '1') return true;
+								if (
+									lower === 'false' ||
+									lower === 'no' ||
+									lower === '0' ||
+									lower === ''
+								)
+									return false;
+							}
+							return v;
+						},
+						z.boolean().optional(),
+					)
+					.describe('Omit (default false) until the trust gate clears. true = mark now.'),
 			}),
-			execute: async ({ messageId }): Promise<ToolResult> => {
-				logToolCall('inbox-mark-processed', { messageId });
-				const ok = markMessageProcessed(messageId);
-				if (ok) {
-					return { kind: 'reply', text: `Message ${messageId} marked processed.` };
-				}
-				// Differentiate doesn't-exist (likely hallucinated) vs exists-but-wrong-state.
+			execute: async ({ messageId, confirmed }): Promise<ToolResult> => {
+				const isConfirmed = confirmed ?? false;
+				logToolCall('inbox-mark-processed', { messageId, confirmed: isConfirmed });
+
+				const forceConfirm =
+					(process.env.INBOX_MARK_PROCESSED_CONFIRM ?? '').trim().toLowerCase() === 'always';
+				const trainedCount = countConfirmedMarkProcessed();
+				const requireProposal = forceConfirm || trainedCount < 50;
+
+				// Verify the id is real BEFORE asking for confirmation — no point
+				// proposing an action on a hallucinated id. Mirrors the existing
+				// not-exist branch's hallucination message.
 				const msg = getMessage(messageId);
 				if (!msg) {
 					return {
@@ -1015,6 +1042,47 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 							`Call inbox-list-queued first and use a real id from the result. ` +
 							`Do NOT report success to the user; tell them the id was wrong and ask which message they meant.`,
 					};
+				}
+
+				if (requireProposal && !isConfirmed) {
+					if (!deps.conversationKey) {
+						// REPL / test caller — no conversation to attach a proposal to.
+						// Fall through to direct execute; tests don't need the gate.
+					} else {
+						const subjectPreview = (msg.subject ?? '').slice(0, 40).trim();
+						const label = subjectPreview
+							? `Mark message ${messageId} ("${subjectPreview}") as processed`
+							: `Mark message ${messageId} as processed`;
+						const proposal = setPending({
+							conversationKey: deps.conversationKey,
+							agentId: 'inbox-mark-processed',
+							task: String(messageId),
+							label,
+							origin: 'natural',
+							modelBranch: deps.modelBranch,
+						});
+						return {
+							kind: 'proposal',
+							text: formatProposal(proposal),
+							agentId: 'inbox-mark-processed',
+							task: String(messageId),
+							label,
+						};
+					}
+				}
+
+				const ok = markMessageProcessed(messageId);
+				recordAgentAction({
+					tool: 'inbox-mark-processed',
+					messageId,
+					actor: 'orchestrator',
+					args: { messageId, confirmed: isConfirmed },
+					result: { ok, source: isConfirmed ? 'confirmed-direct' : 'auto-trusted' },
+					conversationKey: deps.conversationKey ?? null,
+				});
+
+				if (ok) {
+					return { kind: 'reply', text: `Message ${messageId} marked processed.` };
 				}
 				return {
 					kind: 'reply',

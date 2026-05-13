@@ -59,6 +59,7 @@ import { writeIntentDecision } from '$lib/intent/log.js';
 import { normalizeSignature } from '$lib/intent/normalize.js';
 import { isResetCommand, resetConversation, saveTurn } from '$lib/vault-chat/history.js';
 import { getConversationContext, buildAgentContextBrief } from '$lib/conversation/index.js';
+import { markMessageProcessed, recordAgentAction } from '$lib/inbox/index.js';
 import {
 	isHeartbeatMetaCommand,
 	handleHeartbeatMetaCommand,
@@ -449,10 +450,39 @@ export const POST: RequestHandler = async ({ request }) => {
 				const replyKind = classifyProposalReply(workingBody);
 
 				if (replyKind === 'confirm') {
-					// Execute the stored proposal — same path as direct dispatch.
-					// Resolve the proposal as `confirm` so the audit row updates
-					// alongside the live `pending_proposals` delete.
+					// Execute the stored proposal. Resolve as `confirm` so the
+					// audit row updates alongside the live row delete.
 					resolvePendingProposal(conversationKey, 'confirm');
+
+					// ADR-L3 §D7 Guardrail 1 — `inbox-mark-processed` proposals
+					// take a different execution path: no capacity check, no
+					// orchestratorDispatch, just call markMessageProcessed +
+					// write the audit row + reply. The `agent_actions` row is
+					// what increments the trust-trainer counter.
+					if (pending.agentId === 'inbox-mark-processed') {
+						const messageId = Number.parseInt(pending.task, 10);
+						saveTurn(conversationKey, 'user', workingBody, turnNow);
+						if (!Number.isFinite(messageId)) {
+							const text = `Internal error: the stored proposal had an invalid message id (${pending.task}). Ask me to list the inbox again and try once more.`;
+							saveTurn(conversationKey, 'assistant', text, turnNow + 1);
+							return json({ ok: true, action: 'reply', text });
+						}
+						const ok = markMessageProcessed(messageId);
+						recordAgentAction({
+							tool: 'inbox-mark-processed',
+							messageId,
+							actor: 'orchestrator',
+							args: { messageId, confirmed: true },
+							result: { ok, source: 'proposal-confirm' },
+							conversationKey,
+						});
+						const text = ok
+							? `Message ${messageId} marked processed.`
+							: `Message ${messageId} couldn't be marked — it may have already been handled or is no longer queued.`;
+						saveTurn(conversationKey, 'assistant', text, turnNow + 1);
+						return json({ ok: true, action: 'reply', text });
+					}
+
 					const capacity = checkDispatchCapacity(envelope.chatJid);
 					if (!capacity.ok) {
 						saveTurn(conversationKey, 'user', workingBody, turnNow);
