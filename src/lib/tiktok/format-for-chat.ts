@@ -38,6 +38,7 @@ interface TiktokError {
 type TiktokShape = TiktokSuccess | TiktokError;
 
 const TRANSCRIPT_PREVIEW_CHARS = 1200;
+const SUMMARY_PREVIEW_CHARS = 800;
 const CAPTION_HEADER_CHARS = 140;
 
 export function formatTiktokForChat(result: unknown): string {
@@ -70,7 +71,12 @@ export function formatTiktokForChat(result: unknown): string {
 
 	if (r.summary) {
 		lines.push('');
-		lines.push(r.summary.trim());
+		const s = r.summary.trim();
+		lines.push(
+			s.length > SUMMARY_PREVIEW_CHARS
+				? s.slice(0, SUMMARY_PREVIEW_CHARS) + '\n…(summary truncated)'
+				: s,
+		);
 	}
 
 	if (r.transcript) {
