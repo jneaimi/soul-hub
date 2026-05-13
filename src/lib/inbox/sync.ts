@@ -532,17 +532,11 @@ async function connectOutlookWorker(worker: AccountWorker, account: InboxAccount
 		db.prepare('UPDATE accounts SET encrypted_credential = ? WHERE id = ?')
 			.run(encrypt(updatedCred), account.id);
 
-		// Get stored delta link for incremental sync
-		const syncState = getSyncState(account.id, 'INBOX');
-		let deltaLink: string | undefined;
-
-		// Store delta link in sync_state.last_uid as a hack (repurpose the field)
-		// Better: add a delta_link column. For now, use a separate key.
-		const deltaRow = db.prepare('SELECT folder FROM sync_state WHERE account_id = ? AND folder LIKE ?')
-			.get(account.id, 'delta:%') as { folder: string } | undefined;
-		if (deltaRow) {
-			deltaLink = deltaRow.folder.slice(6); // strip 'delta:' prefix
-		}
+		// Get stored delta link for incremental sync (migration 10 — proper column).
+		const deltaRow = db.prepare(
+			`SELECT delta_link FROM sync_state WHERE account_id = ? AND folder = 'INBOX'`,
+		).get(account.id) as { delta_link: string | null } | undefined;
+		const deltaLink = deltaRow?.delta_link ?? undefined;
 
 		let result;
 		try {
@@ -562,13 +556,15 @@ async function connectOutlookWorker(worker: AccountWorker, account: InboxAccount
 			upsertMessages(batch);
 		}
 
-		// Store new delta link
+		// Store new delta link on the account's INBOX row.
 		if (result.deltaLink) {
 			db.prepare(`
-				INSERT INTO sync_state (account_id, folder, last_uid, uid_validity, last_sync)
-				VALUES (?, ?, 0, 0, ?)
-				ON CONFLICT(account_id, folder) DO UPDATE SET last_sync = excluded.last_sync
-			`).run(account.id, `delta:${result.deltaLink}`, Date.now());
+				INSERT INTO sync_state (account_id, folder, last_uid, uid_validity, last_sync, delta_link)
+				VALUES (?, 'INBOX', 0, 0, ?, ?)
+				ON CONFLICT(account_id, folder) DO UPDATE SET
+					last_sync = excluded.last_sync,
+					delta_link = excluded.delta_link
+			`).run(account.id, Date.now(), result.deltaLink);
 		}
 
 		markAccountRecovered(account);

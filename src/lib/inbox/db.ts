@@ -478,6 +478,47 @@ function migrate(db: Database.Database): void {
 		})();
 		db.pragma(`user_version = 9`);
 	}
+
+	if (version < 10) {
+		// Migration 10 — replace the `folder='delta:<url>'` hack with a proper
+		// `delta_link` column on sync_state. The old approach stored Microsoft
+		// Graph's @odata.deltaLink in the folder name (PK component), which
+		// leaked a new row on every successful poll because the watermark URL
+		// changes each sync. Reads then returned an arbitrary row out of the
+		// accumulating set. The column is the right home for it.
+		db.transaction(() => {
+			db.exec(`ALTER TABLE sync_state ADD COLUMN delta_link TEXT;`);
+
+			// Copy the most-recent delta URL per account onto the INBOX row.
+			// For Outlook accounts the INBOX row likely does not exist yet
+			// (Outlook never wrote to it via upsertSyncState); INSERT creates
+			// it. ON CONFLICT only touches delta_link, preserving any real
+			// last_uid/uid_validity from IMAP-style sync.
+			db.exec(`
+				INSERT INTO sync_state (account_id, folder, last_uid, uid_validity, last_sync, delta_link)
+				SELECT
+					s.account_id, 'INBOX', 0, 0, s.last_sync, substr(s.folder, 7)
+				FROM sync_state s
+				JOIN (
+					SELECT account_id, MAX(last_sync) AS max_sync
+					FROM sync_state
+					WHERE folder LIKE 'delta:%'
+					GROUP BY account_id
+				) latest ON latest.account_id = s.account_id AND latest.max_sync = s.last_sync
+				WHERE s.folder LIKE 'delta:%'
+				ON CONFLICT(account_id, folder) DO UPDATE SET
+					delta_link = excluded.delta_link;
+			`);
+
+			const orphaned = db.prepare(`SELECT COUNT(*) AS c FROM sync_state WHERE folder LIKE 'delta:%'`)
+				.get() as { c: number };
+			db.exec(`DELETE FROM sync_state WHERE folder LIKE 'delta:%';`);
+			if (orphaned.c > 0) {
+				console.log(`[inbox-migration] Migrated delta-link cache: cleaned ${orphaned.c} legacy delta:% row(s)`);
+			}
+		})();
+		db.pragma(`user_version = 10`);
+	}
 }
 
 // ── Account CRUD ──
