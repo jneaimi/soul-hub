@@ -28,8 +28,6 @@ export interface IntentDecision {
 	latencyMs?: number;
 }
 
-export interface IntentLogRow extends IntentDecision {}
-
 let schemaReady = false;
 
 function ensureSchema(db: Database): void {
@@ -95,42 +93,9 @@ export function writeIntentDecision(decision: IntentDecision): void {
 	}
 }
 
-/** Recent rows, newest first. For ad-hoc inspection + the future
- *  miner's seven-day window. */
-export function getRecentIntentLog(limit = 50): IntentLogRow[] {
-	const rows = db()
-		.prepare<[number]>(
-			`SELECT ts, conversation_key, raw_message, normalized_signature,
-			        picked_route, source, confidence, latency_ms
-			 FROM intent_log
-			 ORDER BY ts DESC
-			 LIMIT ?`,
-		)
-		.all(limit) as Array<{
-		ts: number;
-		conversation_key: string;
-		raw_message: string;
-		normalized_signature: string;
-		picked_route: string;
-		source: IntentSource;
-		confidence: number | null;
-		latency_ms: number | null;
-	}>;
-	return rows.map((r) => ({
-		ts: r.ts,
-		conversationKey: r.conversation_key,
-		rawMessage: r.raw_message,
-		normalizedSignature: r.normalized_signature,
-		pickedRoute: r.picked_route,
-		source: r.source,
-		confidence: r.confidence ?? undefined,
-		latencyMs: r.latency_ms ?? undefined,
-	}));
-}
-
 /** Sweep rows older than `retentionDays`. Cheap to call; no-op when
- *  there's nothing to delete. Will be wired to the daily miner task
- *  in Phase 1.5; safe to call manually until then. */
+ *  there's nothing to delete. Called from the daily intent-mining task
+ *  (`runIntentMining`) so the table can't grow unboundedly. */
 export function pruneIntentLog(retentionDays = 90, now = Date.now()): number {
 	const cutoff = now - retentionDays * 24 * 60 * 60 * 1000;
 	const result = db().prepare(`DELETE FROM intent_log WHERE ts < ?`).run(cutoff);

@@ -10,6 +10,7 @@
 		{ href: '/orchestration/tools', label: 'Tools', matchPrefix: '/orchestration/tools' },
 		{ href: '/orchestration/metrics', label: 'Metrics', matchPrefix: '/orchestration/metrics' },
 		{ href: '/orchestration/audit', label: 'Audit', matchPrefix: '/orchestration/audit' },
+		{ href: '/orchestration/intent', label: 'Intent', matchPrefix: '/orchestration/intent' },
 	];
 
 	const path = $derived($page.url.pathname);

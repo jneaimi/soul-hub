@@ -64,6 +64,12 @@
 			blurb:
 				'Append-only agent_actions log (ADR-L3 §D7 G2) — every Layer 3 tool invocation with filters, byTool histogram, and the L3 confirmation-gate trust-trainer panel.',
 		},
+		{
+			href: '/orchestration/intent',
+			title: 'Intent',
+			blurb:
+				'ADR-023 router intelligence — intent_log source distribution, learned-pattern hits, P2/P3 gate status, and the analyst proposal approval queue.',
+		},
 	];
 </script>
 

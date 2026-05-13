@@ -25,6 +25,7 @@ import { getInboxDb } from '../inbox/db.js';
 import { soulHubDataDir } from '../paths.js';
 import { dispatchAgent } from '../agents/dispatch/index.js';
 import { writeProposals, rejectedSignatures, type PatternProposal, type MatchKind } from './patterns.js';
+import { pruneIntentLog } from './log.js';
 import { readChannelConfig } from '../channels/telegram/adapter.js';
 import { sendText as sendTelegramText } from '../channels/telegram/outbound.js';
 import { config as soulHubConfig } from '../config.js';
@@ -74,6 +75,9 @@ export interface IntentMiningResult {
 	reportPath: string;
 	proposalsPath: string;
 	telegramNudgeSent: boolean;
+	/** ADR-023 retention sweep — rows older than 90d removed from
+	 *  intent_log before each run so the table can't grow unboundedly. */
+	intentLogRowsPruned: number;
 	durationMs: number;
 	skipped: boolean;
 	skipReason?: string;
@@ -394,6 +398,16 @@ export async function runIntentMining(
 	const proposalsPath = resolve(soulHubDataDir(), `intent-proposals-${batchId}.json`);
 	const reportPath = resolve(vaultDir, VAULT_OPS_DIR, `intent-patterns-${today}.md`);
 
+	// ADR-023 retention sweep — runs before the analyst so the corpus
+	// never includes rows the analyst would skip anyway. Best-effort, never
+	// throws back to the caller (pruneIntentLog's internal try/catch).
+	let intentLogRowsPruned = 0;
+	try {
+		intentLogRowsPruned = pruneIntentLog();
+	} catch (err) {
+		console.warn(`[intent-learner] prune failed: ${(err as Error).message}`);
+	}
+
 	const baseResult: IntentMiningResult = {
 		batchId,
 		corpusRows: 0,
@@ -410,6 +424,7 @@ export async function runIntentMining(
 		reportPath,
 		proposalsPath,
 		telegramNudgeSent: false,
+		intentLogRowsPruned,
 		durationMs: 0,
 		skipped: false,
 	};
@@ -566,6 +581,7 @@ export async function runIntentMining(
 		reportPath,
 		proposalsPath,
 		telegramNudgeSent,
+		intentLogRowsPruned,
 		durationMs: Date.now() - startMs,
 		skipped: false,
 	};

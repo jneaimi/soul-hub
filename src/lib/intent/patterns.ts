@@ -372,7 +372,7 @@ export function rejectedSignatures(limit = 200): Set<string> {
  *  can keep a low-confidence rule visible without it firing); the runtime
  *  needs to be stricter because one bad route burns more trust than ten
  *  LLM calls.  ADR-023 §Phase 2. */
-export const PATTERN_CONFIDENCE_FLOOR = 0.95;
+const PATTERN_CONFIDENCE_FLOOR = 0.95;
 
 export interface PatternHit {
 	/** Discriminator. `learned` = operator-approved row in `intent_patterns`
@@ -493,8 +493,11 @@ export function tryPatternRoute(
 	};
 }
 
-/** Increments hit_count and stamps last_hit_ts. Best-effort. */
-export function bumpPatternHit(patternId: number, now = Date.now()): void {
+/** Increments hit_count and stamps last_hit_ts. Best-effort. Internal —
+ *  only `tryPatternRoute` calls this; the runtime doesn't expose a
+ *  manual bump path because hit-counts are derived signal, not operator
+ *  state. */
+function bumpPatternHit(patternId: number, now = Date.now()): void {
 	try {
 		db()
 			.prepare(
@@ -508,7 +511,7 @@ export function bumpPatternHit(patternId: number, now = Date.now()): void {
 	}
 }
 
-export interface HistoryFallbackOptions {
+interface HistoryFallbackOptions {
 	/** Minimum number of historical rows agreeing on the route. Default 5. */
 	minVotes?: number;
 	/** Minimum share of votes the top route must hold to win. Default 0.90. */
