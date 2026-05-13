@@ -1,7 +1,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **soul-hub** (5665 symbols, 12002 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **soul-hub** (15951 symbols, 21133 relationships, 206 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -12,19 +12,6 @@ This project is indexed by GitNexus as **soul-hub** (5665 symbols, 12002 relatio
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
 - When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
 - When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
-
-## When Debugging
-
-1. `gitnexus_query({query: "<error or symptom>"})` — find execution flows related to the issue
-2. `gitnexus_context({name: "<suspect function>"})` — see all callers, callees, and process participation
-3. `READ gitnexus://repo/soul-hub/process/{processName}` — trace the full execution flow step by step
-4. For regressions: `gitnexus_detect_changes({scope: "compare", base_ref: "main"})` — see what your branch changed
-
-## When Refactoring
-
-- **Renaming**: MUST use `gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})` first. Review the preview — graph edits are safe, text_search edits need manual review. Then run with `dry_run: false`.
-- **Extracting/Splitting**: MUST run `gitnexus_context({name: "target"})` to see all incoming/outgoing refs, then `gitnexus_impact({target: "target", direction: "upstream"})` to find all external callers before moving code.
-- After any refactor: run `gitnexus_detect_changes({scope: "all"})` to verify only expected files changed.
 
 ## Never Do
 
@@ -71,21 +58,21 @@ Before completing any code modification task, verify:
 
 ## Keeping the Index Fresh
 
-After committing code changes, the GitNexus index becomes stale. Re-run analyze to update it:
+After committing code changes the GitNexus index becomes stale. The PostToolUse hook in this project **detects staleness after `git commit` / `git merge` and notifies the agent to run analyze** — the hook does NOT auto-run it (gitnexus 1.6.4+ design: avoids 120s blocks + risk of KuzuDB corruption on timeout). When the hook fires its staleness notice, run:
 
 ```bash
 npx gitnexus analyze
 ```
 
-If the index previously included embeddings, preserve them by adding `--embeddings`:
+As of gitnexus 1.6.4, `analyze` **preserves existing embeddings by default**. Two flags govern embedding state:
 
-```bash
-npx gitnexus analyze --embeddings
-```
+| Flag | Effect |
+|------|--------|
+| (none) | Preserve existing embeddings; regenerate only the graph |
+| `--embeddings` | Regenerate embeddings (use after major structural changes) |
+| `--drop-embeddings` | Delete embeddings entirely (use to opt out of semantic search) |
 
-To check whether embeddings exist, inspect `.gitnexus/meta.json` — the `stats.embeddings` field shows the count (0 means no embeddings). **Running analyze without `--embeddings` will delete any previously generated embeddings.**
-
-> Claude Code users: A PostToolUse hook handles this automatically after `git commit` and `git merge`.
+To check whether embeddings exist, inspect `.gitnexus/meta.json` — the `stats.embeddings` field shows the count (0 means none).
 
 ## CLI
 
