@@ -35,7 +35,7 @@ export interface DispatchResult {
 	runId: string;
 	agentId: string;
 	backend: string;
-	status: 'success' | 'error' | 'cancelled' | 'timeout' | 'budget-exceeded';
+	status: 'success' | 'error' | 'cancelled' | 'timeout' | 'budget-exceeded' | 'goal_achieved';
 	output: string;
 	cost_usd: number;
 	num_turns: number;

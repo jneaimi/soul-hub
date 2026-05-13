@@ -46,6 +46,28 @@ const STALL_MS_DEFAULT = 30_000;
  *  timeout and we'd never preempt a genuinely stuck session. */
 const STALL_MS_MAX = 120_000;
 const ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]/g;
+/** ADR-031 v3 — Claude Code's TUI emits this marker when `/goal <condition>`
+ *  has been satisfied. v1 assumed the agent would also emit our standard
+ *  trailer (`✅ done`, `⚠️ partial`) so the existing stall-based termination
+ *  would catch it. Live validation 2026-05-13 showed otherwise: the agent
+ *  posts ONLY the TUI marker, then sits in the input prompt with the
+ *  status-line spinner still animating — which keeps `lastActivity` fresh
+ *  and prevents the stall timer from firing. Result: every goal-mode run
+ *  burned its full budget even when convergence happened in 1/8 of it.
+ *
+ *  The capture group is the metrics tail — variations observed:
+ *    Goal achieved (29s · 1 turn · 861 tokens)
+ *    Goal achieved (7m ·1 turn · 22.9k tokens) (ctrl+o to expand)
+ *    Goal achieved (1h 23m · 14 turns · 187k tokens)
+ *  Spacing around the bullet is unreliable; the format() helper parses
+ *  the captured string with looser sub-patterns. */
+const GOAL_ACHIEVED_RE = /Goal achieved\s*\(([^)]+)\)/i;
+/** Grace window after the achievement marker fires. Lets any final byte
+ *  in flight (the parenthetical `(ctrl+o to expand)`, the input-prompt
+ *  redraw) flush into the buffer before we kill the session. Tuned short
+ *  because the marker is itself the terminal signal — anything after is
+ *  scenery, not content. */
+const GOAL_GRACE_MS = 1500;
 
 function resolveStallMs(timeoutMs: number): number {
 	const scaled = Math.floor(timeoutMs / 8);
@@ -116,11 +138,38 @@ export const claudePtyDispatcher: BackendDispatcher = {
 		let exited = false;
 		let exitCode: number | null = null;
 		let promptInjected = false;
+		// ADR-031 v3 — goal-achieved detection. Set when GOAL_ACHIEVED_RE
+		// matches the stripped output stream. Holds the captured metrics
+		// tail so we can extract num_turns + token count for the result
+		// envelope. The grace timer kills the session GOAL_GRACE_MS after
+		// the marker so any trailing TUI bytes (the `(ctrl+o to expand)`
+		// hint, the redrawn input prompt) flush into `combined`.
+		let goalAchieved = false;
+		let goalMetricsRaw: string | undefined;
+		let goalGraceTimer: ReturnType<typeof setTimeout> | undefined;
 
 		const onOutput = (data: string) => {
 			lastActivity = Date.now();
 			queue.push(data);
 			combined += data;
+			if (goalActive && !goalAchieved) {
+				// Scan the accumulator (not just this chunk) — the marker
+				// can straddle chunk boundaries, and the TUI is rendered
+				// in many small writes. Match against the stripped form
+				// so ANSI cursor moves around the line don't defeat the
+				// regex.
+				const m = GOAL_ACHIEVED_RE.exec(stripAnsi(combined));
+				if (m) {
+					goalAchieved = true;
+					goalMetricsRaw = m[1].trim();
+					console.log(
+						`[agents/claude-pty] goal achieved for ${agent.id}: (${goalMetricsRaw}) — settling for ${GOAL_GRACE_MS}ms then closing`,
+					);
+					goalGraceTimer = setTimeout(() => {
+						if (!exited) killSession(session.id);
+					}, GOAL_GRACE_MS);
+				}
+			}
 		};
 		const onExit = (code: number) => {
 			exited = true;
@@ -199,6 +248,14 @@ export const claudePtyDispatcher: BackendDispatcher = {
 			if (opts.signal?.aborted) {
 				return finish(runId, agent, started, 'cancelled', cleaned, 'cancelled');
 			}
+			// ADR-031 v3 — convergence wins over timeout/stall. If the
+			// agent emitted `Goal achieved (...)` before the budget kill,
+			// the dispatch was successful even if the session itself was
+			// terminated by our grace timer or the budget timer.
+			if (goalAchieved) {
+				const { num_turns } = parseGoalMetrics(goalMetricsRaw);
+				return finish(runId, agent, started, 'goal_achieved', cleaned, undefined, { num_turns });
+			}
 			if (timedOut) {
 				const msg = `Dispatch exceeded ${budget.timeout_ms}ms timeout`;
 				yield { type: 'error', message: msg, ts: Date.now() };
@@ -222,6 +279,7 @@ export const claudePtyDispatcher: BackendDispatcher = {
 			session.emitter.off('prompt_sent', onPromptSent);
 			if (goalTimers.taskWrite) clearTimeout(goalTimers.taskWrite);
 			if (goalTimers.enterWrite) clearTimeout(goalTimers.enterWrite);
+			if (goalGraceTimer) clearTimeout(goalGraceTimer);
 			opts.signal?.removeEventListener('abort', onAbort);
 			killSession(session.id);
 		}
@@ -254,6 +312,7 @@ function finish(
 	status: DispatchResult['status'],
 	output: string,
 	error?: string,
+	extras?: { num_turns?: number },
 ): DispatchResult {
 	return {
 		runId,
@@ -262,8 +321,24 @@ function finish(
 		status,
 		output,
 		cost_usd: 0, // PTY runs use Max subscription — no per-call cost
-		num_turns: 0, // not tracked in PTY mode
+		num_turns: extras?.num_turns ?? 0,
 		duration_ms: Date.now() - started,
 		error,
+	};
+}
+
+/** ADR-031 v3 — parse the metrics tail captured from a `Goal achieved (…)`
+ *  marker into structured fields. Format is loose; the upstream regex
+ *  captures everything inside the parens. Sub-patterns here pick out the
+ *  pieces we want, with defaults when something is missing. Token count
+ *  is intentionally NOT returned today — Claude Code's `Xk tokens`
+ *  rendering is approximate and the orchestration system stores tokens
+ *  per call elsewhere; conflating displayed-tokens with real-tokens hurts
+ *  more than it helps. Revisit if a goal-mode billing surface lands. */
+function parseGoalMetrics(raw: string | undefined): { num_turns: number } {
+	if (!raw) return { num_turns: 0 };
+	const turnsMatch = /(\d+)\s*turns?/i.exec(raw);
+	return {
+		num_turns: turnsMatch ? Number(turnsMatch[1]) : 0,
 	};
 }
