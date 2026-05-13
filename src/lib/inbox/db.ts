@@ -1102,6 +1102,93 @@ function safeJsonParse(s: string | null): unknown {
 	}
 }
 
+export interface AgentActionsQuery {
+	tool?: string;
+	messageId?: number;
+	actor?: string;
+	since?: number;
+	confirmedOnly?: boolean;
+	limit?: number;
+	offset?: number;
+}
+
+export interface AgentActionsResult {
+	actions: AgentActionRow[];
+	total: number;
+	byTool: Record<string, number>;
+}
+
+/** Generalized agent_actions query — supports the L3 audit-log surface
+ *  (ADR-L3 §D7 G2). Mirrors `listAgentActions(messageId)` but accepts
+ *  any combination of filters and returns a total count + per-tool
+ *  histogram so the UI doesn't have to issue follow-up queries. */
+export function queryAgentActions(opts: AgentActionsQuery = {}): AgentActionsResult {
+	const db = getInboxDb();
+	const limit = Math.min(Math.max(opts.limit ?? 50, 1), 500);
+	const offset = Math.max(opts.offset ?? 0, 0);
+
+	const where: string[] = [];
+	const params: unknown[] = [];
+	if (opts.tool) {
+		where.push('tool = ?');
+		params.push(opts.tool);
+	}
+	if (opts.messageId !== undefined) {
+		where.push('message_id = ?');
+		params.push(opts.messageId);
+	}
+	if (opts.actor) {
+		where.push('actor = ?');
+		params.push(opts.actor);
+	}
+	if (opts.since !== undefined) {
+		where.push('timestamp >= ?');
+		params.push(opts.since);
+	}
+	if (opts.confirmedOnly) {
+		where.push(`result LIKE '%"ok":true%'`);
+	}
+	const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+
+	const rows = db
+		.prepare(
+			`SELECT id, timestamp, tool, message_id, actor, args, result, conversation_key
+			 FROM agent_actions
+			 ${whereSql}
+			 ORDER BY id DESC
+			 LIMIT ? OFFSET ?`,
+		)
+		.all(...params, limit, offset) as Record<string, unknown>[];
+
+	const total = (
+		db.prepare(`SELECT COUNT(*) AS c FROM agent_actions ${whereSql}`).get(...params) as { c: number }
+	).c;
+
+	const byToolRows = db
+		.prepare(
+			`SELECT tool, COUNT(*) AS c
+			 FROM agent_actions
+			 ${whereSql}
+			 GROUP BY tool
+			 ORDER BY c DESC`,
+		)
+		.all(...params) as { tool: string; c: number }[];
+	const byTool: Record<string, number> = {};
+	for (const r of byToolRows) byTool[r.tool] = r.c;
+
+	const actions = rows.map((r) => ({
+		id: r.id as number,
+		timestamp: r.timestamp as number,
+		tool: r.tool as string,
+		messageId: r.message_id as number | null,
+		actor: r.actor as string,
+		args: safeJsonParse(r.args as string | null),
+		result: safeJsonParse(r.result as string | null),
+		conversationKey: r.conversation_key as string | null,
+	}));
+	return { actions, total, byTool };
+}
+
 // ── Sync State ──
 
 export function getSyncState(accountId: string, folder: string): SyncState | null {
