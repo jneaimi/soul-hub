@@ -4,15 +4,23 @@
  * Streams NDJSON of `DispatchEvent`s. Each line is one JSON object terminated
  * by `\n`. The final event is `{ type: 'done', result: DispatchResult }`.
  *
- * Test mode applies hard caps per ADR-001 §6 (max $0.10, 5 turns, 60s) so a
- * curious user can't burn through real spend by hammering the chat panel.
+ * Default `mode: 'test'` — applies hard caps per ADR-001 §6 (max $0.10, 5
+ * turns, 60s) so a curious user can't burn through real spend by hammering
+ * the chat panel.
+ *
+ * Pass `?mode=production` to dispatch against the agent's real budget —
+ * routes through the same path as a chat-triggered dispatch and respects
+ * `goal_condition` on PTY-backed agents (ADR-031). This replaced the
+ * temporary `/api/debug/dispatch` endpoint — the operator UI now provides
+ * the mode toggle visibly instead of forcing curl-with-a-token.
  */
 
 import { error, type RequestHandler } from '@sveltejs/kit';
 import { dispatchAgent } from '$lib/agents/dispatch/index.js';
+import type { DispatchMode } from '$lib/agents/dispatch/types.js';
 import { getAgent } from '$lib/agents/store.js';
 
-export const POST: RequestHandler = async ({ params, request }) => {
+export const POST: RequestHandler = async ({ params, request, url }) => {
 	const id = params.id;
 	if (!id || !/^[a-z0-9][a-z0-9_-]*$/.test(id)) {
 		throw error(400, 'invalid agent id');
@@ -25,6 +33,10 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	const task = typeof body.task === 'string' ? body.task.trim() : '';
 	if (!task) throw error(400, 'task is required (non-empty string)');
 	if (task.length > 4000) throw error(400, 'task too long (max 4000 chars)');
+
+	const modeParam = url.searchParams.get('mode');
+	const mode: DispatchMode =
+		modeParam === 'production' ? 'production' : 'test';
 
 	const ac = new AbortController();
 	request.signal.addEventListener('abort', () => ac.abort());
@@ -41,7 +53,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 			};
 
 			try {
-				const gen = dispatchAgent(id, task, { mode: 'test', signal: ac.signal });
+				const gen = dispatchAgent(id, task, { mode, signal: ac.signal });
 				while (true) {
 					const next = await gen.next();
 					if (next.done) {

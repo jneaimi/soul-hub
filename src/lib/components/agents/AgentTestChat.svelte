@@ -21,13 +21,21 @@
 		runId: string;
 		agentId: string;
 		backend: string;
-		status: 'success' | 'error' | 'cancelled' | 'timeout' | 'budget-exceeded';
+		status:
+			| 'success'
+			| 'error'
+			| 'cancelled'
+			| 'timeout'
+			| 'budget-exceeded'
+			| 'goal_achieved';
 		output: string;
 		cost_usd: number;
 		num_turns: number;
 		duration_ms: number;
 		error?: string;
 	}
+
+	type Mode = 'test' | 'production';
 
 	interface Message {
 		role: 'user' | 'agent' | 'system';
@@ -51,6 +59,10 @@
 	let running = $state(false);
 	let abortController: AbortController | null = null;
 	let chatEl: HTMLDivElement | null = $state(null);
+	// ADR-001 §6 test caps vs the agent's full production budget. Default
+	// to `test` so an accidental click can't burn real spend. The button
+	// label morphs to make the active mode unmissable.
+	let mode = $state<Mode>('test');
 
 	// Production budget hints — derived once per agent change.
 	const prodMaxUsd = $derived(agent.budget?.max_usd ?? PRODUCTION_DEFAULTS.max_usd);
@@ -109,7 +121,10 @@
 		abortController = new AbortController();
 
 		try {
-			const res = await fetch(`/api/agents/${encodeURIComponent(agent.id)}/test`, {
+			const url =
+				`/api/agents/${encodeURIComponent(agent.id)}/test` +
+				(mode === 'production' ? '?mode=production' : '');
+			const res = await fetch(url, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ task: sentTask }),
@@ -267,6 +282,34 @@
 			<span class="text-hub-text">max ${prodMaxUsd.toFixed(2)} · {prodMaxTurns} turns · {prodTimeout}s timeout</span>
 			{#if prodIsCustom}<span class="text-hub-muted">(per-agent override)</span>{:else}<span class="text-hub-muted">(default)</span>{/if}.
 		</p>
+
+		<!-- Mode toggle — defaults to test. Production sends through the same
+		     `dispatchAgent` path as a chat-triggered run, so goal_condition
+		     on PTY-backed agents fires correctly. -->
+		<div class="mt-2 inline-flex rounded-md border border-hub-border overflow-hidden text-[11px]">
+			<button
+				type="button"
+				onclick={() => (mode = 'test')}
+				disabled={running}
+				class="px-2.5 py-1 transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60
+					{mode === 'test'
+						? 'bg-hub-warning/20 text-hub-warning'
+						: 'bg-transparent text-hub-muted hover:text-hub-text'}"
+			>
+				Test mode <span class="text-[9px] opacity-75">($0.10 cap)</span>
+			</button>
+			<button
+				type="button"
+				onclick={() => (mode = 'production')}
+				disabled={running}
+				class="px-2.5 py-1 border-l border-hub-border transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60
+					{mode === 'production'
+						? 'bg-hub-cta/20 text-hub-cta'
+						: 'bg-transparent text-hub-muted hover:text-hub-text'}"
+			>
+				Production <span class="text-[9px] opacity-75">(${prodMaxUsd.toFixed(2)} cap)</span>
+			</button>
+		</div>
 	</div>
 
 	<!-- Messages -->
@@ -325,7 +368,9 @@
 				bind:value={task}
 				onkeydown={onKey}
 				rows="2"
-				placeholder="Type a task and press ⌘↩ (or click Send) — test caps apply"
+				placeholder={mode === 'production'
+					? `Type a task and press ⌘↩ — production caps ($${prodMaxUsd.toFixed(2)} · ${prodMaxTurns} turns · ${prodTimeout}s) apply`
+					: 'Type a task and press ⌘↩ (or click Send) — test caps apply'}
 				disabled={running}
 				class="flex-1 px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-[13px] text-hub-text font-mono resize-none focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50 disabled:opacity-60"
 			></textarea>
@@ -342,9 +387,13 @@
 					type="button"
 					onclick={send}
 					disabled={!task.trim()}
-					class="px-3 py-1.5 rounded-lg bg-hub-cta text-black font-medium text-sm hover:bg-hub-cta/90 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed self-end"
+					class="px-3 py-1.5 rounded-lg font-medium text-sm transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed self-end
+						{mode === 'production'
+							? 'bg-hub-warning text-black hover:bg-hub-warning/90'
+							: 'bg-hub-cta text-black hover:bg-hub-cta/90'}"
+					title={mode === 'production' ? 'Production dispatch — uses real budget' : 'Test run — capped'}
 				>
-					Send
+					{mode === 'production' ? 'Run production' : 'Send'}
 				</button>
 			{/if}
 		</div>
