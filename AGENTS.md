@@ -1,7 +1,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **soul-hub** (15951 symbols, 21133 relationships, 206 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **soul-hub** (15959 symbols, 21141 relationships, 206 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -19,6 +19,30 @@ This project is indexed by GitNexus as **soul-hub** (15951 symbols, 21133 relati
 - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
 - NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
 - NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
+
+## Resources
+
+| Resource | Use for |
+|----------|---------|
+| `gitnexus://repo/soul-hub/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/soul-hub/clusters` | All functional areas |
+| `gitnexus://repo/soul-hub/processes` | All execution flows |
+| `gitnexus://repo/soul-hub/process/{name}` | Step-by-step execution trace |
+
+## CLI
+
+| Task | Read this skill file |
+|------|---------------------|
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+
+<!-- gitnexus:end -->
+
+<!-- operator-curated: survives `gitnexus analyze` because it lives outside the marker block above. -->
 
 ## Tools Quick Reference
 
@@ -38,15 +62,6 @@ This project is indexed by GitNexus as **soul-hub** (15951 symbols, 21133 relati
 | d=1 | WILL BREAK — direct callers/importers | MUST update these |
 | d=2 | LIKELY AFFECTED — indirect deps | Should test |
 | d=3 | MAY NEED TESTING — transitive | Test if critical path |
-
-## Resources
-
-| Resource | Use for |
-|----------|---------|
-| `gitnexus://repo/soul-hub/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/soul-hub/clusters` | All functional areas |
-| `gitnexus://repo/soul-hub/processes` | All execution flows |
-| `gitnexus://repo/soul-hub/process/{name}` | Step-by-step execution trace |
 
 ## Self-Check Before Finishing
 
@@ -73,16 +88,3 @@ As of gitnexus 1.6.4, `analyze` **preserves existing embeddings by default**. Tw
 | `--drop-embeddings` | Delete embeddings entirely (use to opt out of semantic search) |
 
 To check whether embeddings exist, inspect `.gitnexus/meta.json` — the `stats.embeddings` field shows the count (0 means none).
-
-## CLI
-
-| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
-
-<!-- gitnexus:end -->
