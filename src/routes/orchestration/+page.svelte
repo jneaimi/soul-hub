@@ -58,6 +58,12 @@
 			blurb:
 				'ADR-005 falsifier dashboard — recent orchestrator decisions, dispatch outcomes, abstention rates, and agent run history.',
 		},
+		{
+			href: '/orchestration/audit',
+			title: 'Audit',
+			blurb:
+				'Append-only agent_actions log (ADR-L3 §D7 G2) — every Layer 3 tool invocation with filters, byTool histogram, and the L3 confirmation-gate trust-trainer panel.',
+		},
 	];
 </script>
 
