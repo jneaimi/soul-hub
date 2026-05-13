@@ -30,6 +30,8 @@ import { z } from 'zod';
 import type { ResolvedIntent, WhatsAppIntentMap } from './types.js';
 import { writeIntentDecision } from '../../intent/log.js';
 import { normalizeSignature } from '../../intent/normalize.js';
+import { tryPatternRoute, tryHistoryFallback } from '../../intent/patterns.js';
+import { config as soulHubConfig } from '../../config.js';
 
 /** Migrated to GLM-4.6 via OpenRouter (per ADR-009 direction). Override
  *  via env if needed for staged rollout / debug. Falls back to vault-chat
@@ -61,9 +63,16 @@ export interface RouterDecision {
 	input: string;
 	route: string;
 	confidence: number;
-	source: 'regex' | 'llm' | 'fallback';
+	source: 'regex' | 'llm' | 'pattern' | 'fallback';
 	reason?: string;
 	ts: number;
+	/** Per ADR-023 §Phase 2 — only set when source='pattern'. The dispatch
+	 *  layer passes this into the ADR-022 bubble so the placeholder text
+	 *  reflects the inferred topic rather than the generic route default. */
+	placeholderText?: string;
+	/** Per ADR-023 §Phase 2 — pattern row id that fired. Optional surface
+	 *  for the status endpoint + future "why did this route?" debug view. */
+	patternId?: number;
 }
 
 const decisions: RouterDecision[] = [];
@@ -331,6 +340,59 @@ export async function routeFreeForm(
 		return decision;
 	}
 
+	// ADR-023 §Phase 2 — runtime pattern engine.  Gated by
+	// `intent.patternEngine.enabled` so a fresh install never short-circuits
+	// the router until the operator has reviewed the analyst's proposals.
+	const patternCfg = soulHubConfig.intent?.patternEngine;
+	if (patternCfg?.enabled) {
+		const pat = tryPatternRoute(message, conversationKey);
+		if (pat) {
+			const decision: RouterDecision = {
+				input: inputPreview,
+				route: pat.pickedRoute,
+				confidence: pat.confidence,
+				source: 'pattern',
+				reason: `pattern#${pat.patternId} ${pat.scope}/${pat.matchKind} "${pat.signature}"`,
+				ts,
+				placeholderText: pat.placeholderText ?? undefined,
+				patternId: pat.patternId ?? undefined,
+			};
+			logDecision(decision);
+			persistDecision(decision);
+			return decision;
+		}
+	}
+
+	// ADR-023 §Phase 3 — history fallback.  Independent gate; fires only
+	// when the user has 5+ recent rows with the SAME normalized signature
+	// and 90%+ agreement on a single route. Reason field carries the vote
+	// counts so the buffer + intent_log are auditable without a join.
+	if (patternCfg?.historyFallback && conversationKey) {
+		const hist = tryHistoryFallback(message, conversationKey, {
+			minVotes: patternCfg.historyMinVotes,
+			minAgreement: patternCfg.historyMinAgreement,
+			windowDays: patternCfg.historyWindowDays,
+		});
+		if (hist) {
+			const v = hist.votes;
+			const decision: RouterDecision = {
+				input: inputPreview,
+				route: hist.pickedRoute,
+				confidence: hist.confidence,
+				source: 'pattern',
+				reason: v
+					? `history ${v.count}/${v.total} → ${v.route} (${hist.confidence.toFixed(2)})`
+					: `history (${hist.confidence.toFixed(2)})`,
+				ts,
+				// No persistent patternId for history hits — they're
+				// recomputed from the rolling intent_log window each call.
+			};
+			logDecision(decision);
+			persistDecision(decision);
+			return decision;
+		}
+	}
+
 	const llmHit = await llmRoute(message);
 	if (!llmHit) {
 		const decision: RouterDecision = {
@@ -390,6 +452,16 @@ export async function maybeApplyRouter(
 	if (!trimmed) return intent; // nothing to route on
 
 	const decision = await routeFreeForm(trimmed, conversationKey);
-	if (decision.route === intent.route) return intent;
-	return { ...intent, route: decision.route };
+	// ADR-023 §Phase 2 — even when the rewritten route equals the existing
+	// route, propagate the pattern's placeholder text so the bubble can
+	// surface it. (Pattern matches frequently land back on `vault-chat`,
+	// which is the default route, so the early-return below would drop the
+	// patternText without this guard.)
+	const patternText =
+		decision.source === 'pattern' ? decision.placeholderText ?? undefined : undefined;
+	if (decision.route === intent.route) {
+		if (!patternText) return intent;
+		return { ...intent, patternText };
+	}
+	return { ...intent, route: decision.route, patternText };
 }

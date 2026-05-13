@@ -115,4 +115,10 @@ export interface ResolvedIntent {
 	body: string;
 	/** Original command token when the message started with `/`. */
 	command?: string;
+	/** Per ADR-023 §Phase 2 — when the dynamic router short-circuits via a
+	 *  pattern hit, the pattern's `placeholder_text` lands here so the
+	 *  inbound dispatcher can pass it into `presence.bubble(route,
+	 *  { patternText })` for topic-specific placeholder text. Undefined for
+	 *  every non-pattern dispatch (slash, regex, llm, fallback). */
+	patternText?: string;
 }

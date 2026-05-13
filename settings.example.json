@@ -51,6 +51,19 @@
           "cwd": "<REPO_ROOT>",
           "timeoutMs": 60000
         }
+      },
+      {
+        "id": "intent-mining-daily",
+        "type": "intent-mining",
+        "cron": "0 2 * * *",
+        "timezone": "Asia/Dubai",
+        "enabled": true,
+        "noOverlap": true,
+        "description": "Daily intent analyst (ADR-023 P1.5) — mines intent_log + chat_history, proposes routing patterns, nudges via Telegram.",
+        "params": {
+          "lookbackDays": 7,
+          "minNewRows": 10
+        }
       }
     ]
   }

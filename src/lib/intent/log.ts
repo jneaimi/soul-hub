@@ -50,6 +50,13 @@ function ensureSchema(db: Database): void {
 			ON intent_log(normalized_signature, ts DESC);
 		CREATE INDEX IF NOT EXISTS idx_intent_log_recent
 			ON intent_log(ts DESC);
+		-- ADR-023 §Phase 3: history-fallback lookup query is
+		-- (conversation_key, normalized_signature, ts DESC). Existing PK
+		-- (conversation_key, ts) covers the user-scoped scan but doesn't
+		-- help with signature filtering. Additive composite index — safe
+		-- on existing DBs because IF NOT EXISTS is idempotent.
+		CREATE INDEX IF NOT EXISTS idx_intent_log_by_user_sig
+			ON intent_log(conversation_key, normalized_signature, ts DESC);
 	`);
 }
 

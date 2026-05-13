@@ -32,6 +32,15 @@ import {
 	incrementYoutubeCount,
 	ymdInTimezone,
 } from '../whatsapp/heartbeat-state.js';
+import {
+	listProposed,
+	getProposed,
+	promoteProposal,
+	rejectProposal,
+	promoteAllInBatch,
+	deferBatch,
+	type ProposedRow,
+} from '../../intent/patterns.js';
 import { config as soulHubConfig } from '../../config.js';
 import { WhatsAppChannelSchema } from '../../config.schema.js';
 import type {
@@ -43,6 +52,7 @@ import type {
 
 type Verb = 'confirm' | 'decline' | 'web';
 type YoutubeVerb = 'yt-save' | 'yt-tx' | 'yt-skip';
+type IntentVerb = 'ip-review' | 'ip-all' | 'ip-skip' | 'ip-yes' | 'ip-no';
 
 interface PendingButtonRow {
 	conversationKey: string;
@@ -151,7 +161,8 @@ export function rememberYoutubeButtons(args: {
 
 type ProposalParse = { kind: 'proposal'; verb: Verb; id: string };
 type YoutubeParse = { kind: 'youtube'; verb: YoutubeVerb; id: string };
-type ParsedCallback = ProposalParse | YoutubeParse;
+type IntentParse = { kind: 'intent'; verb: IntentVerb; id: string };
+type ParsedCallback = ProposalParse | YoutubeParse | IntentParse;
 
 function parseCallbackData(data: string): ParsedCallback | null {
 	const i = data.indexOf(':');
@@ -164,6 +175,15 @@ function parseCallbackData(data: string): ParsedCallback | null {
 	}
 	if (verb === 'yt-save' || verb === 'yt-tx' || verb === 'yt-skip') {
 		return { kind: 'youtube', verb, id };
+	}
+	if (
+		verb === 'ip-review' ||
+		verb === 'ip-all' ||
+		verb === 'ip-skip' ||
+		verb === 'ip-yes' ||
+		verb === 'ip-no'
+	) {
+		return { kind: 'intent', verb, id };
 	}
 	return null;
 }
@@ -199,6 +219,10 @@ export async function handleCallbackQuery(
 
 	if (parsed.kind === 'proposal') {
 		await handleProposalCallback(query, parsed, config, account);
+		return;
+	}
+	if (parsed.kind === 'intent') {
+		await handleIntentCallback(query, parsed, config);
 		return;
 	}
 	await handleYoutubeCallback(query, parsed, config);
@@ -415,4 +439,203 @@ function readYoutubeConfig() {
 	if (!parsed.success) return undefined;
 	const yt = parsed.data.youtube;
 	return { enabled: yt.enabled, maxPerDay: yt.maxPerDay, model: yt.model };
+}
+
+// ─── Intent-pattern approval keyboard (ADR-023 P1.5) ──────────────────
+
+/** short_id → batchId. Populated by `registerIntentBatchButtons` when
+ *  the analyst run sends its nudge. We don't persist this — restart loses
+ *  the mapping; that's fine because the operator can also hit the
+ *  `/api/intent/proposed` endpoints directly to recover. */
+const pendingIntentBatches = new Map<string, { batchId: string; createdAt: number }>();
+
+/** short_id → proposalId. Populated when [Review] fans the batch out into
+ *  one message per proposal. Same restart-loss caveat as above. */
+const pendingIntentProposals = new Map<
+	string,
+	{ proposalId: number; chatId: string | number; messageId: number; createdAt: number }
+>();
+
+/** Stable short_id derivation. Same scheme as the proposal+YouTube
+ *  flows so callback_data stays ≤64 bytes. */
+function shortIdForString(s: string): string {
+	return createHash('sha1').update(s).digest('base64url').slice(0, 16);
+}
+
+/** Called by the learner when it sends the operator nudge — registers the
+ *  mapping so callback_data can carry a compact short_id while the handler
+ *  resolves it back to the real batchId. Lazy-GCs aged entries. */
+export function registerIntentBatchButtons(batchId: string): string {
+	const id = shortIdForString(batchId);
+	pendingIntentBatches.set(id, { batchId, createdAt: Date.now() });
+	const now = Date.now();
+	for (const [k, v] of pendingIntentBatches) {
+		if (now - v.createdAt > PENDING_TTL_MS) pendingIntentBatches.delete(k);
+	}
+	return id;
+}
+
+function buildIntentProposalKeyboard(proposalId: number): InlineKeyboardMarkup {
+	const id = shortIdForString(`p:${proposalId}`);
+	return {
+		inline_keyboard: [
+			[
+				{ text: '✅ Approve', callback_data: `ip-yes:${id}` },
+				{ text: '✗ Reject', callback_data: `ip-no:${id}` },
+			],
+		],
+	};
+}
+
+function formatProposalForReview(row: ProposedRow): string {
+	const lines = [
+		`*Pattern* \`${row.signature}\` (${row.matchKind})`,
+		`→ route: \`${row.pickedRoute}\`  ·  confidence: ${row.confidence.toFixed(2)}`,
+	];
+	if (row.placeholderText) lines.push(`bubble: "${row.placeholderText}"`);
+	if (row.conversationKey) lines.push(`scope: per-user (\`${row.conversationKey.slice(0, 32)}\`)`);
+	else lines.push(`scope: global`);
+	if (row.rationale) lines.push(`\n${row.rationale}`);
+	lines.push('');
+	lines.push('*Citations:*');
+	for (const c of row.citations.slice(0, 5)) {
+		lines.push(`• ${c.replace(/[*_`]/g, ' ').slice(0, 200)}`);
+	}
+	return lines.join('\n');
+}
+
+async function handleIntentCallback(
+	query: TgCallbackQuery,
+	parsed: IntentParse,
+	config: TelegramChannelConfig,
+): Promise<void> {
+	const chatId = query.message?.chat?.id;
+	const messageId = query.message?.message_id;
+
+	if (parsed.verb === 'ip-yes' || parsed.verb === 'ip-no') {
+		const row = pendingIntentProposals.get(parsed.id);
+		if (!row) {
+			await answerCallbackQuery({
+				callback_query_id: query.id,
+				text: 'Buttons expired — open /orchestration/tools to resolve manually.',
+				show_alert: false,
+			});
+			return;
+		}
+		if (parsed.verb === 'ip-yes') {
+			const r = promoteProposal(row.proposalId);
+			await answerCallbackQuery({
+				callback_query_id: query.id,
+				text: r.ok ? '✅ Approved' : `Couldn't approve: ${r.error}`,
+			});
+			await stripIntentButtons(row.chatId, row.messageId, r.ok ? '✅ Approved.' : `✗ ${r.error}`);
+		} else {
+			const r = rejectProposal(row.proposalId, 'rejected via Telegram button');
+			await answerCallbackQuery({
+				callback_query_id: query.id,
+				text: r.ok ? '✗ Rejected' : `Couldn't reject: ${r.error}`,
+			});
+			await stripIntentButtons(row.chatId, row.messageId, r.ok ? '✗ Rejected.' : `✗ ${r.error}`);
+		}
+		pendingIntentProposals.delete(parsed.id);
+		return;
+	}
+
+	// Batch-level verbs need a registered batchId.
+	const batchEntry = pendingIntentBatches.get(parsed.id);
+	if (!batchEntry) {
+		await answerCallbackQuery({
+			callback_query_id: query.id,
+			text: 'Batch expired — open the proposals API to resolve manually.',
+			show_alert: false,
+		});
+		return;
+	}
+	const { batchId } = batchEntry;
+
+	if (parsed.verb === 'ip-all') {
+		const r = promoteAllInBatch(batchId);
+		await answerCallbackQuery({
+			callback_query_id: query.id,
+			text: `✅ ${r.promoted} approved${r.skipped > 0 ? ` · ${r.skipped} skipped` : ''}`,
+		});
+		if (chatId !== undefined && messageId !== undefined) {
+			await editMessageText({
+				chat_id: chatId,
+				message_id: messageId,
+				text: `✅ All ${r.promoted} pattern${r.promoted === 1 ? '' : 's'} approved.`,
+				parse_mode: 'Markdown',
+			}).catch(() => {});
+		}
+		pendingIntentBatches.delete(parsed.id);
+		return;
+	}
+
+	if (parsed.verb === 'ip-skip') {
+		const r = deferBatch(batchId);
+		await answerCallbackQuery({
+			callback_query_id: query.id,
+			text: `Skipped (${r.deferred})`,
+		});
+		if (chatId !== undefined && messageId !== undefined) {
+			await editMessageText({
+				chat_id: chatId,
+				message_id: messageId,
+				text: `✗ Skipped — ${r.deferred} pattern${r.deferred === 1 ? '' : 's'} deferred.`,
+				parse_mode: 'Markdown',
+			}).catch(() => {});
+		}
+		pendingIntentBatches.delete(parsed.id);
+		return;
+	}
+
+	// ip-review — fan out per-proposal bubbles.
+	if (parsed.verb === 'ip-review') {
+		const proposals = listProposed({ batchId });
+		await answerCallbackQuery({
+			callback_query_id: query.id,
+			text: `Sending ${proposals.length} pattern${proposals.length === 1 ? '' : 's'}…`,
+		});
+		if (proposals.length === 0) return;
+
+		if (chatId === undefined) return;
+		for (const p of proposals) {
+			const proposalShortId = shortIdForString(`p:${p.id}`);
+			const text = formatProposalForReview(p);
+			const sent = await sendText(chatId, text, config.delivery, {
+				replyMarkup: buildIntentProposalKeyboard(p.id),
+			});
+			const sentMessageId = sent.messageIds[0];
+			if (sent.ok && sentMessageId !== undefined) {
+				pendingIntentProposals.set(proposalShortId, {
+					proposalId: p.id,
+					chatId,
+					messageId: sentMessageId,
+					createdAt: Date.now(),
+				});
+			}
+		}
+		// Lazy GC of per-proposal map.
+		const now = Date.now();
+		for (const [k, v] of pendingIntentProposals) {
+			if (now - v.createdAt > PENDING_TTL_MS) pendingIntentProposals.delete(k);
+		}
+	}
+}
+
+async function stripIntentButtons(
+	chatId: string | number,
+	messageId: number,
+	status: string,
+): Promise<void> {
+	try {
+		await editMessageText({
+			chat_id: chatId,
+			message_id: messageId,
+			text: `${status}\n_(button tapped)_`,
+			parse_mode: 'Markdown',
+		});
+	} catch {
+		/* swallow — message may already be edited or deleted */
+	}
 }

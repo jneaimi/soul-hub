@@ -591,6 +591,11 @@ export const POST: RequestHandler = async ({ request }) => {
 			await presence.bubble('vault-chat', {
 				isFocusQuery: isFocusQuery(workingBody),
 				hasMedia: !!envelope.media,
+				// ADR-023 §Phase 2 — when `maybeApplyRouter` short-circuited via
+				// a learned pattern, the pattern's own placeholder text takes
+				// precedence over the route default ("Pulling up your Wed draft
+				// now…" vs the generic "Looking through your vault…").
+				patternText: intent.patternText,
 			});
 
 			// ADR-030 — capture the bubble id NOW so the orchestrator's

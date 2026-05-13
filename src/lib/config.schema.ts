@@ -354,6 +354,35 @@ export const InboxSchema = z.object({
 	autoRoute: InboxAutoRouteSchema.prefault({}),
 });
 
+/** ADR-023 §Phase 2 + §Phase 3 — runtime pattern engine kill switches.
+ *
+ *  `enabled` (P2) — gates the lookup against operator-approved
+ *  `intent_patterns` rows. The analyst (P1.5) keeps writing proposals
+ *  regardless; this flag only governs whether `routeFreeForm` consults
+ *  the approved table during routing.
+ *
+ *  `historyFallback` (P3) — gates an additional history-derived lookup
+ *  that fires when P2 misses: queries the user's own recent `intent_log`
+ *  rows for the same normalized signature and short-circuits if recent
+ *  rows agree strongly on a route. Independent of `enabled` so the
+ *  operator can opt in to one without the other.
+ *
+ *  Both default OFF — a fresh install never short-circuits the LLM
+ *  router until the operator opts in. */
+export const IntentPatternEngineSchema = z.object({
+	enabled: z.boolean().default(false),
+	historyFallback: z.boolean().default(false),
+	historyMinVotes: z.number().int().min(2).max(50).default(5),
+	historyMinAgreement: z.number().min(0.5).max(1).default(0.9),
+	historyWindowDays: z.number().int().min(1).max(180).default(30),
+});
+
+export const IntentSchema = z.object({
+	patternEngine: IntentPatternEngineSchema.prefault({}),
+});
+
+export type IntentConfig = z.infer<typeof IntentSchema>;
+
 /** `/img` configuration — image generation + editing via Gemini Nano
  *  Banana. One slash command, no flags, system prompt sourced from a
  *  vault-watched markdown file (per ADR-002). */
@@ -568,6 +597,11 @@ export const ConfigSchema = z.object({
 	 *  cycles can hang the L2 filter knobs here too (today they're env-
 	 *  driven) without disrupting the channel namespaces. */
 	inbox: InboxSchema.prefault({}),
+	/** ADR-023 §Phase 2 — runtime pattern engine kill switch. See
+	 *  IntentSchema. Top-level (not channel-scoped) because the underlying
+	 *  intent_patterns table is shared across WhatsApp and (future)
+	 *  Telegram orchestrator-v2 wiring. */
+	intent: IntentSchema.prefault({}),
 	// Channels store base fields strictly + allow per-channel extensions to
 	// flow through; each adapter Zod-validates its own slice on read (e.g.
 	// WhatsAppChannelSchema for the `whatsapp` entry).
