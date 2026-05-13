@@ -29,6 +29,7 @@ import { fetchYoutube } from '../../youtube/index.js';
 import { formatYoutubeForChat } from '../../youtube/format-for-chat.js';
 import { runSkillInBackground } from '../../orchestrator/skill-worker.js';
 import { fetchTikTok, probeCapabilities as probeTikTokCapabilities } from '../../tiktok/index.js';
+import { formatTiktokForChat } from '../../tiktok/format-for-chat.js';
 import { dispatchVaultSave } from '../../vault-save/index.js';
 import { fetchPage } from '../../fetch-page/index.js';
 import { recordToolCall, assertManifestParity } from './registry.js';
@@ -599,72 +600,37 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 						execute: async ({ url, mode }): Promise<ToolResult> => {
 							logToolCall('tiktokFetch', { url, mode });
 
-							let summaryQuotaExceeded = false;
-							const willCallGemini =
-								(mode === 'summary' || mode === 'full') &&
-								(deps.tiktokConfig?.enabled ?? false) &&
-								!!deps.senderNumber;
-							if (willCallGemini && deps.tiktokConfig && deps.senderNumber) {
-								const tz = deps.timezone ?? 'Asia/Dubai';
-								const today = ymdInTimezone(tz);
-								const count = getTiktokCount(deps.senderNumber, today);
-								if (count >= deps.tiktokConfig.maxPerDay) {
-									summaryQuotaExceeded = true;
-								}
-							}
-
-							const outcome = await fetchTikTok(url, {
-								mode,
-								tiktokConfig: deps.tiktokConfig,
-								summaryQuotaExceeded,
-							});
-
-							if (!outcome.ok) {
+							// ADR-030 v2 — slow-dispatch path. Mirrors youtubeFetch
+							// above. `metadata` is instant (no whisper, no Gemini)
+							// so it stays inline; `transcript` / `summary` / `full`
+							// fire 7-25s of compute and get dispatched in a
+							// background worker that edits the presence bubble
+							// when complete. The inline path stays available for
+							// metadata-only saves and for callers that didn't
+							// wire slow-dispatch (REPL, UI test routes, Telegram
+							// until v3 wires it).
+							const isSlowCall = mode !== 'metadata';
+							if (isSlowCall && deps.slowDispatch && deps.slowDispatch.channel === 'whatsapp') {
+								const { jid, channel, progressMessageId, worker } = deps.slowDispatch;
+								const conversationKey = deps.conversationKey;
+								runSkillInBackground({
+									jid,
+									channel,
+									toolName: 'tiktokFetch',
+									worker,
+									progressMessageId,
+									conversationKey,
+									executeFn: () => runTiktokFetchInline({ url, mode, deps }),
+									formatFn: formatTiktokForChat,
+								});
 								return {
-									kind: 'tiktok-error',
-									url: outcome.error.url,
-									error: outcome.error.error,
-									tier: outcome.error.tier,
+									kind: 'slow-dispatched',
+									toolName: 'tiktokFetch',
+									ack: `🟡 Fetching that TikTok — I'll send the result here in ~30s.`,
 								};
 							}
 
-							const r = outcome.result;
-							// Increment quota only when Gemini actually produced a summary.
-							// transcriptSource='gemini' alone isn't enough — we want to
-							// charge against the cap when Tier C ran, regardless of
-							// whether transcript or summary came out of it.
-							if (
-								r.summary &&
-								deps.senderNumber &&
-								deps.tiktokConfig &&
-								!summaryQuotaExceeded
-							) {
-								const tz = deps.timezone ?? 'Asia/Dubai';
-								incrementTiktokCount(deps.senderNumber, ymdInTimezone(tz));
-							}
-
-							return {
-								kind: 'tiktok',
-								url: r.url,
-								videoId: r.videoId,
-								author: r.metadata.author,
-								authorHandle: r.metadata.authorHandle,
-								caption: r.metadata.caption,
-								title: r.metadata.title,
-								durationSec: r.metadata.durationSec,
-								postedAt: r.metadata.postedAt,
-								views: r.metadata.views,
-								likes: r.metadata.likes,
-								comments: r.metadata.comments,
-								reposts: r.metadata.reposts,
-								isPhotoPost: r.isPhotoPost,
-								transcript: r.transcript,
-								transcriptLang: r.transcriptLang,
-								transcriptSource: r.transcriptSource,
-								summary: r.summary,
-								costUsd: r.costUsd,
-								note: r.note,
-							};
+							return runTiktokFetchInline({ url, mode, deps });
 						},
 					}),
 				}
@@ -2095,6 +2061,87 @@ async function runYoutubeFetchInline(args: {
 		summary: r.summary,
 		transcript: r.transcript,
 		transcriptSource: r.transcriptSource,
+		costUsd: r.costUsd,
+		note: r.note,
+	};
+}
+
+/** ADR-030 v2 — inline executor for `tiktokFetch`. Shared by the slow-
+ *  dispatch worker and the inline path (metadata mode, non-WhatsApp
+ *  channels, REPL/UI test harness). Pure: just runs `fetchTikTok` and
+ *  shapes the structured ToolResult. Quota bookkeeping (the
+ *  `incrementTiktokCount` call when Gemini ran) is kept here so the slow
+ *  path also charges the cap. */
+async function runTiktokFetchInline(args: {
+	url: string;
+	mode: 'metadata' | 'transcript' | 'summary' | 'full';
+	deps: ToolDeps;
+}): Promise<ToolResult> {
+	const { url, mode, deps } = args;
+
+	let summaryQuotaExceeded = false;
+	const willCallGemini =
+		(mode === 'summary' || mode === 'full') &&
+		(deps.tiktokConfig?.enabled ?? false) &&
+		!!deps.senderNumber;
+	if (willCallGemini && deps.tiktokConfig && deps.senderNumber) {
+		const tz = deps.timezone ?? 'Asia/Dubai';
+		const today = ymdInTimezone(tz);
+		const count = getTiktokCount(deps.senderNumber, today);
+		if (count >= deps.tiktokConfig.maxPerDay) {
+			summaryQuotaExceeded = true;
+		}
+	}
+
+	const outcome = await fetchTikTok(url, {
+		mode,
+		tiktokConfig: deps.tiktokConfig,
+		summaryQuotaExceeded,
+	});
+
+	if (!outcome.ok) {
+		return {
+			kind: 'tiktok-error',
+			url: outcome.error.url,
+			error: outcome.error.error,
+			tier: outcome.error.tier,
+		};
+	}
+
+	const r = outcome.result;
+	// Increment quota only when Gemini actually produced a summary.
+	// transcriptSource='gemini' alone isn't enough — we want to charge
+	// against the cap when Tier C ran, regardless of whether transcript
+	// or summary came out of it.
+	if (
+		r.summary &&
+		deps.senderNumber &&
+		deps.tiktokConfig &&
+		!summaryQuotaExceeded
+	) {
+		const tz = deps.timezone ?? 'Asia/Dubai';
+		incrementTiktokCount(deps.senderNumber, ymdInTimezone(tz));
+	}
+
+	return {
+		kind: 'tiktok',
+		url: r.url,
+		videoId: r.videoId,
+		author: r.metadata.author,
+		authorHandle: r.metadata.authorHandle,
+		caption: r.metadata.caption,
+		title: r.metadata.title,
+		durationSec: r.metadata.durationSec,
+		postedAt: r.metadata.postedAt,
+		views: r.metadata.views,
+		likes: r.metadata.likes,
+		comments: r.metadata.comments,
+		reposts: r.metadata.reposts,
+		isPhotoPost: r.isPhotoPost,
+		transcript: r.transcript,
+		transcriptLang: r.transcriptLang,
+		transcriptSource: r.transcriptSource,
+		summary: r.summary,
 		costUsd: r.costUsd,
 		note: r.note,
 	};
