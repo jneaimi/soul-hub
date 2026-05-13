@@ -266,7 +266,7 @@ export async function decideV2(
 						input: p.input,
 					});
 					console.warn(
-						`[orchestrator-v2] tool-error tool=${p.toolName ?? 'unknown'} input=${JSON.stringify(p.input ?? {}).slice(0, 200)} err=${errMsg.slice(0, 200)}`,
+						`[orchestrator-v2] tool-error tool=${p.toolName ?? 'unknown'} input=${JSON.stringify(p.input ?? {}).slice(0, 500)} err=${errMsg.slice(0, 500)}`,
 					);
 				}
 			}

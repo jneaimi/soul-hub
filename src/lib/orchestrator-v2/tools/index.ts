@@ -677,6 +677,7 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 				"Use ONLY when the user explicitly asks to save / capture / remember / add to notes / write down / store. " +
 				"NEVER call this for discussion-only requests. " +
 				"For multi-step flows (e.g. user asks to save a YouTube video), call the upstream tool first (youtubeFetch with mode=summary), then synthesize a clean note body, THEN call vaultSave with the synthesized title + body. " +
+				"CALL ONCE per save intent — do NOT call vaultSave twice in the same turn even with a different title or richer content. Pick the best title and the fullest body on the first call. A second call wastes tokens and produces a duplicate row. " +
 				"Always writes to the inbox zone — the user curates from there. After it returns, include the openUrl in your reply so the user can open the note.",
 			inputSchema: z.object({
 				title: z
