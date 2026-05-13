@@ -34,6 +34,12 @@ const BRANCH_PRICING: Record<string, { inUsdPerM: number; outUsdPerM: number }> 
 	// MiniMax M2 OpenRouter pricing — estimate; adjust after first day's
 	// telemetry shows the actual rate.
 	'minimax-m2': { inUsdPerM: 0.3, outUsdPerM: 1.2 },
+	// ADR-034 — DeepSeek V4 variants. Pricing from OpenRouter model cards as
+	// of 2026-05-14. Both support 1M context. Per the ADR's "Engines play 2"
+	// the actual telemetry will calibrate these against `cost_usd` over the
+	// trailing 7-day window; alert at >20% divergence.
+	'deepseek-v4-flash': { inUsdPerM: 0.126, outUsdPerM: 0.252 },
+	'deepseek-v4-pro': { inUsdPerM: 0.435, outUsdPerM: 0.87 },
 };
 
 let schemaReady = false;
