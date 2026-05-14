@@ -14,13 +14,19 @@
 	import RenderedMarkdown from '../RenderedMarkdown.svelte';
 	import DecisionActions from './DecisionActions.svelte';
 
+	interface NoteLink {
+		raw: string;
+		resolved?: string;
+		embed?: boolean;
+	}
+
 	interface NotePayload {
 		path: string;
 		title: string;
 		meta: Record<string, unknown>;
 		rendered: string;
 		contentIsRtl?: boolean;
-		links?: string[];
+		links?: NoteLink[];
 		backlinks?: string[];
 	}
 
@@ -33,6 +39,12 @@
 	}
 
 	let { path, onClose, onTransition }: Props = $props();
+
+	/** Internal navigation state — mirrors `path` from the parent on open,
+	 *  but lets in-drawer link clicks (cross-project panel) swap to another
+	 *  note without closing. Reset to `path` whenever the prop changes so
+	 *  the parent stays in control of open/close. */
+	let currentPath = $state<string | null>(null);
 
 	let note = $state<NotePayload | null>(null);
 	let loading = $state(false);
@@ -48,6 +60,73 @@
 	const status = $derived(note ? String(note.meta.status ?? '').toLowerCase() : '');
 	const isProposed = $derived(status === 'proposed');
 	const isAccepted = $derived(status === 'accepted');
+
+	/** Project this note lives in — `projects/<project>/...` → `<project>`,
+	 *  for any other zone returns the zone name (`knowledge`, `inbox`, etc.). */
+	const ownProject = $derived(note ? extractProject(note.path) : '');
+
+	/** Outgoing wikilinks grouped by their target project, EXCLUDING this
+	 *  note's own project. The within-project ones are visible inline in the
+	 *  rendered body, so they don't need a panel. */
+	const outgoingByOtherProject = $derived.by(() => {
+		const map = new Map<string, string[]>();
+		if (!note?.links) return map;
+		for (const link of note.links) {
+			if (!link.resolved || link.embed) continue;
+			const proj = extractProject(link.resolved);
+			if (!proj || proj === ownProject) continue;
+			const arr = map.get(proj) ?? [];
+			arr.push(link.resolved);
+			map.set(proj, arr);
+		}
+		return map;
+	});
+
+	/** Incoming wikilinks (backlinks) grouped by their source project. We show
+	 *  ALL groups (other projects AND own) because backlinks aren't visible
+	 *  in the body — they're inherently a separate read. Other-project bins
+	 *  render first, then own-project. */
+	const incomingByProject = $derived.by(() => {
+		const map = new Map<string, string[]>();
+		if (!note?.backlinks) return map;
+		for (const path of note.backlinks) {
+			const proj = extractProject(path);
+			if (!proj) continue;
+			const arr = map.get(proj) ?? [];
+			arr.push(path);
+			map.set(proj, arr);
+		}
+		return map;
+	});
+
+	const sortedIncomingProjects = $derived.by(() => {
+		const others: string[] = [];
+		const own: string[] = [];
+		for (const proj of incomingByProject.keys()) {
+			if (proj === ownProject) own.push(proj);
+			else others.push(proj);
+		}
+		others.sort();
+		return [...others, ...own];
+	});
+
+	const hasCrossProjectLinks = $derived(
+		outgoingByOtherProject.size > 0 ||
+			Array.from(incomingByProject.keys()).some((p) => p !== ownProject),
+	);
+
+	function extractProject(path: string): string {
+		const parts = path.split('/');
+		// `projects/<slug>/...` (3+ parts) → real project. `projects/index.md`
+		// (zone-root) and other zones (`knowledge/`, `inbox/`, etc.) get the
+		// zone name so they bin together rather than appearing as fake projects.
+		if (parts[0] === 'projects' && parts.length >= 3) return parts[1];
+		return parts[0] || '';
+	}
+
+	function shortName(path: string): string {
+		return path.split('/').pop()?.replace(/\.md$/, '') ?? path;
+	}
 
 	const created = $derived(extractDate(note?.meta.created));
 	const targetDate = $derived(extractDate(note?.meta.target_date));
@@ -103,8 +182,19 @@
 		return () => window.removeEventListener('keydown', handleKeydown);
 	});
 
+	// When the parent changes the prop (open/close or jump to a new note),
+	// reset internal navigation to follow.
 	$effect(() => {
 		const p = path;
+		untrack(() => {
+			currentPath = p;
+		});
+	});
+
+	// Whenever currentPath changes (parent OR internal cross-project click),
+	// fetch the corresponding note.
+	$effect(() => {
+		const p = currentPath;
 		untrack(() => {
 			if (p) load(p);
 			else { note = null; error = ''; }
@@ -353,27 +443,102 @@
 
 				<RenderedMarkdown html={note.rendered ?? ''} rtl={!!note.contentIsRtl} />
 
-				<!-- Backlinks -->
-				{#if note.backlinks && note.backlinks.length > 0}
+				<!-- Cross-project links (Phase 3d) — surfaces wikilinks that
+				     leave/enter this project. Within-project outgoing wikilinks
+				     are visible inline in the body, so we skip those. -->
+				{#if hasCrossProjectLinks}
 					<div class="mt-6 pt-4 border-t border-hub-border">
-						<p class="text-[11px] uppercase tracking-wider text-hub-dim mb-2">
-							Linked from ({note.backlinks.length})
+						<p class="text-[11px] uppercase tracking-wider text-hub-dim mb-3">
+							Cross-project links
 						</p>
-						<ul class="space-y-1 text-xs">
-							{#each note.backlinks.slice(0, 12) as bl}
-								<li>
-									<a
-										href="/vault?path={encodeURIComponent(bl)}"
-										class="text-hub-info hover:text-hub-text font-mono transition-colors"
-									>
-										{bl}
-									</a>
-								</li>
-							{/each}
-							{#if note.backlinks.length > 12}
-								<li class="text-hub-dim">+{note.backlinks.length - 12} more</li>
-							{/if}
-						</ul>
+
+						{#if outgoingByOtherProject.size > 0}
+							<div class="mb-4">
+								<p class="text-[11px] text-hub-dim mb-2">
+									This ADR references {Array.from(outgoingByOtherProject.values()).reduce((n, arr) => n + arr.length, 0)} note{Array.from(outgoingByOtherProject.values()).reduce((n, arr) => n + arr.length, 0) === 1 ? '' : 's'} elsewhere
+								</p>
+								<div class="space-y-2">
+									{#each Array.from(outgoingByOtherProject.entries()).sort((a, b) => a[0].localeCompare(b[0])) as [proj, paths]}
+										<div class="rounded-md border border-hub-border/60 bg-hub-card/40 p-2">
+											<div class="flex items-center gap-2 mb-1.5">
+												<span class="text-[10px] uppercase tracking-wider text-hub-info">→</span>
+												<a href="/projects/{proj}" class="text-xs font-medium text-hub-info hover:text-hub-text transition-colors">
+													{proj}
+												</a>
+												<span class="text-[10px] text-hub-dim">({paths.length})</span>
+											</div>
+											<ul class="space-y-0.5 ml-4 text-xs">
+												{#each paths.slice(0, 6) as p}
+													<li>
+														<button onclick={() => currentPath = p} class="text-hub-text hover:text-hub-info font-mono text-[11px] transition-colors text-left cursor-pointer truncate w-full">
+															{shortName(p)}
+														</button>
+													</li>
+												{/each}
+												{#if paths.length > 6}
+													<li class="text-[11px] text-hub-dim">+{paths.length - 6} more</li>
+												{/if}
+											</ul>
+										</div>
+									{/each}
+								</div>
+							</div>
+						{/if}
+
+						{#if incomingByProject.size > 0}
+							<div>
+								<p class="text-[11px] text-hub-dim mb-2">
+									Referenced by {note.backlinks?.length ?? 0} note{(note.backlinks?.length ?? 0) === 1 ? '' : 's'}
+									{#if Array.from(incomingByProject.keys()).filter((p) => p !== ownProject).length > 0}
+										<span>across {incomingByProject.size} project{incomingByProject.size === 1 ? '' : 's'}</span>
+									{/if}
+								</p>
+								<div class="space-y-2">
+									{#each sortedIncomingProjects as proj}
+										{@const paths = incomingByProject.get(proj) ?? []}
+										{@const isOwn = proj === ownProject}
+										<div class="rounded-md border p-2"
+											class:border-hub-info={!isOwn}
+											class:border-opacity-30={!isOwn}
+											class:bg-hub-info={!isOwn}
+											class:bg-opacity-5={!isOwn}
+											class:border-hub-border={isOwn}
+											class:border-opacity-60={isOwn}
+											class:bg-hub-card={isOwn}
+											class:bg-opacity-40={isOwn}
+										>
+											<div class="flex items-center gap-2 mb-1.5">
+												<span class="text-[10px] uppercase tracking-wider"
+													class:text-hub-info={!isOwn}
+													class:text-hub-dim={isOwn}
+												>←</span>
+												{#if isOwn}
+													<span class="text-xs font-medium text-hub-text">{proj}</span>
+													<span class="text-[10px] text-hub-dim">(same project · {paths.length})</span>
+												{:else}
+													<a href="/projects/{proj}" class="text-xs font-medium text-hub-info hover:text-hub-text transition-colors">
+														{proj}
+													</a>
+													<span class="text-[10px] text-hub-dim">({paths.length})</span>
+												{/if}
+											</div>
+											<ul class="space-y-0.5 ml-4 text-xs">
+												{#each paths.slice(0, 6) as p}
+													<li>
+														<button onclick={() => currentPath = p} class="text-hub-text hover:text-hub-info font-mono text-[11px] transition-colors text-left cursor-pointer truncate w-full">
+															{shortName(p)}
+														</button>
+													</li>
+												{/each}
+												{#if paths.length > 6}
+													<li class="text-[11px] text-hub-dim">+{paths.length - 6} more</li>
+												{/if}
+											</ul>
+										</div>
+									{/each}
+								</div>
+							</div>
+						{/if}
 					</div>
 				{/if}
 			{/if}
