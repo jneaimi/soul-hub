@@ -71,24 +71,53 @@
 		return ((ms - range.startMs) / (range.endMs - range.startMs)) * 100;
 	}
 
-	const monthTicks = $derived.by(() => {
+	/** Adaptive axis ticks. Cadence depends on the visible span so labels
+	 *  never collapse on top of each other:
+	 *  - ≤ 60 days  → weekly (every Monday)
+	 *  - ≤ 180 days → fortnightly (every other Monday)
+	 *  - > 180 days → monthly (1st of each month)
+	 *  Label format also adapts (DD Mon vs Mon 'YY). */
+	const axisTicks = $derived.by(() => {
 		if (!range) return [];
-		const out: { leftPct: number; label: string }[] = [];
+		const out: { leftPct: number; label: string; major: boolean }[] = [];
+		const spanDays = (range.endMs - range.startMs) / 86_400_000;
 		const start = new Date(range.startMs);
-		const end = new Date(range.endMs);
-		const cur = new Date(start.getFullYear(), start.getMonth(), 1);
-		if (cur.getTime() < range.startMs) cur.setMonth(cur.getMonth() + 1);
-		while (cur.getTime() <= range.endMs) {
-			out.push({
-				leftPct: pct(cur.getTime()),
-				label: cur.toLocaleDateString('en', { month: 'short', year: '2-digit' }),
-			});
-			cur.setMonth(cur.getMonth() + 1);
+
+		if (spanDays > 180) {
+			const cur = new Date(start.getFullYear(), start.getMonth(), 1);
+			if (cur.getTime() < range.startMs) cur.setMonth(cur.getMonth() + 1);
+			while (cur.getTime() <= range.endMs) {
+				out.push({
+					leftPct: pct(cur.getTime()),
+					label: cur.toLocaleDateString('en', { month: 'short', year: '2-digit' }),
+					major: cur.getMonth() === 0,
+				});
+				cur.setMonth(cur.getMonth() + 1);
+			}
+		} else {
+			// Week-aligned ticks. Snap to nearest Monday on/after start.
+			const stride = spanDays > 60 ? 14 : 7;
+			const cur = new Date(start);
+			const dow = cur.getDay(); // 0=Sun, 1=Mon, …
+			const daysToMonday = (8 - dow) % 7 || 7; // always advance at least 1 day if already Mon at midnight
+			cur.setDate(cur.getDate() + daysToMonday);
+			cur.setHours(0, 0, 0, 0);
+			while (cur.getTime() <= range.endMs) {
+				out.push({
+					leftPct: pct(cur.getTime()),
+					label: cur.toLocaleDateString('en', { day: 'numeric', month: 'short' }),
+					major: cur.getDate() <= 7, // first Mon of month gets emphasized
+				});
+				cur.setDate(cur.getDate() + stride);
+			}
 		}
 		return out;
 	});
 
 	const todayPct = $derived(range ? pct(TODAY_MS) : 0);
+	const todayLabel = $derived(
+		new Date(TODAY_MS).toLocaleDateString('en', { day: 'numeric', month: 'short' }),
+	);
 
 	function statusFill(status: string): string {
 		if (status === 'shipped') return 'bg-hub-cta/70 group-hover:bg-hub-cta';
@@ -156,23 +185,30 @@
 		<!-- Chart -->
 		<div class="border border-hub-border rounded-lg bg-hub-card/30 overflow-hidden">
 			<!-- Time axis -->
-			<div class="relative h-7 border-b border-hub-border bg-hub-card/40 ml-[140px]">
-				{#each monthTicks as tick}
+			<div class="relative h-9 border-b border-hub-border bg-hub-card/40 ml-[140px]">
+				{#each axisTicks as tick}
 					<div
-						class="absolute top-0 h-full border-l border-hub-border/50"
+						class="absolute top-0 h-full border-l {tick.major ? 'border-hub-border' : 'border-hub-border/50'}"
 						style:left="{tick.leftPct}%"
 					>
-						<span class="absolute top-1.5 left-1.5 text-[10px] text-hub-dim whitespace-nowrap">
+						<span
+							class="absolute top-1.5 left-1.5 text-[10px] whitespace-nowrap {tick.major ? 'text-hub-muted font-medium' : 'text-hub-dim'}"
+						>
 							{tick.label}
 						</span>
 					</div>
 				{/each}
-				<!-- Today marker -->
+				<!-- Today marker + label -->
 				<div
 					class="absolute top-0 h-full border-l-2 border-hub-cta/60"
 					style:left="{todayPct}%"
-					title="Today"
-				></div>
+				>
+					<span
+						class="absolute top-1.5 left-1.5 px-1 rounded text-[10px] font-medium text-hub-cta bg-hub-bg/80 whitespace-nowrap"
+					>
+						Today · {todayLabel}
+					</span>
+				</div>
 			</div>
 
 			<!-- Rows -->
