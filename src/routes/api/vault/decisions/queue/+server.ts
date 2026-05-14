@@ -55,6 +55,10 @@ export const GET: RequestHandler = async () => {
 
 	const rows: QueueRow[] = [];
 	for (const r of decisions) {
+		// Archive zone is excluded — mirrors the filter on /api/vault/projects.
+		// Notes there are reference-only; their `proposed` status is frozen
+		// historical state, not an active decision queue item.
+		if (r.path.startsWith('archive/')) continue;
 		const note = engine.getNote(r.path);
 		if (!note) continue;
 		const status = String(note.meta.status ?? '').toLowerCase();
