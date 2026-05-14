@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { type Workspace, type Suggestion, type GitBranchInfo, fetchWorkspaces, fetchGitBranches, addWorkspaceApi, removeWorkspaceApi, timeAgo } from '$lib/data/workspaces.js';
 	import SystemNotifications from '$lib/components/SystemNotifications.svelte';
 
 	interface DashboardData {
@@ -14,12 +13,6 @@
 		mtime: number;
 	}
 
-	let workspaces = $state<Workspace[]>([]);
-	let suggestions = $state<Suggestion[]>([]);
-	let loading = $state(true);
-	let error = $state('');
-	let filter = $state('');
-	let gitBranches = $state<Record<string, GitBranchInfo>>({});
 	let dashboard = $state<DashboardData | null>(null);
 
 	// Playbooks
@@ -60,32 +53,6 @@
 	}
 	let schedulerTasks = $state<SchedulerTaskSummary[]>([]);
 
-	// Add workspace modal
-	let showAddModal = $state(false);
-	let addingPaths = $state<Set<string>>(new Set());
-
-	// Remove menu
-	let removeMenuOpen = $state<string | null>(null);
-
-	const filtered = $derived(
-		workspaces.filter((w) =>
-			w.name.toLowerCase().includes(filter.toLowerCase())
-		)
-	);
-
-	const visibleWorkspaces = $derived(
-		filtered.slice(0, 7)
-	);
-
-	const typeColorMap: Record<string, string> = {
-		'web-app': 'bg-hub-cta/15 text-hub-cta',
-		pipeline: 'bg-hub-purple/15 text-hub-purple',
-		research: 'bg-hub-info/15 text-hub-info',
-		library: 'bg-hub-warning/15 text-hub-warning',
-		api: 'bg-hub-danger/15 text-hub-danger',
-		unknown: 'bg-hub-dim/15 text-hub-dim',
-	};
-
 	const noteTypeColors: Record<string, string> = {
 		learning: '#10b981',
 		decision: '#f59e0b',
@@ -94,20 +61,6 @@
 		research: '#06b6d4',
 		output: '#3b82f6',
 	};
-
-	async function loadWorkspaces() {
-		error = '';
-		try {
-			const data = await fetchWorkspaces();
-			workspaces = data.workspaces;
-			suggestions = data.suggestions;
-			gitBranches = await fetchGitBranches(data.workspaces);
-		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load workspaces';
-		} finally {
-			loading = false;
-		}
-	}
 
 	async function loadDashboard() {
 		try {
@@ -189,7 +142,6 @@
 				vaultOrphans = data.stats?.orphanNotes ?? 0;
 				vaultUnresolved = data.stats?.unresolvedLinks ?? 0;
 				vaultZones = data.stats?.notesByZone ?? {};
-				// Count notes modified in last 7 days
 				const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
 				try {
 					const allRes = await fetch('/api/vault/recent?limit=200');
@@ -287,7 +239,8 @@
 	}
 
 	onMount(() => {
-		loadWorkspaces();
+		// ADR-037: workspace listing moved to /workspaces, vault projects to /projects.
+		// Homepage is now a pure dashboard — bento tiles only, no blocking loaders.
 		refreshVolatile();
 
 		const onVisible = () => { if (document.visibilityState === 'visible') refreshVolatile(); };
@@ -314,650 +267,326 @@
 			vaultEventSource?.close();
 		};
 	});
-
-	async function addWorkspace(path: string) {
-		addingPaths = new Set([...addingPaths, path]);
-		try {
-			await addWorkspaceApi(path);
-			await loadWorkspaces();
-		} catch {
-			error = 'Failed to add workspace';
-		} finally {
-			const next = new Set(addingPaths);
-			next.delete(path);
-			addingPaths = next;
-		}
-	}
-
-	async function addAllSuggestions() {
-		for (const s of suggestions) {
-			await addWorkspace(s.path);
-		}
-		showAddModal = false;
-	}
-
-	async function removeWorkspace(path: string) {
-		removeMenuOpen = null;
-		try {
-			await removeWorkspaceApi(path);
-			await loadWorkspaces();
-		} catch {
-			error = 'Failed to remove workspace';
-		}
-	}
-
-	function handleClickOutside() {
-		if (removeMenuOpen) removeMenuOpen = null;
-	}
 </script>
 
 <svelte:head>
 	<title>Soul Hub</title>
 </svelte:head>
 
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="h-full flex flex-col" onclick={handleClickOutside}>
-	<!-- Header — global nav lives in AppHeader (root layout). Homepage keeps only its own actions. -->
-	<header class="flex-shrink-0 px-4 sm:px-6 py-3 border-b border-hub-border">
-		<div class="max-w-3xl mx-auto flex items-center justify-end gap-2">
-			{#if suggestions.length > 0}
-				<button
-					onclick={() => { showAddModal = true; }}
-					class="hidden sm:inline-flex px-3 py-1.5 rounded-lg border border-hub-border text-hub-muted text-sm hover:text-hub-text hover:border-hub-dim transition-colors cursor-pointer"
-				>
-					Link workspace
-				</button>
-			{/if}
-			<a
-				href="/new"
-				class="px-3 py-1.5 rounded-lg bg-hub-cta text-black font-medium text-sm hover:bg-hub-cta-hover transition-colors cursor-pointer inline-flex items-center gap-1"
-				aria-label="Create new workspace"
-			>
-				<span class="sm:hidden" aria-hidden="true">+</span>
-				<span class="hidden sm:inline">+ New workspace</span>
-			</a>
-		</div>
-	</header>
-
-	<!-- Main -->
+<div class="h-full flex flex-col">
+	<!-- Main — bento dashboard. Workspaces live at /workspaces; vault projects at /projects. -->
 	<div class="flex-1 overflow-y-auto px-4 sm:px-6 py-6 sm:py-8">
 		<div class="max-w-3xl mx-auto">
-			{#if loading}
-				<div class="flex items-center justify-center py-20">
-					<div class="text-hub-muted text-sm">Loading...</div>
-				</div>
-			{:else}
-				{#if error}
-					<div class="bg-hub-danger/10 border border-hub-danger/30 rounded-lg px-4 py-3 text-sm text-hub-danger mb-6 flex items-center justify-between">
-						<span>{error}</span>
-						<button onclick={() => { error = ''; loadWorkspaces(); }} class="text-xs underline cursor-pointer">Retry</button>
-					</div>
-				{/if}
+			<!-- System Notifications -->
+			<SystemNotifications />
 
-				<!-- System Notifications -->
-				<SystemNotifications />
-
-				<!-- First-time: no workspaces -->
-				{#if workspaces.length === 0 && suggestions.length > 0}
-					<div class="border border-hub-cta/30 rounded-xl p-6 mb-8">
-						<div class="flex items-start justify-between mb-4">
-							<div>
-								<h2 class="text-base font-semibold text-hub-text">
-									{suggestions.length} workspace{suggestions.length === 1 ? '' : 's'} found in ~/dev/
-								</h2>
-								<p class="text-sm text-hub-muted mt-1">Add them to start managing from Soul Hub.</p>
-							</div>
-							<button
-								onclick={addAllSuggestions}
-								class="px-4 py-2 rounded-lg bg-hub-cta text-black font-medium text-sm hover:bg-hub-cta-hover transition-colors cursor-pointer flex-shrink-0"
-							>
-								Add All
-							</button>
-						</div>
-						<div class="space-y-2">
-							{#each suggestions as suggestion}
-								<div class="flex items-center justify-between py-2 px-3 rounded-lg bg-hub-surface/50">
-									<div class="flex items-center gap-2 min-w-0">
-										<span class="text-sm font-medium text-hub-text truncate">{suggestion.name}</span>
-										{#if suggestion.hasGit}
-											<span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-hub-purple/15 text-hub-purple">git</span>
-										{/if}
-									</div>
-									<button
-										onclick={() => addWorkspace(suggestion.path)}
-										disabled={addingPaths.has(suggestion.path)}
-										class="px-3 py-1 rounded text-xs font-medium bg-hub-cta/15 text-hub-cta hover:bg-hub-cta/25 transition-colors cursor-pointer disabled:opacity-50 flex-shrink-0"
-									>
-										{addingPaths.has(suggestion.path) ? 'Adding...' : 'Add'}
-									</button>
-								</div>
-							{/each}
-						</div>
-					</div>
-				{:else if workspaces.length === 0}
-					<div class="flex flex-col items-center justify-center py-20">
-						<p class="text-hub-muted text-sm mb-3">No workspaces yet</p>
-						<a href="/new" class="text-sm text-hub-cta hover:text-hub-cta-hover transition-colors cursor-pointer">Create your first workspace</a>
-					</div>
-				{/if}
-
-				<!-- Workspaces -->
-				{#if workspaces.length > 0}
-					<div class="mb-8 sm:mb-10">
-						<div class="flex items-center justify-between mb-4">
-							<h2 class="text-base font-semibold text-hub-text">
-								Workspaces
-								<span class="text-hub-dim font-normal ml-1">({workspaces.length})</span>
-							</h2>
-							<div class="flex items-center gap-3">
-								{#if suggestions.length > 0}
-									<button
-										onclick={() => { showAddModal = true; }}
-										class="text-xs text-hub-dim hover:text-hub-muted transition-colors cursor-pointer sm:hidden"
-									>
-										Add existing
-									</button>
-								{/if}
-								{#if filtered.length > 7}
-									<a
-										href="/workspaces"
-										class="text-xs text-hub-info hover:text-hub-text transition-colors cursor-pointer"
-									>
-										View all
-									</a>
-								{/if}
-							</div>
-						</div>
-
-						<!-- Filter (only when many workspaces) -->
-						{#if workspaces.length > 5}
-							<div class="relative mb-3">
-								<svg class="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-hub-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-									<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-								</svg>
-								<input
-									bind:value={filter}
-									type="text"
-									placeholder="Filter..."
-									class="w-full bg-transparent border border-hub-border rounded-lg pl-9 pr-3 py-2 text-xs text-hub-text placeholder:text-hub-dim focus:outline-none focus:border-hub-cta/50 transition-colors"
-								/>
-							</div>
-						{/if}
-
-						<!-- Workspace list -->
-						<div class="divide-y divide-hub-border/60">
-							{#each visibleWorkspaces as workspace}
-								<div class="group relative">
-									<a
-										href="/workspace/{workspace.name}"
-										class="flex items-center gap-3 py-3 sm:py-3.5 hover:bg-hub-card/30 -mx-2 px-2 rounded-lg transition-colors cursor-pointer"
-									>
-										<!-- Desktop: single row -->
-										<div class="hidden sm:flex items-center gap-3 flex-1 min-w-0">
-											<span class="font-medium text-sm text-hub-text group-hover:text-hub-cta transition-colors truncate">
-												{workspace.name}
-											</span>
-											<span class="flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider {typeColorMap[workspace.type] || typeColorMap.unknown}">
-												{workspace.type}
-											</span>
-											{#if gitBranches[workspace.name]}
-												<span class="flex-shrink-0 text-[11px] font-mono text-hub-purple">
-													{gitBranches[workspace.name].branch}
-													{#if gitBranches[workspace.name].dirty}
-														<span class="inline-block w-1.5 h-1.5 rounded-full bg-hub-warning ml-1 -mb-px"></span>
-													{/if}
-												</span>
-											{/if}
-											<span class="ml-auto flex-shrink-0 text-[11px] text-hub-dim">{timeAgo(workspace.lastModified)}</span>
-										</div>
-
-										<!-- Mobile: two lines -->
-										<div class="flex sm:hidden flex-col gap-1 flex-1 min-w-0">
-											<span class="font-medium text-sm text-hub-text group-hover:text-hub-cta transition-colors truncate">
-												{workspace.name}
-											</span>
-											<div class="flex items-center gap-2 text-[11px]">
-												<span class="px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider {typeColorMap[workspace.type] || typeColorMap.unknown}">
-													{workspace.type}
-												</span>
-												{#if gitBranches[workspace.name]}
-													<span class="font-mono text-hub-purple truncate">
-														{gitBranches[workspace.name].branch}
-														{#if gitBranches[workspace.name].dirty}
-															<span class="inline-block w-1.5 h-1.5 rounded-full bg-hub-warning ml-0.5 -mb-px"></span>
-														{/if}
-													</span>
-												{/if}
-												<span class="ml-auto text-hub-dim flex-shrink-0">{timeAgo(workspace.lastModified)}</span>
-											</div>
-										</div>
-									</a>
-
-									<!-- Remove button (desktop hover) -->
-									{#if workspace.devPath}
-										<div class="absolute top-1/2 -translate-y-1/2 right-0 hidden sm:block">
-											<button
-												onclick={(e) => { e.preventDefault(); e.stopPropagation(); removeMenuOpen = removeMenuOpen === workspace.name ? null : workspace.name; }}
-												class="p-1.5 rounded-md text-hub-dim opacity-0 group-hover:opacity-100 hover:text-hub-muted hover:bg-hub-card transition-all cursor-pointer"
-												aria-label="Options"
-											>
-												<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-													<circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/>
-												</svg>
-											</button>
-											{#if removeMenuOpen === workspace.name}
-												<div class="absolute right-0 top-8 z-10 bg-hub-surface border border-hub-border rounded-lg shadow-xl py-1 min-w-[120px]">
-													<button
-														onclick={(e) => { e.preventDefault(); e.stopPropagation(); removeWorkspace(workspace.devPath!); }}
-														class="w-full text-left px-3 py-1.5 text-xs text-hub-danger hover:bg-hub-danger/10 transition-colors cursor-pointer flex items-center gap-2"
-													>
-														<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg>
-														Remove
-													</button>
-												</div>
-											{/if}
-										</div>
-									{/if}
-								</div>
-							{/each}
-						</div>
-
-						{#if filtered.length === 0 && workspaces.length > 0}
-							<p class="text-hub-dim text-xs py-6 text-center">No workspaces match "{filter}"</p>
-						{/if}
-					</div>
-				{/if}
-
-					<!-- Bento layout — Vault is the hero (4 cols), Pipelines + Playbooks/Files balance the rows -->
-					<div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-4">
-						<!-- Pipelines -->
-						<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
-							<div class="flex items-center justify-between mb-3">
-								<h3 class="text-sm font-semibold text-hub-text">
-									Pipelines
-									{#if dashboard?.pipelineSummary}
-										<span class="text-hub-dim font-normal ml-1">({dashboard.pipelineSummary.total})</span>
-									{/if}
-								</h3>
-								<div class="flex items-center gap-2">
-									<a
-										href="/pipelines/builder?type=pipeline"
-										class="w-7 h-7 grid place-items-center rounded-md text-hub-dim hover:text-hub-cta hover:bg-hub-surface transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50"
-										aria-label="New pipeline"
-										title="New pipeline"
-									>
-										<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-									</a>
-									<a href="/pipelines" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">View all</a>
-								</div>
-							</div>
-							{#if dashboard?.pipelineSummary && dashboard.pipelineSummary.items.length > 0}
-								<div class="space-y-1.5">
-									{#each dashboard.pipelineSummary.items.slice(0, 5) as item}
-										<a
-											href="/pipelines?name={encodeURIComponent(item.name)}"
-											class="flex items-center justify-between py-1.5 px-2 rounded-lg hover:bg-hub-surface transition-colors cursor-pointer group"
-										>
-											<span class="text-xs text-hub-muted group-hover:text-hub-text transition-colors truncate">{item.name}</span>
-											<span class="flex-shrink-0 w-2 h-2 rounded-full bg-hub-cta/60"></span>
-										</a>
-									{/each}
-								</div>
-							{:else}
-								<p class="text-xs text-hub-dim py-3 text-center">No pipelines yet</p>
+			<!-- Bento layout — Vault is the hero (4 cols), Pipelines + Playbooks/Files balance the rows -->
+			<div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-4">
+				<!-- Pipelines -->
+				<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
+					<div class="flex items-center justify-between mb-3">
+						<h3 class="text-sm font-semibold text-hub-text">
+							Pipelines
+							{#if dashboard?.pipelineSummary}
+								<span class="text-hub-dim font-normal ml-1">({dashboard.pipelineSummary.total})</span>
 							{/if}
-						</div>
-
-						<!-- Vault (hero) -->
-						<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-4">
-							<div class="flex items-center justify-between mb-3">
-								<div class="flex items-center gap-1.5">
-									<h3 class="text-sm font-semibold text-hub-text">
-										Vault
-										{#if vaultNoteCount > 0}
-											<span class="text-hub-dim font-normal ml-1">({vaultNoteCount})</span>
-										{/if}
-									</h3>
-									<span class="w-2 h-2 rounded-full {vaultUnresolved > 0 ? 'bg-amber-400' : 'bg-emerald-400'}"></span>
-								</div>
-								<div class="flex items-center gap-2">
-									<a
-										href="/vault?new=1"
-										class="w-7 h-7 grid place-items-center rounded-md text-hub-dim hover:text-hub-cta hover:bg-hub-surface transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50"
-										aria-label="New note"
-										title="New note"
-									>
-										<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-									</a>
-									<a href="/vault" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">Open vault</a>
-								</div>
-							</div>
-
-							<!-- Zone distribution -->
-							{#if vaultNoteCount > 0 && Object.keys(vaultZones).length > 0}
-								<div class="space-y-1 mb-3">
-									{#each zoneOrder.filter(z => vaultZones[z]) as zone}
-										{@const count = vaultZones[zone] ?? 0}
-										{@const pct = Math.round((count / vaultNoteCount) * 100)}
-										<div class="flex items-center gap-2">
-											<span class="text-[10px] text-hub-dim w-16 text-right truncate">{zone}</span>
-											<div class="flex-1 h-1.5 rounded-full bg-hub-bg overflow-hidden">
-												<div
-													class="h-full rounded-full transition-all duration-500"
-													style="width: {pct}%; background-color: {zoneColors[zone] ?? '#64748b'}"
-												></div>
-											</div>
-											<span class="text-[10px] text-hub-dim w-6">{count}</span>
-										</div>
-									{/each}
-								</div>
-							{/if}
-
-							<!-- Recent notes -->
-							{#if vaultRecent.length > 0}
-								<div class="space-y-1.5">
-									{#each vaultRecent as note}
-										{@const noteType = note.meta?.type ?? 'unknown'}
-										<a
-											href="/vault?note={encodeURIComponent(note.path)}"
-											class="flex items-center gap-2 py-1.5 px-2 rounded-lg hover:bg-hub-surface transition-colors cursor-pointer group"
-										>
-											<span
-												class="flex-shrink-0 w-2 h-2 rounded-full"
-												style="background-color: {noteTypeColors[noteType] ?? '#64748b'}"
-											></span>
-											<span class="text-xs text-hub-muted group-hover:text-hub-text transition-colors truncate">{note.title}</span>
-										</a>
-									{/each}
-								</div>
-							{:else}
-								<p class="text-xs text-hub-dim py-3 text-center">No notes yet</p>
-							{/if}
-
-							<!-- Health + activity -->
-							<div class="flex items-center gap-3 mt-2 text-[10px]">
-								{#if vaultThisWeek > 0}
-									<span class="text-hub-cta">+{vaultThisWeek} this week</span>
-								{/if}
-								{#if vaultUnresolved > 0}
-									<span class="text-hub-warning">{vaultUnresolved} broken</span>
-								{/if}
-								{#if vaultOrphans > 0}
-									<span class="text-hub-dim">{vaultOrphans} orphans</span>
-								{/if}
-								{#if vaultUnresolved === 0 && vaultOrphans === 0 && vaultThisWeek === 0}
-									<span class="text-emerald-400">Healthy</span>
-								{/if}
-							</div>
-						</div>
-
-						<!-- Orchestration (ADR-016 — Agents · Skills · Tools · Metrics consolidated) -->
-						<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
-							<div class="flex items-center justify-between mb-3">
-								<div class="flex items-center gap-2">
-									<h3 class="text-sm font-semibold text-hub-text">Orchestration</h3>
-								</div>
-								<div class="flex items-center gap-2">
-									<a href="/orchestration" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer" title="Agents · Skills · Tools · Metrics — all dispatchable layers (ADR-016)">Open</a>
-								</div>
-							</div>
+						</h3>
+						<div class="flex items-center gap-2">
 							<a
-								href="/orchestration"
-								class="block group"
-								title="Agents · Skills · Tools · Metrics"
+								href="/pipelines/builder?type=pipeline"
+								class="w-7 h-7 grid place-items-center rounded-md text-hub-dim hover:text-hub-cta hover:bg-hub-surface transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50"
+								aria-label="New pipeline"
+								title="New pipeline"
 							>
-								<div class="flex items-center justify-around py-2">
-									<div class="text-center">
-										<div class="text-lg font-semibold text-hub-purple group-hover:text-hub-info transition-colors">{agentCount}</div>
-										<div class="text-[10px] text-hub-dim font-mono">AGENTS</div>
-									</div>
-									<div class="text-center">
-										<div class="text-lg font-semibold text-hub-warning group-hover:text-hub-info transition-colors">{skillCount}</div>
-										<div class="text-[10px] text-hub-dim font-mono">SKILLS</div>
-									</div>
-									<div class="text-center">
-										<div class="text-lg font-semibold text-emerald-400 group-hover:text-hub-info transition-colors">{toolCount}</div>
-										<div class="text-[10px] text-hub-dim font-mono">TOOLS</div>
-									</div>
-									<div class="text-center">
-										<div class="text-lg font-semibold text-hub-info">{recentToolCalls}</div>
-										<div class="text-[10px] text-hub-dim font-mono">RECENT</div>
-									</div>
-								</div>
-								<div class="mt-2 pt-2 border-t border-hub-border/50 text-[10px] text-hub-dim text-center">
-									All dispatchable layers
-								</div>
+								<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
 							</a>
+							<a href="/pipelines" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">View all</a>
 						</div>
-
-						<!-- Scheduler -->
-						<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
-							<div class="flex items-center justify-between mb-3">
-								<div class="flex items-center gap-2">
-									<h3 class="text-sm font-semibold text-hub-text">Scheduler</h3>
-									{#if schedulerSummary.total > 0}
-										<span class="text-[11px] text-hub-dim bg-hub-bg px-1.5 py-0.5 rounded">{schedulerSummary.total}</span>
-									{/if}
-								</div>
-								<div class="flex items-center gap-2">
-									<a
-										href="/scheduler/builder"
-										class="w-7 h-7 grid place-items-center rounded-md text-hub-dim hover:text-hub-cta hover:bg-hub-surface transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50"
-										aria-label="New task"
-										title="New scheduled task"
-									>
-										<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-									</a>
-									<a href="/scheduler" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">View all</a>
-								</div>
-							</div>
-							{#if schedulerTasks.length === 0}
-								<p class="text-xs text-hub-dim py-3 text-center">No tasks yet</p>
-							{:else}
-								<div class="space-y-1.5">
-									{#each schedulerTasks.slice(0, 4) as t (t.id)}
-										<a
-											href="/scheduler"
-											class="flex items-center justify-between py-1 px-2 rounded-lg hover:bg-hub-surface transition-colors cursor-pointer group"
-										>
-											<span class="text-xs text-hub-muted group-hover:text-hub-text transition-colors truncate">{t.id}</span>
-											<span
-												class="flex-shrink-0 w-2 h-2 rounded-full {!t.enabled ? 'bg-hub-dim' : t.lastStatus === 'error' ? 'bg-hub-danger' : t.lastStatus === 'success' ? 'bg-hub-cta/70' : 'bg-hub-info/60'}"
-												title={t.enabled ? `${t.lastStatus ?? 'scheduled'}` : 'disabled'}
-											></span>
-										</a>
-									{/each}
-								</div>
-								<div class="mt-3 pt-2 border-t border-hub-border/50 flex items-center justify-between text-[10px] text-hub-dim">
-									<span>{schedulerSummary.active} active{schedulerSummary.failed > 0 ? ` · ${schedulerSummary.failed} failed` : ''}</span>
-									<span>next {schedulerSummary.nextLabel}</span>
-								</div>
-							{/if}
+					</div>
+					{#if dashboard?.pipelineSummary && dashboard.pipelineSummary.items.length > 0}
+						<div class="space-y-1.5">
+							{#each dashboard.pipelineSummary.items.slice(0, 5) as item}
+								<a
+									href="/pipelines?name={encodeURIComponent(item.name)}"
+									class="flex items-center justify-between py-1.5 px-2 rounded-lg hover:bg-hub-surface transition-colors cursor-pointer group"
+								>
+									<span class="text-xs text-hub-muted group-hover:text-hub-text transition-colors truncate">{item.name}</span>
+									<span class="flex-shrink-0 w-2 h-2 rounded-full bg-hub-cta/60"></span>
+								</a>
+							{/each}
 						</div>
+					{:else}
+						<p class="text-xs text-hub-dim py-3 text-center">No pipelines yet</p>
+					{/if}
+				</div>
 
-						<!-- Playbooks -->
-						<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
-							<div class="flex items-center justify-between mb-3">
-								<div class="flex items-center gap-2">
-									<h3 class="text-sm font-semibold text-hub-text">Playbooks</h3>
-									{#if playbookCount > 0}
-										<span class="text-[11px] text-hub-dim bg-hub-bg px-1.5 py-0.5 rounded">{playbookCount}</span>
-									{/if}
-								</div>
-								<div class="flex items-center gap-2">
-									<a
-										href="/playbooks/builder"
-										class="w-7 h-7 grid place-items-center rounded-md text-hub-dim hover:text-hub-cta hover:bg-hub-surface transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50"
-										aria-label="New playbook"
-										title="New playbook"
-									>
-										<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-									</a>
-									<a href="/playbooks" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">View all</a>
-								</div>
-							</div>
-							{#if playbookItems.length === 0}
-								<p class="text-xs text-hub-dim py-3 text-center">No playbooks yet</p>
-							{:else}
-								<div class="space-y-1.5">
-									{#each playbookItems.slice(0, 3) as pb}
-										<a
-											href="/playbooks/{encodeURIComponent(pb.name)}"
-											class="block py-1.5 px-2 rounded-lg hover:bg-hub-surface transition-colors cursor-pointer group"
-										>
-											<div class="text-xs text-hub-muted group-hover:text-hub-text transition-colors">{pb.name}</div>
-											<div class="text-[11px] text-hub-dim mt-0.5">
-												{pb.roles.length} role{pb.roles.length === 1 ? '' : 's'}, {pb.phases.length} phase{pb.phases.length === 1 ? '' : 's'}
-											</div>
-										</a>
-									{/each}
-								</div>
-							{/if}
-							{#if Object.keys(playbookProviders).length > 0}
-								<div class="mt-3 pt-2 border-t border-hub-border/50 flex gap-3 text-[10px] text-hub-dim">
-									{#each Object.entries(playbookProviders) as [name, available]}
-										<span class="flex items-center gap-1">
-											<span class="w-1.5 h-1.5 rounded-full {available ? 'bg-hub-cta' : 'bg-hub-border'}"></span>
-											{name}
-										</span>
-									{/each}
-								</div>
-							{/if}
-						</div>
-
-						<!-- Files Explorer -->
-						<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
-							<div class="flex items-center justify-between mb-3">
-								<h3 class="text-sm font-semibold text-hub-text">
-									Files
-									{#if explorerRoots.length > 0}
-										<span class="text-hub-dim font-normal ml-1">({explorerRoots.length})</span>
-									{/if}
-								</h3>
-								<div class="flex items-center gap-2">
-									<a
-										href="/settings#explorer-roots"
-										class="w-7 h-7 grid place-items-center rounded-md text-hub-dim hover:text-hub-cta hover:bg-hub-surface transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50"
-										aria-label="Add root"
-										title="Add root in Settings"
-									>
-										<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-									</a>
-									<a href="/files" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">Open</a>
-								</div>
-							</div>
-							{#if explorerRoots.length === 0}
-								<p class="text-xs text-hub-dim py-3 text-center">
-									No folders yet.
-									<a href="/settings" class="text-hub-cta hover:underline cursor-pointer">Add one</a>
-									to start browsing.
-								</p>
-							{:else}
-								<div class="space-y-1.5">
-									{#each explorerRoots.slice(0, 5) as root}
-										<a
-											href="/files"
-											class="flex items-center gap-2 py-1.5 px-2 rounded-lg hover:bg-hub-surface transition-colors cursor-pointer group"
-										>
-											<svg class="w-3.5 h-3.5 text-hub-cta/70 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-												<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-											</svg>
-											<span class="text-xs text-hub-muted group-hover:text-hub-text transition-colors truncate">{root.name}</span>
-											<span class="text-[10px] text-hub-dim/70 ml-auto truncate font-mono">{root.path}</span>
-										</a>
-									{/each}
-								</div>
-								{#if explorerRoots.length > 5}
-									<div class="mt-2 text-[10px] text-hub-dim text-center">
-										+{explorerRoots.length - 5} more
-									</div>
+				<!-- Vault (hero) -->
+				<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-4">
+					<div class="flex items-center justify-between mb-3">
+						<div class="flex items-center gap-1.5">
+							<h3 class="text-sm font-semibold text-hub-text">
+								Vault
+								{#if vaultNoteCount > 0}
+									<span class="text-hub-dim font-normal ml-1">({vaultNoteCount})</span>
 								{/if}
-							{/if}
+							</h3>
+							<span class="w-2 h-2 rounded-full {vaultUnresolved > 0 ? 'bg-amber-400' : 'bg-emerald-400'}"></span>
+						</div>
+						<div class="flex items-center gap-2">
+							<a
+								href="/vault?new=1"
+								class="w-7 h-7 grid place-items-center rounded-md text-hub-dim hover:text-hub-cta hover:bg-hub-surface transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50"
+								aria-label="New note"
+								title="New note"
+							>
+								<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+							</a>
+							<a href="/vault" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">Open vault</a>
 						</div>
 					</div>
 
-					<!-- Suggestions hint (subtle) -->
-					{#if suggestions.length > 0 && projects.length > 0}
-						<div class="mt-6 flex items-center justify-center">
-							<button
-								onclick={() => { showAddModal = true; }}
-								class="text-xs text-hub-dim hover:text-hub-muted transition-colors cursor-pointer"
-							>
-								{suggestions.length} unmanaged project{suggestions.length === 1 ? '' : 's'} found &middot; Add
-							</button>
+					<!-- Zone distribution -->
+					{#if vaultNoteCount > 0 && Object.keys(vaultZones).length > 0}
+						<div class="space-y-1 mb-3">
+							{#each zoneOrder.filter(z => vaultZones[z]) as zone}
+								{@const count = vaultZones[zone] ?? 0}
+								{@const pct = Math.round((count / vaultNoteCount) * 100)}
+								<div class="flex items-center gap-2">
+									<span class="text-[10px] text-hub-dim w-16 text-right truncate">{zone}</span>
+									<div class="flex-1 h-1.5 rounded-full bg-hub-bg overflow-hidden">
+										<div
+											class="h-full rounded-full transition-all duration-500"
+											style="width: {pct}%; background-color: {zoneColors[zone] ?? '#64748b'}"
+										></div>
+									</div>
+									<span class="text-[10px] text-hub-dim w-6">{count}</span>
+								</div>
+							{/each}
 						</div>
 					{/if}
-			{/if}
+
+					<!-- Recent notes -->
+					{#if vaultRecent.length > 0}
+						<div class="space-y-1.5">
+							{#each vaultRecent as note}
+								{@const noteType = note.meta?.type ?? 'unknown'}
+								<a
+									href="/vault?note={encodeURIComponent(note.path)}"
+									class="flex items-center gap-2 py-1.5 px-2 rounded-lg hover:bg-hub-surface transition-colors cursor-pointer group"
+								>
+									<span
+										class="flex-shrink-0 w-2 h-2 rounded-full"
+										style="background-color: {noteTypeColors[noteType] ?? '#64748b'}"
+									></span>
+									<span class="text-xs text-hub-muted group-hover:text-hub-text transition-colors truncate">{note.title}</span>
+								</a>
+							{/each}
+						</div>
+					{:else}
+						<p class="text-xs text-hub-dim py-3 text-center">No notes yet</p>
+					{/if}
+
+					<!-- Health + activity -->
+					<div class="flex items-center gap-3 mt-2 text-[10px]">
+						{#if vaultThisWeek > 0}
+							<span class="text-hub-cta">+{vaultThisWeek} this week</span>
+						{/if}
+						{#if vaultUnresolved > 0}
+							<span class="text-hub-warning">{vaultUnresolved} broken</span>
+						{/if}
+						{#if vaultOrphans > 0}
+							<span class="text-hub-dim">{vaultOrphans} orphans</span>
+						{/if}
+						{#if vaultUnresolved === 0 && vaultOrphans === 0 && vaultThisWeek === 0}
+							<span class="text-emerald-400">Healthy</span>
+						{/if}
+					</div>
+				</div>
+
+				<!-- Orchestration (ADR-016 — Agents · Skills · Tools · Metrics consolidated) -->
+				<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
+					<div class="flex items-center justify-between mb-3">
+						<div class="flex items-center gap-2">
+							<h3 class="text-sm font-semibold text-hub-text">Orchestration</h3>
+						</div>
+						<div class="flex items-center gap-2">
+							<a href="/orchestration" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer" title="Agents · Skills · Tools · Metrics — all dispatchable layers (ADR-016)">Open</a>
+						</div>
+					</div>
+					<a
+						href="/orchestration"
+						class="block group"
+						title="Agents · Skills · Tools · Metrics"
+					>
+						<div class="flex items-center justify-around py-2">
+							<div class="text-center">
+								<div class="text-lg font-semibold text-hub-purple group-hover:text-hub-info transition-colors">{agentCount}</div>
+								<div class="text-[10px] text-hub-dim font-mono">AGENTS</div>
+							</div>
+							<div class="text-center">
+								<div class="text-lg font-semibold text-hub-warning group-hover:text-hub-info transition-colors">{skillCount}</div>
+								<div class="text-[10px] text-hub-dim font-mono">SKILLS</div>
+							</div>
+							<div class="text-center">
+								<div class="text-lg font-semibold text-emerald-400 group-hover:text-hub-info transition-colors">{toolCount}</div>
+								<div class="text-[10px] text-hub-dim font-mono">TOOLS</div>
+							</div>
+							<div class="text-center">
+								<div class="text-lg font-semibold text-hub-info">{recentToolCalls}</div>
+								<div class="text-[10px] text-hub-dim font-mono">RECENT</div>
+							</div>
+						</div>
+						<div class="mt-2 pt-2 border-t border-hub-border/50 text-[10px] text-hub-dim text-center">
+							All dispatchable layers
+						</div>
+					</a>
+				</div>
+
+				<!-- Scheduler -->
+				<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
+					<div class="flex items-center justify-between mb-3">
+						<div class="flex items-center gap-2">
+							<h3 class="text-sm font-semibold text-hub-text">Scheduler</h3>
+							{#if schedulerSummary.total > 0}
+								<span class="text-[11px] text-hub-dim bg-hub-bg px-1.5 py-0.5 rounded">{schedulerSummary.total}</span>
+							{/if}
+						</div>
+						<div class="flex items-center gap-2">
+							<a
+								href="/scheduler/builder"
+								class="w-7 h-7 grid place-items-center rounded-md text-hub-dim hover:text-hub-cta hover:bg-hub-surface transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50"
+								aria-label="New task"
+								title="New scheduled task"
+							>
+								<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+							</a>
+							<a href="/scheduler" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">View all</a>
+						</div>
+					</div>
+					{#if schedulerTasks.length === 0}
+						<p class="text-xs text-hub-dim py-3 text-center">No tasks yet</p>
+					{:else}
+						<div class="space-y-1.5">
+							{#each schedulerTasks.slice(0, 4) as t (t.id)}
+								<a
+									href="/scheduler"
+									class="flex items-center justify-between py-1 px-2 rounded-lg hover:bg-hub-surface transition-colors cursor-pointer group"
+								>
+									<span class="text-xs text-hub-muted group-hover:text-hub-text transition-colors truncate">{t.id}</span>
+									<span
+										class="flex-shrink-0 w-2 h-2 rounded-full {!t.enabled ? 'bg-hub-dim' : t.lastStatus === 'error' ? 'bg-hub-danger' : t.lastStatus === 'success' ? 'bg-hub-cta/70' : 'bg-hub-info/60'}"
+										title={t.enabled ? `${t.lastStatus ?? 'scheduled'}` : 'disabled'}
+									></span>
+								</a>
+							{/each}
+						</div>
+						<div class="mt-3 pt-2 border-t border-hub-border/50 flex items-center justify-between text-[10px] text-hub-dim">
+							<span>{schedulerSummary.active} active{schedulerSummary.failed > 0 ? ` · ${schedulerSummary.failed} failed` : ''}</span>
+							<span>next {schedulerSummary.nextLabel}</span>
+						</div>
+					{/if}
+				</div>
+
+				<!-- Playbooks -->
+				<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
+					<div class="flex items-center justify-between mb-3">
+						<div class="flex items-center gap-2">
+							<h3 class="text-sm font-semibold text-hub-text">Playbooks</h3>
+							{#if playbookCount > 0}
+								<span class="text-[11px] text-hub-dim bg-hub-bg px-1.5 py-0.5 rounded">{playbookCount}</span>
+							{/if}
+						</div>
+						<div class="flex items-center gap-2">
+							<a
+								href="/playbooks/builder"
+								class="w-7 h-7 grid place-items-center rounded-md text-hub-dim hover:text-hub-cta hover:bg-hub-surface transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50"
+								aria-label="New playbook"
+								title="New playbook"
+							>
+								<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+							</a>
+							<a href="/playbooks" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">View all</a>
+						</div>
+					</div>
+					{#if playbookItems.length === 0}
+						<p class="text-xs text-hub-dim py-3 text-center">No playbooks yet</p>
+					{:else}
+						<div class="space-y-1.5">
+							{#each playbookItems.slice(0, 3) as pb}
+								<a
+									href="/playbooks/{encodeURIComponent(pb.name)}"
+									class="block py-1.5 px-2 rounded-lg hover:bg-hub-surface transition-colors cursor-pointer group"
+								>
+									<div class="text-xs text-hub-muted group-hover:text-hub-text transition-colors">{pb.name}</div>
+									<div class="text-[11px] text-hub-dim mt-0.5">
+										{pb.roles.length} role{pb.roles.length === 1 ? '' : 's'}, {pb.phases.length} phase{pb.phases.length === 1 ? '' : 's'}
+									</div>
+								</a>
+							{/each}
+						</div>
+					{/if}
+					{#if Object.keys(playbookProviders).length > 0}
+						<div class="mt-3 pt-2 border-t border-hub-border/50 flex gap-3 text-[10px] text-hub-dim">
+							{#each Object.entries(playbookProviders) as [name, available]}
+								<span class="flex items-center gap-1">
+									<span class="w-1.5 h-1.5 rounded-full {available ? 'bg-hub-cta' : 'bg-hub-border'}"></span>
+									{name}
+								</span>
+							{/each}
+						</div>
+					{/if}
+				</div>
+
+				<!-- Files Explorer -->
+				<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
+					<div class="flex items-center justify-between mb-3">
+						<h3 class="text-sm font-semibold text-hub-text">
+							Files
+							{#if explorerRoots.length > 0}
+								<span class="text-hub-dim font-normal ml-1">({explorerRoots.length})</span>
+							{/if}
+						</h3>
+						<div class="flex items-center gap-2">
+							<a
+								href="/settings#explorer-roots"
+								class="w-7 h-7 grid place-items-center rounded-md text-hub-dim hover:text-hub-cta hover:bg-hub-surface transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50"
+								aria-label="Add root"
+								title="Add root in Settings"
+							>
+								<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+							</a>
+							<a href="/files" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">Open</a>
+						</div>
+					</div>
+					{#if explorerRoots.length === 0}
+						<p class="text-xs text-hub-dim py-3 text-center">
+							No folders yet.
+							<a href="/settings" class="text-hub-cta hover:underline cursor-pointer">Add one</a>
+							to start browsing.
+						</p>
+					{:else}
+						<div class="space-y-1.5">
+							{#each explorerRoots.slice(0, 5) as root}
+								<a
+									href="/files"
+									class="flex items-center gap-2 py-1.5 px-2 rounded-lg hover:bg-hub-surface transition-colors cursor-pointer group"
+								>
+									<svg class="w-3.5 h-3.5 text-hub-cta/70 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+										<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+									</svg>
+									<span class="text-xs text-hub-muted group-hover:text-hub-text transition-colors truncate">{root.name}</span>
+									<span class="text-[10px] text-hub-dim/70 ml-auto truncate font-mono">{root.path}</span>
+								</a>
+							{/each}
+						</div>
+						{#if explorerRoots.length > 5}
+							<div class="mt-2 text-[10px] text-hub-dim text-center">
+								+{explorerRoots.length - 5} more
+							</div>
+						{/if}
+					{/if}
+				</div>
+			</div>
 		</div>
 	</div>
 </div>
-
-<!-- Add Existing Project Modal -->
-{#if showAddModal}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div
-		class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-		onclick={() => { showAddModal = false; }}
-	>
-		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div
-			class="bg-hub-surface border border-hub-border rounded-xl shadow-2xl w-full max-w-lg mx-4 max-h-[80vh] flex flex-col"
-			onclick={(e) => e.stopPropagation()}
-		>
-			<div class="flex items-center justify-between px-5 py-4 border-b border-hub-border">
-				<h2 class="text-base font-semibold text-hub-text">Add Existing Project</h2>
-				<button
-					onclick={() => { showAddModal = false; }}
-					class="p-1 rounded-md text-hub-dim hover:text-hub-text hover:bg-hub-card transition-colors cursor-pointer"
-					aria-label="Close"
-				>
-					<svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-						<path d="M18 6L6 18"/><path d="M6 6l12 12"/>
-					</svg>
-				</button>
-			</div>
-			<div class="flex-1 overflow-y-auto px-5 py-4">
-				{#if suggestions.length === 0}
-					<div class="text-center py-8">
-						<p class="text-hub-muted text-sm">All projects in ~/dev/ are already managed</p>
-					</div>
-				{:else}
-					<div class="flex items-center justify-between mb-3">
-						<p class="text-sm text-hub-muted">{suggestions.length} unmanaged project{suggestions.length === 1 ? '' : 's'}</p>
-						<button
-							onclick={addAllSuggestions}
-							class="px-3 py-1.5 rounded-lg text-xs font-medium bg-hub-cta text-black hover:bg-hub-cta-hover transition-colors cursor-pointer"
-						>
-							Add All
-						</button>
-					</div>
-					<div class="space-y-2">
-						{#each suggestions as suggestion}
-							<div class="flex items-center justify-between bg-hub-card border border-hub-border rounded-lg p-3 hover:border-hub-cta/30 transition-colors">
-								<div class="flex items-center gap-2 min-w-0">
-									<span class="text-sm font-medium text-hub-text truncate">{suggestion.name}</span>
-									{#if suggestion.hasGit}
-										<span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-hub-purple/15 text-hub-purple">git</span>
-									{/if}
-									{#if suggestion.hasClaude}
-										<span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-hub-info/15 text-hub-info">claude</span>
-									{/if}
-								</div>
-								<button
-									onclick={() => addProject(suggestion.path)}
-									disabled={addingPaths.has(suggestion.path)}
-									class="ml-3 px-3 py-1.5 rounded text-xs font-medium bg-hub-cta/15 text-hub-cta hover:bg-hub-cta/25 transition-colors cursor-pointer disabled:opacity-50 flex-shrink-0"
-								>
-									{addingPaths.has(suggestion.path) ? 'Adding...' : 'Add'}
-								</button>
-							</div>
-						{/each}
-					</div>
-				{/if}
-			</div>
-		</div>
-	</div>
-{/if}
