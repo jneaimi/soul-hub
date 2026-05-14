@@ -24,10 +24,12 @@
 		backlinks?: string[];
 	}
 
+	type DrawerAction = 'accept' | 'reject' | 'park' | 'ship';
+
 	interface Props {
 		path: string | null;
 		onClose: () => void;
-		onTransition?: (info: { path: string; action: 'accept' | 'reject' | 'park'; newStatus: string }) => void;
+		onTransition?: (info: { path: string; action: DrawerAction; newStatus: string }) => void;
 	}
 
 	let { path, onClose, onTransition }: Props = $props();
@@ -36,10 +38,21 @@
 	let loading = $state(false);
 	let error = $state('');
 
+	// Phase 3a affordances state
+	let shipping = $state(false);
+	let savingTarget = $state(false);
+	let targetDateInput = $state('');
+	let editingTarget = $state(false);
+	let mutationError = $state('');
+
 	const status = $derived(note ? String(note.meta.status ?? '').toLowerCase() : '');
 	const isProposed = $derived(status === 'proposed');
+	const isAccepted = $derived(status === 'accepted');
 
 	const created = $derived(extractDate(note?.meta.created));
+	const targetDate = $derived(extractDate(note?.meta.target_date));
+	const acceptedOn = $derived(extractDate(note?.meta.accepted_on));
+	const shippedOn = $derived(extractDate(note?.meta.shipped_on));
 	const project = $derived(typeof note?.meta.project === 'string' ? note.meta.project : '');
 	const tags = $derived(extractStringArray(note?.meta.tags));
 	const falsifierDate = $derived(
@@ -98,11 +111,73 @@
 		});
 	});
 
-	function handleTransition(info: { path: string; action: 'accept' | 'reject' | 'park'; newStatus: string }) {
+	function handleTransition(info: { path: string; action: DrawerAction; newStatus: string }) {
 		onTransition?.(info);
 		// Close after a successful transition — the row in the parent list
 		// will update or vanish, so keeping the drawer open shows stale data.
 		onClose();
+	}
+
+	async function shipDecision() {
+		if (!note || shipping) return;
+		shipping = true;
+		mutationError = '';
+		try {
+			const res = await fetch('/api/vault/decisions/transition', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ path: note.path, action: 'ship' }),
+			});
+			const data = await res.json();
+			if (!res.ok || !data.success) {
+				mutationError = data.error ?? `HTTP ${res.status}`;
+				return;
+			}
+			handleTransition({ path: note.path, action: 'ship', newStatus: data.newStatus });
+		} catch (e) {
+			mutationError = e instanceof Error ? e.message : 'Network error';
+		} finally {
+			shipping = false;
+		}
+	}
+
+	async function saveTargetDate() {
+		if (!note || savingTarget) return;
+		const value = targetDateInput.trim();
+		if (value && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+			mutationError = 'Date must be YYYY-MM-DD';
+			return;
+		}
+		savingTarget = true;
+		mutationError = '';
+		try {
+			// Patch only the target_date field. Empty string clears it.
+			const meta: Record<string, unknown> = { ...note.meta, target_date: value || null };
+			if (!value) delete meta.target_date;
+			const res = await fetch(`/api/vault/notes/${note.path}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ meta }),
+			});
+			const data = await res.json();
+			if (!res.ok || data.success === false) {
+				mutationError = data.error ?? `HTTP ${res.status}`;
+				return;
+			}
+			editingTarget = false;
+			// Refresh the note so the chip reflects the new value.
+			await load(note.path);
+		} catch (e) {
+			mutationError = e instanceof Error ? e.message : 'Network error';
+		} finally {
+			savingTarget = false;
+		}
+	}
+
+	function startEditingTarget() {
+		targetDateInput = targetDate ?? '';
+		editingTarget = true;
+		mutationError = '';
 	}
 </script>
 
@@ -189,6 +264,15 @@
 					{#if created}
 						<span class="text-hub-dim">created {created}</span>
 					{/if}
+					{#if acceptedOn}
+						<span class="text-hub-info">accepted {acceptedOn}</span>
+					{/if}
+					{#if shippedOn}
+						<span class="text-hub-cta">shipped {shippedOn}</span>
+					{/if}
+					{#if targetDate && isProposed}
+						<span class="text-hub-warning">target {targetDate}</span>
+					{/if}
 					{#if falsifierDate}
 						<span class="text-hub-warning">⏱ {falsifierDate}</span>
 					{/if}
@@ -204,6 +288,66 @@
 							<p class="text-xs text-hub-warning">Awaiting decision</p>
 							<DecisionActions path={note.path} size="sm" onTransition={handleTransition} />
 						</div>
+
+						<!-- Target date editor — drives the planned-Gantt view (Phase 3a) -->
+						<div class="mt-3 pt-3 border-t border-hub-warning/20 flex items-center gap-2 text-[11px]">
+							<span class="text-hub-dim">Target ship date:</span>
+							{#if editingTarget}
+								<input
+									bind:value={targetDateInput}
+									type="text"
+									placeholder="YYYY-MM-DD"
+									pattern="\d{'{4}'}-\d{'{2}'}-\d{'{2}'}"
+									class="bg-transparent border border-hub-border rounded px-2 py-0.5 text-[11px] text-hub-text placeholder:text-hub-dim focus:outline-none focus:border-hub-cta/50 transition-colors w-32"
+								/>
+								<button
+									onclick={saveTargetDate}
+									disabled={savingTarget}
+									class="px-2 py-0.5 rounded font-medium bg-hub-cta text-hub-bg hover:bg-hub-cta/90 transition-colors cursor-pointer disabled:opacity-50"
+								>
+									{savingTarget ? '…' : 'Save'}
+								</button>
+								<button
+									onclick={() => { editingTarget = false; mutationError = ''; }}
+									class="px-2 py-0.5 rounded text-hub-dim hover:text-hub-text transition-colors cursor-pointer"
+								>
+									Cancel
+								</button>
+							{:else}
+								<span class={targetDate ? 'text-hub-text font-medium' : 'text-hub-dim italic'}>
+									{targetDate ?? 'not set'}
+								</span>
+								<button
+									onclick={startEditingTarget}
+									class="text-hub-info hover:text-hub-text transition-colors cursor-pointer"
+								>
+									{targetDate ? 'Update' : 'Set'}
+								</button>
+							{/if}
+						</div>
+					</div>
+				{/if}
+
+				<!-- Ship button for accepted ADRs (Phase 3a) -->
+				{#if isAccepted}
+					<div class="mb-5 p-3 rounded-lg border border-hub-info/30 bg-hub-info/5 flex items-center justify-between gap-3">
+						<div>
+							<p class="text-xs text-hub-info">Decision accepted{acceptedOn ? ` on ${acceptedOn}` : ''}</p>
+							<p class="text-[11px] text-hub-dim mt-0.5">Mark as shipped when all planned phases are live.</p>
+						</div>
+						<button
+							onclick={shipDecision}
+							disabled={shipping}
+							class="px-3 py-1.5 rounded text-xs font-medium bg-hub-cta text-hub-bg hover:bg-hub-cta/90 transition-colors cursor-pointer disabled:opacity-50 flex-shrink-0"
+						>
+							{shipping ? '…' : 'Mark shipped'}
+						</button>
+					</div>
+				{/if}
+
+				{#if mutationError}
+					<div class="mb-4 px-3 py-2 rounded bg-hub-danger/10 border border-hub-danger/30 text-xs text-hub-danger">
+						{mutationError}
 					</div>
 				{/if}
 

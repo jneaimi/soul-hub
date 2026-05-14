@@ -89,7 +89,7 @@
 		if (planExpanded && !planLoaded) loadPlan();
 	}
 
-	function handleTransition(info: { path: string; action: 'accept' | 'reject' | 'park'; newStatus: string }) {
+	function handleTransition(info: { path: string; action: 'accept' | 'reject' | 'park' | 'ship'; newStatus: string }) {
 		// Reload to refresh both the per-decision row AND the rollup counts.
 		// Cheap on a single-project endpoint.
 		load();
