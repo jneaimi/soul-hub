@@ -1,20 +1,26 @@
 /**
  * ADR-009 §3 + Phase 5 — model A/B with sticky-per-conversationKey
  * branch assignment. ADR-034 (2026-05-14) extended from three branches to
- * five by adding the two DeepSeek V4 variants for evaluation against the
- * current GLM-4.6 default.
+ * five and promoted DeepSeek V4 Pro to primary (Path A) after a smoke
+ * battery showed 7/7 tool selection + per-prompt-correct dispatch
+ * confirmation, while GLM-4.6 silently failed `scheduleReminder` (replied
+ * "OK I'll remind you" without ever calling the tool).
  *
- * The five branches:
- *   - `glm-4.6`            → `z-ai/glm-4.6` (current default; Tau-bench
- *                            retail 0.797, $0.39/$1.90 per M tok)
- *   - `sonnet-4.6`         → `anthropic/claude-sonnet-4.6` (quality benchmark,
- *                            Tau-bench 0.862, $3/$15)
+ * The five branches, in BRANCHES order (least-loaded picker reads
+ * position 0 first when load is tied — operationally the "default"):
+ *   - `deepseek-v4-pro`    → `deepseek/deepseek-v4-pro` (PRIMARY since
+ *                            2026-05-14; MoE 1.6T/49B active, 1M ctx,
+ *                            $0.435/$0.87 per M tok)
+ *   - `deepseek-v4-flash`  → `deepseek/deepseek-v4-flash` (cost fallback;
+ *                            MoE 284B/13B active, 1M ctx, $0.126/$0.252)
+ *   - `sonnet-4.6`         → `anthropic/claude-sonnet-4.6` (quality
+ *                            benchmark, Tau-bench 0.862, $3/$15)
  *   - `minimax-m2`         → `minimax/minimax-m2` (AA Intelligence Index #1
  *                            agentic; $0.30/$1.20 estimated)
- *   - `deepseek-v4-flash`  → `deepseek/deepseek-v4-flash` (ADR-034 — MoE
- *                            284B/13B active, 1M ctx, $0.126/$0.252)
- *   - `deepseek-v4-pro`    → `deepseek/deepseek-v4-pro` (ADR-034 — MoE
- *                            1.6T/49B active, 1M ctx, $0.435/$0.87)
+ *   - `glm-4.6`            → `z-ai/glm-4.6` (DEMOTED 2026-05-14 — silent-
+ *                            fail on scheduleReminder; kept as a cheap
+ *                            fallback while telemetry observes whether the
+ *                            silent-fail recurs; $0.39/$1.90)
  *
  * Sticky assignment via the `model_branch_assignment` table — once a
  * conversationKey lands on a branch, it stays there. New keys go to the
@@ -40,11 +46,11 @@ export interface ModelBranch {
 }
 
 export const BRANCHES: readonly ModelBranch[] = [
-	{ name: 'glm-4.6', model: 'z-ai/glm-4.6' },
+	{ name: 'deepseek-v4-pro', model: 'deepseek/deepseek-v4-pro' },
+	{ name: 'deepseek-v4-flash', model: 'deepseek/deepseek-v4-flash' },
 	{ name: 'sonnet-4.6', model: 'anthropic/claude-sonnet-4.6' },
 	{ name: 'minimax-m2', model: 'minimax/minimax-m2' },
-	{ name: 'deepseek-v4-flash', model: 'deepseek/deepseek-v4-flash' },
-	{ name: 'deepseek-v4-pro', model: 'deepseek/deepseek-v4-pro' },
+	{ name: 'glm-4.6', model: 'z-ai/glm-4.6' },
 ] as const;
 
 let schemaReady = false;
