@@ -1,13 +1,80 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 
+	interface SimilarityMatch {
+		slug: string;
+		title: string;
+		parentProject: string | null;
+		reason: 'slug-exact' | 'slug-substring' | 'lexical' | 'semantic';
+		score: number;
+		snippet?: string;
+	}
+	interface SimilarityResult {
+		proposedSlug: string;
+		matches: SimilarityMatch[];
+		lexicalHits: number;
+		semanticCheck: 'duplicate' | 'related' | 'novel' | 'skipped' | 'error' | null;
+		semanticReason?: string;
+		confidence: 'high' | 'medium' | 'low';
+	}
+
 	let projectName = $state('');
 	let description = $state('');
 	let creating = $state(false);
 	let error = $state('');
+	let similarity = $state<SimilarityResult | null>(null);
+	let similarityLoading = $state(false);
+	let similarityOverride = $state(false);
 
 	const nameValid = $derived(/^[a-z][a-z0-9-]*$/.test(projectName) && projectName.length >= 2);
-	const canCreate = $derived(nameValid && description.trim().length > 0);
+	const canCreate = $derived(
+		nameValid &&
+			description.trim().length > 0 &&
+			(similarity?.confidence !== 'high' || similarityOverride),
+	);
+
+	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+	/** ADR-038 Phase 3 — pre-flight similarity check. Hits the vault to
+	 *  flag duplicate or near-duplicate projects before creation. Soft
+	 *  gate: only the `high` confidence bucket blocks Create (overridable
+	 *  via the "Create anyway" button). */
+	function scheduleSimilarityCheck() {
+		similarityOverride = false;
+		if (debounceTimer) clearTimeout(debounceTimer);
+		if (!nameValid) {
+			similarity = null;
+			return;
+		}
+		const slug = projectName.trim();
+		const desc = description.trim();
+		debounceTimer = setTimeout(async () => {
+			similarityLoading = true;
+			try {
+				const params = new URLSearchParams({ slug });
+				if (desc) params.set('description', desc);
+				const res = await fetch(`/api/vault/projects/similar?${params}`);
+				if (!res.ok) {
+					similarity = null;
+					return;
+				}
+				similarity = await res.json();
+			} catch {
+				// Network error — silently skip the hint; create is still allowed.
+				similarity = null;
+			} finally {
+				similarityLoading = false;
+			}
+		}, 400);
+	}
+
+	$effect(() => {
+		// Re-run whenever name or description changes; the references make
+		// Svelte's reactivity track them without an explicit subscriber.
+		void projectName;
+		void description;
+		scheduleSimilarityCheck();
+	});
 
 	async function createProject() {
 		if (creating || !canCreate) return;
@@ -38,6 +105,16 @@
 		} finally {
 			creating = false;
 		}
+	}
+
+	function reasonLabel(reason: SimilarityMatch['reason']): string {
+		return reason === 'slug-exact'
+			? 'Same name'
+			: reason === 'slug-substring'
+				? 'Similar name'
+				: reason === 'lexical'
+					? 'Similar description'
+					: 'Looks related';
 	}
 </script>
 
@@ -93,6 +170,68 @@ Example: A Python script that uses the Gemini API to generate images and video c
 					</p>
 				</div>
 			</div>
+
+			{#if similarity && similarity.matches.length > 0}
+				{@const isHigh = similarity.confidence === 'high'}
+				{@const isMedium = similarity.confidence === 'medium'}
+				<div
+					class="rounded-lg border px-4 py-3 text-sm"
+					class:border-hub-danger={isHigh}
+					class:bg-hub-danger={isHigh}
+					class:bg-opacity-10={isHigh}
+					class:border-hub-warning={isMedium}
+					class:bg-hub-warning={isMedium}
+					class:border-hub-info={!isHigh && !isMedium}
+					class:bg-hub-info={!isHigh && !isMedium}
+				>
+					<div class="flex items-start justify-between gap-2 mb-2">
+						<div class="font-medium" class:text-hub-danger={isHigh} class:text-hub-warning={isMedium} class:text-hub-info={!isHigh && !isMedium}>
+							{#if isHigh}
+								Looks like a duplicate
+							{:else if isMedium}
+								Might overlap with an existing project
+							{:else}
+								Related project{similarity.matches.length === 1 ? '' : 's'} in the vault
+							{/if}
+						</div>
+						{#if similarityLoading}
+							<span class="text-[10px] text-hub-dim">refreshing…</span>
+						{/if}
+					</div>
+					<ul class="space-y-1.5">
+						{#each similarity.matches as match}
+							<li class="flex items-start gap-2 text-xs">
+								<span class="text-hub-dim flex-shrink-0 mt-0.5">·</span>
+								<div class="min-w-0 flex-1">
+									<a href="/projects/{match.slug}" target="_blank" class="font-mono text-hub-text hover:text-hub-cta cursor-pointer">{match.slug}</a>
+									<span class="text-hub-dim ml-1">({reasonLabel(match.reason)})</span>
+									{#if match.parentProject}
+										<span class="text-[10px] text-hub-dim ml-1">→ {match.parentProject}</span>
+									{/if}
+									{#if match.snippet}
+										<div class="text-[11px] text-hub-muted mt-0.5 line-clamp-2">{match.snippet}</div>
+									{/if}
+								</div>
+							</li>
+						{/each}
+					</ul>
+					{#if similarity.semanticCheck === 'duplicate' || similarity.semanticCheck === 'related'}
+						{#if similarity.semanticReason}
+							<p class="text-[11px] text-hub-muted mt-2 italic">AI: {similarity.semanticReason}</p>
+						{/if}
+					{/if}
+					{#if isHigh}
+						<button
+							type="button"
+							onclick={() => (similarityOverride = true)}
+							disabled={similarityOverride}
+							class="mt-3 text-xs px-3 py-1.5 rounded border border-hub-danger/40 text-hub-danger hover:bg-hub-danger/10 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-default"
+						>
+							{similarityOverride ? '✓ Will create anyway' : 'Create anyway'}
+						</button>
+					{/if}
+				</div>
+			{/if}
 
 			{#if error}
 				<div class="bg-hub-danger/10 border border-hub-danger/30 rounded-lg px-4 py-3 text-sm text-hub-danger">
