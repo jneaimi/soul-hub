@@ -431,6 +431,12 @@ function slugTag(input: string): string {
 	return input
 		.toLowerCase()
 		.normalize('NFKD')
+		// Convert common separators (`.`, `_`, `/`) to spaces BEFORE stripping
+		// non-alphanumeric chars, so `amazon.ae` slugs as `amazon-ae` instead
+		// of `amazonae`, and `noon.com` slugs as `noon-com` instead of `nooncom`.
+		// Pre-fix produced label-collapsed slugs that were ugly in the vault
+		// tag filter UI; retrieval was unaffected.
+		.replace(/[._/]+/g, ' ')
 		.replace(/[^a-z0-9\s-]/g, '')
 		.replace(/\s+/g, '-')
 		.replace(/-+/g, '-')
