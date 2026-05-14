@@ -27,6 +27,8 @@ import { listChatSkills } from '../skills/index.js';
 import { buildOrchestratorTools, type ToolResult } from './tools/index.js';
 import { buildOrchestratorSystemPrompt } from './system-prompt.js';
 import { pickBranchForKey } from './branches.js';
+import { getPersonaBundle, type PersonaBundle } from '../persona/loader.js';
+import { config } from '../config.js';
 import {
 	priceTurn,
 	recordTurnCost,
@@ -160,10 +162,25 @@ export async function decideV2(
 		slowDispatch: opts.slowDispatch,
 	});
 
+	// ADR-033 Layer 1 — load the persona bundle from the vault. The kill
+	// switch (`config.chat.persona.enabled`) flips the chat back to the
+	// pre-ADR-033 prompt without a code change. When the engine isn't
+	// initialised the loader returns empty strings (`hasContent: false`)
+	// and the system-prompt builder falls back to the routing-only stub.
+	const personaBundle: PersonaBundle | undefined = config.chat?.persona?.enabled
+		? getPersonaBundle({
+				soul: config.chat.persona.soulPath,
+				userProfile: config.chat.persona.userProfilePath,
+				boundaries: config.chat.persona.boundariesPath,
+				identity: config.chat.persona.identityPath,
+			})
+		: undefined;
+
 	const system = buildOrchestratorSystemPrompt({
 		dispatchableAgents,
 		invokableSkills,
 		userTimezone: opts.timezone,
+		personaBundle,
 	});
 
 	const openrouter = createOpenRouter({ apiKey });
@@ -357,6 +374,7 @@ export async function decideV2(
 		outputTokens,
 		costUsd: costUsd > 0 ? costUsd : undefined,
 		durationMs: Date.now() - startedAt,
+		personaBundleHash: personaBundle?.hasContent ? personaBundle.hash : undefined,
 	};
 
 	if (llmNote) {

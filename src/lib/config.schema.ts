@@ -383,6 +383,24 @@ export const IntentSchema = z.object({
 
 export type IntentConfig = z.infer<typeof IntentSchema>;
 
+/** ADR-033 Layer 1 — persona bundle wired into the orchestrator system
+ *  prompt at chat time. Vault-loaded, hot-reloaded via `reindexed` events
+ *  (see `persona/loader.ts`). Flipping `enabled: false` reverts the chat
+ *  voice to the pre-ADR-033 routing-rules-only prompt in one config edit. */
+export const ChatPersonaSchema = z.object({
+	enabled: z.boolean().default(true),
+	soulPath: z.string().default('operations/soul.md'),
+	userProfilePath: z.string().default('operations/user-profile.md'),
+	boundariesPath: z.string().default('operations/boundaries.md'),
+	identityPath: z.string().default('operations/identity.md'),
+});
+
+export const ChatSchema = z.object({
+	persona: ChatPersonaSchema.prefault({}),
+});
+
+export type ChatConfig = z.infer<typeof ChatSchema>;
+
 /** `/img` configuration — image generation + editing via Gemini Nano
  *  Banana. One slash command, no flags, system prompt sourced from a
  *  vault-watched markdown file (per ADR-002). */
@@ -602,6 +620,11 @@ export const ConfigSchema = z.object({
 	 *  intent_patterns table is shared across WhatsApp and (future)
 	 *  Telegram orchestrator-v2 wiring. */
 	intent: IntentSchema.prefault({}),
+	/** ADR-033 Layer 1 — chat-time persona (soul / identity / user-profile
+	 *  / boundaries) wired into the orchestrator system prompt. Top-level
+	 *  because the persona is shared across all chat channels (WhatsApp
+	 *  today, Telegram in scope). See ChatSchema. */
+	chat: ChatSchema.prefault({}),
 	// Channels store base fields strictly + allow per-channel extensions to
 	// flow through; each adapter Zod-validates its own slice on read (e.g.
 	// WhatsAppChannelSchema for the `whatsapp` entry).

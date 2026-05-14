@@ -218,7 +218,8 @@ export interface DecideV2Telemetry {
 	/** OpenRouter model id (e.g. `z-ai/glm-4.6`). */
 	model: string;
 	/** ADR-009 Phase 5 — A/B branch label (`glm-4.6` / `sonnet-4.6` /
-	 *  `minimax-m2` / `fixed-override`). */
+	 *  `minimax-m2` / `deepseek-v4-flash` / `deepseek-v4-pro` /
+	 *  `fixed-override`). */
 	modelBranch: string;
 	stepsUsed: number;
 	toolCalls: { name: string; argSummary: string }[];
@@ -226,4 +227,11 @@ export interface DecideV2Telemetry {
 	outputTokens?: number;
 	costUsd?: number;
 	durationMs: number;
+	/** ADR-033 Layer 1 — 12-char SHA1 prefix of the composed persona bundle
+	 *  (soul + identity + user-profile + boundaries). Stamped on every turn
+	 *  so the audit dashboard can stratify routing decisions by persona
+	 *  version (§Engines play 1) and detect voice drift after operator
+	 *  edits to `operations/soul.md` (§Engines play 4). Undefined when the
+	 *  kill switch is off or all four files are empty. */
+	personaBundleHash?: string;
 }

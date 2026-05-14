@@ -8,6 +8,7 @@
  */
 
 import type { AgentSummary } from '../agents/types.js';
+import type { PersonaBundle } from '../persona/loader.js';
 
 export interface PromptContext {
 	dispatchableAgents: Pick<AgentSummary, 'id' | 'description'>[];
@@ -18,6 +19,12 @@ export interface PromptContext {
 	 *  precise ISO 8601 offsets. Without this the model hallucinates the
 	 *  current time and refuses still-future requests as past-dated. */
 	userTimezone?: string;
+	/** ADR-033 Layer 1 — vault-loaded persona bundle. When present and
+	 *  `hasContent` is true, the soul/user-profile/boundaries/identity
+	 *  bodies are injected as the first sections of the prompt (before
+	 *  the time anchor and routing rules). When undefined or empty, the
+	 *  prompt falls back to the pre-ADR-033 personality stub. */
+	personaBundle?: PersonaBundle;
 }
 
 export function buildOrchestratorSystemPrompt(ctx: PromptContext): string {
@@ -42,7 +49,18 @@ export function buildOrchestratorSystemPrompt(ctx: PromptContext): string {
 	}).format(now);
 	const isoNow = now.toISOString();
 
-	return `You are Soul Hub, a personal AI orchestrator running on WhatsApp. You answer the user's messages by picking the right tool(s).
+	// ADR-033 Layer 1 — persona injection. When the operator has filled in
+	// the vault persona files, prepend the SOUL / USER / BOUNDARIES /
+	// IDENTITY sections so the model inhabits a real character with a
+	// real model of who it's talking to, instead of the flat "Warm,
+	// professional, concise" stub below. When the bundle is missing or
+	// empty (config disabled, files absent, vault not yet indexed), the
+	// pre-ADR-033 prompt body runs unchanged — graceful fallback.
+	const personaHeader = ctx.personaBundle?.hasContent
+		? composePersonaHeader(ctx.personaBundle)
+		: '';
+
+	return `${personaHeader}You are Soul Hub, a personal AI orchestrator running on WhatsApp. You answer the user's messages by picking the right tool(s).
 
 ## Current time anchor
 - User's local time: **${localNow}** (timezone: ${tz})
@@ -103,4 +121,25 @@ ${skillList}
 - After your tool calls (if any), produce a final assistant message with the natural-language reply for the user.
 - If you don't need any tools, just reply.
 - If you need clarification, just ask — don't call a tool.`;
+}
+
+/** ADR-033 Layer 1 — compose the persona header that prepends the routing
+ *  prompt. Each non-empty file gets its own `##` section. The whole block
+ *  is wrapped in a top-line marker so the model parses persona context as
+ *  identity (who I am, who they are, what's off-limits) before it gets to
+ *  the mechanical routing rules below.
+ *
+ *  Order matters: SOUL → IDENTITY → USER → BOUNDARIES. Soul is the
+ *  abstract voice; identity grounds the name; user-profile names the
+ *  human; boundaries scope the action space. Anything missing is
+ *  silently skipped — the prompt degrades gracefully to whatever is
+ *  authored in the vault. */
+function composePersonaHeader(bundle: PersonaBundle): string {
+	const parts: string[] = [];
+	if (bundle.soul) parts.push(`## Who you are\n\n${bundle.soul}`);
+	if (bundle.identity) parts.push(`## Your identity\n\n${bundle.identity}`);
+	if (bundle.userProfile) parts.push(`## Who you're talking to\n\n${bundle.userProfile}`);
+	if (bundle.boundaries) parts.push(`## Boundaries\n\n${bundle.boundaries}`);
+	if (parts.length === 0) return '';
+	return parts.join('\n\n') + '\n\n---\n\n';
 }
