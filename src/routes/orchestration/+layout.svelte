@@ -11,6 +11,7 @@
 		{ href: '/orchestration/metrics', label: 'Metrics', matchPrefix: '/orchestration/metrics' },
 		{ href: '/orchestration/audit', label: 'Audit', matchPrefix: '/orchestration/audit' },
 		{ href: '/orchestration/intent', label: 'Intent', matchPrefix: '/orchestration/intent' },
+		{ href: '/orchestration/models', label: 'Models', matchPrefix: '/orchestration/models' },
 	];
 
 	const path = $derived($page.url.pathname);

@@ -67,36 +67,10 @@ export const WhatsAppAccessSchema = z
 		message: '`dmPolicy: "open"` requires `allowFrom` to include "*".',
 	});
 
-/** ADR-028 Phase 3 — one-version migration shim. Persisted settings.json
- *  files written before the 2026-05-12 rename still carry the old
- *  `brain-*` route names. The schema rewrites them to `vault-*` at parse
- *  time and warns once per process, so an out-of-date settings file
- *  doesn't silently route to a dead branch (slash command falls through
- *  to the orchestrator). Remove after a release cycle. */
-const BRAIN_VAULT_ALIAS: Record<string, string> = {
-	'brain-save': 'vault-save-note',
-	'brain-find': 'vault-find',
-	'brain-recent': 'vault-recent',
-};
-const aliasWarned = new Set<string>();
-
-function migrateRouteName(value: unknown): unknown {
-	if (typeof value !== 'string') return value;
-	const alias = BRAIN_VAULT_ALIAS[value];
-	if (!alias) return value;
-	if (!aliasWarned.has(value)) {
-		aliasWarned.add(value);
-		console.warn(
-			`[config] intentMap route "${value}" is the legacy name; auto-migrating to "${alias}" (ADR-028 P3). Update settings.json to remove this warning.`,
-		);
-	}
-	return alias;
-}
-
 export const WhatsAppIntentMapSchema = z.record(
 	z.string(),
 	z.object({
-		route: z.preprocess(migrateRouteName, z.string()),
+		route: z.string(),
 		description: z.string().optional(),
 		/** Slice 1.5 — opt-in smart routing for free-form (non-slash) messages.
 		 *  Only meaningful on the `default` entry; ignored on slash entries
@@ -486,8 +460,7 @@ export const TelegramAccessSchema = z
 export const TelegramIntentMapSchema = z.record(
 	z.string(),
 	z.object({
-		// ADR-028 P3 — same one-version migration shim as the WhatsApp side.
-		route: z.preprocess(migrateRouteName, z.string()),
+		route: z.string(),
 		description: z.string().optional(),
 		dynamic: z.boolean().optional(),
 	}),
