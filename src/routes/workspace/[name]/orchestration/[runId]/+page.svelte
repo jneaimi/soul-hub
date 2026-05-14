@@ -547,7 +547,7 @@
 	<!-- Header -->
 	<div class="run-header">
 		<div class="header-top">
-			<a href="/project/{data.projectName}/orchestration" class="back-link">&larr; Back</a>
+			<a href="/workspace/{data.projectName}/orchestration" class="back-link">&larr; Back</a>
 			<span class="header-goal">{run.plan.goal}</span>
 			<div class="header-actions">
 				{#if isActive}

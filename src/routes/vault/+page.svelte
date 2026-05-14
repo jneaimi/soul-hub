@@ -246,7 +246,7 @@
   async function scaffoldAll() {
     scaffoldingAll = true;
     try {
-      const res = await fetch('/api/projects');
+      const res = await fetch('/api/workspaces');
       if (!res.ok) return;
       const data = await res.json();
       const projects = data.projects || [];

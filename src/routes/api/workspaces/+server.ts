@@ -55,7 +55,10 @@ function resolveType(metaType: string | undefined): ProjectType | 'unknown' {
 	return 'unknown';
 }
 
-/** GET /api/projects — managed projects + suggestions */
+/** GET /api/workspaces — managed workspaces + suggestions.
+ *  Renamed from /api/projects per ADR-037 (workspaces/projects split).
+ *  Response key `projects` retained for backward compatibility; the lib
+ *  wrapper aliases to `workspaces` on read. */
 export const GET: RequestHandler = async () => {
 	const projects: Project[] = [];
 	const managedNames = new Set<string>();

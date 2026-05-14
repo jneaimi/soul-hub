@@ -13,7 +13,7 @@
 	<header class="flex-shrink-0 px-4 sm:px-6 py-3 border-b border-hub-border bg-hub-surface">
 		<div class="flex items-center gap-3">
 			<a
-				href="/project/{data.name}"
+				href="/workspace/{data.name}"
 				class="p-1.5 rounded-lg hover:bg-hub-card transition-colors text-hub-muted hover:text-hub-text cursor-pointer"
 				aria-label="Back to project"
 			>

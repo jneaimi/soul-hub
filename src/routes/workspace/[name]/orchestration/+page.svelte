@@ -46,7 +46,7 @@
 			}
 
 			// Navigate to the new run
-			window.location.href = `/project/${data.projectName}/orchestration/${result.runId}`;
+			window.location.href = `/workspace/${data.projectName}/orchestration/${result.runId}`;
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Network error';
 		} finally {
@@ -70,7 +70,7 @@
 <div class="orch-page">
 <div class="orch-list">
 	<div class="page-header">
-		<a href="/project/{data.projectName}" class="back-link">&larr; Back</a>
+		<a href="/workspace/{data.projectName}" class="back-link">&larr; Back</a>
 		<h1 class="page-title">Orchestration</h1>
 	</div>
 
@@ -99,7 +99,7 @@
 	{:else}
 		<div class="runs-list">
 			{#each runs as run}
-				<a href="/project/{data.projectName}/orchestration/{run.runId}" class="run-card">
+				<a href="/workspace/{data.projectName}/orchestration/{run.runId}" class="run-card">
 					<div class="run-card-top">
 						<span class="run-status-dot" style="background: {statusColors[run.status]}"></span>
 						<span class="run-goal">{run.plan.goal}</span>

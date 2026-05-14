@@ -3,7 +3,8 @@
 
 	const NAV: { href: string; label: string; matchPrefix: string }[] = [
 		{ href: '/orchestration', label: 'Orchestration', matchPrefix: '/orchestration' },
-		{ href: '/projects', label: 'Projects', matchPrefix: '/project' },
+		{ href: '/projects', label: 'Projects', matchPrefix: '/projects' },
+		{ href: '/workspaces', label: 'Workspaces', matchPrefix: '/workspace' },
 		{ href: '/inbox', label: 'Inbox', matchPrefix: '/inbox' },
 		{ href: '/crm', label: 'CRM', matchPrefix: '/crm' },
 		{ href: '/vault', label: 'Vault', matchPrefix: '/vault' },
@@ -13,8 +14,9 @@
 	const path = $derived($page.url.pathname);
 
 	function isActive(prefix: string): boolean {
-		if (prefix === '/project') {
-			return path === '/projects' || path.startsWith('/project/') || path === '/projects';
+		// /workspace prefix matches both /workspaces (list) and /workspace/[name] (detail)
+		if (prefix === '/workspace') {
+			return path === '/workspaces' || path.startsWith('/workspace/');
 		}
 		return path === prefix || path.startsWith(prefix + '/');
 	}

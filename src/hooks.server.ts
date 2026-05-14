@@ -299,6 +299,25 @@ function redirectOrchestration(pathname: string, search: string): string | null 
 	return null;
 }
 
+/**
+ * ADR-037 — code-workspace pages renamed from `/projects` + `/project/[name]`
+ * to `/workspaces` + `/workspace/[name]`. The old `/projects` URL is now
+ * the managed-initiative home (vault projects), so we DO NOT redirect it.
+ * Only the per-workspace detail URL and the API are redirected.
+ */
+function redirectWorkspaces(pathname: string, search: string): string | null {
+	// Exact + prefix: /project/foo → /workspace/foo (workspace detail pages)
+	if (pathname === '/project' || pathname.startsWith('/project/')) {
+		return '/workspace' + pathname.slice('/project'.length) + search;
+	}
+	// API rewrite: /api/projects[/...] → /api/workspaces[/...] (any cached fetch
+	// from a stale page bundle keeps working until the operator hard-refreshes)
+	if (pathname === '/api/projects' || pathname.startsWith('/api/projects/')) {
+		return '/api/workspaces' + pathname.slice('/api/projects'.length) + search;
+	}
+	return null;
+}
+
 // Dev port proxy — intercept pXXXX.soul-hub.jneaimi.com before SvelteKit router
 export const handle: Handle = async ({ event, resolve: svelteResolve }) => {
 	const hostname = event.request.headers.get('host') || '';
@@ -321,6 +340,15 @@ export const handle: Handle = async ({ event, resolve: svelteResolve }) => {
 	const orchestrationRedirect = redirectOrchestration(pathname, event.url.search);
 	if (orchestrationRedirect) {
 		return new Response(null, { status: 301, headers: { location: orchestrationRedirect } });
+	}
+
+	// ADR-037 — 301 redirects for the workspace pages (renamed from /project/*).
+	// /projects is intentionally NOT redirected because that URL now hosts the
+	// new managed-initiative page. Operators with bookmarks to /projects will
+	// see the new page, which is the desired V1 behaviour.
+	const workspacesRedirect = redirectWorkspaces(pathname, event.url.search);
+	if (workspacesRedirect) {
+		return new Response(null, { status: 301, headers: { location: workspacesRedirect } });
 	}
 
 	// First-run gate: if ~/.soul-hub/settings.json is missing, redirect HTML
