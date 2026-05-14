@@ -58,6 +58,7 @@ const ArgsSchema = z
 			.optional()
 			.describe('For "byTag": tag or comma-separated tags. AND logic — every tag must match.'),
 		project: z.string().optional().describe('For "byProject": project slug, kebab-case (e.g. "soul-hub-whatsapp").'),
+		zone: z.string().optional().describe('For "byZone": top-level vault folder name (e.g. "finance", "operations", "knowledge", "projects", "content", "inbox", "archive", "security"). May include a nested zone path ("projects/signal-forge").'),
 		path: z.string().optional().describe('For "backlinks": vault-relative note path (e.g. "projects/soul-hub-whatsapp/index.md").'),
 	})
 	.describe('Tool arguments. Each tool only reads its own field(s).');
@@ -67,7 +68,7 @@ const SelectionSchema = z.object({
 		.array(
 			z.object({
 				name: z
-					.enum(['fulltext', 'recent', 'byType', 'byTag', 'byProject', 'backlinks'])
+					.enum(['fulltext', 'recent', 'byType', 'byTag', 'byZone', 'byProject', 'backlinks'])
 					.describe('Which retrieval tool to run. See the system prompt for what each does.'),
 				args: ArgsSchema,
 			}),
@@ -86,6 +87,7 @@ Rules:
 - **Focus queries — single specific note.** When the user asks about THE LATEST / THE NEWEST / THE LAST / THE MOST RECENT / MY LATEST [singular noun] (e.g. "the latest draft", "my newest decision", "review my most recent post", "analyze the latest writeup"), use ONLY "recent" with limit:1–3. **Do NOT include fulltext** — the natural-language query contains generic keywords ("draft", "post", "note") that match dozens of old notes via MiniSearch and outrank the actual latest one. This is the most common selector mistake; the focus mode in the formatter only gives the top-1 note its full body, so polluting the top-K with high-scoring-but-old fulltext hits silently breaks the response.
 - **Overview queries — multiple notes.** Default to including "fulltext" with a focused 2–6 keyword query.
 - Prefer "byProject" over "fulltext" when the user names a project explicitly (kebab-case like "soul-hub-whatsapp" or natural-language like "the WhatsApp project").
+- **Prefer "byZone" over everything else when the user names a vault zone directly** — "my finance notes", "latest in operations", "what's in finance", "show me content drafts". The eight canonical zones: finance, inbox, knowledge, content, operations, projects, archive, security. Auto-routed notes (payments, statements in finance/) often have empty tags, so byTag misses them — byZone reads the path prefix directly. Combine with "recent" when the user asks for "latest finance notes" — byZone surfaces the candidates, recent ranks by mtime.
 - Use "recent" for time-shaped queries. Limits: 1–3 for "the latest" (singular focus); 5–10 for "what's new" (overview).
 - Use "byTag" only when the user explicitly names a tag word.
 - "backlinks" requires an exact note path — almost never selected on the first turn.
@@ -144,6 +146,22 @@ export function heuristicSelect(userMessage: string): SelectorOutput {
 	// Recency markers
 	if (/\b(recent|latest|newest|today|this week|yesterday|so far)\b/.test(lower)) {
 		calls.push({ name: 'recent', args: { limit: 8 } });
+	}
+
+	// Zone markers — direct mentions of canonical top-level folders.
+	// Caught before type/project because zones often co-occur with recency
+	// markers ("latest finance notes") and byZone is the more specific
+	// signal. Word-boundary anchored so "financial" doesn't false-match.
+	const zoneMatch = lower.match(
+		/\b(finance|operations|knowledge|content|projects|inbox|archive|security)\b/,
+	);
+	if (zoneMatch) {
+		// Skip "inbox" — overwhelmingly refers to email (the WhatsApp inbox
+		// tooling), not the vault `inbox/` folder for quick captures. If the
+		// user actually wants vault inbox captures they'll be specific.
+		if (zoneMatch[1] !== 'inbox') {
+			calls.push({ name: 'byZone', args: { zone: zoneMatch[1], limit: 10 } });
+		}
 	}
 
 	// Type markers

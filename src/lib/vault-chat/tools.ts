@@ -39,6 +39,7 @@ export type ToolName =
 	| 'recent'
 	| 'byType'
 	| 'byTag'
+	| 'byZone'
 	| 'byProject'
 	| 'backlinks';
 
@@ -133,6 +134,19 @@ export function byTag(args: { tags?: string | string[]; limit?: number }): Retri
 	return results.map((r) => fromSearchResult(r, 'byTag'));
 }
 
+export function byZone(args: { zone?: string; limit?: number }): RetrievedNote[] {
+	const engine = requireEngine();
+	if (!engine || !args.zone) return [];
+	// Top-level vault folder filter: `finance`, `projects`, `operations`,
+	// `knowledge`, `inbox`, `content`, `archive`, `security`, plus any
+	// nested zone path (`projects/soul-hub-whatsapp`). The engine accepts
+	// both forms via SearchQuery.zone. Sorted by engine's default score
+	// (mtime-recency-leaning for non-fulltext queries).
+	const zone = args.zone.replace(/^\/+|\/+$/g, ''); // strip wrapping slashes
+	const results = engine.getNotes({ zone, limit: clampLimit(args.limit) });
+	return results.map((r) => fromSearchResult(r, 'byZone'));
+}
+
 export function byProject(args: { project?: string; limit?: number }): RetrievedNote[] {
 	const engine = requireEngine();
 	if (!engine || !args.project) return [];
@@ -160,6 +174,8 @@ export function runTool(call: ToolCall): RetrievedNote[] {
 			return byType(call.args as Parameters<typeof byType>[0]);
 		case 'byTag':
 			return byTag(call.args as Parameters<typeof byTag>[0]);
+		case 'byZone':
+			return byZone(call.args as Parameters<typeof byZone>[0]);
 		case 'byProject':
 			return byProject(call.args as Parameters<typeof byProject>[0]);
 		case 'backlinks':
@@ -201,9 +217,15 @@ export const TOOL_CATALOG: Array<{
 		args: 'tags: string or string[] (required), limit: number (default 8)',
 	},
 	{
+		name: 'byZone',
+		description:
+			'Notes inside a vault top-level zone (folder). The six canonical zones: `finance`, `inbox`, `knowledge`, `content`, `operations`, `projects`, `archive`, `security`. Use when the user names a zone directly ("my finance notes", "latest in operations", "what\'s in finance", "show me content drafts"). Frontmatter `tags` are unreliable for zone membership (auto-routed notes often have empty tags) — `byZone` reads the path prefix directly. For nested scopes, pass the full path (`projects/soul-hub-whatsapp`).',
+		args: 'zone: string (required, e.g. "finance" or "projects/signal-forge"), limit: number (default 8)',
+	},
+	{
 		name: 'byProject',
 		description:
-			'All notes for a given project (`project:` frontmatter field). Use when the user names a project ("show me the soul-hub-whatsapp project", "what\'s the status of signal-forge"). Project names are kebab-case.',
+			'All notes for a given project (`project:` frontmatter field). Use when the user names a project ("show me the soul-hub-whatsapp project", "what\'s the status of signal-forge"). Project names are kebab-case. For zone-style queries ("my finance notes") prefer `byZone`.',
 		args: 'project: string (required), limit: number (default 8)',
 	},
 	{
