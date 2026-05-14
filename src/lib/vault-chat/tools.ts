@@ -6,10 +6,31 @@
  *
  *  All tools degrade gracefully: if the engine isn't initialised they
  *  return `[]` rather than throwing — callers add the orchestrator's
- *  failure mode (no augmentation), not a 500. */
+ *  failure mode (no augmentation), not a 500. A one-time warning fires on
+ *  the first null-engine call so silent retrieval failures become visible
+ *  in logs (this masquerades as a model bug otherwise; see ADR-034 smoke
+ *  2026-05-14). */
 
-import { getVaultEngine } from '../vault/index.js';
+import { getVaultEngine, type VaultEngine } from '../vault/index.js';
 import type { VaultNote, SearchResult } from '../vault/types.js';
+
+let warnedEngineNull = false;
+
+/** Return the vault engine if initialised; warn-once and return null otherwise.
+ *  Use instead of `getVaultEngine()` directly so missing-init bugs surface as
+ *  a single log line rather than silent empty retrievals. Exported so other
+ *  vault-chat modules (e.g. `retrieval.ts`) share the same warned-once flag. */
+export function requireEngine(): VaultEngine | null {
+	const engine = getVaultEngine();
+	if (engine) return engine;
+	if (!warnedEngineNull) {
+		warnedEngineNull = true;
+		console.warn(
+			'[vault-chat/tools] getVaultEngine() returned null — vault retrieval tools will return [] until initVault() runs. In the PM2 server this indicates a startup ordering bug; in smoke/test scripts call `await initVault(config.resolved.vaultDir)` first.',
+		);
+	}
+	return null;
+}
 
 /** Tool names exposed to the selector. Keep this list small — every name
  *  becomes part of the JSON schema we ship to Gemini. */
@@ -78,14 +99,14 @@ function fromVaultNote(n: VaultNote, source: ToolName, score = 0.4): RetrievedNo
 }
 
 export function fulltext(args: { q?: string; limit?: number }): RetrievedNote[] {
-	const engine = getVaultEngine();
+	const engine = requireEngine();
 	if (!engine || !args.q) return [];
 	const results = engine.getNotes({ q: args.q, limit: clampLimit(args.limit) });
 	return results.map((r) => fromSearchResult(r, 'fulltext'));
 }
 
 export function recent(args: { limit?: number }): RetrievedNote[] {
-	const engine = getVaultEngine();
+	const engine = requireEngine();
 	if (!engine) return [];
 	const notes = engine.getRecent(clampLimit(args.limit));
 	// Recent-by-mtime — give the newest a small boost so freshness wins on ties.
@@ -93,14 +114,14 @@ export function recent(args: { limit?: number }): RetrievedNote[] {
 }
 
 export function byType(args: { type?: string | string[]; limit?: number }): RetrievedNote[] {
-	const engine = getVaultEngine();
+	const engine = requireEngine();
 	if (!engine || !args.type) return [];
 	const results = engine.getNotes({ type: args.type, limit: clampLimit(args.limit) });
 	return results.map((r) => fromSearchResult(r, 'byType'));
 }
 
 export function byTag(args: { tags?: string | string[]; limit?: number }): RetrievedNote[] {
-	const engine = getVaultEngine();
+	const engine = requireEngine();
 	if (!engine) return [];
 	const tags = Array.isArray(args.tags)
 		? args.tags
@@ -113,14 +134,14 @@ export function byTag(args: { tags?: string | string[]; limit?: number }): Retri
 }
 
 export function byProject(args: { project?: string; limit?: number }): RetrievedNote[] {
-	const engine = getVaultEngine();
+	const engine = requireEngine();
 	if (!engine || !args.project) return [];
 	const results = engine.getNotes({ project: args.project, limit: clampLimit(args.limit) });
 	return results.map((r) => fromSearchResult(r, 'byProject'));
 }
 
 export function backlinks(args: { path?: string; limit?: number }): RetrievedNote[] {
-	const engine = getVaultEngine();
+	const engine = requireEngine();
 	if (!engine || !args.path) return [];
 	const notes = engine.getBacklinks(args.path).slice(0, clampLimit(args.limit));
 	return notes.map((n) => fromVaultNote(n, 'backlinks', 0.45));

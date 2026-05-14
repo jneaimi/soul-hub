@@ -2,10 +2,9 @@
  *  by path, reranks, and hydrates the top-K notes with their full body for
  *  the formatter. */
 
-import { getVaultEngine } from '../vault/index.js';
 import type { VaultNote } from '../vault/types.js';
 import type { RetrievedNote, ToolCall } from './tools.js';
-import { runTool } from './tools.js';
+import { runTool, requireEngine } from './tools.js';
 
 const TOP_K = 6;
 
@@ -78,7 +77,7 @@ export interface RetrievalOutcome {
 }
 
 export function retrieve(toolCalls: ToolCall[]): RetrievalOutcome {
-	const engine = getVaultEngine();
+	const engine = requireEngine();
 	if (!engine) {
 		return { notes: [], totalSurfaced: 0, toolsRun: toolCalls };
 	}
