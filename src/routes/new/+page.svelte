@@ -28,11 +28,11 @@
 			const data = await res.json();
 
 			if (!res.ok) {
-				error = data.error || data.errors?.join(', ') || 'Failed to create project';
+				error = data.error || data.errors?.join(', ') || 'Failed to create workspace';
 				return;
 			}
 
-			goto(`/project/${encodeURIComponent(projectName.trim())}?setup=true`);
+			goto(`/workspace/${encodeURIComponent(projectName.trim())}?setup=true`);
 		} catch {
 			error = 'Network error';
 		} finally {
@@ -42,24 +42,24 @@
 </script>
 
 <svelte:head>
-	<title>New Project | Soul Hub</title>
+	<title>New Workspace | Soul Hub</title>
 </svelte:head>
 
 <div class="min-h-screen bg-hub-bg text-hub-text">
 	<div class="max-w-lg mx-auto px-6 py-10">
 		<div class="flex items-center gap-3 mb-8">
-			<a href="/" class="text-hub-muted hover:text-hub-text text-sm transition-colors cursor-pointer">&lt; Back</a>
-			<h1 class="text-xl font-bold">New Project</h1>
+			<a href="/workspaces" class="text-hub-muted hover:text-hub-text text-sm transition-colors cursor-pointer">&lt; Back</a>
+			<h1 class="text-xl font-bold">New Workspace</h1>
 		</div>
 
 		<div class="space-y-6">
 			<div>
-				<label for="project-name" class="block text-sm font-medium mb-2">Project name</label>
+				<label for="project-name" class="block text-sm font-medium mb-2">Workspace name</label>
 				<input
 					id="project-name"
 					type="text"
 					bind:value={projectName}
-					placeholder="my-awesome-project"
+					placeholder="my-awesome-workspace"
 					class="w-full bg-hub-surface border border-hub-border rounded-lg px-4 py-2.5 text-hub-text font-mono focus:outline-none focus:ring-2 focus:ring-hub-cta/30 focus:border-hub-cta/50"
 				/>
 				{#if projectName && !nameValid}
