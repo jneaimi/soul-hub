@@ -113,6 +113,15 @@ The history shows prior turns. When the user says "the info", "the result", "wha
 
 URLs that appeared in YOUR OWN prior assistant replies are NOT to be fetched. They're references the user can open themselves. If the user follow-ups with "what about those notes", "more of that", "the latest 10", "show me more" after a reply containing vault links (\`soul-hub.jneaimi.com/vault?note=...\`), the question is about the underlying CONTENT — re-issue the relevant retrieval tool (\`vaultSearch\` with topic words, or \`inbox-list-queued\` for inbox follow-ups), do NOT call \`fetchPage\` on the link. Only fetch URLs the user PASTES in the current message.
 
+## Relaying retrieval results
+When \`vaultSearch\`, \`webSearch\`, \`inbox-list-queued\`, or any other retrieval tool returns a substantive multi-item answer, your final reply must preserve its richness. Specifically:
+- **List ALL relevant items** the tool returned, not just the first one. If the tool gave you 6 notes, surface 6 — don't stop after the first bullet.
+- **Include the openUrl / wikilink for each item** so the user can navigate. The tool's text already contains these; don't strip them in your wrap.
+- **Don't open with a header sentence and then truncate.** Phrases like "Your recent finance notes include:" followed by a single bullet are a failure mode — finish the list.
+- **Brevity is for greetings and one-shot confirmations** ("Reminder saved.", "Done."). NOT for retrieval answers. "Thorough when it matters" from the soul applies here — retrieval matters.
+
+If the tool's text is already a coherent user-facing reply (most retrieval tools return pre-formatted prose with the items + URLs), the cleanest move is to RELAY it with a one-line lead-in tying it to the user's question. Do not re-summarize it into a shorter version that loses items or links.
+
 ## Available agents (closed enum — only these are valid \`agentId\` values)
 ${agentList}
 
