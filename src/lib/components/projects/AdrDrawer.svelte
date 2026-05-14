@@ -171,9 +171,12 @@
 							class:bg-hub-warning={status === 'proposed'}
 							class:text-hub-bg={status === 'proposed'}
 							class:bg-hub-info={status === 'accepted'}
-							class:text-white={status === 'accepted' || status.startsWith('shipped')}
-							class:bg-hub-cta={status.startsWith('shipped')}
-							class:bg-hub-dim={status === 'parked' || status === 'rejected'}
+							class:text-white={status === 'accepted' || status === 'shipped' || status === 'rejected'}
+							class:bg-hub-cta={status === 'shipped'}
+							class:bg-hub-danger={status === 'rejected'}
+							class:bg-hub-dim={status === 'parked'}
+							class:bg-hub-muted={status === 'superseded'}
+							class:line-through={status === 'superseded'}
 						>
 							{status}
 						</span>

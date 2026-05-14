@@ -19,7 +19,7 @@
 		slug: string;
 		adrCount: number;
 		noteCount: number;
-		statusCounts: { proposed: number; accepted: number; shipped: number; rejected: number; parked: number; other: number };
+		statusCounts: { proposed: number; accepted: number; shipped: number; rejected: number; parked: number; superseded: number; other: number };
 		openCount: number;
 		lastActivity: number | null;
 		upcomingFalsifiers: { path: string; date: string; daysAway: number }[];
@@ -111,9 +111,10 @@
 	function statusClass(status: string): string {
 		if (status === 'proposed') return 'bg-hub-warning/15 text-hub-warning';
 		if (status === 'accepted') return 'bg-hub-info/15 text-hub-info';
-		if (status.startsWith('shipped')) return 'bg-hub-cta/15 text-hub-cta';
+		if (status === 'shipped') return 'bg-hub-cta/15 text-hub-cta';
 		if (status === 'rejected') return 'bg-hub-danger/15 text-hub-danger';
 		if (status === 'parked') return 'bg-hub-dim/15 text-hub-dim';
+		if (status === 'superseded') return 'bg-hub-muted/15 text-hub-muted line-through';
 		return 'bg-hub-card text-hub-dim';
 	}
 
@@ -166,8 +167,9 @@
 					<p class="text-hub-dim text-xs">No folder at <code class="font-mono">~/vault/projects/{slug}/</code>.</p>
 				</div>
 			{:else}
-				<!-- Stat cards -->
-				<div class="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-6">
+				<!-- Stat cards. Superseded + Rejected only render when non-zero
+				     to keep the row tight for the common case. -->
+				<div class="grid grid-cols-2 sm:grid-cols-5 lg:grid-cols-6 gap-2 mb-6">
 					<div class="p-3 rounded-lg bg-hub-card/40 border border-hub-border">
 						<div class="text-[10px] uppercase tracking-wider text-hub-dim mb-1">Proposed</div>
 						<div class="text-lg font-semibold text-hub-warning">{detail.statusCounts.proposed}</div>
@@ -184,6 +186,18 @@
 						<div class="text-[10px] uppercase tracking-wider text-hub-dim mb-1">Parked</div>
 						<div class="text-lg font-semibold text-hub-dim">{detail.statusCounts.parked}</div>
 					</div>
+					{#if detail.statusCounts.superseded > 0}
+						<div class="p-3 rounded-lg bg-hub-card/40 border border-hub-border">
+							<div class="text-[10px] uppercase tracking-wider text-hub-dim mb-1">Superseded</div>
+							<div class="text-lg font-semibold text-hub-muted">{detail.statusCounts.superseded}</div>
+						</div>
+					{/if}
+					{#if detail.statusCounts.rejected > 0}
+						<div class="p-3 rounded-lg bg-hub-card/40 border border-hub-border">
+							<div class="text-[10px] uppercase tracking-wider text-hub-dim mb-1">Rejected</div>
+							<div class="text-lg font-semibold text-hub-danger">{detail.statusCounts.rejected}</div>
+						</div>
+					{/if}
 					<div class="p-3 rounded-lg bg-hub-card/40 border border-hub-border">
 						<div class="text-[10px] uppercase tracking-wider text-hub-dim mb-1">Last activity</div>
 						<div class="text-sm font-medium text-hub-text">{timeAgoMs(detail.lastActivity)}</div>

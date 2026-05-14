@@ -16,12 +16,17 @@ import { getVaultEngine } from '$lib/vault/index.js';
 
 const PROJECT_ZONE = 'projects';
 
+/** Canonical status set per ~/vault/projects/CLAUDE.md governance.
+ *  See ~/vault/knowledge/learnings/2026-05-14-adr-status-canonical-set.md.
+ *  `other` should always be 0 — non-zero means a non-canonical status
+ *  has crept back in and the migration script needs to be re-run. */
 type StatusCounts = {
 	proposed: number;
 	accepted: number;
 	shipped: number;
 	rejected: number;
 	parked: number;
+	superseded: number;
 	other: number;
 };
 
@@ -56,16 +61,17 @@ function asStringArray(raw: unknown): string[] {
 }
 
 function emptyStatusCounts(): StatusCounts {
-	return { proposed: 0, accepted: 0, shipped: 0, rejected: 0, parked: 0, other: 0 };
+	return { proposed: 0, accepted: 0, shipped: 0, rejected: 0, parked: 0, superseded: 0, other: 0 };
 }
 
 function bucketStatus(raw: unknown): keyof StatusCounts {
 	const s = String(raw ?? '').toLowerCase();
 	if (s === 'proposed') return 'proposed';
 	if (s === 'accepted') return 'accepted';
-	if (s.startsWith('shipped') || s === 'phase-1-shipped' || s === 'phase-1+4-lite-shipped') return 'shipped';
+	if (s === 'shipped') return 'shipped';
 	if (s === 'rejected') return 'rejected';
 	if (s === 'parked') return 'parked';
+	if (s === 'superseded') return 'superseded';
 	return 'other';
 }
 
@@ -128,7 +134,12 @@ export const GET: RequestHandler = async ({ url }) => {
 		// nothing if the project has no notes with that field — most projects
 		// in the vault DO use the `project:` frontmatter, but a few legacy
 		// folders don't, in which case the rollup will under-report.
-		const notes = engine.getNotes({ project: slug, limit: 500 });
+		// Archive zone is excluded: per archive/CLAUDE.md, notes there are
+		// out of the active lifecycle, so they should not show in project
+		// stat counts or the decisions list.
+		const notes = engine
+			.getNotes({ project: slug, limit: 500 })
+			.filter((n) => !n.path.startsWith('archive/'));
 
 		const counts = emptyStatusCounts();
 		let adrCount = 0;
@@ -192,7 +203,13 @@ export const GET: RequestHandler = async ({ url }) => {
 		// page wants: open decisions on top, recent shipped/accepted right after.
 		if (includeDecisions) {
 			const statusRank = (s: string) =>
-				s === 'proposed' ? 0 : s === 'accepted' ? 1 : s.startsWith('shipped') ? 2 : s === 'parked' ? 3 : 4;
+				s === 'proposed' ? 0
+				: s === 'accepted' ? 1
+				: s === 'shipped' ? 2
+				: s === 'superseded' ? 3
+				: s === 'parked' ? 4
+				: s === 'rejected' ? 5
+				: 6;
 			decisions.sort((a, b) => {
 				const r = statusRank(a.status) - statusRank(b.status);
 				if (r !== 0) return r;

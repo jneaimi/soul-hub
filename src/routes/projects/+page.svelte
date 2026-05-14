@@ -7,6 +7,7 @@
 		shipped: number;
 		rejected: number;
 		parked: number;
+		superseded: number;
 		other: number;
 	}
 
