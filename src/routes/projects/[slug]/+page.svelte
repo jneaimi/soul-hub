@@ -3,12 +3,17 @@
 	import RenderedMarkdown from '$lib/components/RenderedMarkdown.svelte';
 	import DecisionActions from '$lib/components/projects/DecisionActions.svelte';
 	import AdrDrawer from '$lib/components/projects/AdrDrawer.svelte';
+	import AdrGantt from '$lib/components/projects/AdrGantt.svelte';
 
 	interface DecisionRow {
 		path: string;
 		title: string;
 		status: string;
 		created: string | null;
+		acceptedOn: string | null;
+		shippedOn: string | null;
+		targetDate: string | null;
+		dateInferred: boolean;
 		falsifierDate: string | null;
 		falsifierDaysAway: number | null;
 		tags: string[];
@@ -38,6 +43,8 @@
 	let planLoaded = $state(false);
 	let planLoading = $state(false);
 	let planError = $state('');
+
+	let timelineExpanded = $state(true);
 
 	const slug = $derived($page.params.slug);
 	const decisions = $derived(detail?.decisions ?? []);
@@ -239,6 +246,30 @@
 								{:else}
 									<p class="text-xs text-hub-dim py-3">Plan is empty.</p>
 								{/if}
+							</div>
+						{/if}
+					</section>
+				{/if}
+
+				<!-- Timeline (Gantt) — Phase 3c. Renders if there are any dated decisions. -->
+				{#if decisions.length > 0}
+					<section class="mb-6 border border-hub-border rounded-lg bg-hub-card/40 overflow-hidden">
+						<button
+							onclick={() => (timelineExpanded = !timelineExpanded)}
+							class="w-full flex items-center gap-2 px-4 py-3 hover:bg-hub-card/60 transition-colors text-left cursor-pointer"
+							aria-expanded={timelineExpanded}
+						>
+							<svg class="w-4 h-4 text-hub-dim transition-transform" style:transform={timelineExpanded ? 'rotate(90deg)' : ''} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+								<polyline points="9 18 15 12 9 6"/>
+							</svg>
+							<span class="text-sm font-medium text-hub-text">Timeline</span>
+							<span class="text-[11px] text-hub-dim">{decisions.length} ADR{decisions.length === 1 ? '' : 's'}</span>
+						</button>
+						{#if timelineExpanded}
+							<div class="px-4 pb-4 border-t border-hub-border">
+								<div class="pt-3">
+									<AdrGantt decisions={decisions} onSelect={(p) => (drawerPath = p)} />
+								</div>
 							</div>
 						{/if}
 					</section>

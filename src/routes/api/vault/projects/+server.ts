@@ -35,6 +35,10 @@ interface DecisionRow {
 	title: string;
 	status: string;
 	created: string | null;
+	acceptedOn: string | null;
+	shippedOn: string | null;
+	targetDate: string | null;
+	dateInferred: boolean;
 	falsifierDate: string | null;
 	falsifierDaysAway: number | null;
 	tags: string[];
@@ -187,6 +191,10 @@ export const GET: RequestHandler = async ({ url }) => {
 								: note.title || note.path.split('/').pop()?.replace(/\.md$/, '') || note.path,
 						status,
 						created,
+						acceptedOn: asIsoDate(full.meta.accepted_on ?? full.meta.acceptedOn),
+						shippedOn: asIsoDate(full.meta.shipped_on ?? full.meta.shippedOn),
+						targetDate: asIsoDate(full.meta.target_date ?? full.meta.targetDate),
+						dateInferred: full.meta.date_inferred === true || full.meta.dateInferred === true,
 						falsifierDate: falsifier,
 						falsifierDaysAway: falsifier ? daysBetween(falsifier) : null,
 						tags: asStringArray(full.meta.tags),
