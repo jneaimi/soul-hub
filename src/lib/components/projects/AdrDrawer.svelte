@@ -155,6 +155,82 @@
 		return [];
 	}
 
+	/** Phase 3b — parse `"[[slug]]"` or `"[[path/to/note]]"` wikilink values out
+	 *  of a frontmatter relationship array. Tolerates either string or
+	 *  string[] shape and strips the `|alias` suffix. Non-wikilink strings
+	 *  are dropped — governance enforces the wikilink format. */
+	function parseWikilinks(raw: unknown): string[] {
+		const arr = Array.isArray(raw) ? raw : raw == null ? [] : [raw];
+		const out: string[] = [];
+		for (const item of arr) {
+			if (typeof item !== 'string') continue;
+			const m = item.match(/^\s*\[\[(.+?)(?:\|.+?)?\]\]\s*$/);
+			if (m) out.push(m[1].trim());
+		}
+		return out;
+	}
+
+	/** Resolve a frontmatter wikilink target to a vault-relative file path.
+	 *  - Slug form (`adr-018-author-agent`) → same directory as `fromPath`.
+	 *  - Path form (`../soul-hub-pipeline/adr-001-...`) → resolved relative
+	 *    to `fromPath`'s directory, with `..` segments collapsed. */
+	function resolveRelLink(raw: string, fromPath: string): string {
+		const fromDir = fromPath.split('/').slice(0, -1);
+		if (!raw.includes('/')) {
+			return [...fromDir, `${raw}.md`].join('/');
+		}
+		const segments = raw.split('/');
+		const out = [...fromDir];
+		for (const seg of segments) {
+			if (seg === '..') out.pop();
+			else if (seg === '.' || seg === '') continue;
+			else out.push(seg);
+		}
+		let resolved = out.join('/');
+		if (!/\.md$/.test(resolved)) resolved += '.md';
+		return resolved;
+	}
+
+	interface DepEdge {
+		label: string;
+		raw: string;
+		resolved: string;
+	}
+
+	function collectEdges(fields: [string, string][]): DepEdge[] {
+		if (!note) return [];
+		const items: DepEdge[] = [];
+		for (const [field, label] of fields) {
+			for (const raw of parseWikilinks(note.meta[field])) {
+				items.push({ label, raw, resolved: resolveRelLink(raw, note.path) });
+			}
+		}
+		return items;
+	}
+
+	// Upstream — this ADR depends on / replaced these
+	const upstreamEdges = $derived(
+		collectEdges([
+			['blocked_by', 'blocked by'],
+			['extends', 'extends'],
+			['supersedes', 'supersedes'],
+		]),
+	);
+
+	// Downstream — these depend on / replaced this
+	const downstreamEdges = $derived(
+		collectEdges([
+			['blocks', 'blocks'],
+			['superseded_by', 'superseded by'],
+		]),
+	);
+
+	const relatedEdges = $derived(collectEdges([['relates_to', 'relates to']]));
+
+	const hasDependencies = $derived(
+		upstreamEdges.length + downstreamEdges.length + relatedEdges.length > 0,
+	);
+
 	async function load(p: string) {
 		loading = true;
 		error = '';
@@ -442,6 +518,94 @@
 				{/if}
 
 				<RenderedMarkdown html={note.rendered ?? ''} rtl={!!note.contentIsRtl} />
+
+				<!-- Dependencies panel (Phase 3b) — surfaces typed relationship
+				     fields from the frontmatter (blocks/blocked_by/extends/
+				     supersedes/superseded_by/relates_to). Each item is a
+				     button that swaps the drawer to that ADR, reusing the
+				     in-drawer nav pattern. -->
+				{#if hasDependencies}
+					<div class="mt-6 pt-4 border-t border-hub-border">
+						<p class="text-[11px] uppercase tracking-wider text-hub-dim mb-3">
+							Dependencies
+						</p>
+
+						{#if upstreamEdges.length > 0}
+							<div class="mb-3 rounded-md border border-hub-warning/30 bg-hub-warning/5 p-2">
+								<div class="flex items-center gap-2 mb-1.5">
+									<span class="text-[10px] uppercase tracking-wider text-hub-warning">↑</span>
+									<span class="text-xs font-medium text-hub-text">This depends on</span>
+									<span class="text-[10px] text-hub-dim">({upstreamEdges.length})</span>
+								</div>
+								<ul class="space-y-0.5 ml-4">
+									{#each upstreamEdges as edge}
+										<li class="flex items-baseline gap-2 text-xs">
+											<span class="text-[10px] uppercase tracking-wider text-hub-dim w-20 flex-shrink-0">
+												{edge.label}
+											</span>
+											<button
+												onclick={() => (currentPath = edge.resolved)}
+												class="text-hub-text hover:text-hub-info font-mono text-[11px] transition-colors text-left cursor-pointer truncate min-w-0 flex-1"
+												title={edge.resolved}
+											>
+												{shortName(edge.resolved)}
+											</button>
+										</li>
+									{/each}
+								</ul>
+							</div>
+						{/if}
+
+						{#if downstreamEdges.length > 0}
+							<div class="mb-3 rounded-md border border-hub-cta/30 bg-hub-cta/5 p-2">
+								<div class="flex items-center gap-2 mb-1.5">
+									<span class="text-[10px] uppercase tracking-wider text-hub-cta">↓</span>
+									<span class="text-xs font-medium text-hub-text">Downstream</span>
+									<span class="text-[10px] text-hub-dim">({downstreamEdges.length})</span>
+								</div>
+								<ul class="space-y-0.5 ml-4">
+									{#each downstreamEdges as edge}
+										<li class="flex items-baseline gap-2 text-xs">
+											<span class="text-[10px] uppercase tracking-wider text-hub-dim w-20 flex-shrink-0">
+												{edge.label}
+											</span>
+											<button
+												onclick={() => (currentPath = edge.resolved)}
+												class="text-hub-text hover:text-hub-info font-mono text-[11px] transition-colors text-left cursor-pointer truncate min-w-0 flex-1"
+												title={edge.resolved}
+											>
+												{shortName(edge.resolved)}
+											</button>
+										</li>
+									{/each}
+								</ul>
+							</div>
+						{/if}
+
+						{#if relatedEdges.length > 0}
+							<div class="rounded-md border border-hub-border/60 bg-hub-card/40 p-2">
+								<div class="flex items-center gap-2 mb-1.5">
+									<span class="text-[10px] uppercase tracking-wider text-hub-dim">↔</span>
+									<span class="text-xs font-medium text-hub-text">Related</span>
+									<span class="text-[10px] text-hub-dim">({relatedEdges.length})</span>
+								</div>
+								<ul class="space-y-0.5 ml-4">
+									{#each relatedEdges as edge}
+										<li class="text-xs">
+											<button
+												onclick={() => (currentPath = edge.resolved)}
+												class="text-hub-text hover:text-hub-info font-mono text-[11px] transition-colors text-left cursor-pointer truncate w-full"
+												title={edge.resolved}
+											>
+												{shortName(edge.resolved)}
+											</button>
+										</li>
+									{/each}
+								</ul>
+							</div>
+						{/if}
+					</div>
+				{/if}
 
 				<!-- Cross-project links (Phase 3d) — surfaces wikilinks that
 				     leave/enter this project. Within-project outgoing wikilinks
