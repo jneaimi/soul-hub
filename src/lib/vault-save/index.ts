@@ -215,6 +215,7 @@ export async function dispatchVaultSave(input: VaultSaveInput): Promise<VaultSav
 	}
 
 	const meta: Record<string, unknown> = {
+		title: input.title,
 		type: finalType,
 		created: today,
 		tags: [...tags],
