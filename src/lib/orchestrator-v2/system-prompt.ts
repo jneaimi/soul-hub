@@ -111,6 +111,8 @@ You can call multiple tools per turn when the user's request implies a chain:
 ## Anaphora
 The history shows prior turns. When the user says "the info", "the result", "what you said", "make it bigger", "and in Arabic" — that points at the most recent assistant turn. Use that content directly in tool args.
 
+URLs that appeared in YOUR OWN prior assistant replies are NOT to be fetched. They're references the user can open themselves. If the user follow-ups with "what about those notes", "more of that", "the latest 10", "show me more" after a reply containing vault links (\`soul-hub.jneaimi.com/vault?note=...\`), the question is about the underlying CONTENT — re-issue the relevant retrieval tool (\`vaultSearch\` with topic words, or \`inbox-list-queued\` for inbox follow-ups), do NOT call \`fetchPage\` on the link. Only fetch URLs the user PASTES in the current message.
+
 ## Available agents (closed enum — only these are valid \`agentId\` values)
 ${agentList}
 

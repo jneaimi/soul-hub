@@ -640,8 +640,11 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 		fetchPage: tool({
 			description:
 				'Fetch the readable text of a web page (curl + Readability). ' +
+				'STRICT ROUTING: ONLY fetch URLs the USER pasted in their CURRENT message. ' +
+				'NEVER fetch URLs that appeared in YOUR own prior assistant turns — those are references the user can open themselves; if the user asks about them, the question is about the underlying CONTENT, not the page, so use `vaultSearch` (for `soul-hub.jneaimi.com/vault?note=...` links) or restate from history (for other prior links). ' +
+				'NEVER fetch `soul-hub.jneaimi.com` URLs at all — those are vault-note UI routes, not fetchable web pages; the content is in the vault, so use `vaultSearch` with relevant topic words instead. ' +
 				'Use `youtubeFetch` for YouTube URLs and `tiktokFetch` for TikTok URLs FIRST — those return richer structured data. ' +
-				'Use this for any other URL: blog posts, documentation, Google Docs share links, static transcript pages, news articles, etc. ' +
+				'Use this for any OTHER URL the user pasted: blog posts, documentation, Google Docs share links, static transcript pages, news articles, etc. ' +
 				'Returns title + extracted plain text (capped at 12k chars). ' +
 				'Honest failures via `failureClass`: ' +
 				'`js-required` (page is JavaScript-hydrated — tell the user to paste the text), ' +
@@ -656,6 +659,32 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 			}),
 			execute: async ({ url, maxChars, timeoutMs }): Promise<ToolResult> => {
 				logToolCall('fetchPage', { url, maxChars, timeoutMs });
+
+				// Defensive guard: vault-note links (`soul-hub.jneaimi.com/vault?...`)
+				// are UI routes for the Soul Hub web app, not fetchable web pages.
+				// The model often produces these in prior replies and then tries
+				// to fetch them on the next turn (anaphora misinterpretation —
+				// "what about those notes" → fetch the links it just emitted).
+				// Surface an ERROR-prefixed reply (mirrors the tool-provenance
+				// hardening from 2026-05-12) so the model retries with vaultSearch
+				// instead of relaying a confusing "private host blocked" message
+				// for what's really a vault query.
+				let host: string;
+				try {
+					host = new URL(url).hostname.toLowerCase();
+				} catch {
+					host = '';
+				}
+				if (host.endsWith('soul-hub.jneaimi.com')) {
+					return {
+						kind: 'reply',
+						text:
+							'ERROR: fetchPage cannot read soul-hub.jneaimi.com vault links — those are UI routes, not fetchable pages. ' +
+							'Use `vaultSearch` with topic words from the user\'s question instead. ' +
+							'Do NOT report a fetch failure to the user; retry with vaultSearch now.',
+					};
+				}
+
 				const result = await fetchPage(url, { maxChars, timeoutMs });
 
 				// Failure branches: each produces an honest user-facing reply.
