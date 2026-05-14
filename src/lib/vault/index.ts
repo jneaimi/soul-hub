@@ -19,6 +19,10 @@ import { emitReindex } from './events.js';
 
 let engine: VaultEngine | null = null;
 
+function truncate(s: string, max: number): string {
+	return s.length <= max ? s : s.slice(0, max - 1) + '…';
+}
+
 export class VaultEngine {
 	private indexer: VaultIndexer;
 	private searcher: VaultSearch;
@@ -199,6 +203,44 @@ export class VaultEngine {
 			for (const field of zone.requiredFields) {
 				if (!(field in note.meta) || note.meta[field] === undefined || note.meta[field] === '') {
 					violations.push(`Missing required field: ${field}`);
+				}
+			}
+
+			// Canonical status check (decisions only). Empty allowedStatuses
+			// = no rule for this zone.
+			if (
+				note.meta.type === 'decision' &&
+				zone.allowedStatuses.length > 0 &&
+				note.meta.status !== undefined &&
+				note.meta.status !== null &&
+				note.meta.status !== ''
+			) {
+				const status = String(note.meta.status).toLowerCase();
+				if (!zone.allowedStatuses.includes(status)) {
+					violations.push(
+						`Status "${note.meta.status}" not in canonical set (allowed: ${zone.allowedStatuses.join(', ')})`,
+					);
+				}
+			}
+
+			// Relationship field format check. For any allowed relationship
+			// field that's present on the note, every value must be wikilink
+			// format `[[slug]]` (single string or list of strings).
+			if (zone.allowedRelationshipFields.length > 0) {
+				for (const field of zone.allowedRelationshipFields) {
+					if (!(field in note.meta)) continue;
+					const value = note.meta[field];
+					const items: unknown[] = Array.isArray(value) ? value : [value];
+					for (const item of items) {
+						if (item === null || item === undefined || item === '') continue;
+						const s = String(item).trim();
+						if (!/^\[\[.+\]\]$/.test(s)) {
+							violations.push(
+								`Relationship field "${field}" must be wikilink format [[slug]] (got: ${truncate(s, 60)})`,
+							);
+							break; // one message per field is enough
+						}
+					}
 				}
 			}
 

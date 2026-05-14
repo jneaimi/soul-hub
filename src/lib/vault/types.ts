@@ -83,6 +83,15 @@ export interface VaultZone {
 	requiredFields: string[];
 	/** Naming pattern regex (validated on write) */
 	namingPattern?: string;
+	/** Allowed `status:` values for `type: decision` notes (canonical set per
+	 *  zone). Empty = no restriction. Sourced from CLAUDE.md `## Allowed
+	 *  Statuses` section. */
+	allowedStatuses: string[];
+	/** Allowed relationship-field NAMES on decision notes (e.g. supersedes,
+	 *  blocks, blocked_by, relates_to, extends, superseded_by). Values for
+	 *  these fields must be wikilink format `[[slug]]` (or list of). Empty =
+	 *  no restriction. Sourced from CLAUDE.md `## Allowed Relationship Fields`. */
+	allowedRelationshipFields: string[];
 	/** Raw governance text (from CLAUDE.md) */
 	rawGovernance: string;
 }

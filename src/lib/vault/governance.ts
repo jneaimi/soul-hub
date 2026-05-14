@@ -19,19 +19,42 @@ export class GovernanceResolver {
 
 	resolve(targetPath: string): VaultZone {
 		const parts = targetPath.split('/');
-		// Walk from most specific to least specific (include full path)
+		// Walk from most specific to least specific (include full path).
+		// The most-specific zone defines `allowedTypes`/`requiredFields`/
+		// `namingPattern`/`requireTemplate` (existing behavior — child fully
+		// overrides parent). For the canonical-set rules added in Phase 3a
+		// enforcement (`allowedStatuses`, `allowedRelationshipFields`), the
+		// child INHERITS the parent's rule when it doesn't define its own —
+		// so a project-specific CLAUDE.md doesn't silently disable vault-wide
+		// canonical-set governance.
+		const chain: VaultZone[] = [];
 		for (let i = parts.length; i >= 0; i--) {
 			const candidate = parts.slice(0, i).join('/');
 			const zone = this.zones.get(candidate);
-			if (zone) return zone;
+			if (zone) chain.push(zone);
 		}
 
+		if (chain.length === 0) {
+			return {
+				path: '',
+				allowedTypes: [],
+				requireTemplate: false,
+				requiredFields: [],
+				allowedStatuses: [],
+				allowedRelationshipFields: [],
+				rawGovernance: ''
+			};
+		}
+
+		const child = chain[0];
+		// Walk parent → root for the inheriting fields. First non-empty wins.
+		const inheritedStatuses = chain.find((z) => z.allowedStatuses.length > 0)?.allowedStatuses ?? [];
+		const inheritedRelationships = chain.find((z) => z.allowedRelationshipFields.length > 0)?.allowedRelationshipFields ?? [];
+
 		return {
-			path: '',
-			allowedTypes: [],
-			requireTemplate: false,
-			requiredFields: [],
-			rawGovernance: ''
+			...child,
+			allowedStatuses: inheritedStatuses,
+			allowedRelationshipFields: inheritedRelationships,
 		};
 	}
 
@@ -66,6 +89,14 @@ async function findClaudeMdFiles(dir: string, vaultRoot: string): Promise<string
 function parseGovernance(zonePath: string, raw: string): VaultZone {
 	const allowedTypes = extractListSection(raw, 'Allowed Types', zonePath);
 	const requiredFields = extractListSection(raw, 'Required Fields', zonePath);
+	// Optional sections — empty array means "no rule for this zone".
+	// Date fields are NOT enforced (canonical names live in the learning
+	// note); we only enforce status + relationship-field format.
+	// `extractFieldNames` strips trailing descriptions and backticks so
+	// bullets like `- \`supersedes\` — this ADR replaces another` parse
+	// correctly to just `supersedes`.
+	const allowedStatuses = extractFieldNames(raw, 'Allowed Statuses');
+	const allowedRelationshipFields = extractFieldNames(raw, 'Allowed Relationship Fields');
 	const namingPattern = extractNamingPattern(raw);
 	const requireTemplate =
 		/template\s+.*(?:required|MUST\s+use)/i.test(raw) ||
@@ -81,6 +112,8 @@ function parseGovernance(zonePath: string, raw: string): VaultZone {
 		requireTemplate,
 		requiredFields,
 		namingPattern: namingPattern ?? undefined,
+		allowedStatuses,
+		allowedRelationshipFields,
 		rawGovernance: raw
 	};
 }
@@ -111,6 +144,25 @@ function extractListSection(raw: string, heading: string, zonePath?: string): st
 		.split(',')
 		.map((s) => s.trim())
 		.filter(Boolean);
+}
+
+/** Extract a list of field names from a CLAUDE.md section. Like
+ *  `extractListSection` but each bullet's value is reduced to just the
+ *  leading identifier — strips backticks, dashes, em-dashes, and any
+ *  trailing description prose so bullets like
+ *    - `supersedes` — this ADR replaces another
+ *  return just `supersedes`. */
+function extractFieldNames(raw: string, heading: string): string[] {
+	const lines = extractListSection(raw, heading);
+	const names: string[] = [];
+	for (const line of lines) {
+		// Strip leading/trailing backticks; take only the first whitespace-
+		// or punctuation-delimited token. Permissive about separators because
+		// authors use both `—` and `-` and `:`.
+		const m = line.match(/^[`\s]*([A-Za-z][A-Za-z0-9_-]*)/);
+		if (m && m[1]) names.push(m[1]);
+	}
+	return names;
 }
 
 function extractNamingPattern(raw: string): string | null {
