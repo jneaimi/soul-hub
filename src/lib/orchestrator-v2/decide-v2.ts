@@ -612,6 +612,34 @@ function buildV2Output(
 		return { kind: 'text', text: verbatimResult.text };
 	}
 
+	// Self-narration guard. V4 Pro occasionally emits a short
+	// pre-action wrap-up like "Right — let me pull X from the vault." even
+	// AFTER the tool has already returned a polished reply. The user gets
+	// the narration, not the data. Detect by: (a) we have a substantive
+	// search/reply result on hand, AND (b) `usefulFinal` is short OR
+	// matches the common self-narration openers. In that case prefer the
+	// tool's verbatim text (the "Relaying retrieval results" prompt rule
+	// is meant to make the model do this itself; this is the safety net
+	// when it doesn't).
+	const richTextResult =
+		results.find((r) => r.kind === 'vault-search') ??
+		results.find((r) => r.kind === 'web-search') ??
+		results.find((r) => r.kind === 'reply');
+	const richText =
+		richTextResult && 'text' in richTextResult ? (richTextResult.text as string) : '';
+	const selfNarrationOpener =
+		/^(?:right\b|ok\b|okay\b|sure\b|let me\b|i'?ll\b|i will\b|i'?m going to\b|i'?m about to\b|got it\b)[\s—–\-,.:!]/i;
+	const wrapUpLooksLikeNarration =
+		usefulFinal.length > 0 &&
+		(usefulFinal.trim().length < 120 ||
+			selfNarrationOpener.test(usefulFinal.trim()));
+	if (richText && richText.length >= 200 && wrapUpLooksLikeNarration) {
+		console.warn(
+			`[orchestrator-v2] self-narration wrap-up detected (len=${usefulFinal.length} tail=${JSON.stringify(usefulFinal.slice(-40))}); preferring ${richTextResult!.kind} result`,
+		);
+		return { kind: 'text', text: richText };
+	}
+
 	if (usefulFinal) return { kind: 'text', text: usefulFinal, youtubeContext };
 
 	const replyResult = results.find((r) => r.kind === 'reply');

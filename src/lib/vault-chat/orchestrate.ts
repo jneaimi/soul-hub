@@ -25,7 +25,10 @@ import { loadHistory, saveTurn, pruneStaleHistory, buildRetrievalInput } from '.
 import type { MediaPayload } from '../channels/whatsapp/types.js';
 
 const ROUTE_NAME = 'vault-chat';
-const ANSWER_MAX_TOKENS = 800;
+// 800 was too tight for retrieval queries that surface 5-10 candidate notes
+// with bullets + links; the answer got cut mid-sentence. 1500 gives enough
+// room for a substantive list reply without inflating typical short Q&A.
+const ANSWER_MAX_TOKENS = 1500;
 const MULTIMODAL_MODEL = 'gemini-2.5-flash';
 
 export interface VaultChatMedia {

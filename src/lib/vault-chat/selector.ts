@@ -88,6 +88,7 @@ Rules:
 - **Overview queries — multiple notes.** Default to including "fulltext" with a focused 2–6 keyword query.
 - Prefer "byProject" over "fulltext" when the user names a project explicitly (kebab-case like "soul-hub-whatsapp" or natural-language like "the WhatsApp project").
 - **Prefer "byZone" over everything else when the user names a vault zone directly** — "my finance notes", "latest in operations", "what's in finance", "show me content drafts". The eight canonical zones: finance, inbox, knowledge, content, operations, projects, archive, security. Auto-routed notes (payments, statements in finance/) often have empty tags, so byTag misses them — byZone reads the path prefix directly. Combine with "recent" when the user asks for "latest finance notes" — byZone surfaces the candidates, recent ranks by mtime.
+- **Signal Forge outputs live in "content" (NOT "projects").** Content menus, miner-daily / miner-weekly briefs, content-prep notes, strategist briefs, the "weekly pipeline" — all live in content/signal-forge/. For queries about these ("content menu", "today's signals", "what should I post", "what's worth writing", "miner brief", "weekly pipeline"), use byZone({zone:'content', limit:10}). Do NOT use byProject({project:'signal-forge'}) — that's reserved for project-tracking notes in projects/ (which signal-forge doesn't have).
 - Use "recent" for time-shaped queries. Limits: 1–3 for "the latest" (singular focus); 5–10 for "what's new" (overview).
 - Use "byTag" only when the user explicitly names a tag word.
 - "backlinks" requires an exact note path — almost never selected on the first turn.
@@ -133,6 +134,50 @@ function applyFocusOverride(tools: ToolCall[], userMessage: string): ToolCall[] 
 		filtered.forEach((t) => {
 			if (t.name === 'recent') t.args = { ...t.args, limit: 1 };
 		});
+	}
+	return filtered;
+}
+
+/** Detect queries that target Signal Forge pipeline outputs. These live in
+ *  the `content/` zone, NOT `projects/`. The LLM selector routinely
+ *  mis-routes them to `byProject({project:'signal-forge'})` which returns
+ *  zero — there's no `projects/signal-forge/` zone — and the fulltext
+ *  fallback then surfaces stale dates (whichever 'content menu' note has
+ *  the highest MiniSearch score, often a months-old report). */
+function isSignalForgePipelineQuery(message: string): boolean {
+	const lower = message.toLowerCase();
+	return (
+		/\bcontent[\s-]?menu\b/.test(lower) ||
+		/\bminer[\s-](?:daily|weekly|brief)\b/.test(lower) ||
+		/\bsignal[\s-]?forge\b/.test(lower) ||
+		/\bcontent[\s-]?prep\b/.test(lower) ||
+		/\bstrategist[\s-](?:weekly|brief)\b/.test(lower) ||
+		/\b(?:today's|this week's|today|current)\s+(?:signals?|content|menu|brief)\b/.test(lower) ||
+		/\bweekly\s+pipeline\b/.test(lower) ||
+		/\bwhat(?:'s| is)?\s+worth\s+(?:writing|posting|sharing)\b/.test(lower) ||
+		/\bsomething\s+(?:to\s+)?(?:write|post|share)\b/.test(lower)
+	);
+}
+
+/** Apply the signal-forge override. Forces byZone({zone:'content', limit:10})
+ *  to be present and strips byProject({project:'signal-forge'}) (which
+ *  always returns nothing). Keeps fulltext for topical narrowing. Mirrors
+ *  the system-prompt rule but enforces it deterministically — the LLM
+ *  selector still hallucinates byProject roughly 60% of the time on these
+ *  queries even with the rule. */
+function applySignalForgeOverride(tools: ToolCall[], userMessage: string): ToolCall[] {
+	if (!isSignalForgePipelineQuery(userMessage)) return tools;
+	// Drop the wrong-zone byProject that the LLM keeps picking.
+	const filtered = tools.filter(
+		(t) => !(t.name === 'byProject' && (t.args as { project?: string })?.project === 'signal-forge'),
+	);
+	// Ensure byZone({zone:'content', limit:10}) is present at the front so
+	// the merger sees the recency-sorted candidates first.
+	const hasContentZone = filtered.some(
+		(t) => t.name === 'byZone' && (t.args as { zone?: string })?.zone === 'content',
+	);
+	if (!hasContentZone) {
+		filtered.unshift({ name: 'byZone', args: { zone: 'content', limit: 10 } });
 	}
 	return filtered;
 }
@@ -232,6 +277,11 @@ export async function selectTools(userMessage: string): Promise<SelectorOutput> 
 		// for the rationale.
 		tools = applyFocusOverride(tools, userMessage);
 
+		// Signal-Forge override — corrects the LLM's persistent habit of
+		// routing content-menu/miner-brief queries to byProject(signal-forge),
+		// which returns nothing because signal-forge lives in `content/`.
+		tools = applySignalForgeOverride(tools, userMessage);
+
 		// Default-overview path: guarantee a fulltext baseline so structural-
 		// only selections still have topical retrieval. Skipped for focus
 		// queries (intentionally — fulltext is what dilutes them).
@@ -255,6 +305,10 @@ export async function selectTools(userMessage: string): Promise<SelectorOutput> 
 					? `selector failed: ${err.message}`
 					: 'selector failed: unknown error';
 		const fallback = heuristicSelect(userMessage);
-		return { ...fallback, tools: applyFocusOverride(fallback.tools, userMessage), reason };
+		return {
+			...fallback,
+			tools: applySignalForgeOverride(applyFocusOverride(fallback.tools, userMessage), userMessage),
+			reason,
+		};
 	}
 }
