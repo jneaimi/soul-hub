@@ -26,6 +26,15 @@ export interface IntentDecision {
 	source: IntentSource;
 	confidence?: number;
 	latencyMs?: number;
+	/** ADR-033 §Engines play 1 — 12-char SHA1 prefix of the composed
+	 *  persona bundle that was injected into the orchestrator-v2 system
+	 *  prompt at decision time. Stamping it here turns the intent-learner's
+	 *  nightly mining into an automatic persona-regression detector: when
+	 *  `personaVersion` changes (operator edits `operations/soul.md` etc.),
+	 *  the next morning's audit shows route distributions stratified by
+	 *  persona version. Undefined for `regex`/`fallback` sources that
+	 *  bypass the orchestrator entirely. */
+	personaVersion?: string;
 }
 
 let schemaReady = false;
@@ -56,6 +65,16 @@ function ensureSchema(db: Database): void {
 		CREATE INDEX IF NOT EXISTS idx_intent_log_by_user_sig
 			ON intent_log(conversation_key, normalized_signature, ts DESC);
 	`);
+
+	// ADR-033 §Engines play 1 — additive column for persona version
+	// stratification. PRAGMA table_info gate keeps migration idempotent on
+	// existing DBs without an ALTER-OR-IGNORE syntax in SQLite. Older rows
+	// stay NULL (pre-ADR-033 era); the audit dashboard treats NULL as
+	// `(pre-persona)` rather than a missing field.
+	const cols = db.prepare(`PRAGMA table_info(intent_log)`).all() as Array<{ name: string }>;
+	if (!cols.some((c) => c.name === 'persona_version')) {
+		db.exec(`ALTER TABLE intent_log ADD COLUMN persona_version TEXT`);
+	}
 }
 
 function db(): Database {
@@ -75,8 +94,8 @@ export function writeIntentDecision(decision: IntentDecision): void {
 		db()
 			.prepare(
 				`INSERT OR REPLACE INTO intent_log
-				 (ts, conversation_key, raw_message, normalized_signature, picked_route, source, confidence, latency_ms)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				 (ts, conversation_key, raw_message, normalized_signature, picked_route, source, confidence, latency_ms, persona_version)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			)
 			.run(
 				decision.ts,
@@ -87,6 +106,7 @@ export function writeIntentDecision(decision: IntentDecision): void {
 				decision.source,
 				decision.confidence ?? null,
 				decision.latencyMs ?? null,
+				decision.personaVersion ?? null,
 			);
 	} catch (err) {
 		console.warn(`[intent-log] write failed: ${(err as Error).message}`);

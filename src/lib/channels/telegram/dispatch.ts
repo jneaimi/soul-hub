@@ -502,6 +502,7 @@ async function dispatchOrchestrated(
 				source: 'llm',
 				confidence: orch.decision.confidence,
 				latencyMs: Date.now() - decideStart,
+				personaVersion: orch.telemetry?.personaBundleHash,
 			});
 		}
 	} catch (err) {

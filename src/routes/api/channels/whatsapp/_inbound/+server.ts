@@ -687,6 +687,7 @@ export const POST: RequestHandler = async ({ request }) => {
 					source: 'llm',
 					confidence: orch.decision.confidence,
 					latencyMs: Date.now() - decideStart,
+					personaVersion: orch.telemetry?.personaBundleHash,
 				});
 			} else {
 				writeIntentDecision({
@@ -697,6 +698,7 @@ export const POST: RequestHandler = async ({ request }) => {
 					pickedRoute: 'vault-chat',
 					source: 'fallback',
 					latencyMs: Date.now() - decideStart,
+					personaVersion: orch.telemetry?.personaBundleHash,
 				});
 			}
 
