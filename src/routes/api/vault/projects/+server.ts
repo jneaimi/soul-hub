@@ -25,6 +25,17 @@ type StatusCounts = {
 	other: number;
 };
 
+interface DecisionRow {
+	path: string;
+	title: string;
+	status: string;
+	created: string | null;
+	falsifierDate: string | null;
+	falsifierDaysAway: number | null;
+	tags: string[];
+	blockedBy: string[];
+}
+
 interface ProjectRollup {
 	slug: string;
 	adrCount: number;
@@ -34,6 +45,14 @@ interface ProjectRollup {
 	lastActivity: number | null;
 	upcomingFalsifiers: { path: string; date: string; daysAway: number }[];
 	hasIndex: boolean;
+	indexPath: string | null;
+	decisions?: DecisionRow[];
+}
+
+function asStringArray(raw: unknown): string[] {
+	if (Array.isArray(raw)) return raw.filter((x) => typeof x === 'string') as string[];
+	if (typeof raw === 'string') return [raw];
+	return [];
 }
 
 function emptyStatusCounts(): StatusCounts {
@@ -87,6 +106,10 @@ export const GET: RequestHandler = async ({ url }) => {
 	const filterParam = url.searchParams.get('slug');
 	const filterSet = filterParam ? new Set(filterParam.split(',').map((s) => s.trim())) : null;
 
+	// When a single slug is requested, include per-decision rows on the rollup.
+	// Skipped on the list view to keep the payload tight.
+	const includeDecisions = filterSet !== null && filterSet.size === 1;
+
 	const rollups: ProjectRollup[] = [];
 
 	for (const slug of entries) {
@@ -111,16 +134,17 @@ export const GET: RequestHandler = async ({ url }) => {
 		let adrCount = 0;
 		let lastActivity: number | null = null;
 		let hasIndex = false;
+		let indexPath: string | null = null;
 		const upcomingFalsifiers: ProjectRollup['upcomingFalsifiers'] = [];
+		const decisions: DecisionRow[] = [];
 
 		for (const note of notes) {
-			// SearchResult is a thin shape — we need full meta for status/falsifier.
-			// `engine.getNote(path)` returns the indexed note with meta.
 			const full = engine.getNote(note.path);
 			if (!full) continue;
 
 			if (note.path.endsWith('/index.md') || note.path.endsWith(`/${slug}/index.md`)) {
 				hasIndex = true;
+				indexPath = note.path;
 			}
 
 			if (full.mtime && (!lastActivity || full.mtime > lastActivity)) {
@@ -129,20 +153,55 @@ export const GET: RequestHandler = async ({ url }) => {
 
 			if (full.meta.type === 'decision') {
 				adrCount++;
+				const status = String(full.meta.status ?? '').toLowerCase();
 				const bucket = bucketStatus(full.meta.status);
 				counts[bucket]++;
 
-				const falsifier = asIsoDate(full.meta.falsifier_date) ?? asIsoDate(full.meta.falsifierDate);
+				const falsifier =
+					asIsoDate(full.meta.falsifier_date) ?? asIsoDate(full.meta.falsifierDate);
 				if (falsifier) {
 					const days = daysBetween(falsifier);
 					if (days !== null && days >= -1 && days <= 60) {
 						upcomingFalsifiers.push({ path: note.path, date: falsifier, daysAway: days });
 					}
 				}
+
+				if (includeDecisions) {
+					const created = asIsoDate(full.meta.created);
+					decisions.push({
+						path: note.path,
+						title:
+							typeof full.meta.title === 'string' && full.meta.title
+								? full.meta.title
+								: note.title || note.path.split('/').pop()?.replace(/\.md$/, '') || note.path,
+						status,
+						created,
+						falsifierDate: falsifier,
+						falsifierDaysAway: falsifier ? daysBetween(falsifier) : null,
+						tags: asStringArray(full.meta.tags),
+						blockedBy: asStringArray(full.meta.blocked_by ?? full.meta.blockedBy),
+					});
+				}
 			}
 		}
 
 		upcomingFalsifiers.sort((a, b) => a.daysAway - b.daysAway);
+
+		// Decision sort: proposed first (then by created asc — oldest first), then
+		// everything else by created desc (newest first). This is what the detail
+		// page wants: open decisions on top, recent shipped/accepted right after.
+		if (includeDecisions) {
+			const statusRank = (s: string) =>
+				s === 'proposed' ? 0 : s === 'accepted' ? 1 : s.startsWith('shipped') ? 2 : s === 'parked' ? 3 : 4;
+			decisions.sort((a, b) => {
+				const r = statusRank(a.status) - statusRank(b.status);
+				if (r !== 0) return r;
+				if (a.status === 'proposed' && b.status === 'proposed') {
+					return (a.created ?? '').localeCompare(b.created ?? '');
+				}
+				return (b.created ?? '').localeCompare(a.created ?? '');
+			});
+		}
 
 		rollups.push({
 			slug,
@@ -153,6 +212,8 @@ export const GET: RequestHandler = async ({ url }) => {
 			lastActivity,
 			upcomingFalsifiers,
 			hasIndex,
+			indexPath,
+			...(includeDecisions ? { decisions } : {}),
 		});
 	}
 

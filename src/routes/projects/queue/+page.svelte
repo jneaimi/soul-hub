@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import DecisionActions from '$lib/components/projects/DecisionActions.svelte';
+	import AdrDrawer from '$lib/components/projects/AdrDrawer.svelte';
 
 	interface QueueRow {
 		path: string;
@@ -16,14 +18,7 @@
 	let rows = $state<QueueRow[]>([]);
 	let loading = $state(true);
 	let error = $state('');
-	let actingPath = $state<string | null>(null);
-	let actionResult = $state<{ path: string; status: string; message: string } | null>(null);
-
-	// Per-row reject form state
-	let rejectingPath = $state<string | null>(null);
-	let rejectReason = $state('');
-	let parkingPath = $state<string | null>(null);
-	let parkReviewAfter = $state('');
+	let drawerPath = $state<string | null>(null);
 
 	async function load() {
 		error = '';
@@ -39,53 +34,13 @@
 		}
 	}
 
-	async function transition(
-		path: string,
-		action: 'accept' | 'reject' | 'park',
-		body: Record<string, unknown> = {},
-	) {
-		actingPath = path;
-		actionResult = null;
-		try {
-			const res = await fetch('/api/vault/decisions/transition', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ path, action, ...body }),
-			});
-			const data = await res.json();
-			if (!res.ok || !data.success) {
-				actionResult = {
-					path,
-					status: 'error',
-					message: data.error ?? `HTTP ${res.status}`,
-				};
-				return;
-			}
-			actionResult = {
-				path,
-				status: 'ok',
-				message: `${action} → ${data.newStatus}`,
-			};
-			// Drop the row optimistically (server already mutated)
-			rows = rows.filter((r) => r.path !== path);
-			rejectingPath = null;
-			parkingPath = null;
-			rejectReason = '';
-			parkReviewAfter = '';
-		} catch (e) {
-			actionResult = {
-				path,
-				status: 'error',
-				message: e instanceof Error ? e.message : 'Network error',
-			};
-		} finally {
-			actingPath = null;
-		}
+	function handleTransition(info: { path: string }) {
+		// Drop the row optimistically — the server already mutated.
+		rows = rows.filter((r) => r.path !== info.path);
 	}
 
 	function falsifierClass(daysAway: number | null): string {
 		if (daysAway === null) return 'text-hub-dim';
-		if (daysAway <= 0) return 'text-hub-danger';
 		if (daysAway <= 7) return 'text-hub-danger';
 		if (daysAway <= 30) return 'text-hub-warning';
 		return 'text-hub-dim';
@@ -117,7 +72,7 @@
 					{/if}
 				</div>
 				<div class="text-xs text-hub-dim">
-					Oldest first · accept clears one click · reject requires a reason
+					Oldest first · click row to view · accept clears one click · reject requires a reason
 				</div>
 			</div>
 			<nav class="flex items-center gap-1 text-xs">
@@ -153,9 +108,12 @@
 					{#each rows as row (row.path)}
 						<div class="border border-hub-border rounded-lg bg-hub-card/40 p-4">
 							<div class="flex items-start justify-between gap-3 mb-2">
-								<div class="min-w-0 flex-1">
+								<button
+									onclick={() => drawerPath = row.path}
+									class="min-w-0 flex-1 text-left cursor-pointer group"
+								>
 									<div class="flex items-center gap-2 text-[11px] text-hub-dim mb-1">
-										<a href="/projects/{row.project}" class="text-hub-info hover:text-hub-text transition-colors cursor-pointer">{row.project || '—'}</a>
+										<span class="text-hub-info">{row.project || '—'}</span>
 										{#if row.created}
 											<span>·</span>
 											<span>{row.created}</span>
@@ -171,34 +129,12 @@
 											<span class="text-hub-warning">blocked by {row.blockedBy.length}</span>
 										{/if}
 									</div>
-									<h3 class="text-sm font-semibold text-hub-text truncate">
+									<h3 class="text-sm font-semibold text-hub-text group-hover:text-hub-info transition-colors">
 										{row.title}
 									</h3>
 									<p class="text-[11px] text-hub-dim font-mono truncate mt-1">{row.path}</p>
-								</div>
-								<div class="flex items-center gap-1 flex-shrink-0">
-									<button
-										onclick={() => transition(row.path, 'accept')}
-										disabled={actingPath === row.path}
-										class="px-3 py-1.5 rounded text-xs font-medium bg-hub-info/15 text-hub-info hover:bg-hub-info/25 transition-colors cursor-pointer disabled:opacity-50"
-									>
-										{actingPath === row.path ? '…' : 'Accept'}
-									</button>
-									<button
-										onclick={() => { rejectingPath = rejectingPath === row.path ? null : row.path; parkingPath = null; }}
-										disabled={actingPath === row.path}
-										class="px-3 py-1.5 rounded text-xs font-medium bg-hub-danger/15 text-hub-danger hover:bg-hub-danger/25 transition-colors cursor-pointer disabled:opacity-50"
-									>
-										Reject
-									</button>
-									<button
-										onclick={() => { parkingPath = parkingPath === row.path ? null : row.path; rejectingPath = null; }}
-										disabled={actingPath === row.path}
-										class="px-3 py-1.5 rounded text-xs font-medium bg-hub-dim/15 text-hub-dim hover:bg-hub-dim/25 transition-colors cursor-pointer disabled:opacity-50"
-									>
-										Park
-									</button>
-								</div>
+								</button>
+								<DecisionActions path={row.path} size="md" onTransition={handleTransition} />
 							</div>
 
 							{#if row.tags.length > 0}
@@ -211,76 +147,6 @@
 									{/if}
 								</div>
 							{/if}
-
-							{#if rejectingPath === row.path}
-								<div class="mt-3 p-3 rounded-lg bg-hub-surface border border-hub-danger/30">
-									<label class="block text-[11px] font-medium text-hub-danger mb-1">
-										Reason for reject (required)
-									</label>
-									<textarea
-										bind:value={rejectReason}
-										rows="2"
-										placeholder="Why is this rejected? Any context for future-you."
-										class="w-full bg-transparent border border-hub-border rounded px-2 py-1.5 text-xs text-hub-text placeholder:text-hub-dim focus:outline-none focus:border-hub-danger/50 transition-colors resize-none"
-									></textarea>
-									<div class="flex items-center gap-2 mt-2">
-										<button
-											onclick={() => transition(row.path, 'reject', { reason: rejectReason })}
-											disabled={!rejectReason.trim() || actingPath === row.path}
-											class="px-3 py-1 rounded text-[11px] font-medium bg-hub-danger text-white hover:bg-hub-danger/90 transition-colors cursor-pointer disabled:opacity-50"
-										>
-											Confirm reject
-										</button>
-										<button
-											onclick={() => { rejectingPath = null; rejectReason = ''; }}
-											class="px-3 py-1 rounded text-[11px] text-hub-dim hover:text-hub-text transition-colors cursor-pointer"
-										>
-											Cancel
-										</button>
-									</div>
-								</div>
-							{/if}
-
-							{#if parkingPath === row.path}
-								<div class="mt-3 p-3 rounded-lg bg-hub-surface border border-hub-dim/30">
-									<label class="block text-[11px] font-medium text-hub-dim mb-1">
-										Review after (optional, YYYY-MM-DD)
-									</label>
-									<input
-										bind:value={parkReviewAfter}
-										type="text"
-										placeholder="2026-06-30"
-										pattern="\d{'{4}'}-\d{'{2}'}-\d{'{2}'}"
-										class="w-full bg-transparent border border-hub-border rounded px-2 py-1.5 text-xs text-hub-text placeholder:text-hub-dim focus:outline-none focus:border-hub-cta/50 transition-colors"
-									/>
-									<div class="flex items-center gap-2 mt-2">
-										<button
-											onclick={() => transition(row.path, 'park', parkReviewAfter ? { reviewAfter: parkReviewAfter } : {})}
-											disabled={actingPath === row.path}
-											class="px-3 py-1 rounded text-[11px] font-medium bg-hub-dim text-hub-text hover:bg-hub-dim/80 transition-colors cursor-pointer disabled:opacity-50"
-										>
-											Confirm park
-										</button>
-										<button
-											onclick={() => { parkingPath = null; parkReviewAfter = ''; }}
-											class="px-3 py-1 rounded text-[11px] text-hub-dim hover:text-hub-text transition-colors cursor-pointer"
-										>
-											Cancel
-										</button>
-									</div>
-								</div>
-							{/if}
-
-							{#if actionResult && actionResult.path === row.path}
-								<div
-									class="mt-2 px-2 py-1 rounded text-[11px]"
-									class:bg-hub-info={actionResult.status === 'ok'}
-									class:text-white={actionResult.status === 'ok'}
-									class:bg-hub-danger={actionResult.status === 'error'}
-								>
-									{actionResult.message}
-								</div>
-							{/if}
 						</div>
 					{/each}
 				</div>
@@ -288,3 +154,9 @@
 		</div>
 	</div>
 </div>
+
+<AdrDrawer
+	path={drawerPath}
+	onClose={() => drawerPath = null}
+	onTransition={handleTransition}
+/>
