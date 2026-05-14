@@ -49,7 +49,12 @@ import type {
  *  entirely. Used by tests / one-off debugging. The 14-day live A/B reads
  *  the branch from `pickBranchForKey()` instead. */
 const FIXED_MODEL_OVERRIDE = process.env.ORCHESTRATOR_V2_MODEL;
-const MAX_STEPS = 5;
+// 5 was too tight for V4 Pro: it iterates more aggressively than GLM-4.6
+// on retrieval — one mis-routed tool call + 3-4 vaultSearches exhausts
+// the budget mid-composition, shipping a half-sentence to the user.
+// 8 keeps p95 latency reasonable (~80s worst case) while giving the
+// model room to recover from a bad first step.
+const MAX_STEPS = 8;
 
 /** ADR-030 v2 — stop the agent loop the moment a slow tool dispatches.
  *
@@ -386,7 +391,7 @@ export async function decideV2(
 		};
 	}
 
-	const v2Output = buildV2Output(toolResults, finalText, toolErrors);
+	const v2Output = buildV2Output(toolResults, finalText, toolErrors, stepsUsed);
 	const decision = mapToolCallsToDecision(toolCalls, finalText);
 	return {
 		decision,
@@ -462,9 +467,24 @@ function buildV2Output(
 	results: readonly ToolResult[],
 	finalText: string,
 	toolErrors: readonly ToolError[],
+	stepsUsed: number,
 ): V2Output | undefined {
 	const trimmedFinal = finalText.trim();
-	const usefulFinal = trimmedFinal.length >= MIN_USEFUL_FINAL_TEXT ? finalText : '';
+	// When the agent loop hits the step cap mid-composition the model
+	// often returns a coherent-looking prefix that ends mid-word (e.g.
+	// "…items (those with the"). Treating that as the wrap-up ships a
+	// fragment to the user. Detect by: (a) we burned the whole step
+	// budget AND (b) the last char isn't a sentence terminator. In that
+	// case fall through to the tool's verbatim text below.
+	const endsCleanly = /[.!?)\]"'`»”]\s*$/.test(trimmedFinal);
+	const looksTruncated = stepsUsed >= MAX_STEPS && !endsCleanly;
+	if (looksTruncated) {
+		console.warn(
+			`[orchestrator-v2] truncated wrap-up detected (steps=${stepsUsed}/${MAX_STEPS}, tail=${JSON.stringify(trimmedFinal.slice(-40))}); falling through to tool result`,
+		);
+	}
+	const usefulFinal =
+		trimmedFinal.length >= MIN_USEFUL_FINAL_TEXT && !looksTruncated ? finalText : '';
 
 	if (results.length === 0) {
 		// No tools produced a usable result. If a tool-error happened, the
