@@ -261,26 +261,22 @@ function composeNote(message: InboxMessage, extract: TransactionalExtract | null
 
 	if (message.category === 'transactional' && extract?.kind === 'receipt') {
 		const merchant = extract.merchant || 'Unknown merchant';
-		const amountLabel = formatAmount(extract.amount, extract.currency);
-		title = amountLabel ? `Receipt — ${merchant} (${amountLabel})` : `Receipt — ${merchant}`;
+		title = composeMoneyMovementTitle('Receipt', merchant, extract);
 		header = transactionalHeader(extract, fromLabel, receivedIso);
 		if (extract.merchant) tags.add(slugTag(extract.merchant));
 	} else if (message.category === 'transactional' && extract?.kind === 'payment') {
 		const merchant = extract.merchant || 'Unknown merchant';
-		const amountLabel = formatAmount(extract.amount, extract.currency);
-		title = amountLabel ? `Payment — ${merchant} (${amountLabel})` : `Payment — ${merchant}`;
+		title = composeMoneyMovementTitle('Payment', merchant, extract);
 		header = transactionalHeader(extract, fromLabel, receivedIso);
 		if (extract.merchant) tags.add(slugTag(extract.merchant));
 	} else if (message.category === 'transactional' && extract?.kind === 'refund') {
 		const merchant = extract.merchant || 'Unknown merchant';
-		const amountLabel = formatAmount(extract.amount, extract.currency);
-		title = amountLabel ? `Refund — ${merchant} (${amountLabel})` : `Refund — ${merchant}`;
+		title = composeMoneyMovementTitle('Refund', merchant, extract);
 		header = transactionalHeader(extract, fromLabel, receivedIso);
 		if (extract.merchant) tags.add(slugTag(extract.merchant));
 	} else if (message.category === 'transactional' && extract?.kind === 'subscription-renewal') {
 		const merchant = extract.merchant || 'Unknown merchant';
-		const amountLabel = formatAmount(extract.amount, extract.currency);
-		title = amountLabel ? `Renewal — ${merchant} (${amountLabel})` : `Renewal — ${merchant}`;
+		title = composeMoneyMovementTitle('Renewal', merchant, extract);
 		header = transactionalHeader(extract, fromLabel, receivedIso);
 		if (extract.merchant) tags.add(slugTag(extract.merchant));
 	} else if (message.category === 'transactional' && extract?.kind === 'statement') {
@@ -367,6 +363,32 @@ function transactionalHeader(
 	if (extract.referenceNumber) lines.push(`**Reference:** \`${extract.referenceNumber}\``);
 	if (extract.anomalyHint) lines.push(`**Anomaly hint:** yes`);
 	return lines;
+}
+
+/** Shared title shape for receipts/payments/refunds/renewals. Distinguishes
+ *  same-merchant same-amount notes by including the transaction date in the
+ *  parens — fixes the 'two Vercel receipts look like duplicates' problem
+ *  reported live 2026-05-14. Date falls back gracefully: explicit
+ *  `extract.date` first (the bank's own field, usually a YYYY-MM-DD slice),
+ *  then nothing (older format) — the trailing `, ` separator means missing
+ *  dates produce `Receipt — Vercel Inc. (USD 20.00)` not `(USD 20.00, )`. */
+function composeMoneyMovementTitle(
+	kind: 'Receipt' | 'Payment' | 'Refund' | 'Renewal',
+	merchant: string,
+	extract: TransactionalExtract,
+): string {
+	const amountLabel = formatAmount(extract.amount, extract.currency);
+	const dateLabel = extract.date && extract.date.trim() ? extract.date.trim() : null;
+	if (amountLabel && dateLabel) {
+		return `${kind} — ${merchant} (${amountLabel}, ${dateLabel})`;
+	}
+	if (amountLabel) {
+		return `${kind} — ${merchant} (${amountLabel})`;
+	}
+	if (dateLabel) {
+		return `${kind} — ${merchant} (${dateLabel})`;
+	}
+	return `${kind} — ${merchant}`;
 }
 
 function formatAmount(amount: number | undefined, currency: string | undefined): string | null {
