@@ -244,6 +244,19 @@ export class VaultEngine {
 				}
 			}
 
+			// ADR-039 R3 — scope discipline. Flag oversized ADRs so the
+			// operator can decide whether to split the next phase into a
+			// new ADR (via `extends:`). Soft warning, not a block.
+			if (note.meta.type === 'decision') {
+				const bodyBytes = Buffer.byteLength(note.content, 'utf8');
+				const shippedMarkers = (note.content.match(/\bSHIPPED\b|shipped on/g) || []).length;
+				if (bodyBytes > 15000 || shippedMarkers > 5) {
+					violations.push(
+						`ADR scope (ADR-039): body ${bodyBytes} bytes, ${shippedMarkers} shipped markers — consider splitting next phase into a new ADR with \`extends:\``,
+					);
+				}
+			}
+
 			if (violations.length > 0) {
 				results.push({ path: note.path, violations });
 			}
