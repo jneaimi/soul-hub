@@ -20,7 +20,16 @@
 		lastActivity: number | null;
 		upcomingFalsifiers: { path: string; date: string; daysAway: number }[];
 		hasIndex: boolean;
+		parentProject: string | null;
 	}
+
+	interface TreeNode {
+		project: ProjectRollup;
+		depth: number;
+		children: TreeNode[];
+	}
+
+	const EXPANDED_KEY = 'vault-projects-tree-expanded';
 
 	interface QueueRow {
 		path: string;
@@ -40,16 +49,118 @@
 	let error = $state('');
 	let filter = $state('');
 	let statusFilter = $state<'all' | 'open' | 'shipped' | 'archived'>('all');
+	let expanded = $state<Set<string>>(new Set());
 
-	const filtered = $derived(
-		projects.filter((p) => {
-			if (filter && !p.slug.toLowerCase().includes(filter.toLowerCase())) return false;
-			if (statusFilter === 'open' && p.statusCounts.proposed === 0) return false;
-			if (statusFilter === 'shipped' && p.statusCounts.shipped === 0) return false;
-			if (statusFilter === 'archived' && p.adrCount > 0) return false;
-			return true;
-		}),
-	);
+	/** A project passes the row-level filter (text + status). The tree-walk
+	 *  below uses this to decide whether to keep a node OR any of its
+	 *  descendants (descendant-aware filtering). */
+	function projectMatches(p: ProjectRollup): boolean {
+		if (filter && !p.slug.toLowerCase().includes(filter.toLowerCase())) return false;
+		if (statusFilter === 'open' && p.statusCounts.proposed === 0) return false;
+		if (statusFilter === 'shipped' && p.statusCounts.shipped === 0) return false;
+		if (statusFilter === 'archived' && p.adrCount > 0) return false;
+		return true;
+	}
+
+	/** Build a tree from the flat list. Roots = parentProject is null OR
+	 *  parent slug isn't in the set (orphan parent — render at top level
+	 *  rather than dropping the node). */
+	const tree = $derived.by<TreeNode[]>(() => {
+		const bySlug = new Map<string, ProjectRollup>();
+		for (const p of projects) bySlug.set(p.slug, p);
+
+		const childrenOf = new Map<string, ProjectRollup[]>();
+		const roots: ProjectRollup[] = [];
+		for (const p of projects) {
+			if (p.parentProject && bySlug.has(p.parentProject)) {
+				const arr = childrenOf.get(p.parentProject) ?? [];
+				arr.push(p);
+				childrenOf.set(p.parentProject, arr);
+			} else {
+				roots.push(p);
+			}
+		}
+
+		const sortByActivity = (a: ProjectRollup, b: ProjectRollup) => {
+			if (a.lastActivity && b.lastActivity) return b.lastActivity - a.lastActivity;
+			if (a.lastActivity) return -1;
+			if (b.lastActivity) return 1;
+			return a.slug.localeCompare(b.slug);
+		};
+
+		const buildNode = (p: ProjectRollup, depth: number): TreeNode => {
+			const kids = (childrenOf.get(p.slug) ?? [])
+				.slice()
+				.sort(sortByActivity)
+				.map((c) => buildNode(c, depth + 1));
+			return { project: p, depth, children: kids };
+		};
+
+		return roots.sort(sortByActivity).map((r) => buildNode(r, 0));
+	});
+
+	/** Descendant-aware filter: a node survives if it matches OR any
+	 *  descendant survives. Empty parents get dropped. */
+	function filterTree(nodes: TreeNode[]): TreeNode[] {
+		const out: TreeNode[] = [];
+		for (const n of nodes) {
+			const filteredChildren = filterTree(n.children);
+			if (projectMatches(n.project) || filteredChildren.length > 0) {
+				out.push({ ...n, children: filteredChildren });
+			}
+		}
+		return out;
+	}
+
+	const filtered = $derived(filterTree(tree));
+
+	/** Slugs that should auto-expand: ancestors of any filter-match.
+	 *  Computed only when filter is active so manual expand/collapse wins
+	 *  when filters are empty. */
+	const autoExpanded = $derived.by(() => {
+		if (!filter && statusFilter === 'all') return null;
+		const set = new Set<string>();
+		const visit = (nodes: TreeNode[], ancestors: string[]) => {
+			for (const n of nodes) {
+				if (projectMatches(n.project)) {
+					for (const a of ancestors) set.add(a);
+				}
+				visit(n.children, [...ancestors, n.project.slug]);
+			}
+		};
+		visit(tree, []);
+		return set;
+	});
+
+	function isExpanded(slug: string): boolean {
+		if (autoExpanded) return autoExpanded.has(slug);
+		return expanded.has(slug);
+	}
+
+	function toggle(slug: string) {
+		const next = new Set(expanded);
+		if (next.has(slug)) next.delete(slug);
+		else next.add(slug);
+		expanded = next;
+		try {
+			localStorage.setItem(EXPANDED_KEY, JSON.stringify([...next]));
+		} catch {
+			// localStorage may be disabled — silently fall back to memory-only state
+		}
+	}
+
+	/** Count visible cards (used for "no matches" empty state). */
+	const visibleCount = $derived.by(() => {
+		let n = 0;
+		const walk = (nodes: TreeNode[]) => {
+			for (const node of nodes) {
+				n++;
+				walk(node.children);
+			}
+		};
+		walk(filtered);
+		return n;
+	});
 
 	const totals = $derived.by(() => {
 		const t = { adrs: 0, proposed: 0, shipped: 0 };
@@ -94,8 +205,110 @@
 		}
 	}
 
-	onMount(() => { loadProjects(); });
+	onMount(() => {
+		try {
+			const raw = localStorage.getItem(EXPANDED_KEY);
+			if (raw) {
+				const parsed = JSON.parse(raw);
+				if (Array.isArray(parsed)) expanded = new Set(parsed.filter((x) => typeof x === 'string'));
+			}
+		} catch {
+			// localStorage unavailable or malformed value — start collapsed
+		}
+		loadProjects();
+	});
 </script>
+
+{#snippet treeRow(node: TreeNode)}
+	{@const project = node.project}
+	{@const hasChildren = node.children.length > 0}
+	{@const open = isExpanded(project.slug)}
+	<div style="margin-left: {node.depth * 24}px;">
+		<div class="group flex items-stretch rounded-lg border border-hub-border bg-hub-card/40 hover:border-hub-cta/40 hover:bg-hub-card/60 transition-colors">
+			<button
+				type="button"
+				onclick={() => hasChildren && toggle(project.slug)}
+				class="flex-shrink-0 w-7 flex items-center justify-center text-hub-dim hover:text-hub-text"
+				class:cursor-pointer={hasChildren}
+				class:cursor-default={!hasChildren}
+				aria-label={hasChildren ? (open ? 'Collapse' : 'Expand') : ''}
+				tabindex={hasChildren ? 0 : -1}
+			>
+				{#if hasChildren}
+					<span class="text-[10px] leading-none select-none">{open ? '▼' : '▶'}</span>
+				{:else}
+					<span class="block w-1 h-1 rounded-full bg-hub-border"></span>
+				{/if}
+			</button>
+			<a href="/projects/{project.slug}" class="flex-1 block p-4 cursor-pointer min-w-0">
+				<div class="flex items-start justify-between mb-2 min-w-0 gap-2">
+					<h3 class="text-sm font-semibold text-hub-text group-hover:text-hub-cta transition-colors truncate">
+						{project.slug}
+						{#if hasChildren}
+							<span class="ml-1 text-[10px] font-normal text-hub-dim">({node.children.length})</span>
+						{/if}
+					</h3>
+					{#if project.upcomingFalsifiers.length > 0}
+						<span
+							class="flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium"
+							class:bg-hub-danger={project.upcomingFalsifiers[0].daysAway <= 7}
+							class:text-white={project.upcomingFalsifiers[0].daysAway <= 7}
+							class:bg-hub-warning={project.upcomingFalsifiers[0].daysAway > 7}
+							class:text-black={project.upcomingFalsifiers[0].daysAway > 7}
+							title={`Falsifier: ${project.upcomingFalsifiers[0].date}`}
+						>
+							⏱ {project.upcomingFalsifiers[0].daysAway}d
+						</span>
+					{/if}
+				</div>
+				<div class="flex items-center gap-2 text-[11px] mb-2 flex-wrap">
+					<span class="text-hub-dim">{project.adrCount} ADR{project.adrCount === 1 ? '' : 's'}</span>
+					<span class="text-hub-dim">·</span>
+					<span class="text-hub-dim">{project.noteCount} note{project.noteCount === 1 ? '' : 's'}</span>
+					<span class="text-hub-dim">·</span>
+					<span class="text-hub-dim">{timeAgoMs(project.lastActivity)}</span>
+				</div>
+				<div class="flex flex-wrap items-center gap-1">
+					{#if project.statusCounts.proposed > 0}
+						<span class="px-2 py-0.5 rounded text-[10px] font-medium bg-hub-warning/15 text-hub-warning">
+							{project.statusCounts.proposed} proposed
+						</span>
+					{/if}
+					{#if project.statusCounts.accepted > 0}
+						<span class="px-2 py-0.5 rounded text-[10px] font-medium bg-hub-info/15 text-hub-info">
+							{project.statusCounts.accepted} accepted
+						</span>
+					{/if}
+					{#if project.statusCounts.shipped > 0}
+						<span class="px-2 py-0.5 rounded text-[10px] font-medium bg-hub-cta/15 text-hub-cta">
+							{project.statusCounts.shipped} shipped
+						</span>
+					{/if}
+					{#if project.statusCounts.parked > 0}
+						<span class="px-2 py-0.5 rounded text-[10px] font-medium bg-hub-dim/15 text-hub-dim">
+							{project.statusCounts.parked} parked
+						</span>
+					{/if}
+					{#if project.statusCounts.rejected > 0}
+						<span class="px-2 py-0.5 rounded text-[10px] font-medium bg-hub-danger/15 text-hub-danger">
+							{project.statusCounts.rejected} rejected
+						</span>
+					{/if}
+					{#if project.adrCount === 0}
+						<span class="text-[10px] text-hub-dim">no ADRs yet</span>
+					{/if}
+				</div>
+			</a>
+		</div>
+		{#if hasChildren && open}
+			<div class="mt-2 flex flex-col gap-2">
+				{#each node.children as child (child.project.slug)}
+					{@render treeRow(child)}
+				{/each}
+			</div>
+		{/if}
+	</div>
+{/snippet}
 
 <svelte:head>
 	<title>Projects | Soul Hub</title>
@@ -205,73 +418,12 @@
 					</div>
 				</div>
 
-				{#if filtered.length === 0}
+				{#if visibleCount === 0}
 					<p class="text-hub-dim text-xs py-6 text-center">No projects match the current filter.</p>
 				{:else}
-					<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-						{#each filtered as project}
-							<a
-								href="/projects/{project.slug}"
-								class="group block p-4 rounded-lg border border-hub-border bg-hub-card/40 hover:border-hub-cta/40 hover:bg-hub-card/60 transition-colors cursor-pointer"
-							>
-								<div class="flex items-start justify-between mb-2 min-w-0">
-									<h3 class="text-sm font-semibold text-hub-text group-hover:text-hub-cta transition-colors truncate">
-										{project.slug}
-									</h3>
-									{#if project.upcomingFalsifiers.length > 0}
-										<span
-											class="ml-2 flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium"
-											class:bg-hub-danger={project.upcomingFalsifiers[0].daysAway <= 7}
-											class:text-white={project.upcomingFalsifiers[0].daysAway <= 7}
-											class:bg-hub-warning={project.upcomingFalsifiers[0].daysAway > 7}
-											class:text-black={project.upcomingFalsifiers[0].daysAway > 7}
-											title={`Falsifier: ${project.upcomingFalsifiers[0].date}`}
-										>
-											⏱ {project.upcomingFalsifiers[0].daysAway}d
-										</span>
-									{/if}
-								</div>
-
-								<div class="flex items-center gap-2 text-[11px] mb-3">
-									<span class="text-hub-dim">{project.adrCount} ADR{project.adrCount === 1 ? '' : 's'}</span>
-									<span class="text-hub-dim">·</span>
-									<span class="text-hub-dim">{project.noteCount} note{project.noteCount === 1 ? '' : 's'}</span>
-									<span class="text-hub-dim">·</span>
-									<span class="text-hub-dim">{timeAgoMs(project.lastActivity)}</span>
-								</div>
-
-								<!-- Status pills -->
-								<div class="flex flex-wrap items-center gap-1">
-									{#if project.statusCounts.proposed > 0}
-										<span class="px-2 py-0.5 rounded text-[10px] font-medium bg-hub-warning/15 text-hub-warning">
-											{project.statusCounts.proposed} proposed
-										</span>
-									{/if}
-									{#if project.statusCounts.accepted > 0}
-										<span class="px-2 py-0.5 rounded text-[10px] font-medium bg-hub-info/15 text-hub-info">
-											{project.statusCounts.accepted} accepted
-										</span>
-									{/if}
-									{#if project.statusCounts.shipped > 0}
-										<span class="px-2 py-0.5 rounded text-[10px] font-medium bg-hub-cta/15 text-hub-cta">
-											{project.statusCounts.shipped} shipped
-										</span>
-									{/if}
-									{#if project.statusCounts.parked > 0}
-										<span class="px-2 py-0.5 rounded text-[10px] font-medium bg-hub-dim/15 text-hub-dim">
-											{project.statusCounts.parked} parked
-										</span>
-									{/if}
-									{#if project.statusCounts.rejected > 0}
-										<span class="px-2 py-0.5 rounded text-[10px] font-medium bg-hub-danger/15 text-hub-danger">
-											{project.statusCounts.rejected} rejected
-										</span>
-									{/if}
-									{#if project.adrCount === 0}
-										<span class="text-[10px] text-hub-dim">no ADRs yet</span>
-									{/if}
-								</div>
-							</a>
+					<div class="flex flex-col gap-2">
+						{#each filtered as node (node.project.slug)}
+							{@render treeRow(node)}
 						{/each}
 					</div>
 				{/if}

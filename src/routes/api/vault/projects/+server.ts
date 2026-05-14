@@ -55,7 +55,25 @@ interface ProjectRollup {
 	upcomingFalsifiers: { path: string; date: string; daysAway: number }[];
 	hasIndex: boolean;
 	indexPath: string | null;
+	/** Slug of parent project, or null for root projects. Per ADR-038
+	 *  D2/D3: stored on `index.md` as `parent_project: "[[slug|alias]]"`.
+	 *  Inverted client-side to build the tree (child_projects is not stored). */
+	parentProject: string | null;
 	decisions?: DecisionRow[];
+}
+
+/** Extract the target slug from a parent_project wikilink value.
+ *  Accepts `[[slug]]` or `[[slug|alias]]` or `[[path/to/slug]]`. Returns
+ *  null if the value is missing or not a wikilink. */
+function parseParentSlug(raw: unknown): string | null {
+	if (typeof raw !== 'string') return null;
+	const m = /^\[\[([^\]|#]+?)(?:\|[^\]]*)?\]\]$/.exec(raw.trim());
+	if (!m) return null;
+	// If target is a path like `projects/soul-hub|index|soul-hub`, take the
+	// last segment so we get the project slug, not the directory chain.
+	const target = m[1].trim();
+	const lastSeg = target.split('/').pop() ?? target;
+	return lastSeg || null;
 }
 
 function asStringArray(raw: unknown): string[] {
@@ -150,6 +168,7 @@ export const GET: RequestHandler = async ({ url }) => {
 		let lastActivity: number | null = null;
 		let hasIndex = false;
 		let indexPath: string | null = null;
+		let parentProject: string | null = null;
 		const upcomingFalsifiers: ProjectRollup['upcomingFalsifiers'] = [];
 		const decisions: DecisionRow[] = [];
 
@@ -160,6 +179,7 @@ export const GET: RequestHandler = async ({ url }) => {
 			if (note.path.endsWith('/index.md') || note.path.endsWith(`/${slug}/index.md`)) {
 				hasIndex = true;
 				indexPath = note.path;
+				parentProject = parseParentSlug(full.meta.parent_project);
 			}
 
 			if (full.mtime && (!lastActivity || full.mtime > lastActivity)) {
@@ -238,6 +258,7 @@ export const GET: RequestHandler = async ({ url }) => {
 			upcomingFalsifiers,
 			hasIndex,
 			indexPath,
+			parentProject,
 			...(includeDecisions ? { decisions } : {}),
 		});
 	}
