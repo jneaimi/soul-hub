@@ -21,6 +21,8 @@
 		shippedOn: string | null;
 		targetDate: string | null;
 		dateInferred: boolean;
+		falsifierDate: string | null;
+		falsifierDaysAway: number | null;
 	}
 
 	let {
@@ -60,8 +62,11 @@
 		const starts = visible.map((d) => Date.parse(d.created!));
 		const ends = visible.map((d) => Date.parse(endIso(d)));
 		const targets = visible.filter((d) => d.targetDate).map((d) => Date.parse(d.targetDate!));
+		const falsifiers = visible
+			.filter((d) => d.falsifierDate)
+			.map((d) => Date.parse(d.falsifierDate!));
 		const startMs = Math.min(...starts);
-		const endMs = Math.max(TODAY_MS, ...ends, ...targets);
+		const endMs = Math.max(TODAY_MS, ...ends, ...targets, ...falsifiers);
 		const pad = Math.max((endMs - startMs) * 0.03, 86_400_000); // ≥1 day
 		return { startMs: startMs - pad, endMs: endMs + pad };
 	});
@@ -139,8 +144,25 @@
 		if (d.acceptedOn) parts.push(`accepted: ${d.acceptedOn}`);
 		if (d.shippedOn) parts.push(`shipped: ${d.shippedOn}`);
 		if (d.targetDate) parts.push(`target: ${d.targetDate}`);
+		if (d.falsifierDate) {
+			const daysSuffix =
+				d.falsifierDaysAway !== null
+					? ` (${d.falsifierDaysAway >= 0 ? `${d.falsifierDaysAway}d away` : `${Math.abs(d.falsifierDaysAway)}d overdue`})`
+					: '';
+			parts.push(`falsifier: ${d.falsifierDate}${daysSuffix}`);
+		}
 		if (d.dateInferred) parts.push('', 'dates inferred from git history');
 		return parts.join('\n');
+	}
+
+	/** Falsifier diamond colour. Red if overdue or due within a week; amber
+	 *  if within a month; muted otherwise. Same buckets the project detail
+	 *  page uses for its falsifier badge. */
+	function falsifierFill(daysAway: number | null): string {
+		if (daysAway === null) return 'bg-hub-muted/60';
+		if (daysAway <= 7) return 'bg-hub-danger';
+		if (daysAway <= 30) return 'bg-hub-warning';
+		return 'bg-hub-muted/60';
 	}
 
 	const counts = $derived.by(() => {
@@ -152,6 +174,7 @@
 	});
 
 	const inferredCount = $derived(visible.filter((d) => d.dateInferred).length);
+	const falsifierCount = $derived(visible.filter((d) => d.falsifierDate).length);
 </script>
 
 {#if visible.length === 0 && decisions.length > 0}
@@ -172,6 +195,12 @@
 				<span class="inline-flex items-center gap-1.5">
 					<span class="w-2.5 h-2.5 rounded border border-dashed border-hub-muted"></span>
 					inferred ({inferredCount})
+				</span>
+			{/if}
+			{#if falsifierCount > 0}
+				<span class="inline-flex items-center gap-1.5" title="Falsifier review deadline">
+					<span class="w-2 h-2 rotate-45 bg-hub-warning"></span>
+					falsifier ({falsifierCount})
 				</span>
 			{/if}
 			<button
@@ -218,6 +247,19 @@
 					{@const endPct = pct(Date.parse(endIso(d)))}
 					{@const widthPct = Math.max(endPct - startPct, MIN_BAR_PCT)}
 					{@const targetPct = d.targetDate ? pct(Date.parse(d.targetDate)) : null}
+					{@const falsifierPct = d.falsifierDate ? pct(Date.parse(d.falsifierDate)) : null}
+					{@const isOpen = d.status === 'proposed' || d.status === 'accepted'}
+					{@const forecastEndPct = isOpen
+						? Math.max(
+								endPct,
+								targetPct ?? -Infinity,
+								// For accepted ADRs only, extend to falsifier as a fallback
+								// when there's no target_date — falsifier is the implicit
+								// review deadline. Proposed ADRs keep target_date-only
+								// behaviour so the dashed bar means "scheduled to ship".
+								d.status === 'accepted' && !d.targetDate ? falsifierPct ?? -Infinity : -Infinity,
+							)
+						: endPct}
 					<button
 						type="button"
 						class="group w-full flex items-stretch h-7 hover:bg-hub-card/60 transition-colors text-left cursor-pointer"
@@ -238,14 +280,25 @@
 								style:left="{startPct}%"
 								style:width="{widthPct}%"
 							></div>
-							<!-- Forecast extension to target_date for proposed ADRs -->
-							{#if d.status === 'proposed' && targetPct !== null && targetPct > endPct}
+							<!-- Forecast extension for open ADRs (proposed → target_date,
+							     accepted → target_date OR falsifier_date if no target). -->
+							{#if isOpen && forecastEndPct > endPct}
 								<div
-									class="absolute top-2.5 bottom-2.5 rounded border border-dashed border-hub-warning/60"
+									class="absolute top-2.5 bottom-2.5 rounded border border-dashed {d.status === 'proposed' ? 'border-hub-warning/60' : 'border-hub-info/60'}"
 									style:left="{endPct}%"
-									style:width="{Math.max(targetPct - endPct, MIN_BAR_PCT)}%"
-									title="Forecast → {d.targetDate}"
+									style:width="{Math.max(forecastEndPct - endPct, MIN_BAR_PCT)}%"
+									title="Forecast → {d.targetDate ?? d.falsifierDate}"
 								></div>
+							{/if}
+							<!-- Falsifier diamond — rendered on every ADR that carries
+							     a falsifier_date, regardless of status. Click bubbles
+							     to the row button (drawer opens via onSelect). -->
+							{#if falsifierPct !== null}
+								<span
+									class="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2.5 h-2.5 rotate-45 {falsifierFill(d.falsifierDaysAway)} border border-hub-bg shadow-sm pointer-events-none"
+									style:left="{falsifierPct}%"
+									aria-hidden="true"
+								></span>
 							{/if}
 						</div>
 					</button>
