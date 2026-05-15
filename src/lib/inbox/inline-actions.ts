@@ -645,6 +645,25 @@ function formatAttachmentsList(
 	return lines.join('\n');
 }
 
+/** Module-scope in-flight registry — `messageId → Promise<result>` for
+ *  drafts currently being composed by mailwright. Concurrent callers
+ *  (e.g. operator clicks Draft in Telegram, then on /inbox within the
+ *  ~30–60s mailwright takes) JOIN the running promise instead of each
+ *  starting a fresh dispatch. The `processStatus='drafted'` flip only
+ *  happens AFTER mailwright completes, so this map closes the gap
+ *  between dispatch-start and DB-state-flip during which two requests
+ *  would both observe `processStatus !== 'drafted'` and race.
+ *
+ *  Process-restart-safe: if soul-hub crashes mid-draft, the map drops
+ *  with the process. Any partial file is left in vault (mailwright may
+ *  or may not have written by then); the next caller bypasses the map
+ *  (empty) and runs a fresh dispatch — which is idempotent thanks to
+ *  `processStatus === 'drafted'` if the prior run actually flipped it. */
+const draftsInFlight = new Map<
+	number,
+	Promise<InboxActionResult & { vaultPath?: string; openUrl?: string }>
+>();
+
 /** Dispatch the dedicated `mailwright` agent (claude-cli-flag, one-shot)
  *  to draft a reply for the given inbox message. The agent writes the
  *  draft directly to a vault note at `email/drafts/<YYYY-MM>/...` —
@@ -681,6 +700,24 @@ export async function draftInboxReply(
 		};
 	}
 
+	// In-flight join — if another caller is already running mailwright
+	// for this exact messageId, await ITS promise instead of dispatching
+	// again. Without this guard, two clicks within mailwright's 30–60s
+	// runtime both observe `processStatus !== 'drafted'` (terminal flip
+	// only happens AFTER mailwright completes) and both spawn an agent,
+	// burning ~$0.20 each AND racing each other to write the same file.
+	// All concurrent callers receive the SAME result object when the
+	// in-flight dispatch completes.
+	const existing = draftsInFlight.get(messageId);
+	if (existing) {
+		return existing;
+	}
+
+	// Wrap the entire dispatch in a promise stored in draftsInFlight so
+	// concurrent callers (within the same process) join this run rather
+	// than starting a parallel mailwright. The promise is registered
+	// synchronously below — anyone arriving in the same tick sees it.
+	const promise: Promise<InboxActionResult & { vaultPath?: string; openUrl?: string }> = (async () => {
 	const from = msg.fromName || msg.fromAddress || 'sender';
 
 	// Pull the full body + attachments via IMAP (Gmail/iCloud); degrades
@@ -898,4 +935,14 @@ export async function draftInboxReply(
 		openUrl: noteOpenUrl(relPath),
 		detail: `mailwright runId=${runId ?? 'unknown'}`,
 	};
+	})();
+
+	draftsInFlight.set(messageId, promise);
+	try {
+		return await promise;
+	} finally {
+		// Always release — success, failure, and thrown errors all flow
+		// through here so the map can't accumulate stuck entries.
+		draftsInFlight.delete(messageId);
+	}
 }
