@@ -37,6 +37,20 @@ export interface AttachmentBytes {
 	contentType: string;
 }
 
+/** Body + attachment binaries from a single IMAP fetch. Used by ADR-044
+ *  mailwright draft path to surface both the original mail content and
+ *  any attachments alongside the drafted reply, without forcing a second
+ *  IMAP round-trip per attachment. */
+export interface MessageBodyWithAttachments extends MessageBody {
+	attachments: Array<{
+		filename: string;
+		mimeType: string;
+		size: number;
+		data: Buffer;
+		isInline: boolean;
+	}>;
+}
+
 /**
  * Build and connect an ImapFlow client using the account's stored credential.
  * OAuth2 tokens are refreshed if expired and the refreshed pair is persisted
@@ -100,6 +114,19 @@ export async function fetchImapBody(
 	account: InboxAccount,
 	message: Pick<InboxMessage, 'uid' | 'folder'>,
 ): Promise<MessageBody> {
+	const full = await fetchImapBodyWithAttachments(account, message);
+	return { text: full.text, html: full.html, fetchedAt: full.fetchedAt };
+}
+
+/** Same as `fetchImapBody` but also returns parsed attachment binaries.
+ *  Used by the ADR-044 draft path which embeds the original mail body
+ *  + saves attachments alongside the draft. The IMAP fetch is identical
+ *  — `simpleParser` always parses attachments; the difference is whether
+ *  we return them. */
+export async function fetchImapBodyWithAttachments(
+	account: InboxAccount,
+	message: Pick<InboxMessage, 'uid' | 'folder'>,
+): Promise<MessageBodyWithAttachments> {
 	const client = await connectImap(account);
 	try {
 		const lock = await client.getMailboxLock(message.folder || 'INBOX');
@@ -113,10 +140,18 @@ export async function fetchImapBody(
 				throw new Error('Message source not returned by server (possibly deleted upstream)');
 			}
 			const parsed = await simpleParser(result.source as Buffer);
+			const attachments = (parsed.attachments ?? []).map((a) => ({
+				filename: a.filename ?? 'unnamed',
+				mimeType: a.contentType ?? 'application/octet-stream',
+				size: a.size ?? (a.content?.length ?? 0),
+				data: a.content as Buffer,
+				isInline: a.contentDisposition === 'inline',
+			}));
 			return {
 				text: parsed.text || '',
 				html: typeof parsed.html === 'string' ? parsed.html : null,
 				fetchedAt: Date.now(),
+				attachments,
 			};
 		} finally {
 			lock.release();

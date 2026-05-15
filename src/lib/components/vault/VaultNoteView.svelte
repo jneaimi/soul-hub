@@ -2,6 +2,7 @@
 	import type { VaultNote } from '$lib/vault/types';
 	import { TYPE_COLORS } from '$lib/vault/types';
 	import VaultAttachments from './VaultAttachments.svelte';
+	import CrmSenderCard from './CrmSenderCard.svelte';
 
 	interface Props {
 		note: VaultNote & { rendered?: string; contentIsRtl?: boolean; titleIsRtl?: boolean };
@@ -165,6 +166,12 @@
 			{/if}
 		</div>
 	</div>
+
+	<!-- ADR-044.E — CRM sender card. Renders on email-save notes that
+	     have `crm_sender_status` in frontmatter; nothing otherwise. -->
+	{#if note.meta.crm_sender_status}
+		<CrmSenderCard notePath={note.path} meta={note.meta as Record<string, unknown>} />
+	{/if}
 
 	<!-- Rendered content -->
 	<div

@@ -47,6 +47,7 @@ import {
 import type { InboxMessage, FilterCategory } from './types.js';
 import { fetchImapHeaders } from './body.js';
 import { SHIPPING_PATTERN } from './route-to-vault.js';
+import { findContactByEmail } from '../crm/index.js';
 
 /** Carrier domains we trust to send delivery / shipping notifications. */
 const CARRIER_DOMAINS = /\b(amazon\.(com|ae|sa)|noon\.com|aramex\.com|dhl\.com|fedex\.com|fetchr\.com|ups\.com|talabat\.com|deliveroo\.com|careem\.com)\b/i;
@@ -70,6 +71,55 @@ function correctCategoryHeuristic(message: { fromAddress: string; subject: strin
 	const senderMatch = CARRIER_DOMAINS.test(message.fromAddress || '');
 	if (subjMatch && senderMatch) return 'notification';
 	return category;
+}
+
+/** ADR-044.F — CRM safety rail.
+ *
+ *  Active CRM contacts must never be silently filtered out of the
+ *  digest. If the classifier (cache / rule / LLM) lands on a
+ *  skipped category (`bulk` or `promotional`) for a sender we're
+ *  actively tracking, upgrade to `personal` so the mail surfaces.
+ *  The closest existing "this is a human worth my attention" bucket
+ *  is `personal` — no new category, no migration.
+ *
+ *  Active = any stage except `Lost`. `Won` contacts still count
+ *  (post-sale relationships matter), and pre-`Won` stages obviously
+ *  do too.
+ *
+ *  Cache semantics: when this corrector fires, we write the UPGRADED
+ *  category to the filter cache. That makes the upgrade sticky for
+ *  the sender — even if they're later removed from CRM, future mail
+ *  keeps surfacing until the cache entry is evicted. Acceptable
+ *  trade-off; the operator can always re-classify manually.
+ *
+ *  The check is one indexed PK lookup per cache-miss message. Cache
+ *  hits skip this when the cached category is already not skipped.
+ */
+function crmProtectedCorrection(
+	message: { fromAddress: string },
+	category: FilterCategory,
+): FilterCategory {
+	if (category !== 'bulk' && category !== 'promotional') return category;
+	if (!message.fromAddress) return category;
+	const match = findContactByEmail(message.fromAddress);
+	if (!match) return category;
+	if (match.contact.stage === 'Lost') return category;
+	return 'personal';
+}
+
+/** Chain shipping + CRM corrections. Returns the final category and
+ *  a tag list for the reason string. Empty tag list means no override
+ *  fired — caller uses the raw classifier reason. */
+function correctCategory(
+	message: { fromAddress: string; subject: string },
+	category: FilterCategory,
+): { category: FilterCategory; tags: string[] } {
+	const tags: string[] = [];
+	const afterShipping = correctCategoryHeuristic(message, category);
+	if (afterShipping !== category) tags.push('shipping-override');
+	const afterCrm = crmProtectedCorrection(message, afterShipping);
+	if (afterCrm !== afterShipping) tags.push('crm-protected');
+	return { category: afterCrm, tags };
 }
 import {
 	classifyByRules,
@@ -342,10 +392,11 @@ async function processChunk(messages: InboxMessage[]): Promise<ChunkSummary> {
 			const sig = cacheSignature(msg);
 			const cached = getFilterCache(sig);
 			if (cached) {
-				const correctedCategory = correctCategoryHeuristic(msg, cached.category);
+				const { category: correctedCategory, tags } = correctCategory(msg, cached.category);
+				const reason = tags.length === 0 ? 'cache:hit' : `cache:hit+${tags.join('+')}`;
 				applyClassification(msg.id, {
 					category: correctedCategory,
-					reason: correctedCategory === cached.category ? 'cache:hit' : 'cache:hit+shipping-override',
+					reason,
 				});
 				bumpFilterCacheHit(sig);
 				summary.cacheHits++;
@@ -380,8 +431,8 @@ async function processChunk(messages: InboxMessage[]): Promise<ChunkSummary> {
 			const sig = cacheSignature(msg);
 			const result = classifyByRules(rules, msg, rawHeaders);
 			if (result) {
-				const correctedCategory = correctCategoryHeuristic(msg, result.category);
-				const correctedReason = correctedCategory === result.category ? result.reason : `${result.reason}+shipping-override`;
+				const { category: correctedCategory, tags } = correctCategory(msg, result.category);
+				const correctedReason = tags.length === 0 ? result.reason : `${result.reason}+${tags.join('+')}`;
 				applyClassification(msg.id, {
 					category: correctedCategory,
 					reason: correctedReason,
@@ -423,8 +474,8 @@ async function processChunk(messages: InboxMessage[]): Promise<ChunkSummary> {
 			for (const r of outcome.results) {
 				const original = grayMessages.get(r.id);
 				if (!original) continue;
-				const correctedCategory = correctCategoryHeuristic(original, r.category);
-				const correctedReason = correctedCategory === r.category ? `llm:${r.category}` : `llm:${r.category}+shipping-override`;
+				const { category: correctedCategory, tags } = correctCategory(original, r.category);
+				const correctedReason = tags.length === 0 ? `llm:${r.category}` : `llm:${r.category}+${tags.join('+')}`;
 				applyClassification(r.id, {
 					category: correctedCategory,
 					reason: correctedReason,

@@ -12,6 +12,7 @@ import { shellScriptFactory } from '$lib/scheduler/handlers/shell-script.js';
 import { dailyFocusFactory } from '$lib/scheduler/handlers/daily-focus.js';
 import { vaultScoutFactory } from '$lib/scheduler/handlers/vault-scout.js';
 import { inboxDigestFactory } from '$lib/scheduler/handlers/inbox-digest.js';
+import { inboxDigestTelegramFactory } from '$lib/scheduler/handlers/inbox-digest-telegram.js';
 import { intentMiningFactory } from '$lib/scheduler/handlers/intent-mining.js';
 import { telegramLivenessFactory } from '$lib/scheduler/handlers/telegram-liveness.js';
 import { hygieneButtonEscalatorFactory } from '$lib/scheduler/handlers/hygiene-button-escalator.js';
@@ -139,6 +140,11 @@ try {
 		'inbox-digest',
 		inboxDigestFactory,
 		'Daily inbox digest — server-formatted summary of queued mail from the lookback window, excludes already anomaly-pushed rows (Layer 3 Stage 3b).',
+	);
+	registerTaskHandler(
+		'inbox-digest-telegram',
+		inboxDigestTelegramFactory,
+		'ADR-044 — Telegram-native inbox digest with inline action buttons (Save/Archive/Mute/Draft reply).',
 	);
 	registerTaskHandler(
 		'intent-mining',

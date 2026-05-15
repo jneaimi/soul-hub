@@ -49,6 +49,14 @@ import {
 	dropStaleInboxItem,
 	unlinkBrokenWikilink,
 } from '../../vault-hygiene/link-actions.js';
+import {
+	archiveInboxMessage,
+	draftInboxReply,
+	muteInboxSender,
+	saveInboxToVault,
+} from '../../inbox/inline-actions.js';
+import { getMessage as getInboxMessage } from '../../inbox/index.js';
+import { findContactByEmail } from '../../crm/index.js';
 import { getVaultEngine } from '../../vault/index.js';
 import {
 	getYoutubeCount,
@@ -94,6 +102,19 @@ type HygieneVerb =
 	| 'hyg-use-proj' // dual_file_disagree: copy project.md status → index.md
 	| 'hyg-snooze' // falsifier_due_soon: push review_date +14d
 	| 'hyg-reviewed'; // falsifier_due_soon: push review_date +90d (fresh cycle)
+
+// ADR-044 — inbox-digest verbs (ibx- prefix).
+// Save/Archive/Reply are direct-execute (fully reversible).
+// Mute branches: direct for non-CRM senders, confirm-then-execute when
+// the sender is a known CRM contact (Lead/In Conversation muting is a
+// real footgun).
+type InboxVerb =
+	| 'ibx-save' // direct: vault save to email/<YYYY-MM>/
+	| 'ibx-arc' // direct: process_status='archived'
+	| 'ibx-mute' // first tap — branches on CRM hit
+	| 'ibx-mute-y' // confirmed mute of a CRM contact
+	| 'ibx-mute-n' // cancelled
+	| 'ibx-reply'; // direct: background scribe dispatch
 
 // ADR-043 — vault-hygiene verbs (vh- prefix, distinct from project-hygiene hyg-)
 type VaultHygieneVerb =
@@ -219,12 +240,14 @@ type YoutubeParse = { kind: 'youtube'; verb: YoutubeVerb; id: string };
 type IntentParse = { kind: 'intent'; verb: IntentVerb; id: string };
 type HygieneParse = { kind: 'hygiene'; verb: HygieneVerb; id: string };
 type VaultHygieneParse = { kind: 'vault-hygiene'; verb: VaultHygieneVerb; id: string };
+type InboxParse = { kind: 'inbox'; verb: InboxVerb; id: string };
 type ParsedCallback =
 	| ProposalParse
 	| YoutubeParse
 	| IntentParse
 	| HygieneParse
-	| VaultHygieneParse;
+	| VaultHygieneParse
+	| InboxParse;
 
 function parseCallbackData(data: string): ParsedCallback | null {
 	const i = data.indexOf(':');
@@ -280,6 +303,16 @@ function parseCallbackData(data: string): ParsedCallback | null {
 	) {
 		return { kind: 'vault-hygiene', verb, id };
 	}
+	if (
+		verb === 'ibx-save' ||
+		verb === 'ibx-arc' ||
+		verb === 'ibx-mute' ||
+		verb === 'ibx-mute-y' ||
+		verb === 'ibx-mute-n' ||
+		verb === 'ibx-reply'
+	) {
+		return { kind: 'inbox', verb, id };
+	}
 	return null;
 }
 
@@ -326,6 +359,10 @@ export async function handleCallbackQuery(
 	}
 	if (parsed.kind === 'vault-hygiene') {
 		await handleVaultHygieneCallback(query, parsed, config);
+		return;
+	}
+	if (parsed.kind === 'inbox') {
+		await handleInboxCallback(query, parsed, config);
 		return;
 	}
 	await handleYoutubeCallback(query, parsed, config);
@@ -1490,6 +1527,264 @@ async function handleVaultHygieneCallback(
 	const toastText = editOk
 		? undefined
 		: resultText.replace(/[`*_]/g, '').slice(0, 200);
+	await answerCallbackQuery({
+		callback_query_id: query.id,
+		...(toastText ? { text: toastText, show_alert: true } : {}),
+	});
+}
+
+// ─── Inbox-digest remediation (ADR-044) ────────────────────────────────
+
+interface PendingInboxRow {
+	messageId: number;
+	chatJid: string;
+	tgMessageId: number;
+	createdAt: number;
+}
+
+/** id → inbox row map. Carries the underlying inbox `messageId` (numeric,
+ *  from the SQLite messages table) plus the Telegram chat + message id
+ *  we sent the highlight bubble to. Per ADR-043 anti-abstraction call,
+ *  kept separate from the hygiene maps until a 4th surface arrives. */
+const pendingInboxButtons = new Map<string, PendingInboxRow>();
+const INBOX_PENDING_TTL_MS = 24 * 60 * 60 * 1000; // 1 day matches digest cadence
+
+/** Deterministic id for an inbox highlight. Same numeric messageId →
+ *  same id across restarts, so a re-emitted digest doesn't accumulate
+ *  stale entries. */
+function inboxIdFor(messageId: number): string {
+	return createHash('sha1').update(String(messageId)).digest('base64url').slice(0, 16);
+}
+
+/** 4-button keyboard for an inbox digest highlight. */
+export function buildInboxDigestKeyboard(messageId: number): InlineKeyboardMarkup {
+	const id = inboxIdFor(messageId);
+	return {
+		inline_keyboard: [
+			[
+				{ text: '📥 Save to vault', callback_data: `ibx-save:${id}` },
+				{ text: '📁 Archive', callback_data: `ibx-arc:${id}` },
+			],
+			[
+				{ text: '🔇 Mute sender', callback_data: `ibx-mute:${id}` },
+				{ text: '↩️ Draft reply', callback_data: `ibx-reply:${id}` },
+			],
+		],
+	};
+}
+
+export function rememberInboxButtons(args: {
+	messageId: number;
+	chatJid: string;
+	tgMessageId: number;
+}): void {
+	const id = inboxIdFor(args.messageId);
+	pendingInboxButtons.set(id, { ...args, createdAt: Date.now() });
+	const now = Date.now();
+	for (const [k, v] of pendingInboxButtons) {
+		if (now - v.createdAt > INBOX_PENDING_TTL_MS) pendingInboxButtons.delete(k);
+	}
+}
+
+/** Inbox callback branch. Four verbs:
+ *   - ibx-save:  dispatchVaultSave with envelope + preview
+ *   - ibx-arc:   process_status='archived'
+ *   - ibx-mute:  insert sender_pattern → bulk filter rule
+ *   - ibx-reply: ack toast → background scribe → draft as new message */
+async function handleInboxCallback(
+	query: TgCallbackQuery,
+	parsed: InboxParse,
+	config: TelegramChannelConfig,
+): Promise<void> {
+	const row = pendingInboxButtons.get(parsed.id);
+	if (!row) {
+		await answerCallbackQuery({
+			callback_query_id: query.id,
+			text: 'Inbox row expired — wait for the next digest',
+		});
+		return;
+	}
+
+	// Draft reply: long-running agent dispatch. Ack the callback within
+	// Telegram's window, edit bubble to "drafting…", then run scribe in
+	// the background and deliver the draft as a new message.
+	if (parsed.verb === 'ibx-reply') {
+		await answerCallbackQuery({
+			callback_query_id: query.id,
+			text: '🤖 Drafting…',
+		});
+		try {
+			await editMessageText({
+				chat_id: row.chatJid,
+				message_id: row.tgMessageId,
+				text: `🤖 *Drafting reply* for inbox msg ${row.messageId}…\n\n_(scribe is composing — 30–60s; reply will arrive as a new message below)_`,
+				parse_mode: 'Markdown',
+			});
+		} catch {
+			/* swallow */
+		}
+		pendingInboxButtons.delete(parsed.id);
+
+		void draftInboxReply(row.messageId)
+			.then(async (result) => {
+				if (!result.ok) {
+					await editMessageText({
+						chat_id: row.chatJid,
+						message_id: row.tgMessageId,
+						text: `❌ Draft failed: ${result.detail ?? result.error}`,
+						parse_mode: 'Markdown',
+					}).catch(() => {});
+					return;
+				}
+				// Surface the vault path as a clickable link. The bubble
+				// stays tight; the operator opens the note to view, edit,
+				// and copy. Permanent draft history in the vault.
+				const linkPart = result.openUrl
+					? `[\`${result.vaultPath}\`](${result.openUrl})`
+					: `\`${result.vaultPath ?? '(no path)'}\``;
+				await editMessageText({
+					chat_id: row.chatJid,
+					message_id: row.tgMessageId,
+					text:
+						`↩️ *Draft saved* → ${linkPart}\n\n` +
+						`_${result.detail}_\n\n` +
+						`Open the note to read, edit, and copy. Send manually from your mail client (outbound isn't wired yet).`,
+					parse_mode: 'Markdown',
+				}).catch(() => {});
+			})
+			.catch(async (err) => {
+				await editMessageText({
+					chat_id: row.chatJid,
+					message_id: row.tgMessageId,
+					text: `❌ Draft threw: ${(err as Error).message}`,
+					parse_mode: 'Markdown',
+				}).catch(() => {});
+			});
+		return;
+	}
+
+	let resultText: string;
+
+	switch (parsed.verb) {
+		case 'ibx-arc': {
+			const r = await archiveInboxMessage(row.messageId);
+			resultText = r.ok
+				? `📁 Archived msg ${row.messageId} — ${r.detail}`
+				: `❌ Archive failed: ${r.detail ?? r.error}`;
+			pendingInboxButtons.delete(parsed.id);
+			break;
+		}
+		case 'ibx-save': {
+			const r = await saveInboxToVault(row.messageId);
+			resultText = r.ok
+				? `📥 Saved msg ${row.messageId} — ${r.detail}`
+				: `❌ Save failed: ${r.detail ?? r.error}`;
+			pendingInboxButtons.delete(parsed.id);
+			break;
+		}
+		case 'ibx-mute': {
+			const msg = getInboxMessage(row.messageId);
+			const sender = msg?.fromAddress;
+			if (!sender) {
+				resultText = `❌ Mute failed: no sender on msg ${row.messageId}`;
+				pendingInboxButtons.delete(parsed.id);
+				break;
+			}
+			// ADR-044.C — branch on CRM hit. Muting a CRM contact is a
+			// real footgun (you'd silently drop a Lead's mail from future
+			// digests); require an explicit confirm with the contact's
+			// stage shown. Non-CRM senders mute directly. CRM lookup is
+			// wrapped — a DB hiccup here shouldn't break Mute entirely.
+			let crmMatch: Awaited<ReturnType<typeof findContactByEmail>> | null = null;
+			try {
+				crmMatch = findContactByEmail(sender);
+			} catch (err) {
+				console.warn(
+					`[telegram/inbox] CRM lookup failed for ${sender}: ${(err as Error).message}`,
+				);
+			}
+			if (crmMatch) {
+				const c = crmMatch.contact;
+				const stagePart = c.stage ? `*${c.stage}*` : '_no stage_';
+				try {
+					await editMessageText({
+						chat_id: row.chatJid,
+						message_id: row.tgMessageId,
+						text:
+							`⚠️ *Mute CRM contact?*\n\n` +
+							`\`${sender}\` is *${c.displayName}* — ${stagePart}` +
+							(c.company ? ` at ${c.company}` : '') +
+							`.\n\nMuting will drop future mail from this sender into the bulk category — they'll skip the digest. ` +
+							`Reversible via the filter-rules UI, but easy to forget.`,
+						parse_mode: 'Markdown',
+						reply_markup: {
+							inline_keyboard: [
+								[
+									{ text: '✅ Confirm mute', callback_data: `ibx-mute-y:${parsed.id}` },
+									{ text: '❌ Cancel', callback_data: `ibx-mute-n:${parsed.id}` },
+								],
+							],
+						},
+					});
+				} catch {
+					/* swallow */
+				}
+				await answerCallbackQuery({ callback_query_id: query.id });
+				return;
+			}
+			const r = await muteInboxSender(sender, row.messageId);
+			resultText = r.ok
+				? `🔇 Muted \`${sender}\` — ${r.detail}`
+				: `❌ Mute failed: ${r.detail ?? r.error}`;
+			pendingInboxButtons.delete(parsed.id);
+			break;
+		}
+		case 'ibx-mute-y': {
+			const msg = getInboxMessage(row.messageId);
+			const sender = msg?.fromAddress;
+			if (!sender) {
+				resultText = `❌ Mute failed: no sender on msg ${row.messageId}`;
+				pendingInboxButtons.delete(parsed.id);
+				break;
+			}
+			const r = await muteInboxSender(sender, row.messageId);
+			resultText = r.ok
+				? `🔇 Muted \`${sender}\` (CRM contact) — ${r.detail}`
+				: `❌ Mute failed: ${r.detail ?? r.error}`;
+			pendingInboxButtons.delete(parsed.id);
+			break;
+		}
+		case 'ibx-mute-n': {
+			resultText = `🚫 Cancelled. CRM contact not muted.`;
+			pendingInboxButtons.delete(parsed.id);
+			break;
+		}
+		default: {
+			resultText = `❌ Unknown inbox verb: ${(parsed as { verb: string }).verb}`;
+		}
+	}
+
+	let editOk = true;
+	try {
+		const editResult = await editMessageText({
+			chat_id: row.chatJid,
+			message_id: row.tgMessageId,
+			text: resultText,
+			parse_mode: 'Markdown',
+		});
+		editOk = editResult.ok;
+		if (!editOk) {
+			console.warn(
+				`[telegram/inbox] editMessageText failed for msg ${row.messageId} verb=${parsed.verb} — ${editResult.error ?? 'unknown'}`,
+			);
+		}
+	} catch (err) {
+		editOk = false;
+		console.warn(
+			`[telegram/inbox] editMessageText threw for msg ${row.messageId} verb=${parsed.verb} — ${(err as Error).message}`,
+		);
+	}
+	const toastText = editOk ? undefined : resultText.replace(/[`*_]/g, '').slice(0, 200);
 	await answerCallbackQuery({
 		callback_query_id: query.id,
 		...(toastText ? { text: toastText, show_alert: true } : {}),

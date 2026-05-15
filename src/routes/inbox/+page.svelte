@@ -147,6 +147,9 @@
 		{ value: 'new', label: 'New' },
 		{ value: 'queued', label: 'Queued' },
 		{ value: 'processed', label: 'Processed' },
+		{ value: 'saved', label: 'Saved' },
+		{ value: 'drafted', label: 'Drafted' },
+		{ value: 'archived', label: 'Archived' },
 		{ value: 'skipped', label: 'Skipped' },
 	];
 
@@ -174,6 +177,10 @@
 		new: 'bg-blue-400',
 		queued: 'bg-emerald-300',
 		processed: 'bg-emerald-400',
+		// ADR-044 Telegram inline actions write these terminal states.
+		saved: 'bg-violet-400',
+		drafted: 'bg-fuchsia-400',
+		archived: 'bg-slate-400',
 		skipped: 'bg-hub-dim/50',
 	};
 
