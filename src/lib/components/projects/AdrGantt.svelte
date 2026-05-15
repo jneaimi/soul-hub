@@ -175,6 +175,20 @@
 
 	const inferredCount = $derived(visible.filter((d) => d.dateInferred).length);
 	const falsifierCount = $derived(visible.filter((d) => d.falsifierDate).length);
+
+	/** ADRs that are open (proposed/accepted) but carry neither a
+	 *  `target_date` nor a `falsifier_date` — meaning the chart has no
+	 *  forward signal for when they should ship or be reviewed. These
+	 *  are the ones quietly losing momentum; the tray surfaces them so
+	 *  the operator can schedule them. */
+	const unscheduled = $derived(
+		decisions.filter(
+			(d) =>
+				(d.status === 'proposed' || d.status === 'accepted') &&
+				!d.targetDate &&
+				!d.falsifierDate,
+		),
+	);
 </script>
 
 {#if visible.length === 0 && decisions.length > 0}
@@ -210,6 +224,37 @@
 				{showInactive ? 'Hide' : 'Show'} rejected / superseded
 			</button>
 		</div>
+
+		<!-- Unscheduled tray — open ADRs with no target_date and no falsifier_date.
+		     These don't show on the timeline because they have no forward signal;
+		     surfacing them as chips here keeps them visible so they don't drift. -->
+		{#if unscheduled.length > 0}
+			<div class="rounded-lg border border-hub-dim/40 bg-hub-card/30 px-3 py-2">
+				<div class="flex items-baseline justify-between mb-1.5">
+					<span class="text-[11px] font-medium text-hub-muted">
+						Unscheduled
+						<span class="text-hub-dim font-normal">— no target or falsifier date</span>
+					</span>
+					<span class="text-[10px] text-hub-dim">{unscheduled.length}</span>
+				</div>
+				<div class="flex flex-wrap gap-1.5">
+					{#each unscheduled as d (d.path)}
+						<button
+							type="button"
+							class="group inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono border border-hub-border bg-hub-bg/40 hover:border-hub-cta/40 hover:bg-hub-card transition-colors cursor-pointer"
+							onclick={() => onSelect(d.path)}
+							title={tooltip(d)}
+						>
+							<span
+								class="w-1.5 h-1.5 rounded-full {d.status === 'proposed' ? 'bg-hub-warning' : 'bg-hub-info'}"
+								aria-hidden="true"
+							></span>
+							<span class="text-hub-text group-hover:text-hub-cta">{shortLabel(d)}</span>
+						</button>
+					{/each}
+				</div>
+			</div>
+		{/if}
 
 		<!-- Chart -->
 		<div class="border border-hub-border rounded-lg bg-hub-card/30 overflow-hidden">
