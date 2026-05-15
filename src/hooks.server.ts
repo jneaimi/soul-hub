@@ -13,6 +13,7 @@ import { dailyFocusFactory } from '$lib/scheduler/handlers/daily-focus.js';
 import { vaultScoutFactory } from '$lib/scheduler/handlers/vault-scout.js';
 import { inboxDigestFactory } from '$lib/scheduler/handlers/inbox-digest.js';
 import { intentMiningFactory } from '$lib/scheduler/handlers/intent-mining.js';
+import { telegramLivenessFactory } from '$lib/scheduler/handlers/telegram-liveness.js';
 import { initVault, getVaultEngine } from '$lib/vault/index.js';
 import { initSystemHealth, getSystemHealth } from '$lib/system/index.js';
 import { listSessions, killSession } from '$lib/pty/manager.js';
@@ -142,6 +143,11 @@ try {
 		'intent-mining',
 		intentMiningFactory,
 		'Daily intent analyst (ADR-023 P1.5) — mines intent_log + chat_history and proposes routing patterns for operator approval.',
+	);
+	registerTaskHandler(
+		'telegram-liveness',
+		telegramLivenessFactory,
+		'Telegram webhook liveness check (ADR-011 falsifier #5) — calls getWebhookInfo and alerts on pending_update_count > threshold or recent delivery errors.',
 	);
 } catch (err) {
 	console.error('[scheduler] handler registration failed:', err);
