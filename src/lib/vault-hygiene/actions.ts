@@ -288,8 +288,12 @@ export async function suppressAnomaly(
 	bucket: string,
 	days = SUPPRESS_DAYS_DEFAULT,
 ): Promise<ActionResult> {
-	if (!PROJECT_SLUG_RX.test(slug)) {
-		return { ok: false, error: 'invalid-slug' };
+	// ADR-043 relaxed the slug check from project-slug regex to a length-
+	// bounded, control-char-free string. Vault-hygiene composite keys
+	// (`source::[[target]]`) need to fit here too. We still want a sane cap
+	// to keep the JSON file from accumulating arbitrarily large entries.
+	if (!slug || slug.length === 0 || slug.length > 400 || /[\x00-\x1f]/.test(slug)) {
+		return { ok: false, error: 'invalid-key' };
 	}
 	if (!/^[a-z_]+$/.test(bucket)) {
 		return { ok: false, error: 'invalid-bucket' };

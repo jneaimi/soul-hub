@@ -42,6 +42,7 @@ import {
 	suppressAnomaly,
 	touchProjectUpdated,
 } from '../../vault-hygiene/actions.js';
+import { unlinkBrokenWikilink } from '../../vault-hygiene/link-actions.js';
 import { getVaultEngine } from '../../vault/index.js';
 import {
 	getYoutubeCount,
@@ -82,6 +83,13 @@ type HygieneVerb =
 	| 'hyg-active' // status → active (no_status default)
 	| 'hyg-recon' // status → maintained (stale_active_30)
 	| 'hyg-scaffold'; // write template index.md (missing_index)
+
+// ADR-043 — vault-hygiene verbs (vh- prefix, distinct from project-hygiene hyg-)
+type VaultHygieneVerb =
+	| 'vh-unlink' // first tap on broken_link — swap to confirm/cancel
+	| 'vh-unlink-y' // confirmed — rewrites the wikilink to its display text
+	| 'vh-unlink-n' // cancelled
+	| 'vh-ig'; // suppress (source, raw) for 30 days
 
 interface PendingButtonRow {
 	conversationKey: string;
@@ -192,7 +200,13 @@ type ProposalParse = { kind: 'proposal'; verb: Verb; id: string };
 type YoutubeParse = { kind: 'youtube'; verb: YoutubeVerb; id: string };
 type IntentParse = { kind: 'intent'; verb: IntentVerb; id: string };
 type HygieneParse = { kind: 'hygiene'; verb: HygieneVerb; id: string };
-type ParsedCallback = ProposalParse | YoutubeParse | IntentParse | HygieneParse;
+type VaultHygieneParse = { kind: 'vault-hygiene'; verb: VaultHygieneVerb; id: string };
+type ParsedCallback =
+	| ProposalParse
+	| YoutubeParse
+	| IntentParse
+	| HygieneParse
+	| VaultHygieneParse;
 
 function parseCallbackData(data: string): ParsedCallback | null {
 	const i = data.indexOf(':');
@@ -229,6 +243,14 @@ function parseCallbackData(data: string): ParsedCallback | null {
 		verb === 'hyg-scaffold'
 	) {
 		return { kind: 'hygiene', verb, id };
+	}
+	if (
+		verb === 'vh-unlink' ||
+		verb === 'vh-unlink-y' ||
+		verb === 'vh-unlink-n' ||
+		verb === 'vh-ig'
+	) {
+		return { kind: 'vault-hygiene', verb, id };
 	}
 	return null;
 }
@@ -272,6 +294,10 @@ export async function handleCallbackQuery(
 	}
 	if (parsed.kind === 'hygiene') {
 		await handleHygieneCallback(query, parsed, config);
+		return;
+	}
+	if (parsed.kind === 'vault-hygiene') {
+		await handleVaultHygieneCallback(query, parsed, config);
 		return;
 	}
 	await handleYoutubeCallback(query, parsed, config);
@@ -1006,6 +1032,163 @@ async function handleHygieneCallback(
 				? `📝 Scaffolded \`${row.slug}/index.md\``
 				: `❌ ${r.detail ?? r.error}`;
 			pendingHygieneButtons.delete(parsed.id);
+			break;
+		}
+	}
+
+	try {
+		await editMessageText({
+			chat_id: row.chatJid,
+			message_id: row.messageId,
+			text: resultText,
+			parse_mode: 'Markdown',
+		});
+	} catch {
+		/* swallow */
+	}
+	await answerCallbackQuery({ callback_query_id: query.id });
+}
+
+// ─── Vault-hygiene remediation (ADR-043) ───────────────────────────────
+
+interface PendingVaultHygieneRow {
+	source: string;
+	raw: string;
+	bucket: string;
+	chatJid: string;
+	messageId: number;
+	createdAt: number;
+}
+
+/** id → (source, raw, bucket) map for vault-hygiene escalations.
+ *  Separate from `pendingHygieneButtons` (project-hygiene) so callback
+ *  parsing routes cleanly and the two surfaces can evolve independently.
+ *  Per ADR-043 anti-abstraction call: keep separate maps until a 3rd
+ *  surface arrives. */
+const pendingVaultHygieneButtons = new Map<string, PendingVaultHygieneRow>();
+const VAULT_HYG_PENDING_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Deterministic id for a (source, raw) wikilink anomaly. SHA-1
+ *  truncated to 16 chars keeps `vh-unlink-y:<id>` comfortably inside
+ *  Telegram's 64-byte callback_data cap (≈26 bytes total). */
+function vaultHygieneIdFor(source: string, raw: string, bucket: string): string {
+	return createHash('sha1').update(`${source}\0${raw}\0${bucket}`).digest('base64url').slice(0, 16);
+}
+
+/** Build the inline keyboard for an `unresolved` (broken_link) anomaly.
+ *  Pilot bucket per ADR-043. Other vault-hygiene buckets (orphan_note,
+ *  stale_inbox_item) get their own builders in pass 2. */
+export function buildVaultHygieneUnresolvedKeyboard(
+	source: string,
+	raw: string,
+): InlineKeyboardMarkup {
+	const id = vaultHygieneIdFor(source, raw, 'unresolved');
+	return {
+		inline_keyboard: [
+			[
+				{ text: '🗑 Unlink', callback_data: `vh-unlink:${id}` },
+				{ text: '🔇 Ignore 30d', callback_data: `vh-ig:${id}` },
+			],
+		],
+	};
+}
+
+/** Stash the (source, raw, chatJid, messageId) so the callback handler
+ *  can resolve which broken-link a tap belongs to. Older entries GC'd
+ *  lazily on each insert. */
+export function rememberVaultHygieneButtons(args: {
+	source: string;
+	raw: string;
+	bucket: string;
+	chatJid: string;
+	messageId: number;
+}): void {
+	const id = vaultHygieneIdFor(args.source, args.raw, args.bucket);
+	pendingVaultHygieneButtons.set(id, { ...args, createdAt: Date.now() });
+	const now = Date.now();
+	for (const [k, v] of pendingVaultHygieneButtons) {
+		if (now - v.createdAt > VAULT_HYG_PENDING_TTL_MS) pendingVaultHygieneButtons.delete(k);
+	}
+}
+
+/** Vault-hygiene callback branch. Four verbs, all resolved inline:
+ *   - vh-unlink:   first tap → swap keyboard to confirm/cancel
+ *   - vh-unlink-y: confirmed → unlinkBrokenWikilink() rewrites prose
+ *   - vh-unlink-n: cancelled → message edits to "unchanged"
+ *   - vh-ig:       suppressAnomaly(`source::raw`, bucket, 30d) */
+async function handleVaultHygieneCallback(
+	query: TgCallbackQuery,
+	parsed: VaultHygieneParse,
+	_config: TelegramChannelConfig,
+): Promise<void> {
+	const row = pendingVaultHygieneButtons.get(parsed.id);
+	if (!row) {
+		await answerCallbackQuery({
+			callback_query_id: query.id,
+			text: 'Anomaly id expired — wait for next vault-hygiene tick',
+		});
+		return;
+	}
+
+	const engine = getVaultEngine();
+	if (!engine) {
+		await answerCallbackQuery({
+			callback_query_id: query.id,
+			text: 'Vault engine not ready',
+		});
+		return;
+	}
+	const vaultDir = engine.vaultDir;
+
+	let resultText: string;
+
+	switch (parsed.verb) {
+		case 'vh-unlink': {
+			try {
+				await editMessageText({
+					chat_id: row.chatJid,
+					message_id: row.messageId,
+					text:
+						`Unlink \`[[${row.raw}]]\` in \`${row.source}\`?\n\n` +
+						`Will replace every occurrence with its display text. Reversible via git.`,
+					parse_mode: 'Markdown',
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '✅ Confirm', callback_data: `vh-unlink-y:${parsed.id}` },
+								{ text: '❌ Cancel', callback_data: `vh-unlink-n:${parsed.id}` },
+							],
+						],
+					},
+				});
+			} catch {
+				/* swallow */
+			}
+			await answerCallbackQuery({ callback_query_id: query.id });
+			return;
+		}
+		case 'vh-unlink-y': {
+			const r = await unlinkBrokenWikilink(row.source, row.raw, vaultDir);
+			resultText = r.ok
+				? `✓ Unlinked — ${r.detail}`
+				: `❌ Unlink failed: ${r.detail ?? r.error}`;
+			pendingVaultHygieneButtons.delete(parsed.id);
+			break;
+		}
+		case 'vh-unlink-n': {
+			resultText = `🚫 Cancelled. \`${row.source}\` unchanged.`;
+			pendingVaultHygieneButtons.delete(parsed.id);
+			break;
+		}
+		case 'vh-ig': {
+			// Suppression key is `source::raw` so a single broken link can
+			// be ignored independently of other broken links in the same file.
+			const compositeKey = `${row.source}::${row.raw}`;
+			const r = await suppressAnomaly(compositeKey, row.bucket, 30);
+			resultText = r.ok
+				? `🔇 Ignored \`[[${row.raw}]]\` in \`${row.source}\` for 30 days`
+				: `❌ ${r.detail ?? r.error}`;
+			pendingVaultHygieneButtons.delete(parsed.id);
 			break;
 		}
 	}
