@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import SystemNotifications from '$lib/components/SystemNotifications.svelte';
+	import SchedulerMiniTimeline from '$lib/components/scheduler/SchedulerMiniTimeline.svelte';
 
 	interface DashboardData {
 		pipelineSummary: { total: number; items: { name: string; type: 'pipeline' | 'chain' }[] };
@@ -44,14 +45,23 @@
 	let explorerRoots = $state<ExplorerRoot[]>([]);
 
 	// Scheduler tile data
+	interface SchedulerRunRow {
+		status: 'success' | 'error' | string;
+		startedAt: string;
+	}
 	interface SchedulerTaskSummary {
 		id: string;
 		type: string;
 		enabled: boolean;
+		cron: string | null;
+		timezone: string | null;
 		lastStatus: string | null;
 		nextRunAt: string | null;
+		recentHistory: SchedulerRunRow[];
 	}
 	let schedulerTasks = $state<SchedulerTaskSummary[]>([]);
+	let nowMs = $state(Date.now());
+	let tickHandle: ReturnType<typeof setInterval> | null = null;
 
 	const noteTypeColors: Record<string, string> = {
 		learning: '#10b981',
@@ -71,41 +81,70 @@
 
 	async function loadScheduler() {
 		try {
-			const res = await fetch('/api/scheduler/tasks?historyLimit=1');
+			const res = await fetch('/api/scheduler/tasks?historyLimit=7');
 			if (res.ok) {
 				const data = await res.json();
 				schedulerTasks = (data.tasks ?? []).map((t: SchedulerTaskSummary) => ({
 					id: t.id,
 					type: t.type,
 					enabled: t.enabled,
+					cron: t.cron ?? null,
+					timezone: t.timezone ?? null,
 					lastStatus: t.lastStatus,
 					nextRunAt: t.nextRunAt,
+					recentHistory: t.recentHistory ?? [],
 				}));
 			}
 		} catch { /* silent */ }
 	}
 
-	function nextSchedulerLabel(iso: string | null): string {
+	function relativeFromNow(iso: string | null, baseMs: number): string {
 		if (!iso) return '—';
-		const ms = new Date(iso).getTime() - Date.now();
+		const ms = new Date(iso).getTime() - baseMs;
 		if (ms < 0) return 'overdue';
 		const mins = Math.floor(ms / 60_000);
 		const hours = Math.floor(mins / 60);
 		const days = Math.floor(hours / 24);
-		if (days > 0) return `in ${days}d ${hours % 24}h`;
-		if (hours > 0) return `in ${hours}h ${mins % 60}m`;
-		return `in ${mins}m`;
+		if (days > 0) return `${days}d ${hours % 24}h`;
+		if (hours > 0) return `${hours}h ${mins % 60}m`;
+		return `${mins}m`;
 	}
+
+	function countdownLabel(iso: string | null, baseMs: number): string {
+		if (!iso) return '—';
+		const ms = new Date(iso).getTime() - baseMs;
+		if (ms < 0) return '00:00';
+		const totalSec = Math.floor(ms / 1000);
+		const hours = Math.floor(totalSec / 3600);
+		const mins = Math.floor((totalSec % 3600) / 60);
+		const secs = totalSec % 60;
+		// Show H:MM:SS when ≥1h, else MM:SS
+		const pad = (n: number) => n.toString().padStart(2, '0');
+		if (hours > 0) return `${hours}:${pad(mins)}:${pad(secs)}`;
+		return `${pad(mins)}:${pad(secs)}`;
+	}
+
+	const nextTask = $derived.by(() => {
+		const candidates = schedulerTasks
+			.filter((t) => t.enabled && t.nextRunAt)
+			.map((t) => ({ task: t, atMs: new Date(t.nextRunAt!).getTime() }))
+			.sort((a, b) => a.atMs - b.atMs);
+		return candidates[0]?.task ?? null;
+	});
+
+	const upcomingRuns = $derived(
+		schedulerTasks
+			.filter((t) => t.enabled && t.nextRunAt)
+			.map((t) => ({ at: new Date(t.nextRunAt!).getTime(), taskId: t.id }))
+			.sort((a, b) => a.at - b.at)
+	);
 
 	const schedulerSummary = $derived.by(() => {
 		const total = schedulerTasks.length;
 		const active = schedulerTasks.filter((t) => t.enabled).length;
+		const disabled = schedulerTasks.filter((t) => !t.enabled).length;
 		const failed = schedulerTasks.filter((t) => t.lastStatus === 'error').length;
-		const next = schedulerTasks
-			.filter((t) => t.enabled && t.nextRunAt)
-			.map((t) => new Date(t.nextRunAt!).getTime())
-			.sort((a, b) => a - b)[0];
-		return { total, active, failed, nextLabel: next ? nextSchedulerLabel(new Date(next).toISOString()) : '—' };
+		return { total, active, disabled, failed };
 	});
 
 	async function loadPlaybooks() {
@@ -243,6 +282,9 @@
 		// Homepage is now a pure dashboard — bento tiles only, no blocking loaders.
 		refreshVolatile();
 
+		// ADR-008 P2: 1s ticker drives the scheduler countdown. Single setInterval.
+		tickHandle = setInterval(() => { nowMs = Date.now(); }, 1000);
+
 		const onVisible = () => { if (document.visibilityState === 'visible') refreshVolatile(); };
 		document.addEventListener('visibilitychange', onVisible);
 
@@ -265,6 +307,7 @@
 			document.removeEventListener('visibilitychange', onVisible);
 			window.removeEventListener('vault:refresh', onVaultRefresh);
 			vaultEventSource?.close();
+			if (tickHandle) { clearInterval(tickHandle); tickHandle = null; }
 		};
 	});
 </script>
@@ -276,7 +319,7 @@
 <div class="h-full flex flex-col">
 	<!-- Main — bento dashboard. Workspaces live at /workspaces; vault projects at /projects. -->
 	<div class="flex-1 overflow-y-auto px-4 sm:px-6 py-6 sm:py-8">
-		<div class="max-w-3xl mx-auto">
+		<div class="max-w-6xl mx-auto">
 			<!-- System Notifications -->
 			<SystemNotifications />
 
@@ -443,7 +486,7 @@
 				</div>
 
 				<!-- Scheduler -->
-				<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
+				<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-4">
 					<div class="flex items-center justify-between mb-3">
 						<div class="flex items-center gap-2">
 							<h3 class="text-sm font-semibold text-hub-text">Scheduler</h3>
@@ -466,29 +509,70 @@
 					{#if schedulerTasks.length === 0}
 						<p class="text-xs text-hub-dim py-3 text-center">No tasks yet</p>
 					{:else}
-						<div class="space-y-1.5">
+						<!-- Hero: countdown + next task -->
+						{#if nextTask}
+							<div class="flex items-start gap-3 mb-3">
+								<div class="flex items-center gap-2 px-3 py-1.5 rounded-md bg-hub-bg border border-hub-border/60">
+									<svg class="w-3.5 h-3.5 text-hub-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+									<span class="font-mono text-sm text-hub-text tabular-nums" aria-label="Time until next scheduled run">
+										{countdownLabel(nextTask.nextRunAt, nowMs)}
+									</span>
+								</div>
+								<div class="min-w-0 flex-1">
+									<div class="text-xs text-hub-text truncate">{nextTask.id}</div>
+									<div class="text-[11px] text-hub-dim truncate">
+										{nextTask.cron ?? '—'}{nextTask.timezone ? ` · ${nextTask.timezone}` : ''}
+									</div>
+								</div>
+							</div>
+
+							<!-- Mini-timeline (sm+ only — dense for desktop) -->
+							<div class="hidden sm:block mb-3">
+								<SchedulerMiniTimeline runs={upcomingRuns} nowMs={nowMs} windowHours={6} />
+							</div>
+						{/if}
+
+						<!-- Task list with 7-dot history -->
+						<div class="space-y-1">
 							{#each schedulerTasks.slice(0, 4) as t (t.id)}
+								{@const okCount = t.recentHistory.filter((r) => r.status === 'success').length}
+								{@const failCount = t.recentHistory.filter((r) => r.status === 'error').length}
 								<a
 									href="/scheduler"
-									class="flex items-center justify-between py-1 px-2 rounded-lg hover:bg-hub-surface transition-colors cursor-pointer group"
+									class="flex items-center gap-3 py-1.5 px-2 rounded-lg hover:bg-hub-surface transition-colors cursor-pointer group"
 								>
-									<span class="text-xs text-hub-muted group-hover:text-hub-text transition-colors truncate">{t.id}</span>
+									<span class="flex-1 min-w-0 text-xs text-hub-muted group-hover:text-hub-text transition-colors truncate">{t.id}</span>
+									<span class="text-[11px] text-hub-dim tabular-nums whitespace-nowrap w-16 text-right">
+										{t.enabled && t.nextRunAt ? `in ${relativeFromNow(t.nextRunAt, nowMs)}` : t.enabled ? '—' : 'off'}
+									</span>
 									<span
-										class="flex-shrink-0 w-2 h-2 rounded-full {!t.enabled ? 'bg-hub-dim' : t.lastStatus === 'error' ? 'bg-hub-danger' : t.lastStatus === 'success' ? 'bg-hub-cta/70' : 'bg-hub-info/60'}"
-										title={t.enabled ? `${t.lastStatus ?? 'scheduled'}` : 'disabled'}
-									></span>
+										class="flex items-center gap-0.5"
+										aria-label="Last {t.recentHistory.length} runs: {okCount} ok, {failCount} failed"
+									>
+										{#each Array.from({ length: 7 }) as _, i}
+											{@const run = t.recentHistory[i]}
+											<span
+												class="w-1.5 h-1.5 rounded-sm {!run ? 'bg-hub-border/40' : run.status === 'success' ? 'bg-hub-cta/70' : run.status === 'error' ? 'bg-hub-danger' : 'bg-hub-info/60'}"
+												title={run ? `${run.status} · ${new Date(run.startedAt).toLocaleString()}` : 'no run'}
+											></span>
+										{/each}
+									</span>
 								</a>
 							{/each}
 						</div>
+
+						<!-- Footer strip -->
 						<div class="mt-3 pt-2 border-t border-hub-border/50 flex items-center justify-between text-[10px] text-hub-dim">
-							<span>{schedulerSummary.active} active{schedulerSummary.failed > 0 ? ` · ${schedulerSummary.failed} failed` : ''}</span>
-							<span>next {schedulerSummary.nextLabel}</span>
+							<span>
+								{schedulerSummary.active} active{schedulerSummary.failed > 0 ? ` · ${schedulerSummary.failed} failed` : ''}{schedulerSummary.disabled > 0 ? ` · ${schedulerSummary.disabled} disabled` : ''}
+							</span>
+							<a href="/scheduler" class="text-hub-dim hover:text-hub-info transition-colors cursor-pointer">history →</a>
 						</div>
 					{/if}
 				</div>
 
 				<!-- Playbooks -->
-				<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
+				<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-3">
 					<div class="flex items-center justify-between mb-3">
 						<div class="flex items-center gap-2">
 							<h3 class="text-sm font-semibold text-hub-text">Playbooks</h3>
@@ -538,7 +622,7 @@
 				</div>
 
 				<!-- Files Explorer -->
-				<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
+				<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-3">
 					<div class="flex items-center justify-between mb-3">
 						<h3 class="text-sm font-semibold text-hub-text">
 							Files

@@ -6,6 +6,7 @@
 		{ href: '/projects', label: 'Projects', matchPrefix: '/projects' },
 		{ href: '/workspaces', label: 'Workspaces', matchPrefix: '/workspace' },
 		{ href: '/inbox', label: 'Inbox', matchPrefix: '/inbox' },
+		{ href: '/scheduler', label: 'Scheduler', matchPrefix: '/scheduler' },
 		{ href: '/crm', label: 'CRM', matchPrefix: '/crm' },
 		{ href: '/vault', label: 'Vault', matchPrefix: '/vault' },
 		{ href: '/sessions', label: 'Sessions', matchPrefix: '/sessions' },

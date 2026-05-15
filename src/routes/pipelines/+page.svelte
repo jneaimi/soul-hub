@@ -1337,14 +1337,20 @@
 						</button>
 						{#if showSettings}
 						<div class="bg-hub-surface border border-hub-border rounded-lg p-4 space-y-3">
-							<!-- Scheduling is owned by /scheduler (per ADR-004). -->
+							<!-- Scheduling is owned by /scheduler (per ADR-004; deep-link per ADR-008 P3). -->
 							<div class="flex items-start gap-3">
 								<span class="text-xs text-hub-muted w-16 flex-shrink-0 pt-0.5">Schedule</span>
-								<p class="text-[11px] text-hub-dim flex-1">
-									Pipelines run on demand or via the
-									<a href="/scheduler/builder" class="text-hub-info hover:text-hub-text underline-offset-2 hover:underline">scheduler</a>
-									(create a task with type <code class="font-mono text-hub-info">trigger-pipeline</code>).
-								</p>
+								<div class="flex-1 flex items-center gap-2 flex-wrap">
+									<a
+										href="/scheduler/builder?source=pipeline&pipeline={encodeURIComponent(selectedName)}"
+										class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] bg-hub-bg border border-hub-border hover:border-hub-cta/60 hover:text-hub-cta text-hub-muted transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50"
+										title="Open the scheduler builder pre-filled for this {selectedChain ? 'chain' : 'pipeline'}"
+									>
+										<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+										Schedule this {selectedChain ? 'chain' : 'pipeline'}
+									</a>
+									<span class="text-[11px] text-hub-dim">creates a <code class="font-mono text-hub-info">trigger-pipeline</code> task</span>
+								</div>
 							</div>
 
 							<!-- Webhook trigger -->
@@ -1699,14 +1705,20 @@
 						</button>
 						{#if showSettings}
 						<div class="bg-hub-surface border border-hub-border rounded-lg p-4 space-y-3">
-							<!-- Scheduling is owned by /scheduler (per ADR-004). -->
+							<!-- Scheduling is owned by /scheduler (per ADR-004; deep-link per ADR-008 P3). -->
 							<div class="flex items-start gap-3">
 								<span class="text-xs text-hub-muted w-16 flex-shrink-0 pt-0.5">Schedule</span>
-								<p class="text-[11px] text-hub-dim flex-1">
-									Pipelines run on demand or via the
-									<a href="/scheduler/builder" class="text-hub-info hover:text-hub-text underline-offset-2 hover:underline">scheduler</a>
-									(create a task with type <code class="font-mono text-hub-info">trigger-pipeline</code>).
-								</p>
+								<div class="flex-1 flex items-center gap-2 flex-wrap">
+									<a
+										href="/scheduler/builder?source=pipeline&pipeline={encodeURIComponent(selectedName)}"
+										class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] bg-hub-bg border border-hub-border hover:border-hub-cta/60 hover:text-hub-cta text-hub-muted transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50"
+										title="Open the scheduler builder pre-filled for this {selectedChain ? 'chain' : 'pipeline'}"
+									>
+										<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+										Schedule this {selectedChain ? 'chain' : 'pipeline'}
+									</a>
+									<span class="text-[11px] text-hub-dim">creates a <code class="font-mono text-hub-info">trigger-pipeline</code> task</span>
+								</div>
 							</div>
 
 							<!-- Webhook trigger -->

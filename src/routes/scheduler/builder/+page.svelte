@@ -284,6 +284,15 @@
 		const taskId = url.searchParams.get('id');
 		if (taskId) {
 			loadExisting(taskId);
+			return;
+		}
+		// ADR-008 P3 — deep link from /pipelines: pre-fill a new trigger-pipeline task.
+		const source = url.searchParams.get('source');
+		const pipelineParam = url.searchParams.get('pipeline');
+		if (source === 'pipeline' && pipelineParam) {
+			type = 'trigger-pipeline';
+			pipelineName = pipelineParam;
+			if (!id) id = `pipeline-${pipelineParam}`.toLowerCase().replace(/[^a-z0-9-_]+/g, '-');
 		}
 	});
 
