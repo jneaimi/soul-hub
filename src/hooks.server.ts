@@ -13,6 +13,7 @@ import { dailyFocusFactory } from '$lib/scheduler/handlers/daily-focus.js';
 import { vaultScoutFactory } from '$lib/scheduler/handlers/vault-scout.js';
 import { inboxDigestFactory } from '$lib/scheduler/handlers/inbox-digest.js';
 import { inboxDigestTelegramFactory } from '$lib/scheduler/handlers/inbox-digest-telegram.js';
+import { inboxAnomalyTelegramFactory } from '$lib/scheduler/handlers/inbox-anomaly-telegram.js';
 import { intentMiningFactory } from '$lib/scheduler/handlers/intent-mining.js';
 import { telegramLivenessFactory } from '$lib/scheduler/handlers/telegram-liveness.js';
 import { hygieneButtonEscalatorFactory } from '$lib/scheduler/handlers/hygiene-button-escalator.js';
@@ -145,6 +146,11 @@ try {
 		'inbox-digest-telegram',
 		inboxDigestTelegramFactory,
 		'ADR-044 — Telegram-native inbox digest with inline action buttons (Save/Archive/Mute/Draft reply).',
+	);
+	registerTaskHandler(
+		'inbox-anomaly-telegram',
+		inboxAnomalyTelegramFactory,
+		'ADR-044.H — Telegram-native S3a anomaly push (replaces WhatsApp anomaly rail). Same 4-button keyboard as the digest.',
 	);
 	registerTaskHandler(
 		'intent-mining',
