@@ -113,6 +113,52 @@ export async function archiveProject(slug: string, vaultDir: string): Promise<Ac
 	return { ok: true, detail: `moved projects/${slug} → archive/${slug}` };
 }
 
+/** Flip the project's `status:` field to a new value. Used by the
+ *  empty_stub button flow which needs to set `archived` before the
+ *  archiveProject() status guard will pass. Returns ok with detail
+ *  including the prior value so the caller can log it. */
+export async function setProjectStatus(
+	slug: string,
+	newStatus: string,
+	vaultDir: string,
+): Promise<ActionResult> {
+	if (!PROJECT_SLUG_RX.test(slug)) {
+		return { ok: false, error: 'invalid-slug' };
+	}
+	if (!/^[a-z][a-z-]*$/.test(newStatus)) {
+		return { ok: false, error: 'invalid-status' };
+	}
+
+	const idxPath = join(vaultDir, 'projects', slug, 'index.md');
+	if (!(await pathExists(idxPath))) {
+		return { ok: false, error: 'not-found' };
+	}
+
+	const original = await readFile(idxPath, 'utf-8');
+	if (!original.startsWith('---')) {
+		return { ok: false, error: 'no-frontmatter' };
+	}
+	const fmEnd = original.indexOf('\n---', 3);
+	if (fmEnd === -1) {
+		return { ok: false, error: 'malformed-frontmatter' };
+	}
+	const fmBlock = original.slice(0, fmEnd);
+	const rest = original.slice(fmEnd);
+
+	const priorMatch = fmBlock.match(/^status:\s*['"]?(\w+)['"]?\s*$/m);
+	const prior = priorMatch?.[1] ?? null;
+
+	let newFm: string;
+	if (priorMatch) {
+		newFm = fmBlock.replace(/^status:.*$/m, `status: ${newStatus}`);
+	} else {
+		newFm = fmBlock.replace(/\n$/, '') + `\nstatus: ${newStatus}`;
+	}
+
+	await writeFile(idxPath, newFm + rest, 'utf-8');
+	return { ok: true, detail: `status ${prior ?? '(none)'} → ${newStatus}` };
+}
+
 /** Inject `pause_until: YYYY-MM-DD` into the project's index.md
  *  frontmatter. Replaces any existing pause_until. Caller passes an
  *  ISO date string. The vault watcher's commit picks the write up

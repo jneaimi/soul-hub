@@ -18,7 +18,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { sendText } from '../channels/telegram/outbound.js';
 import {
-	buildHygieneArchiveZoneKeyboard,
+	buildHygieneStandardKeyboard,
 	rememberHygieneButtons,
 } from '../channels/telegram/callback.js';
 import { config as soulHubConfig } from '../config.js';
@@ -65,26 +65,50 @@ async function findLatestDigest(): Promise<string | null> {
 	return candidates[0].path;
 }
 
-/** Extract archive_zone_mismatch slugs from a digest body.
- *  Looks for the section heading and reads bullet rows until the next
- *  heading. Bullet format from the renderer:
- *    `- [[projects/<slug>/index|<slug>]] — idle Nd` */
-export function parseArchiveZoneSlugs(digestBody: string): string[] {
+/** Map from a digest section heading to the bucket key the escalator
+ *  should attribute its messages to. Add an entry when extending to a
+ *  new bucket — keeps the parser declarative and the bucket→action
+ *  mapping centralised. */
+const SECTION_TO_BUCKET: { match: string; bucket: string }[] = [
+	{ match: 'archive-zone mismatch', bucket: 'archive_zone_mismatch' },
+	{ match: 'empty stub', bucket: 'empty_stub' },
+];
+
+interface DigestRow {
+	slug: string;
+	bucket: string;
+}
+
+/** Extract (slug, bucket) rows for every actionable section in the
+ *  digest body. Bullet format from the renderer:
+ *    `- [[projects/<slug>/index|<slug>]] — ...`
+ *  Sections not in SECTION_TO_BUCKET are ignored (the escalator only
+ *  emits buttons for buckets it has built keyboards for). */
+export function parseActionableRows(digestBody: string): DigestRow[] {
 	const lines = digestBody.split('\n');
-	const slugs: string[] = [];
-	let inSection = false;
+	const rows: DigestRow[] = [];
+	let currentBucket: string | null = null;
 	for (const line of lines) {
 		const trimmed = line.trim();
 		if (trimmed.startsWith('## ')) {
-			inSection = trimmed.toLowerCase().includes('archive-zone mismatch');
+			const lower = trimmed.toLowerCase();
+			const hit = SECTION_TO_BUCKET.find((s) => lower.includes(s.match));
+			currentBucket = hit?.bucket ?? null;
 			continue;
 		}
-		if (!inSection) continue;
+		if (!currentBucket) continue;
 		if (!trimmed.startsWith('- ')) continue;
 		const m = trimmed.match(/\[\[projects\/([a-z][a-z0-9-]*)\/index/);
-		if (m) slugs.push(m[1]);
+		if (m) rows.push({ slug: m[1], bucket: currentBucket });
 	}
-	return slugs;
+	return rows;
+}
+
+/** Legacy export — kept for the existing smoke test. */
+export function parseArchiveZoneSlugs(digestBody: string): string[] {
+	return parseActionableRows(digestBody)
+		.filter((r) => r.bucket === 'archive_zone_mismatch')
+		.map((r) => r.slug);
 }
 
 function resolveTelegramChatId(): string | null {
@@ -93,18 +117,40 @@ function resolveTelegramChatId(): string | null {
 	return process.env.TELEGRAM_CHAT_ID ?? null;
 }
 
-/** Send one inline-keyboard message per archive_zone_mismatch row in the
- *  latest digest. Idempotent enough for the pilot — if called twice in
- *  quick succession the second call produces duplicate messages, but
- *  rememberHygieneButtons keys on (slug,bucket) so callback resolution
- *  still points at the latest message id. */
-export async function emitArchiveZoneEscalations(): Promise<EscalationResult> {
+/** Compose the per-row escalation text. Bucket-specific prose so the
+ *  operator instantly understands what the buttons will do. */
+function formatRowMessage(slug: string, bucket: string): string {
+	switch (bucket) {
+		case 'archive_zone_mismatch':
+			return (
+				`📦 *Archive-zone mismatch* — \`${slug}\`\n\n` +
+				`Status is \`archived\` but the folder still sits under \`projects/\`. ` +
+				`Tap to move it to \`archive/\`, pause for 60 days, or ignore for 30.`
+			);
+		case 'empty_stub':
+			return (
+				`🪹 *Empty stub* — \`${slug}\`\n\n` +
+				`\`index.md\` body is small and has zero content under any section — ` +
+				`auto-scaffolded but never grew. Tap to archive (flips status + moves), ` +
+				`pause for 60 days, or ignore for 30.`
+			);
+		default:
+			return `⚠️ *${bucket}* — \`${slug}\`\n\nReview and decide.`;
+	}
+}
+
+/** Send one inline-keyboard message per actionable row in the latest
+ *  digest. Iterates both `archive_zone_mismatch` and `empty_stub`
+ *  sections. Idempotent enough for the pilot — `rememberHygieneButtons`
+ *  keys on (slug, bucket) so duplicate calls overwrite rather than
+ *  accumulate. */
+export async function emitInlineEscalations(): Promise<EscalationResult> {
 	const digestPath = await findLatestDigest();
 	if (!digestPath) return { ok: false, error: 'no-digest-found' };
 
 	const body = await readFile(digestPath, 'utf-8');
-	const slugs = parseArchiveZoneSlugs(body);
-	if (slugs.length === 0) {
+	const rows = parseActionableRows(body);
+	if (rows.length === 0) {
 		return { ok: true, digestPath, totalRows: 0, sent: 0, failures: [] };
 	}
 
@@ -117,26 +163,28 @@ export async function emitArchiveZoneEscalations(): Promise<EscalationResult> {
 	const failures: { slug: string; error: string }[] = [];
 	let sent = 0;
 
-	for (const slug of slugs) {
-		const text =
-			`📦 *Archive-zone mismatch* — \`${slug}\`\n\n` +
-			`Status is \`archived\` but the folder still sits under \`projects/\`. ` +
-			`Tap to move it to \`archive/\`, pause for 60 days, or ignore for 30.`;
+	for (const row of rows) {
+		const text = formatRowMessage(row.slug, row.bucket);
 		const result = await sendText(chatId, text, delivery, {
-			replyMarkup: buildHygieneArchiveZoneKeyboard(slug, 'archive_zone_mismatch'),
+			replyMarkup: buildHygieneStandardKeyboard(row.slug, row.bucket),
 		});
 		if (!result.ok || result.messageIds.length === 0) {
-			failures.push({ slug, error: result.error ?? 'send-failed' });
+			failures.push({ slug: row.slug, error: result.error ?? 'send-failed' });
 			continue;
 		}
 		rememberHygieneButtons({
-			slug,
-			bucket: 'archive_zone_mismatch',
+			slug: row.slug,
+			bucket: row.bucket,
 			chatJid: String(chatId),
 			messageId: result.messageIds[0],
 		});
 		sent++;
 	}
 
-	return { ok: true, digestPath, totalRows: slugs.length, sent, failures };
+	return { ok: true, digestPath, totalRows: rows.length, sent, failures };
 }
+
+/** Legacy export — kept so the scheduler handler and existing callers
+ *  keep working while pass 2 settles. Delegates to the generalized
+ *  emitter. */
+export const emitArchiveZoneEscalations = emitInlineEscalations;

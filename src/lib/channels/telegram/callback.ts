@@ -34,7 +34,12 @@ import { sendText } from './outbound.js';
 import { dispatchInbound, conversationKeyFor } from './dispatch.js';
 import { dispatchVaultSave } from '../../vault-save/index.js';
 import { fetchYoutube } from '../../youtube/index.js';
-import { archiveProject, setPauseUntil, suppressAnomaly } from '../../vault-hygiene/actions.js';
+import {
+	archiveProject,
+	setPauseUntil,
+	setProjectStatus,
+	suppressAnomaly,
+} from '../../vault-hygiene/actions.js';
 import { getVaultEngine } from '../../vault/index.js';
 import {
 	getYoutubeCount,
@@ -689,24 +694,35 @@ function hygieneIdFor(slug: string, bucket: string): string {
 	return createHash('sha1').update(`${slug}\0${bucket}`).digest('base64url').slice(0, 16);
 }
 
-/** Build the inline keyboard for an archive_zone_mismatch escalation.
- *  Pilot bucket per ADR-042. Other buckets land in pass 2 — each gets
- *  its own builder so the verb→action map stays explicit. */
-export function buildHygieneArchiveZoneKeyboard(
+/** Standard 3-button hygiene keyboard. Used by buckets where the
+ *  remediation set is `Archive | Pause | Ignore` (archive_zone_mismatch,
+ *  empty_stub, template_only_index, missing_index). Buckets needing
+ *  bucket-specific verbs (Distill via scribe, Fill stub, Reconcile to
+ *  X) get their own builder when those flows land. */
+export function buildHygieneStandardKeyboard(
 	slug: string,
 	bucket: string,
 ): InlineKeyboardMarkup {
 	const id = hygieneIdFor(slug, bucket);
+	// archive_zone_mismatch's button label says "Move" since the
+	// project is already status=archived; empty/template buckets need
+	// "Archive" because the handler flips status first.
+	const archiveLabel =
+		bucket === 'archive_zone_mismatch' ? '📦 Move to archive/' : '📦 Archive now';
 	return {
 		inline_keyboard: [
 			[
-				{ text: '📦 Move to archive/', callback_data: `hyg-arc:${id}` },
+				{ text: archiveLabel, callback_data: `hyg-arc:${id}` },
 				{ text: '⏸ Pause 60d', callback_data: `hyg-pause:${id}` },
 			],
 			[{ text: '🔇 Ignore 30d', callback_data: `hyg-ig:${id}` }],
 		],
 	};
 }
+
+/** Legacy export — pass-1 alias retained so any existing call sites keep
+ *  working. New code uses buildHygieneStandardKeyboard. */
+export const buildHygieneArchiveZoneKeyboard = buildHygieneStandardKeyboard;
 
 /** Stash the (slug, bucket, chatJid, messageId) so the callback handler
  *  can resolve which anomaly a tap belongs to. Older entries GC'd
@@ -786,6 +802,19 @@ async function handleHygieneCallback(
 			return;
 		}
 		case 'hyg-arc-y': {
+			// For empty_stub / template_only_index / missing_index, the
+			// project's status is still `active`/`maintained`/etc — we need
+			// to flip to `archived` first or archiveProject's status guard
+			// will reject. archive_zone_mismatch already has status=archived
+			// by definition; skip the flip.
+			if (row.bucket !== 'archive_zone_mismatch') {
+				const sR = await setProjectStatus(row.slug, 'archived', vaultDir);
+				if (!sR.ok) {
+					resultText = `❌ Status flip failed: ${sR.detail ?? sR.error}`;
+					pendingHygieneButtons.delete(parsed.id);
+					break;
+				}
+			}
 			const r = await archiveProject(row.slug, vaultDir);
 			resultText = r.ok
 				? `✓ Archived \`${row.slug}\` → \`archive/${row.slug}\``
