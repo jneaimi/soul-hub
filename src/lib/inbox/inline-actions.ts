@@ -789,21 +789,27 @@ export async function draftInboxReply(
 		`---`,
 		`\`\`\``,
 		``,
-		`Followed by:`,
-		`- \`# ${titleRe}\` (H1)`,
-		`- \`## Source\` with EXACTLY this block pasted verbatim (do not regenerate):`,
+		`Followed by, IN THIS EXACT ORDER (top-down — the operator reads the reply first, not the original mail):`,
+		``,
+		`1. \`# ${titleRe}\` (H1)`,
+		``,
+		`2. \`## Content\` containing your drafted reply body (NOT the original mail). ` +
+			`This section comes FIRST so the operator sees what they're about to send ` +
+			`without scrolling past the original email. The reply should stand on its own; ` +
+			`the operator will paste it into their mail client and send.`,
+		``,
+		`3. \`## Source\` with EXACTLY this block pasted verbatim (do not regenerate):`,
 		``,
 		`\`\`\``,
 		sourceBlock,
 		`\`\`\``,
 		``,
-		`- \`## Original Email\` containing the ORIGINAL incoming mail body verbatim ` +
+		`4. \`## Original Email\` containing the ORIGINAL incoming mail body verbatim ` +
 			`(the "### Full body" content above this section, no edits). Paste it as plain ` +
 			`markdown text — do NOT wrap in a fenced code block (the body already has ` +
 			`paragraph structure; code blocks render monospace which hurts readability). ` +
-			`This lets the operator read the incoming mail side-by-side with your drafted reply.`,
-		``,
-		`- \`## Content\` containing your drafted reply body (NOT the original mail).`,
+			`This sits LAST as reference material — the operator can scroll to it if they ` +
+			`need to reread context, but the draft reply they care about is already at the top.`,
 		``,
 		`After writing the file, print only the absolute path on stdout. Nothing else.`,
 	].join('\n');
