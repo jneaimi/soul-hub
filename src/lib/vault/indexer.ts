@@ -161,6 +161,13 @@ export class VaultIndexer {
 			return true;
 		}).length;
 
+		// Mirror the report.ts (ADR-044 Phase A) unresolved-source filter:
+		// wikilinks INSIDE archive/inbox/hygiene-report notes are cosmetic
+		// references to deleted projects, not operational debt. Counting
+		// them in `unresolvedLinks` inflates the home dashboard's "broken"
+		// number and drowns out real breakage.
+		const UNRESOLVED_SOURCE_EXEMPT = new Set(['archive', 'inbox']);
+
 		for (const note of allNotes) {
 			const type = note.meta.type || 'unknown';
 			notesByType[type] = (notesByType[type] || 0) + 1;
@@ -169,7 +176,12 @@ export class VaultIndexer {
 			notesByZone[zone] = (notesByZone[zone] || 0) + 1;
 
 			totalLinks += note.links.length;
-			unresolvedLinks += note.links.filter((l) => l.resolved === null).length;
+			if (
+				!UNRESOLVED_SOURCE_EXEMPT.has(zone) &&
+				!note.path.startsWith('operations/hygiene/')
+			) {
+				unresolvedLinks += note.links.filter((l) => l.resolved === null).length;
+			}
 		}
 
 		return {
@@ -197,8 +209,15 @@ export class VaultIndexer {
 			})
 			.map((n) => n.path);
 
+		// Mirror stats() — exempt archive/inbox/hygiene-report sources so
+		// the health surface doesn't double-count cosmetic refs to
+		// deleted projects (see ADR-044 Phase A rationale).
+		const UNRESOLVED_SOURCE_EXEMPT = new Set(['archive', 'inbox']);
 		const unresolvedLinks: { source: string; raw: string }[] = [];
 		for (const note of allNotes) {
+			const zone = note.path.split('/')[0];
+			if (UNRESOLVED_SOURCE_EXEMPT.has(zone)) continue;
+			if (note.path.startsWith('operations/hygiene/')) continue;
 			for (const link of note.links) {
 				if (link.resolved === null) {
 					unresolvedLinks.push({ source: note.path, raw: link.raw });

@@ -38,6 +38,35 @@
 	let submitting = $state(false);
 	let errorMsg = $state<string | null>(null);
 
+	// Live CRM check — the frontmatter is a snapshot from save-time. If
+	// the operator added this sender via a sibling note's card later,
+	// THIS note's frontmatter still says not-in-crm even though the
+	// contact now exists. Re-check on mount so the card reflects the
+	// current CRM state, not the stale frontmatter.
+	$effect(() => {
+		if (localStatus !== 'not-in-crm' || !formEmail || !formEmail.includes('@')) return;
+		void (async () => {
+			try {
+				const response = await fetch(
+					`/api/crm/contacts/by-email?email=${encodeURIComponent(formEmail)}`,
+				);
+				if (!response.ok) return;
+				const data = (await response.json()) as {
+					contact?: { id: string; displayName: string; stage: string } | null;
+				};
+				if (data.contact) {
+					localStatus = 'in-crm';
+					localContactId = data.contact.id;
+					localContactStage = data.contact.stage;
+					localContactName = data.contact.displayName;
+				}
+			} catch {
+				// Swallow — silently fall back to the form. The card is
+				// non-critical; a network blip shouldn't break the note view.
+			}
+		})();
+	});
+
 	async function handleSubmit(e: Event) {
 		e.preventDefault();
 		if (submitting) return;
