@@ -33,11 +33,46 @@
 				: null,
 	);
 
-	type CardState = 'idle' | 'drafting' | 'done' | 'error';
-	let state = $state<CardState>('idle');
+	type CardState = 'probing' | 'idle' | 'drafting' | 'done' | 'error';
+	// 'probing' is the initial state — we hit /draft-status on mount to
+	// reflect any pre-existing draft (created via Telegram or /inbox, or
+	// by this card in a previous tab the operator already closed). Without
+	// this, the card always renders "idle" and the operator has no way to
+	// see that a draft already exists — they'd click again, hit the
+	// idempotency path, and only THEN see the existing draft.
+	let state = $state<CardState>('probing');
 	let resultPath = $state<string | null>(null);
 	let resultDetail = $state<string | null>(null);
 	let errorMsg = $state<string | null>(null);
+
+	$effect(() => {
+		if (!messageId) return;
+		void (async () => {
+			try {
+				const res = await fetch(`/api/inbox/messages/${messageId}/draft-status`);
+				if (!res.ok) {
+					// Probe failure isn't fatal — fall back to idle so the
+					// operator can still dispatch. Most common cause: the
+					// source inbox row was pruned after retention window.
+					state = 'idle';
+					return;
+				}
+				const data = (await res.json()) as {
+					drafted?: boolean;
+					vaultPath?: string;
+				};
+				if (data.drafted && data.vaultPath) {
+					resultPath = data.vaultPath;
+					resultDetail = 'previously drafted';
+					state = 'done';
+				} else {
+					state = 'idle';
+				}
+			} catch {
+				state = 'idle';
+			}
+		})();
+	});
 
 	async function dispatchDraft() {
 		if (!messageId || state === 'drafting') return;
@@ -79,7 +114,12 @@
 	<div
 		class="email-draft-card rounded-md border border-hub-border bg-hub-card p-3 space-y-2"
 	>
-		{#if state === 'idle'}
+		{#if state === 'probing'}
+			<div class="flex items-center gap-2 text-sm text-hub-dim">
+				<span class="text-base leading-none opacity-50">↩️</span>
+				<span>Checking draft status…</span>
+			</div>
+		{:else if state === 'idle'}
 			<div class="flex items-center justify-between gap-3">
 				<div class="flex items-center gap-2 text-sm">
 					<span class="text-base leading-none">↩️</span>

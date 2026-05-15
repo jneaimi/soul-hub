@@ -73,14 +73,32 @@ export async function archiveInboxMessage(
 }
 
 /** Slugify a string into a filesystem-safe kebab-case segment. Strips
- *  non-alnum, collapses runs of `-`, trims trailing `-`, lower-cases. */
-function slugify(input: string, max = 60): string {
+ *  non-alnum, collapses runs of `-`, trims trailing `-`, lower-cases.
+ *  Exported because the draft-status probe re-derives draft paths and
+ *  needs the same formula as draftInboxReply — keeping them in lockstep
+ *  by shared helper, not by copy. */
+export function slugify(input: string, max = 60): string {
 	const slug = (input || '')
 		.toLowerCase()
 		.replace(/[^a-z0-9]+/g, '-')
 		.replace(/^-+|-+$/g, '')
 		.slice(0, max);
 	return slug || 'untitled';
+}
+
+/** Deterministic draft vault path for an inbox message. Single source of
+ *  truth — both draftInboxReply (writer) and /api/inbox/messages/[id]/
+ *  draft-status (reader) call this so the path never drifts. */
+export function draftPathFor(msg: {
+	dateReceived: number;
+	fromAddress: string | null;
+	subject: string | null;
+}): string {
+	const dateIso = new Date(msg.dateReceived).toISOString().slice(0, 10);
+	const yearMonth = dateIso.slice(0, 7);
+	const senderSlug = slugify(msg.fromAddress?.split('@')[0] || 'unknown', 30);
+	const subjectSlug = slugify(msg.subject || 'no-subject', 50);
+	return `email/drafts/${yearMonth}/${dateIso}-${senderSlug}-${subjectSlug}-draft.md`;
 }
 
 /** Build the public vault URL for a note path. Mirrors `noteOpenUrl` in
@@ -653,17 +671,13 @@ export async function draftInboxReply(
 	// each dispatch a fresh mailwright run (observed 8× on a single
 	// messageId during operator testing). Each run costs API spend and
 	// overwrites the same deterministic vault path. The slug formula
-	// below is stable, so re-deriving the relative path is safe.
+	// in draftPathFor() is the single source of truth, shared with the
+	// /draft-status probe so reader + writer never drift.
 	if (msg.processStatus === 'drafted') {
-		const dateIso0 = new Date(msg.dateReceived).toISOString().slice(0, 10);
-		const yearMonth0 = dateIso0.slice(0, 7);
-		const senderSlug0 = slugify(msg.fromAddress?.split('@')[0] || 'unknown', 30);
-		const subjectSlug0 = slugify(msg.subject || 'no-subject', 50);
-		const existingPath = `email/drafts/${yearMonth0}/${dateIso0}-${senderSlug0}-${subjectSlug0}-draft.md`;
 		return {
 			ok: true,
 			detail: 'already drafted (idempotent)',
-			vaultPath: existingPath,
+			vaultPath: draftPathFor(msg),
 		};
 	}
 
@@ -684,12 +698,13 @@ export async function draftInboxReply(
 		: msg.accountId;
 
 	// Pre-compute the target vault path. mailwright receives this verbatim
-	// in its task prompt and writes the file there.
+	// in its task prompt and writes the file there. dateIso + yearMonth
+	// are still needed inline below for the body composition (Source
+	// block + attachments folder), so we derive them once and let
+	// draftPathFor compose the final relPath from the same inputs.
 	const dateIso = new Date(msg.dateReceived).toISOString().slice(0, 10);
 	const yearMonth = dateIso.slice(0, 7);
-	const senderSlug = slugify(msg.fromAddress?.split('@')[0] || 'unknown', 30);
-	const subjectSlug = slugify(msg.subject || 'no-subject', 50);
-	const relPath = `email/drafts/${yearMonth}/${dateIso}-${senderSlug}-${subjectSlug}-draft.md`;
+	const relPath = draftPathFor(msg);
 	const absPath = join(engine.vaultDir, relPath);
 
 	// Build attachments block with paths relative to the draft note's zone.
