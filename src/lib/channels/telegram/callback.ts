@@ -1,7 +1,7 @@
 /** Inline-keyboard `callback_query` handler.
  *
  *  Telegram inline-keyboard buttons fire a `callback_query` with the
- *  button's `callback_data` payload. Two button families:
+ *  button's `callback_data` payload. Button families:
  *
  *  1. **Proposal** (ADR-011) — verbs `confirm` / `decline` / `web`.
  *     Resolved by re-entering the inbound dispatcher with a synthetic
@@ -13,6 +13,13 @@
  *     the user's intent is unambiguous and we already cached the video
  *     context from the prior summary turn. Skipping the LLM saves
  *     latency + cost.
+ *
+ *  3. **Hygiene remediation** (ADR-042) — verbs `hyg-arc` (+ confirm
+ *     `hyg-arc-y` / cancel `hyg-arc-n`), `hyg-pause`, `hyg-ig`.
+ *     Triggered by keeper escalations for project-hygiene anomalies.
+ *     Resolved INLINE; archive uses confirm-then-execute since the
+ *     file move is destructive (reversible via git, but worth one
+ *     extra tap to prevent misclicks).
  *
  *  callback_data layout: `<verb>:<short_id>` where short_id is the
  *  base64url'd SHA-1 of the conversationKey, fitting inside Telegram's
@@ -27,6 +34,8 @@ import { sendText } from './outbound.js';
 import { dispatchInbound, conversationKeyFor } from './dispatch.js';
 import { dispatchVaultSave } from '../../vault-save/index.js';
 import { fetchYoutube } from '../../youtube/index.js';
+import { archiveProject, setPauseUntil, suppressAnomaly } from '../../vault-hygiene/actions.js';
+import { getVaultEngine } from '../../vault/index.js';
 import {
 	getYoutubeCount,
 	incrementYoutubeCount,
@@ -53,6 +62,7 @@ import type {
 type Verb = 'confirm' | 'decline' | 'web';
 type YoutubeVerb = 'yt-save' | 'yt-tx' | 'yt-skip';
 type IntentVerb = 'ip-review' | 'ip-all' | 'ip-skip' | 'ip-yes' | 'ip-no';
+type HygieneVerb = 'hyg-arc' | 'hyg-arc-y' | 'hyg-arc-n' | 'hyg-pause' | 'hyg-ig';
 
 interface PendingButtonRow {
 	conversationKey: string;
@@ -162,7 +172,8 @@ export function rememberYoutubeButtons(args: {
 type ProposalParse = { kind: 'proposal'; verb: Verb; id: string };
 type YoutubeParse = { kind: 'youtube'; verb: YoutubeVerb; id: string };
 type IntentParse = { kind: 'intent'; verb: IntentVerb; id: string };
-type ParsedCallback = ProposalParse | YoutubeParse | IntentParse;
+type HygieneParse = { kind: 'hygiene'; verb: HygieneVerb; id: string };
+type ParsedCallback = ProposalParse | YoutubeParse | IntentParse | HygieneParse;
 
 function parseCallbackData(data: string): ParsedCallback | null {
 	const i = data.indexOf(':');
@@ -184,6 +195,15 @@ function parseCallbackData(data: string): ParsedCallback | null {
 		verb === 'ip-no'
 	) {
 		return { kind: 'intent', verb, id };
+	}
+	if (
+		verb === 'hyg-arc' ||
+		verb === 'hyg-arc-y' ||
+		verb === 'hyg-arc-n' ||
+		verb === 'hyg-pause' ||
+		verb === 'hyg-ig'
+	) {
+		return { kind: 'hygiene', verb, id };
 	}
 	return null;
 }
@@ -223,6 +243,10 @@ export async function handleCallbackQuery(
 	}
 	if (parsed.kind === 'intent') {
 		await handleIntentCallback(query, parsed, config);
+		return;
+	}
+	if (parsed.kind === 'hygiene') {
+		await handleHygieneCallback(query, parsed, config);
 		return;
 	}
 	await handleYoutubeCallback(query, parsed, config);
@@ -638,4 +662,168 @@ async function stripIntentButtons(
 	} catch {
 		/* swallow — message may already be edited or deleted */
 	}
+}
+
+// ─── Hygiene remediation keyboard (ADR-042) ────────────────────────────
+
+interface PendingHygieneRow {
+	slug: string;
+	bucket: string;
+	chatJid: string;
+	messageId: number;
+	createdAt: number;
+}
+
+/** id → (slug, bucket) map. Restart-loss is acceptable — the next
+ *  Sunday hygiene run re-emits the escalation with fresh ids. TTL is
+ *  long because hygiene anomalies can sit waiting for an operator
+ *  decision across several days. */
+const pendingHygieneButtons = new Map<string, PendingHygieneRow>();
+const HYGIENE_PENDING_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+/** Deterministic id for a (slug, bucket) pair. Same anomaly → same id
+ *  across restarts; if the escalation re-fires we don't accumulate
+ *  stale entries. SHA-1 truncated to fit the 64-byte callback_data cap
+ *  comfortably (`hyg-arc-y:` + 16 chars = 26 bytes). */
+function hygieneIdFor(slug: string, bucket: string): string {
+	return createHash('sha1').update(`${slug}\0${bucket}`).digest('base64url').slice(0, 16);
+}
+
+/** Build the inline keyboard for an archive_zone_mismatch escalation.
+ *  Pilot bucket per ADR-042. Other buckets land in pass 2 — each gets
+ *  its own builder so the verb→action map stays explicit. */
+export function buildHygieneArchiveZoneKeyboard(
+	slug: string,
+	bucket: string,
+): InlineKeyboardMarkup {
+	const id = hygieneIdFor(slug, bucket);
+	return {
+		inline_keyboard: [
+			[
+				{ text: '📦 Move to archive/', callback_data: `hyg-arc:${id}` },
+				{ text: '⏸ Pause 60d', callback_data: `hyg-pause:${id}` },
+			],
+			[{ text: '🔇 Ignore 30d', callback_data: `hyg-ig:${id}` }],
+		],
+	};
+}
+
+/** Stash the (slug, bucket, chatJid, messageId) so the callback handler
+ *  can resolve which anomaly a tap belongs to. Older entries GC'd
+ *  lazily on each insert. */
+export function rememberHygieneButtons(args: {
+	slug: string;
+	bucket: string;
+	chatJid: string;
+	messageId: number;
+}): void {
+	const id = hygieneIdFor(args.slug, args.bucket);
+	pendingHygieneButtons.set(id, { ...args, createdAt: Date.now() });
+	const now = Date.now();
+	for (const [k, v] of pendingHygieneButtons) {
+		if (now - v.createdAt > HYGIENE_PENDING_TTL_MS) pendingHygieneButtons.delete(k);
+	}
+}
+
+function isoDateAddDays(days: number): string {
+	return new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+}
+
+/** Hygiene callback branch. Five verbs, all resolved inline:
+ *   - hyg-arc:    first tap → swap keyboard to confirm/cancel
+ *   - hyg-arc-y:  confirmed → archiveProject() runs git mv + commit
+ *   - hyg-arc-n:  cancelled → message edits to "cancelled"
+ *   - hyg-pause:  setPauseUntil(slug, +60d)
+ *   - hyg-ig:     suppressAnomaly(slug, bucket, 30d) */
+async function handleHygieneCallback(
+	query: TgCallbackQuery,
+	parsed: HygieneParse,
+	_config: TelegramChannelConfig,
+): Promise<void> {
+	const row = pendingHygieneButtons.get(parsed.id);
+	if (!row) {
+		await answerCallbackQuery({
+			callback_query_id: query.id,
+			text: 'Anomaly id expired — wait for next hygiene run',
+		});
+		return;
+	}
+
+	const engine = getVaultEngine();
+	if (!engine) {
+		await answerCallbackQuery({
+			callback_query_id: query.id,
+			text: 'Vault engine not ready',
+		});
+		return;
+	}
+	const vaultDir = engine.vaultDir;
+
+	let resultText: string;
+
+	switch (parsed.verb) {
+		case 'hyg-arc': {
+			// First tap — swap keyboard to confirm/cancel. No destructive op yet.
+			try {
+				await editMessageText({
+					chat_id: row.chatJid,
+					message_id: row.messageId,
+					text: `Archive *${row.slug}*?\n\n\`git mv projects/${row.slug} archive/${row.slug}\``,
+					parse_mode: 'Markdown',
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '✅ Confirm', callback_data: `hyg-arc-y:${parsed.id}` },
+								{ text: '❌ Cancel', callback_data: `hyg-arc-n:${parsed.id}` },
+							],
+						],
+					},
+				});
+			} catch {
+				/* edit may fail if message gone; swallow */
+			}
+			await answerCallbackQuery({ callback_query_id: query.id });
+			return;
+		}
+		case 'hyg-arc-y': {
+			const r = await archiveProject(row.slug, vaultDir);
+			resultText = r.ok
+				? `✓ Archived \`${row.slug}\` → \`archive/${row.slug}\``
+				: `❌ Archive failed: ${r.detail ?? r.error}`;
+			pendingHygieneButtons.delete(parsed.id);
+			break;
+		}
+		case 'hyg-arc-n': {
+			resultText = `🚫 Cancelled. \`${row.slug}\` unchanged.`;
+			pendingHygieneButtons.delete(parsed.id);
+			break;
+		}
+		case 'hyg-pause': {
+			const date = isoDateAddDays(60);
+			const r = await setPauseUntil(row.slug, date, vaultDir);
+			resultText = r.ok ? `⏸ Paused \`${row.slug}\` until ${date}` : `❌ ${r.detail ?? r.error}`;
+			pendingHygieneButtons.delete(parsed.id);
+			break;
+		}
+		case 'hyg-ig': {
+			const r = await suppressAnomaly(row.slug, row.bucket, 30);
+			resultText = r.ok
+				? `🔇 Ignored \`${row.slug}:${row.bucket}\` for 30 days`
+				: `❌ ${r.detail ?? r.error}`;
+			pendingHygieneButtons.delete(parsed.id);
+			break;
+		}
+	}
+
+	try {
+		await editMessageText({
+			chat_id: row.chatJid,
+			message_id: row.messageId,
+			text: resultText,
+			parse_mode: 'Markdown',
+		});
+	} catch {
+		/* swallow */
+	}
+	await answerCallbackQuery({ callback_query_id: query.id });
 }
