@@ -206,6 +206,12 @@ export async function saveInboxToVault(
 			created: new Date().toISOString(),
 			tags: ['inbox', 'email-save', msg.category ?? 'unclassified'],
 			source_agent: 'orchestrator-v2-inbox-save',
+			// ADR-044 Phase A — surface the source messageId in frontmatter
+			// so vault-side UI can offer Draft Reply without parsing body
+			// text. Numeric to keep YAML clean. Future-proof for when the
+			// inbox prune lapses the source row out of the DB: the note
+			// still records which message it came from.
+			inbox_message_id: messageId,
 			...crmMeta,
 		},
 		content: body,

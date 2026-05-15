@@ -301,6 +301,82 @@
 		}
 	}
 
+	// ADR-044 Phase A — Save / Archive / Draft action buttons mirror
+	// Telegram's inline keyboard. Routes call the same inline-actions
+	// handlers as the callback, so idempotency + dedup + CRM-interaction
+	// logging are shared across both surfaces. Per-row in-flight state
+	// is keyed by messageId so multiple rows can be acted on independently;
+	// the verb is tracked so the spinner labels the right button.
+	let actionInflight = $state<{ id: number; verb: 'save' | 'archive' | 'draft' } | null>(null);
+
+	function patchProcessStatus(messageId: number, nextStatus: string): void {
+		messages = messages.map((m) =>
+			m.id === messageId ? { ...m, processStatus: nextStatus } : m,
+		);
+		if (selectedMessage?.id === messageId) {
+			selectedMessage = { ...selectedMessage, processStatus: nextStatus };
+		}
+	}
+
+	async function actionSave(messageId: number) {
+		actionInflight = { id: messageId, verb: 'save' };
+		try {
+			const res = await fetch(`/api/inbox/messages/${messageId}/save`, { method: 'POST' });
+			const data = await res.json();
+			if (!res.ok || !data.ok) {
+				showFlash(`Save failed: ${data.detail ?? data.error ?? `HTTP ${res.status}`}`, 'error', 5000);
+				return;
+			}
+			patchProcessStatus(messageId, 'saved');
+			showFlash(`📥 Saved — ${data.detail}`, 'success', 4000);
+		} catch (err) {
+			showFlash(`Save threw: ${(err as Error).message}`, 'error', 5000);
+		} finally {
+			actionInflight = null;
+		}
+	}
+
+	async function actionArchive(messageId: number) {
+		actionInflight = { id: messageId, verb: 'archive' };
+		try {
+			const res = await fetch(`/api/inbox/messages/${messageId}/archive`, { method: 'POST' });
+			const data = await res.json();
+			if (!res.ok || !data.ok) {
+				showFlash(`Archive failed: ${data.detail ?? data.error ?? `HTTP ${res.status}`}`, 'error', 5000);
+				return;
+			}
+			patchProcessStatus(messageId, 'archived');
+			showFlash(`📁 Archived — ${data.detail}`, 'success', 3000);
+		} catch (err) {
+			showFlash(`Archive threw: ${(err as Error).message}`, 'error', 5000);
+		} finally {
+			actionInflight = null;
+		}
+	}
+
+	async function actionDraft(messageId: number) {
+		// Draft is the slow one — mailwright dispatch is 30–60s. Surface
+		// progress via the disabled button + a "drafting…" flash that
+		// the success flash replaces when the route returns.
+		actionInflight = { id: messageId, verb: 'draft' };
+		showFlash('🤖 Drafting reply — mailwright is composing…', 'success', 60000);
+		try {
+			const res = await fetch(`/api/inbox/messages/${messageId}/draft`, { method: 'POST' });
+			const data = await res.json();
+			if (!res.ok || !data.ok) {
+				showFlash(`Draft failed: ${data.detail ?? data.error ?? `HTTP ${res.status}`}`, 'error', 6000);
+				return;
+			}
+			patchProcessStatus(messageId, 'drafted');
+			const pathBit = data.vaultPath ? ` → ${data.vaultPath}` : '';
+			showFlash(`↩️ Draft saved${pathBit}`, 'success', 6000);
+		} catch (err) {
+			showFlash(`Draft threw: ${(err as Error).message}`, 'error', 6000);
+		} finally {
+			actionInflight = null;
+		}
+	}
+
 	// Add account form
 	let showAddForm = $state(false);
 	let addProvider = $state('icloud');
@@ -1329,6 +1405,70 @@
 											From: {msg.fromName ? `${msg.fromName} <${msg.fromAddress}>` : msg.fromAddress}
 										</p>
 										<p class="text-xs text-hub-dim">To: {msg.toAddress}</p>
+
+										<!-- ADR-044 Phase A: Save / Archive / Draft actions, mirroring
+										     Telegram's inline keyboard. Same backend handlers, idempotent
+										     on prior terminal state. Buttons reflect current process_status:
+										     once a row is saved/archived/drafted that button shows a
+										     checkmark + dimmed styling, but stays clickable so the
+										     operator can re-action (handler returns ok idempotently). -->
+										<div class="flex items-center gap-1.5 mt-2">
+											<button
+												type="button"
+												onclick={() => void actionSave(msg.id)}
+												disabled={actionInflight?.id === msg.id}
+												class="text-[11px] px-2 py-1 rounded font-medium transition-colors cursor-pointer disabled:cursor-wait
+													{msg.processStatus === 'saved'
+														? 'bg-violet-500/20 text-violet-200 hover:bg-violet-500/30'
+														: 'bg-hub-surface/60 text-hub-muted hover:bg-hub-surface hover:text-hub-text'}"
+												title={msg.processStatus === 'saved' ? 'Already saved — click to re-save (idempotent)' : 'Save this email to vault under email/YYYY-MM/'}
+											>
+												{#if actionInflight?.id === msg.id && actionInflight.verb === 'save'}
+													⏳ Saving…
+												{:else if msg.processStatus === 'saved'}
+													✓ Saved
+												{:else}
+													📥 Save
+												{/if}
+											</button>
+											<button
+												type="button"
+												onclick={() => void actionArchive(msg.id)}
+												disabled={actionInflight?.id === msg.id}
+												class="text-[11px] px-2 py-1 rounded font-medium transition-colors cursor-pointer disabled:cursor-wait
+													{msg.processStatus === 'archived'
+														? 'bg-slate-500/30 text-slate-200 hover:bg-slate-500/40'
+														: 'bg-hub-surface/60 text-hub-muted hover:bg-hub-surface hover:text-hub-text'}"
+												title={msg.processStatus === 'archived' ? 'Already archived (idempotent)' : 'Archive — flips process_status, falls out of digests'}
+											>
+												{#if actionInflight?.id === msg.id && actionInflight.verb === 'archive'}
+													⏳ Archiving…
+												{:else if msg.processStatus === 'archived'}
+													✓ Archived
+												{:else}
+													📁 Archive
+												{/if}
+											</button>
+											<button
+												type="button"
+												onclick={() => void actionDraft(msg.id)}
+												disabled={actionInflight?.id === msg.id}
+												class="text-[11px] px-2 py-1 rounded font-medium transition-colors cursor-pointer disabled:cursor-wait
+													{msg.processStatus === 'drafted'
+														? 'bg-fuchsia-500/20 text-fuchsia-200 hover:bg-fuchsia-500/30'
+														: 'bg-hub-surface/60 text-hub-muted hover:bg-hub-surface hover:text-hub-text'}"
+												title={msg.processStatus === 'drafted' ? 'Already drafted — click to re-draft (idempotent)' : 'Draft reply via mailwright agent (30–60s)'}
+											>
+												{#if actionInflight?.id === msg.id && actionInflight.verb === 'draft'}
+													🤖 Drafting…
+												{:else if msg.processStatus === 'drafted'}
+													✓ Drafted
+												{:else}
+													↩️ Draft
+												{/if}
+											</button>
+										</div>
+
 										{#if chips.length > 0 || (msg.category && categoryColors[msg.category])}
 											<div class="flex flex-wrap items-center gap-1 mt-1.5">
 												{#if msg.category && categoryColors[msg.category]}
