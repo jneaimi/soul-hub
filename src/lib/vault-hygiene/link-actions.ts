@@ -1,24 +1,21 @@
-/** ADR-043 — Broken-wikilink remediation actions (pilot bucket).
+/** ADR-043 — Vault-hygiene note-level remediation actions.
  *
- *  Pure functions that mutate a single note to remove a broken
- *  wikilink. Called from the Telegram callback handler when the
- *  operator taps `🗑 Unlink` on a `vh-unlink` button.
+ *  Pure functions called from the Telegram callback handler when the
+ *  operator taps a vault-hygiene button. Three buckets are wired:
  *
- *  The vault-hygiene engine surfaces broken wikilinks as
- *  `UnresolvedIssue` entries: `{source, raw, suggestedFix}` where
- *  `source` is the note containing the broken link and `raw` is the
- *  literal `[[target]]` or `[[target|alias]]` markdown.
- *
- *  Unlink rewrites that ONE wikilink to its display text (alias if
- *  present, else the last segment of the target path). All other
- *  prose stays intact. Other occurrences of the same literal in the
- *  file are also rewritten — same broken target shouldn't survive
- *  in any form once the operator decides to drop it. The vault
- *  watcher commits the write naturally; no explicit git op here.
+ *  - `unresolved` (broken wikilink) → `unlinkBrokenWikilink` rewrites
+ *    `[[target]]` to its display text in the source file. Reversible
+ *    via the vault watcher's commit.
+ *  - `orphan_note`                  → `archiveOrphanNote` git-mv's the
+ *    note to `archive/<original-path>` + commits. Reversible via
+ *    `git revert`.
+ *  - `stale_inbox_item`             → `dropStaleInboxItem` git-rm's
+ *    the inbox note + commits. Reversible via `git checkout`.
  */
 
 import { readFile, writeFile, access } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { spawn } from 'node:child_process';
 
 export interface LinkActionResult {
 	ok: boolean;
@@ -88,4 +85,136 @@ export async function unlinkBrokenWikilink(
 		ok: true,
 		detail: `replaced ${count} × \`[[${target}...]]\` in ${source}`,
 	};
+}
+
+/** Run a git command in the vault dir. Same shape as the helper in
+ *  `actions.ts` — we copy it here to keep this module's dependencies
+ *  narrow. Resolves with stdout on success, rejects with stderr-bearing
+ *  Error on non-zero exit. */
+function runGit(vaultDir: string, args: string[]): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const child = spawn('git', ['-C', vaultDir, ...args], {
+			stdio: ['ignore', 'pipe', 'pipe'],
+		});
+		let stdout = '';
+		let stderr = '';
+		child.stdout.on('data', (c) => (stdout += c.toString()));
+		child.stderr.on('data', (c) => (stderr += c.toString()));
+		child.on('error', reject);
+		child.on('close', (code) => {
+			if (code === 0) resolve(stdout);
+			else reject(new Error(`git ${args.join(' ')} exited ${code}: ${stderr.trim()}`));
+		});
+	});
+}
+
+/** Validate that a vault-relative note path is safe to operate on:
+ *  no absolute prefix, no `..` traversal, must end in `.md`. */
+function isSafeNotePath(p: string): boolean {
+	if (!p) return false;
+	if (p.startsWith('/')) return false;
+	if (p.split('/').some((seg) => seg === '..' || seg === '.')) return false;
+	if (!p.endsWith('.md')) return false;
+	return true;
+}
+
+/** Move an orphan note to `archive/<original-path>` and commit. Preserves
+ *  the original zone structure under archive/ so a future revert can put
+ *  the note back exactly where it came from. Refuses to archive a zone
+ *  `index.md` — those are structural and should never be classified as
+ *  orphans (the detector exempts inbox/archive but doesn't catch all
+ *  edge cases). */
+export async function archiveOrphanNote(
+	notePath: string,
+	vaultDir: string,
+): Promise<LinkActionResult> {
+	if (!isSafeNotePath(notePath)) {
+		return { ok: false, error: 'invalid-path' };
+	}
+	if (notePath.endsWith('/index.md') || notePath === 'index.md') {
+		return { ok: false, error: 'refuse-index', detail: `won't archive ${notePath}` };
+	}
+	if (notePath.startsWith('archive/')) {
+		return { ok: false, error: 'already-archived' };
+	}
+
+	const src = join(vaultDir, notePath);
+	const dstRel = `archive/${notePath}`;
+	const dst = join(vaultDir, dstRel);
+
+	try {
+		await access(src);
+	} catch {
+		return { ok: false, error: 'not-found', detail: `${notePath} missing` };
+	}
+	try {
+		await access(dst);
+		return { ok: false, error: 'collision', detail: `${dstRel} already exists` };
+	} catch {
+		/* expected — destination should not exist */
+	}
+
+	try {
+		// Ensure destination parent dir exists; git mv will create it but
+		// only if it's one level deep. For nested paths, mkdir -p first.
+		await runGit(vaultDir, ['ls-files']); // sanity check vault is a git repo
+		const { mkdir } = await import('node:fs/promises');
+		await mkdir(dirname(dst), { recursive: true });
+		await runGit(vaultDir, ['mv', notePath, dstRel]);
+		await runGit(vaultDir, [
+			'commit',
+			'-m',
+			`vault(hygiene): archive orphan ${notePath} (ADR-043 inline action)`,
+		]);
+	} catch (err) {
+		return {
+			ok: false,
+			error: 'git-failed',
+			detail: err instanceof Error ? err.message : String(err),
+		};
+	}
+
+	return { ok: true, detail: `moved ${notePath} → ${dstRel}` };
+}
+
+/** `git rm` a stale inbox note + commit. Reversible via
+ *  `git checkout HEAD~1 -- <path>`. Refuses anything outside `inbox/`
+ *  and any `index.md` (the inbox zone-index is structural). */
+export async function dropStaleInboxItem(
+	notePath: string,
+	vaultDir: string,
+): Promise<LinkActionResult> {
+	if (!isSafeNotePath(notePath)) {
+		return { ok: false, error: 'invalid-path' };
+	}
+	if (!notePath.startsWith('inbox/')) {
+		return { ok: false, error: 'not-in-inbox', detail: `${notePath} is outside inbox/` };
+	}
+	if (notePath.endsWith('/index.md') || notePath === 'inbox/index.md') {
+		return { ok: false, error: 'refuse-index' };
+	}
+
+	const src = join(vaultDir, notePath);
+	try {
+		await access(src);
+	} catch {
+		return { ok: false, error: 'not-found', detail: `${notePath} missing` };
+	}
+
+	try {
+		await runGit(vaultDir, ['rm', notePath]);
+		await runGit(vaultDir, [
+			'commit',
+			'-m',
+			`vault(hygiene): drop stale inbox ${notePath} (ADR-043 inline action)`,
+		]);
+	} catch (err) {
+		return {
+			ok: false,
+			error: 'git-failed',
+			detail: err instanceof Error ? err.message : String(err),
+		};
+	}
+
+	return { ok: true, detail: `removed ${notePath}` };
 }

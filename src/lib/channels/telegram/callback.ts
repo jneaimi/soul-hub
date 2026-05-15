@@ -44,7 +44,11 @@ import {
 	suppressAnomaly,
 	touchProjectUpdated,
 } from '../../vault-hygiene/actions.js';
-import { unlinkBrokenWikilink } from '../../vault-hygiene/link-actions.js';
+import {
+	archiveOrphanNote,
+	dropStaleInboxItem,
+	unlinkBrokenWikilink,
+} from '../../vault-hygiene/link-actions.js';
 import { getVaultEngine } from '../../vault/index.js';
 import {
 	getYoutubeCount,
@@ -96,7 +100,14 @@ type VaultHygieneVerb =
 	| 'vh-unlink' // first tap on broken_link — swap to confirm/cancel
 	| 'vh-unlink-y' // confirmed — rewrites the wikilink to its display text
 	| 'vh-unlink-n' // cancelled
-	| 'vh-ig'; // suppress (source, raw) for 30 days
+	| 'vh-ig' // suppress (source, raw) for 30 days
+	// Pass 2 verbs
+	| 'vh-orphan-arc' // first tap on orphan_note → swap to confirm/cancel
+	| 'vh-orphan-arc-y' // confirmed → archiveOrphanNote()
+	| 'vh-orphan-arc-n' // cancelled
+	| 'vh-inbox-drop' // first tap on stale_inbox_item → swap to confirm/cancel
+	| 'vh-inbox-drop-y' // confirmed → dropStaleInboxItem()
+	| 'vh-inbox-drop-n'; // cancelled
 
 interface PendingButtonRow {
 	conversationKey: string;
@@ -259,7 +270,13 @@ function parseCallbackData(data: string): ParsedCallback | null {
 		verb === 'vh-unlink' ||
 		verb === 'vh-unlink-y' ||
 		verb === 'vh-unlink-n' ||
-		verb === 'vh-ig'
+		verb === 'vh-ig' ||
+		verb === 'vh-orphan-arc' ||
+		verb === 'vh-orphan-arc-y' ||
+		verb === 'vh-orphan-arc-n' ||
+		verb === 'vh-inbox-drop' ||
+		verb === 'vh-inbox-drop-y' ||
+		verb === 'vh-inbox-drop-n'
 	) {
 		return { kind: 'vault-hygiene', verb, id };
 	}
@@ -1215,8 +1232,7 @@ function vaultHygieneIdFor(source: string, raw: string, bucket: string): string 
 }
 
 /** Build the inline keyboard for an `unresolved` (broken_link) anomaly.
- *  Pilot bucket per ADR-043. Other vault-hygiene buckets (orphan_note,
- *  stale_inbox_item) get their own builders in pass 2. */
+ *  Pilot bucket per ADR-043. */
 export function buildVaultHygieneUnresolvedKeyboard(
 	source: string,
 	raw: string,
@@ -1226,6 +1242,36 @@ export function buildVaultHygieneUnresolvedKeyboard(
 		inline_keyboard: [
 			[
 				{ text: '🗑 Unlink', callback_data: `vh-unlink:${id}` },
+				{ text: '🔇 Ignore 30d', callback_data: `vh-ig:${id}` },
+			],
+		],
+	};
+}
+
+/** Build the inline keyboard for an `orphan_note` anomaly. Pass 2.
+ *  🔗 Link-up (operator-picked parent) is deferred — it needs a
+ *  multi-step picker flow that doesn't fit single-tap. */
+export function buildVaultHygieneOrphanKeyboard(notePath: string): InlineKeyboardMarkup {
+	const id = vaultHygieneIdFor(notePath, '', 'orphan_note');
+	return {
+		inline_keyboard: [
+			[
+				{ text: '📦 Archive', callback_data: `vh-orphan-arc:${id}` },
+				{ text: '🔇 Ignore 30d', callback_data: `vh-ig:${id}` },
+			],
+		],
+	};
+}
+
+/** Build the inline keyboard for a `stale_inbox_item` anomaly. Pass 2.
+ *  📥 Move to vault (operator-picked destination) is deferred — same
+ *  multi-step reasoning as the orphan Link-up button. */
+export function buildVaultHygieneStaleInboxKeyboard(notePath: string): InlineKeyboardMarkup {
+	const id = vaultHygieneIdFor(notePath, '', 'stale_inbox_item');
+	return {
+		inline_keyboard: [
+			[
+				{ text: '🗑 Drop', callback_data: `vh-inbox-drop:${id}` },
 				{ text: '🔇 Ignore 30d', callback_data: `vh-ig:${id}` },
 			],
 		],
@@ -1250,11 +1296,16 @@ export function rememberVaultHygieneButtons(args: {
 	}
 }
 
-/** Vault-hygiene callback branch. Four verbs, all resolved inline:
- *   - vh-unlink:   first tap → swap keyboard to confirm/cancel
- *   - vh-unlink-y: confirmed → unlinkBrokenWikilink() rewrites prose
- *   - vh-unlink-n: cancelled → message edits to "unchanged"
- *   - vh-ig:       suppressAnomaly(`source::raw`, bucket, 30d) */
+/** Vault-hygiene callback branch. Ten verbs, all resolved inline:
+ *   Pilot (broken_link):
+ *    - vh-unlink / vh-unlink-y / vh-unlink-n  → confirm-then-execute Unlink
+ *   Pass 2 (orphan_note):
+ *    - vh-orphan-arc / vh-orphan-arc-y / vh-orphan-arc-n → confirm-then-execute Archive
+ *   Pass 2 (stale_inbox_item):
+ *    - vh-inbox-drop / vh-inbox-drop-y / vh-inbox-drop-n → confirm-then-execute Drop
+ *   All buckets:
+ *    - vh-ig: suppressAnomaly(key, bucket, 30d) where key is `source::raw`
+ *      for unresolved and just the path for orphan_note / stale_inbox_item. */
 async function handleVaultHygieneCallback(
 	query: TgCallbackQuery,
 	parsed: VaultHygieneParse,
@@ -1320,27 +1371,127 @@ async function handleVaultHygieneCallback(
 			break;
 		}
 		case 'vh-ig': {
-			// Suppression key is `source::raw` so a single broken link can
-			// be ignored independently of other broken links in the same file.
-			const compositeKey = `${row.source}::${row.raw}`;
-			const r = await suppressAnomaly(compositeKey, row.bucket, 30);
+			// Suppression key shape varies by bucket — composite for
+			// unresolved (per-link), just the path for orphan/stale (per-note).
+			const key =
+				row.bucket === 'unresolved' ? `${row.source}::${row.raw}` : row.source;
+			const r = await suppressAnomaly(key, row.bucket, 30);
+			if (r.ok) {
+				resultText =
+					row.bucket === 'unresolved'
+						? `🔇 Ignored \`[[${row.raw}]]\` in \`${row.source}\` for 30 days`
+						: `🔇 Ignored \`${row.source}\` for 30 days`;
+			} else {
+				resultText = `❌ ${r.detail ?? r.error}`;
+			}
+			pendingVaultHygieneButtons.delete(parsed.id);
+			break;
+		}
+		case 'vh-orphan-arc': {
+			try {
+				await editMessageText({
+					chat_id: row.chatJid,
+					message_id: row.messageId,
+					text:
+						`Archive orphan \`${row.source}\`?\n\n` +
+						`Will git-mv to \`archive/${row.source}\` and commit. Reversible via git.`,
+					parse_mode: 'Markdown',
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '✅ Confirm', callback_data: `vh-orphan-arc-y:${parsed.id}` },
+								{ text: '❌ Cancel', callback_data: `vh-orphan-arc-n:${parsed.id}` },
+							],
+						],
+					},
+				});
+			} catch {
+				/* swallow */
+			}
+			await answerCallbackQuery({ callback_query_id: query.id });
+			return;
+		}
+		case 'vh-orphan-arc-y': {
+			const r = await archiveOrphanNote(row.source, vaultDir);
 			resultText = r.ok
-				? `🔇 Ignored \`[[${row.raw}]]\` in \`${row.source}\` for 30 days`
-				: `❌ ${r.detail ?? r.error}`;
+				? `✓ Archived — ${r.detail}`
+				: `❌ Archive failed: ${r.detail ?? r.error}`;
+			pendingVaultHygieneButtons.delete(parsed.id);
+			break;
+		}
+		case 'vh-orphan-arc-n': {
+			resultText = `🚫 Cancelled. \`${row.source}\` unchanged.`;
+			pendingVaultHygieneButtons.delete(parsed.id);
+			break;
+		}
+		case 'vh-inbox-drop': {
+			try {
+				await editMessageText({
+					chat_id: row.chatJid,
+					message_id: row.messageId,
+					text:
+						`Drop stale inbox note \`${row.source}\`?\n\n` +
+						`Will \`git rm\` and commit. Reversible via \`git checkout HEAD~1 -- ${row.source}\`.`,
+					parse_mode: 'Markdown',
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '✅ Confirm', callback_data: `vh-inbox-drop-y:${parsed.id}` },
+								{ text: '❌ Cancel', callback_data: `vh-inbox-drop-n:${parsed.id}` },
+							],
+						],
+					},
+				});
+			} catch {
+				/* swallow */
+			}
+			await answerCallbackQuery({ callback_query_id: query.id });
+			return;
+		}
+		case 'vh-inbox-drop-y': {
+			const r = await dropStaleInboxItem(row.source, vaultDir);
+			resultText = r.ok
+				? `✓ Dropped — ${r.detail}`
+				: `❌ Drop failed: ${r.detail ?? r.error}`;
+			pendingVaultHygieneButtons.delete(parsed.id);
+			break;
+		}
+		case 'vh-inbox-drop-n': {
+			resultText = `🚫 Cancelled. \`${row.source}\` unchanged.`;
 			pendingVaultHygieneButtons.delete(parsed.id);
 			break;
 		}
 	}
 
+	// Same diagnostic + toast-fallback pattern as the project-hygiene
+	// handler (Pass 4 lesson): editMessageText silent-fails on Markdown
+	// parse errors, log + fall back to answerCallbackQuery alert so the
+	// operator always gets visible feedback.
+	let editOk = true;
 	try {
-		await editMessageText({
+		const editResult = await editMessageText({
 			chat_id: row.chatJid,
 			message_id: row.messageId,
 			text: resultText,
 			parse_mode: 'Markdown',
 		});
-	} catch {
-		/* swallow */
+		editOk = editResult.ok;
+		if (!editOk) {
+			console.warn(
+				`[telegram/vault-hygiene] editMessageText failed for ${row.source}:${row.bucket} verb=${parsed.verb} — ${editResult.error ?? 'unknown'}`,
+			);
+		}
+	} catch (err) {
+		editOk = false;
+		console.warn(
+			`[telegram/vault-hygiene] editMessageText threw for ${row.source}:${row.bucket} verb=${parsed.verb} — ${(err as Error).message}`,
+		);
 	}
-	await answerCallbackQuery({ callback_query_id: query.id });
+	const toastText = editOk
+		? undefined
+		: resultText.replace(/[`*_]/g, '').slice(0, 200);
+	await answerCallbackQuery({
+		callback_query_id: query.id,
+		...(toastText ? { text: toastText, show_alert: true } : {}),
+	});
 }
