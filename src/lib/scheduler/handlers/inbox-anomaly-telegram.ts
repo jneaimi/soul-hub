@@ -32,10 +32,7 @@
 
 import { config as soulHubConfig } from '../../config.js';
 import { sendText } from '../../channels/telegram/outbound.js';
-import {
-	buildInboxDigestKeyboard,
-	rememberInboxButtons,
-} from '../../channels/telegram/callback.js';
+import { buildInboxDigestKeyboard } from '../../channels/telegram/callback.js';
 import {
 	listAnomalyPushCandidates,
 	recordAgentAction,
@@ -135,11 +132,6 @@ export function inboxAnomalyTelegramFactory(rawParams: unknown): TaskFn {
 				result: { pushed: result.ok, error: result.ok ? undefined : 'send failed' },
 			});
 			if (result.ok && result.messageIds.length > 0) {
-				rememberInboxButtons({
-					messageId: msg.id,
-					chatJid: String(chatId),
-					tgMessageId: result.messageIds[0],
-				});
 				// Belt-and-suspenders: also record a digest-sent row so the
 				// heartbeat digest task (ADR-044.G) doesn't re-push the same
 				// item later via its `inbox-digest-telegram + sent:true`

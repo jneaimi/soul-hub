@@ -1535,30 +1535,14 @@ async function handleVaultHygieneCallback(
 
 // ─── Inbox-digest remediation (ADR-044) ────────────────────────────────
 
-interface PendingInboxRow {
-	messageId: number;
-	chatJid: string;
-	tgMessageId: number;
-	createdAt: number;
-}
-
-/** id → inbox row map. Carries the underlying inbox `messageId` (numeric,
- *  from the SQLite messages table) plus the Telegram chat + message id
- *  we sent the highlight bubble to. Per ADR-043 anti-abstraction call,
- *  kept separate from the hygiene maps until a 4th surface arrives. */
-const pendingInboxButtons = new Map<string, PendingInboxRow>();
-const INBOX_PENDING_TTL_MS = 24 * 60 * 60 * 1000; // 1 day matches digest cadence
-
-/** Deterministic id for an inbox highlight. Same numeric messageId →
- *  same id across restarts, so a re-emitted digest doesn't accumulate
- *  stale entries. */
-function inboxIdFor(messageId: number): string {
-	return createHash('sha1').update(String(messageId)).digest('base64url').slice(0, 16);
-}
-
-/** 4-button keyboard for an inbox digest highlight. */
+/** 4-button keyboard for an inbox digest highlight. The numeric inbox
+ *  messageId rides directly in callback_data — Telegram's 64-byte cap
+ *  has plenty of room (`ibx-save:34510` is 14 bytes). No short_id, no
+ *  in-memory rendezvous map: the click handler reconstructs chat +
+ *  Telegram message id from `query.message` on the callback payload,
+ *  so buttons survive PM2 reloads, deploys, and crashes. */
 export function buildInboxDigestKeyboard(messageId: number): InlineKeyboardMarkup {
-	const id = inboxIdFor(messageId);
+	const id = String(messageId);
 	return {
 		inline_keyboard: [
 			[
@@ -1573,19 +1557,6 @@ export function buildInboxDigestKeyboard(messageId: number): InlineKeyboardMarku
 	};
 }
 
-export function rememberInboxButtons(args: {
-	messageId: number;
-	chatJid: string;
-	tgMessageId: number;
-}): void {
-	const id = inboxIdFor(args.messageId);
-	pendingInboxButtons.set(id, { ...args, createdAt: Date.now() });
-	const now = Date.now();
-	for (const [k, v] of pendingInboxButtons) {
-		if (now - v.createdAt > INBOX_PENDING_TTL_MS) pendingInboxButtons.delete(k);
-	}
-}
-
 /** Inbox callback branch. Four verbs:
  *   - ibx-save:  dispatchVaultSave with envelope + preview
  *   - ibx-arc:   process_status='archived'
@@ -1596,18 +1567,33 @@ async function handleInboxCallback(
 	parsed: InboxParse,
 	config: TelegramChannelConfig,
 ): Promise<void> {
-	const row = pendingInboxButtons.get(parsed.id);
-	if (!row) {
+	// Stateless dispatch — `parsed.id` is the numeric inbox messageId
+	// (encoded directly in callback_data, no map), and Telegram includes
+	// the original bubble's chat + message_id on every callback_query.
+	// This means buttons survive PM2 reloads, deploys, and process
+	// restarts: previously a 24h in-memory `pendingInboxButtons` map
+	// would silently die on any restart and clicks returned "expired."
+	const messageId = Number(parsed.id);
+	if (!Number.isFinite(messageId) || messageId <= 0) {
 		await answerCallbackQuery({
 			callback_query_id: query.id,
-			text: 'Inbox row expired — wait for the next digest',
+			text: 'Invalid inbox row id',
 		});
 		return;
 	}
+	if (!query.message) {
+		await answerCallbackQuery({
+			callback_query_id: query.id,
+			text: 'Inbox row context missing — open /inbox in the web UI',
+		});
+		return;
+	}
+	const chatJid = String(query.message.chat.id);
+	const tgMessageId = query.message.message_id;
 
 	// Draft reply: long-running agent dispatch. Ack the callback within
-	// Telegram's window, edit bubble to "drafting…", then run scribe in
-	// the background and deliver the draft as a new message.
+	// Telegram's window, edit bubble to "drafting…", then run mailwright
+	// in the background and deliver the draft via in-place edit.
 	if (parsed.verb === 'ibx-reply') {
 		await answerCallbackQuery({
 			callback_query_id: query.id,
@@ -1615,22 +1601,21 @@ async function handleInboxCallback(
 		});
 		try {
 			await editMessageText({
-				chat_id: row.chatJid,
-				message_id: row.tgMessageId,
-				text: `🤖 *Drafting reply* for inbox msg ${row.messageId}…\n\n_(scribe is composing — 30–60s; reply will arrive as a new message below)_`,
+				chat_id: chatJid,
+				message_id: tgMessageId,
+				text: `🤖 *Drafting reply* for inbox msg ${messageId}…\n\n_(scribe is composing — 30–60s; reply will arrive as a new message below)_`,
 				parse_mode: 'Markdown',
 			});
 		} catch {
 			/* swallow */
 		}
-		pendingInboxButtons.delete(parsed.id);
 
-		void draftInboxReply(row.messageId)
+		void draftInboxReply(messageId)
 			.then(async (result) => {
 				if (!result.ok) {
 					await editMessageText({
-						chat_id: row.chatJid,
-						message_id: row.tgMessageId,
+						chat_id: chatJid,
+						message_id: tgMessageId,
 						text: `❌ Draft failed: ${result.detail ?? result.error}`,
 						parse_mode: 'Markdown',
 					}).catch(() => {});
@@ -1643,8 +1628,8 @@ async function handleInboxCallback(
 					? `[\`${result.vaultPath}\`](${result.openUrl})`
 					: `\`${result.vaultPath ?? '(no path)'}\``;
 				await editMessageText({
-					chat_id: row.chatJid,
-					message_id: row.tgMessageId,
+					chat_id: chatJid,
+					message_id: tgMessageId,
 					text:
 						`↩️ *Draft saved* → ${linkPart}\n\n` +
 						`_${result.detail}_\n\n` +
@@ -1654,8 +1639,8 @@ async function handleInboxCallback(
 			})
 			.catch(async (err) => {
 				await editMessageText({
-					chat_id: row.chatJid,
-					message_id: row.tgMessageId,
+					chat_id: chatJid,
+					message_id: tgMessageId,
 					text: `❌ Draft threw: ${(err as Error).message}`,
 					parse_mode: 'Markdown',
 				}).catch(() => {});
@@ -1667,27 +1652,24 @@ async function handleInboxCallback(
 
 	switch (parsed.verb) {
 		case 'ibx-arc': {
-			const r = await archiveInboxMessage(row.messageId);
+			const r = await archiveInboxMessage(messageId);
 			resultText = r.ok
-				? `📁 Archived msg ${row.messageId} — ${r.detail}`
+				? `📁 Archived msg ${messageId} — ${r.detail}`
 				: `❌ Archive failed: ${r.detail ?? r.error}`;
-			pendingInboxButtons.delete(parsed.id);
 			break;
 		}
 		case 'ibx-save': {
-			const r = await saveInboxToVault(row.messageId);
+			const r = await saveInboxToVault(messageId);
 			resultText = r.ok
-				? `📥 Saved msg ${row.messageId} — ${r.detail}`
+				? `📥 Saved msg ${messageId} — ${r.detail}`
 				: `❌ Save failed: ${r.detail ?? r.error}`;
-			pendingInboxButtons.delete(parsed.id);
 			break;
 		}
 		case 'ibx-mute': {
-			const msg = getInboxMessage(row.messageId);
+			const msg = getInboxMessage(messageId);
 			const sender = msg?.fromAddress;
 			if (!sender) {
-				resultText = `❌ Mute failed: no sender on msg ${row.messageId}`;
-				pendingInboxButtons.delete(parsed.id);
+				resultText = `❌ Mute failed: no sender on msg ${messageId}`;
 				break;
 			}
 			// ADR-044.C — branch on CRM hit. Muting a CRM contact is a
@@ -1708,8 +1690,8 @@ async function handleInboxCallback(
 				const stagePart = c.stage ? `*${c.stage}*` : '_no stage_';
 				try {
 					await editMessageText({
-						chat_id: row.chatJid,
-						message_id: row.tgMessageId,
+						chat_id: chatJid,
+						message_id: tgMessageId,
 						text:
 							`⚠️ *Mute CRM contact?*\n\n` +
 							`\`${sender}\` is *${c.displayName}* — ${stagePart}` +
@@ -1732,31 +1714,27 @@ async function handleInboxCallback(
 				await answerCallbackQuery({ callback_query_id: query.id });
 				return;
 			}
-			const r = await muteInboxSender(sender, row.messageId);
+			const r = await muteInboxSender(sender, messageId);
 			resultText = r.ok
 				? `🔇 Muted \`${sender}\` — ${r.detail}`
 				: `❌ Mute failed: ${r.detail ?? r.error}`;
-			pendingInboxButtons.delete(parsed.id);
 			break;
 		}
 		case 'ibx-mute-y': {
-			const msg = getInboxMessage(row.messageId);
+			const msg = getInboxMessage(messageId);
 			const sender = msg?.fromAddress;
 			if (!sender) {
-				resultText = `❌ Mute failed: no sender on msg ${row.messageId}`;
-				pendingInboxButtons.delete(parsed.id);
+				resultText = `❌ Mute failed: no sender on msg ${messageId}`;
 				break;
 			}
-			const r = await muteInboxSender(sender, row.messageId);
+			const r = await muteInboxSender(sender, messageId);
 			resultText = r.ok
 				? `🔇 Muted \`${sender}\` (CRM contact) — ${r.detail}`
 				: `❌ Mute failed: ${r.detail ?? r.error}`;
-			pendingInboxButtons.delete(parsed.id);
 			break;
 		}
 		case 'ibx-mute-n': {
 			resultText = `🚫 Cancelled. CRM contact not muted.`;
-			pendingInboxButtons.delete(parsed.id);
 			break;
 		}
 		default: {
@@ -1767,21 +1745,21 @@ async function handleInboxCallback(
 	let editOk = true;
 	try {
 		const editResult = await editMessageText({
-			chat_id: row.chatJid,
-			message_id: row.tgMessageId,
+			chat_id: chatJid,
+			message_id: tgMessageId,
 			text: resultText,
 			parse_mode: 'Markdown',
 		});
 		editOk = editResult.ok;
 		if (!editOk) {
 			console.warn(
-				`[telegram/inbox] editMessageText failed for msg ${row.messageId} verb=${parsed.verb} — ${editResult.error ?? 'unknown'}`,
+				`[telegram/inbox] editMessageText failed for msg ${messageId} verb=${parsed.verb} — ${editResult.error ?? 'unknown'}`,
 			);
 		}
 	} catch (err) {
 		editOk = false;
 		console.warn(
-			`[telegram/inbox] editMessageText threw for msg ${row.messageId} verb=${parsed.verb} — ${(err as Error).message}`,
+			`[telegram/inbox] editMessageText threw for msg ${messageId} verb=${parsed.verb} — ${(err as Error).message}`,
 		);
 	}
 	const toastText = editOk ? undefined : resultText.replace(/[`*_]/g, '').slice(0, 200);

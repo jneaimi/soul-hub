@@ -34,10 +34,7 @@
 
 import { config as soulHubConfig } from '../../config.js';
 import { sendText } from '../../channels/telegram/outbound.js';
-import {
-	buildInboxDigestKeyboard,
-	rememberInboxButtons,
-} from '../../channels/telegram/callback.js';
+import { buildInboxDigestKeyboard } from '../../channels/telegram/callback.js';
 import {
 	getInboxDb,
 	rowToMessage,
@@ -150,11 +147,6 @@ export function inboxDigestTelegramFactory(rawParams: unknown): TaskFn {
 				replyMarkup: buildInboxDigestKeyboard(h.msg.id),
 			});
 			if (result.ok && result.messageIds.length > 0) {
-				rememberInboxButtons({
-					messageId: h.msg.id,
-					chatJid: String(chatId),
-					tgMessageId: result.messageIds[0],
-				});
 				// ADR-044.G — per-highlight dedup row. listDigestCandidates
 				// excludes any message_id with a `sent:true` record under this
 				// tool name, so the next tick won't re-push this item.

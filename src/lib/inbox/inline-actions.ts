@@ -105,6 +105,16 @@ export async function saveInboxToVault(
 	const msg = getMessage(messageId);
 	if (!msg) return { ok: false, error: 'not-found' };
 
+	// Idempotent short-circuit — guards against double-clicks racing
+	// through this function in the same second (observed in agent_actions:
+	// two `inbox-digest-save` rows for the same messageId at identical
+	// timestamps). Without this, both calls do full body fetch + agent
+	// work + would double-insert a CRM interaction. Vault content-similarity
+	// dedup catches the file write itself, but CRM logging happens after.
+	if (msg.processStatus === 'saved') {
+		return { ok: true, detail: 'already saved (idempotent)' };
+	}
+
 	const engine = getVaultEngine();
 	if (!engine) return { ok: false, error: 'vault-engine-not-ready' };
 
@@ -632,6 +642,24 @@ export async function draftInboxReply(
 
 	const engine = getVaultEngine();
 	if (!engine) return { ok: false, error: 'vault-engine-not-ready' };
+
+	// Idempotent short-circuit — without this, repeated button clicks
+	// each dispatch a fresh mailwright run (observed 8× on a single
+	// messageId during operator testing). Each run costs API spend and
+	// overwrites the same deterministic vault path. The slug formula
+	// below is stable, so re-deriving the relative path is safe.
+	if (msg.processStatus === 'drafted') {
+		const dateIso0 = new Date(msg.dateReceived).toISOString().slice(0, 10);
+		const yearMonth0 = dateIso0.slice(0, 7);
+		const senderSlug0 = slugify(msg.fromAddress?.split('@')[0] || 'unknown', 30);
+		const subjectSlug0 = slugify(msg.subject || 'no-subject', 50);
+		const existingPath = `email/drafts/${yearMonth0}/${dateIso0}-${senderSlug0}-${subjectSlug0}-draft.md`;
+		return {
+			ok: true,
+			detail: 'already drafted (idempotent)',
+			vaultPath: existingPath,
+		};
+	}
 
 	const from = msg.fromName || msg.fromAddress || 'sender';
 
