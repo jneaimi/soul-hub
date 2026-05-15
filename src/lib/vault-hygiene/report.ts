@@ -53,11 +53,28 @@ export async function getHygieneReport(): Promise<HygieneReport> {
 		}));
 
 	const unresolvedRaw = engine.getUnresolved();
-	const unresolved: UnresolvedIssue[] = unresolvedRaw.map((u) => ({
-		source: u.source,
-		raw: u.raw,
-		suggestedFix: `Fuzzy-match \`${u.raw}\` against vault titles in \`${u.source}\` directory; correct the link or remove the line.`,
-	}));
+	// Mirror the orphan filter (line 44) — `archive/` is frozen historical
+	// content. Wikilinks inside archive notes that point at since-deleted
+	// projects are cosmetic noise, not operational debt: the operator can't
+	// "fix" them without rewriting frozen records, and they don't impact
+	// any live surface. Skipping them keeps the report's signal-to-noise
+	// usable. `inbox/` notes are also transient — same rationale.
+	// `operations/hygiene/` reports are frozen heartbeat snapshots (this
+	// generator's own past output) — they describe state at a moment in
+	// time, so a wikilink to a since-deleted project is a faithful
+	// record, not a fix-it.
+	const unresolved: UnresolvedIssue[] = unresolvedRaw
+		.filter((u) => {
+			const zone = u.source.split('/')[0];
+			if (zone === 'archive' || zone === 'inbox') return false;
+			if (u.source.startsWith('operations/hygiene/')) return false;
+			return true;
+		})
+		.map((u) => ({
+			source: u.source,
+			raw: u.raw,
+			suggestedFix: `Fuzzy-match \`${u.raw}\` against vault titles in \`${u.source}\` directory; correct the link or remove the line.`,
+		}));
 
 	const staleInbox = getStaleInbox(engine);
 	const statusContradictions = getStatusContradictions(engine);
