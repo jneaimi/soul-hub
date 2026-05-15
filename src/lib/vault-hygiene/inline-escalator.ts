@@ -92,11 +92,20 @@ const SECTION_TO_BUCKET: { match: string; bucket: string }[] = [
 	{ match: '`complete` but recently touched', bucket: 'complete_recent_activity' },
 	{ match: 'needs `status:` field', bucket: 'no_status' },
 	{ match: 'missing `index.md`', bucket: 'missing_index' },
+	// Pass 4 (ADR-042)
+	{ match: 'dual-file status disagreement', bucket: 'dual_file_disagree' },
+	{ match: 'active-work canary', bucket: 'falsifier_due_soon' },
+	{ match: 'naming violations', bucket: 'naming_violation' },
 ];
 
 interface DigestRow {
 	slug: string;
 	bucket: string;
+	/** Optional bucket-specific structured data parsed from the bullet
+	 *  (e.g. `idxStatus`/`projStatus` for dual_file, `reviewDate`/`daysLeft`
+	 *  for falsifier_due_soon, `issues` for naming_violation). Consumers
+	 *  read only the keys their bucket emits. */
+	meta?: Record<string, string>;
 }
 
 /** Extract (slug, bucket) rows for every actionable section in the
@@ -118,12 +127,27 @@ export function parseActionableRows(digestBody: string): DigestRow[] {
 		}
 		if (!currentBucket) continue;
 		if (!trimmed.startsWith('- ')) continue;
-		// Two bullet formats from the python renderer:
+		// Three bullet formats from the python renderer:
 		//   wiki style: `- [[projects/<slug>/index|<slug>]] — ...` (most buckets)
-		//   bare style: `- \`<slug>/\`` (missing_index only)
+		//   bare style: `- \`<slug>/\`` (missing_index)
+		//   naming   : `- \`<NAME>\` — issues: ...` (naming_violation; slug
+		//              can contain caps/underscores so the bare regex misses)
 		const wiki = trimmed.match(/\[\[projects\/([a-z][a-z0-9-]*)\/index/);
 		if (wiki) {
-			rows.push({ slug: wiki[1], bucket: currentBucket });
+			const slug = wiki[1];
+			const meta = extractMetaForBucket(currentBucket, trimmed);
+			rows.push(meta ? { slug, bucket: currentBucket, meta } : { slug, bucket: currentBucket });
+			continue;
+		}
+		if (currentBucket === 'naming_violation') {
+			const naming = trimmed.match(/^- `([^`]+)`\s*—\s*issues?:\s*(.+)$/);
+			if (naming) {
+				rows.push({
+					slug: naming[1],
+					bucket: currentBucket,
+					meta: { issues: naming[2].trim() },
+				});
+			}
 			continue;
 		}
 		const bare = trimmed.match(/^- `([a-z][a-z0-9-]*)\/?`/);
@@ -132,6 +156,30 @@ export function parseActionableRows(digestBody: string): DigestRow[] {
 		}
 	}
 	return rows;
+}
+
+/** Pull bucket-specific structured fields out of a wiki-style bullet's
+ *  post-`—` text. Returns `undefined` for buckets that don't need meta. */
+function extractMetaForBucket(bucket: string, bulletLine: string): Record<string, string> | undefined {
+	const afterDash = bulletLine.split('—').slice(1).join('—').trim();
+	if (!afterDash) return undefined;
+	switch (bucket) {
+		case 'dual_file_disagree': {
+			// index: `active` · project: `archived`
+			const idx = afterDash.match(/index:\s*`([^`]+)`/);
+			const proj = afterDash.match(/project:\s*`([^`]+)`/);
+			if (!idx || !proj) return undefined;
+			return { idxStatus: idx[1], projStatus: proj[1] };
+		}
+		case 'falsifier_due_soon': {
+			// review_date: 2026-06-01 (14d away)
+			const m = afterDash.match(/review_date:\s*([0-9-]+)\s*\((-?\d+)d/);
+			if (!m) return undefined;
+			return { reviewDate: m[1], daysLeft: m[2] };
+		}
+		default:
+			return undefined;
+	}
 }
 
 /** Legacy export — kept for the existing smoke test. */
@@ -149,7 +197,7 @@ function resolveTelegramChatId(): string | null {
 
 /** Compose the per-row escalation text. Bucket-specific prose so the
  *  operator instantly understands what the buttons will do. */
-function formatRowMessage(slug: string, bucket: string): string {
+function formatRowMessage(slug: string, bucket: string, meta?: Record<string, string>): string {
 	switch (bucket) {
 		case 'archive_zone_mismatch':
 			return (
@@ -199,6 +247,33 @@ function formatRowMessage(slug: string, bucket: string): string {
 				`📂 *Missing \`index.md\`* — \`${slug}\`\n\n` +
 				`Folder exists but has no index.md. Scaffold a stub or archive the folder.`
 			);
+		case 'dual_file_disagree': {
+			const idx = meta?.idxStatus ?? '?';
+			const proj = meta?.projStatus ?? '?';
+			return (
+				`📄 *Dual-file status disagreement* — \`${slug}\`\n\n` +
+				`\`index.md\` says \`${idx}\` but \`project.md\` says \`${proj}\`. ` +
+				`Tap to copy one file's status onto the other, or ignore for 30 days.`
+			);
+		}
+		case 'falsifier_due_soon': {
+			const rd = meta?.reviewDate ?? '?';
+			const days = meta?.daysLeft ?? '?';
+			return (
+				`🎯 *Falsifier review due* — \`${slug}\`\n\n` +
+				`\`review_date: ${rd}\` is ${days}d away. Snooze +14d, mark reviewed (+90d), ` +
+				`or ignore for 30 days.`
+			);
+		}
+		case 'naming_violation': {
+			const issues = meta?.issues ?? 'unknown';
+			return (
+				`✏️ *Naming violation* — \`${slug}\`\n\n` +
+				`Folder/file name issues: ${issues}.\n\n` +
+				`Rename requires wikilink rewrite across the vault — too risky for one button. ` +
+				`Fix manually, or ignore for 30 days.`
+			);
+		}
 		default:
 			return `⚠️ *${bucket}* — \`${slug}\`\n\nReview and decide.`;
 	}
@@ -243,7 +318,7 @@ export async function emitInlineEscalations(): Promise<EscalationResult> {
 			skipped++;
 			continue;
 		}
-		const text = formatRowMessage(row.slug, row.bucket);
+		const text = formatRowMessage(row.slug, row.bucket, row.meta);
 		const result = await sendText(chatId, text, delivery, {
 			replyMarkup: buildHygieneKeyboardFor(row.slug, row.bucket),
 		});
@@ -256,6 +331,7 @@ export async function emitInlineEscalations(): Promise<EscalationResult> {
 			bucket: row.bucket,
 			chatJid: String(chatId),
 			messageId: result.messageIds[0],
+			meta: row.meta,
 		});
 		emittedFromCurrentDigest.add(rowKey);
 		sent++;

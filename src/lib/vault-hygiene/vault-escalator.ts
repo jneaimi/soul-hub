@@ -27,8 +27,14 @@ import {
 	rememberVaultHygieneButtons,
 } from '../channels/telegram/callback.js';
 import { config as soulHubConfig } from '../config.js';
-import { getHygieneReport } from './report.js';
+import { getVaultEngine } from '../vault/index.js';
 import type { UnresolvedIssue } from './types.js';
+
+/** Per-emission cap. The hygiene report caps at ISSUE_LIST_CAP (20) for
+ *  display purposes; the escalator applies the cap AFTER suppression so
+ *  the operator only sees actionable rows, not noise they've already
+ *  ignored. */
+const EMIT_CAP = 20;
 
 const SUPPRESSIONS_PATH = join(homedir(), '.soul-hub', 'data', 'hygiene-suppressions.json');
 
@@ -106,21 +112,25 @@ export async function emitVaultHygieneEscalations(): Promise<VaultEscalationResu
 	const delivery = soulHubConfig.channels?.telegram?.delivery;
 	if (!delivery) return { ok: false, error: 'no-telegram-delivery-config' };
 
-	let report;
-	try {
-		report = await getHygieneReport();
-	} catch (err) {
-		return { ok: false, error: `report-failed: ${(err as Error).message}` };
-	}
+	const engine = getVaultEngine();
+	if (!engine) return { ok: false, error: 'vault-engine-not-ready' };
 
-	// Refresh dedup state when the report's generatedAt changes.
-	if (report.generatedAt !== lastEmittedAt) {
-		lastEmittedAt = report.generatedAt;
+	// Pull the FULL unresolved set from the engine directly. The hygiene
+	// report's 20-cap is a display affordance, not a policy — for the
+	// escalator we want suppression to take effect across the entire pool
+	// before we apply our own emission cap.
+	const allUnresolved = engine.getUnresolved();
+	const generatedAt = new Date().toISOString();
+
+	// Refresh dedup state when the generated timestamp changes (each
+	// emission cycle gets a fresh window). On manual reruns within the
+	// same second this collapses to "skip what we already sent this run".
+	if (generatedAt !== lastEmittedAt) {
+		lastEmittedAt = generatedAt;
 		emittedThisRun.clear();
 	}
 
-	const issues = report.unresolved ?? [];
-	if (issues.length === 0) {
+	if (allUnresolved.length === 0) {
 		return { ok: true, totalRows: 0, sent: 0, skipped: 0, failures: [] };
 	}
 
@@ -130,7 +140,13 @@ export async function emitVaultHygieneEscalations(): Promise<VaultEscalationResu
 	let sent = 0;
 	let skipped = 0;
 
-	for (const issue of issues) {
+	for (const link of allUnresolved) {
+		if (sent >= EMIT_CAP) break;
+		const issue: UnresolvedIssue = {
+			source: link.source,
+			raw: link.raw,
+			suggestedFix: `Fuzzy-match \`${link.raw}\` against vault titles in \`${link.source}\` directory; correct the link or remove the line.`,
+		};
 		const key = vaultHygieneKeyFor(issue.source, issue.raw);
 		if (suppressed.has(key) || emittedThisRun.has(key)) {
 			skipped++;
@@ -159,5 +175,5 @@ export async function emitVaultHygieneEscalations(): Promise<VaultEscalationResu
 		sent++;
 	}
 
-	return { ok: true, totalRows: issues.length, sent, skipped, failures };
+	return { ok: true, totalRows: allUnresolved.length, sent, skipped, failures };
 }

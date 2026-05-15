@@ -36,9 +36,11 @@ import { dispatchVaultSave } from '../../vault-save/index.js';
 import { fetchYoutube } from '../../youtube/index.js';
 import {
 	archiveProject,
+	reconcileDualStatus,
 	scaffoldProjectIndex,
 	setPauseUntil,
 	setProjectStatus,
+	setReviewDate,
 	suppressAnomaly,
 	touchProjectUpdated,
 } from '../../vault-hygiene/actions.js';
@@ -82,7 +84,12 @@ type HygieneVerb =
 	| 'hyg-complete' // status → shipped (complete_recent_activity)
 	| 'hyg-active' // status → active (no_status default)
 	| 'hyg-recon' // status → maintained (stale_active_30)
-	| 'hyg-scaffold'; // write template index.md (missing_index)
+	| 'hyg-scaffold' // write template index.md (missing_index)
+	// Pass 4 verbs (ADR-042)
+	| 'hyg-use-idx' // dual_file_disagree: copy index.md status → project.md
+	| 'hyg-use-proj' // dual_file_disagree: copy project.md status → index.md
+	| 'hyg-snooze' // falsifier_due_soon: push review_date +14d
+	| 'hyg-reviewed'; // falsifier_due_soon: push review_date +90d (fresh cycle)
 
 // ADR-043 — vault-hygiene verbs (vh- prefix, distinct from project-hygiene hyg-)
 type VaultHygieneVerb =
@@ -240,7 +247,11 @@ function parseCallbackData(data: string): ParsedCallback | null {
 		verb === 'hyg-complete' ||
 		verb === 'hyg-active' ||
 		verb === 'hyg-recon' ||
-		verb === 'hyg-scaffold'
+		verb === 'hyg-scaffold' ||
+		verb === 'hyg-use-idx' ||
+		verb === 'hyg-use-proj' ||
+		verb === 'hyg-snooze' ||
+		verb === 'hyg-reviewed'
 	) {
 		return { kind: 'hygiene', verb, id };
 	}
@@ -723,6 +734,11 @@ interface PendingHygieneRow {
 	chatJid: string;
 	messageId: number;
 	createdAt: number;
+	/** Bucket-specific extras parsed from the digest bullet. Carried so
+	 *  the callback handler doesn't have to re-read the digest at action
+	 *  time. Pass 4 uses this for dual_file (idxStatus/projStatus) and
+	 *  falsifier (reviewDate/daysLeft). */
+	meta?: Record<string, string>;
 }
 
 /** id → (slug, bucket) map. Restart-loss is acceptable — the next
@@ -848,6 +864,59 @@ export function buildHygieneMissingIndexKeyboard(
 	};
 }
 
+/** dual_file_disagree — index.md and project.md disagree on `status:`.
+ *  The Python script's comment says "project.md usually wins
+ *  (human-authored)" — surfaced as the left button. Operator can pick
+ *  either source or ignore. */
+export function buildHygieneDualFileKeyboard(
+	slug: string,
+	bucket: string,
+): InlineKeyboardMarkup {
+	const id = hygieneIdFor(slug, bucket);
+	return {
+		inline_keyboard: [
+			[
+				{ text: '📄 Use project.md', callback_data: `hyg-use-proj:${id}` },
+				{ text: '📄 Use index.md', callback_data: `hyg-use-idx:${id}` },
+			],
+			[{ text: '🔇 Ignore 30d', callback_data: `hyg-ig:${id}` }],
+		],
+	};
+}
+
+/** falsifier_due_soon — `review_date:` is approaching. Snooze a couple
+ *  weeks, mark as freshly reviewed (push +90d), or ignore. */
+export function buildHygieneFalsifierKeyboard(
+	slug: string,
+	bucket: string,
+): InlineKeyboardMarkup {
+	const id = hygieneIdFor(slug, bucket);
+	return {
+		inline_keyboard: [
+			[
+				{ text: '📅 Snooze +14d', callback_data: `hyg-snooze:${id}` },
+				{ text: '✅ Mark reviewed', callback_data: `hyg-reviewed:${id}` },
+			],
+			[{ text: '🔇 Ignore 30d', callback_data: `hyg-ig:${id}` }],
+		],
+	};
+}
+
+/** naming_violation — folder/file name fails kebab-case rules. Rename
+ *  is too risky for one button (requires wikilink rewrite); surface as
+ *  ignore-only and let the operator fix manually. */
+export function buildHygieneNamingKeyboard(
+	slug: string,
+	bucket: string,
+): InlineKeyboardMarkup {
+	const id = hygieneIdFor(slug, bucket);
+	return {
+		inline_keyboard: [
+			[{ text: '🔇 Ignore 30d', callback_data: `hyg-ig:${id}` }],
+		],
+	};
+}
+
 /** Bucket → keyboard dispatcher. The escalator and any other inline-
  *  button emitter calls this rather than hard-coding the standard
  *  builder, so new buckets pick up their own keyboards automatically. */
@@ -862,6 +931,12 @@ export function buildHygieneKeyboardFor(slug: string, bucket: string): InlineKey
 			return buildHygieneNoStatusKeyboard(slug, bucket);
 		case 'missing_index':
 			return buildHygieneMissingIndexKeyboard(slug, bucket);
+		case 'dual_file_disagree':
+			return buildHygieneDualFileKeyboard(slug, bucket);
+		case 'falsifier_due_soon':
+			return buildHygieneFalsifierKeyboard(slug, bucket);
+		case 'naming_violation':
+			return buildHygieneNamingKeyboard(slug, bucket);
 		// archive_zone_mismatch, empty_stub, template_only_index → standard
 		default:
 			return buildHygieneStandardKeyboard(slug, bucket);
@@ -876,6 +951,7 @@ export function rememberHygieneButtons(args: {
 	bucket: string;
 	chatJid: string;
 	messageId: number;
+	meta?: Record<string, string>;
 }): void {
 	const id = hygieneIdFor(args.slug, args.bucket);
 	pendingHygieneButtons.set(id, { ...args, createdAt: Date.now() });
@@ -1034,19 +1110,82 @@ async function handleHygieneCallback(
 			pendingHygieneButtons.delete(parsed.id);
 			break;
 		}
+		case 'hyg-use-idx': {
+			const r = await reconcileDualStatus(row.slug, 'index', vaultDir);
+			resultText = r.ok
+				? `📄 \`${row.slug}\` — ${r.detail}`
+				: `❌ ${r.detail ?? r.error}`;
+			pendingHygieneButtons.delete(parsed.id);
+			break;
+		}
+		case 'hyg-use-proj': {
+			const r = await reconcileDualStatus(row.slug, 'project', vaultDir);
+			resultText = r.ok
+				? `📄 \`${row.slug}\` — ${r.detail}`
+				: `❌ ${r.detail ?? r.error}`;
+			pendingHygieneButtons.delete(parsed.id);
+			break;
+		}
+		case 'hyg-snooze': {
+			// Push review_date forward by 14 days from the digest's stated
+			// review_date (not from today) — preserves the original cadence
+			// even if the operator is late actioning.
+			const baseDateStr = row.meta?.reviewDate;
+			const baseDate = baseDateStr ? new Date(baseDateStr) : new Date();
+			const next = new Date(baseDate.getTime() + 14 * 86_400_000)
+				.toISOString()
+				.slice(0, 10);
+			const r = await setReviewDate(row.slug, next, vaultDir);
+			resultText = r.ok
+				? `📅 Snoozed \`${row.slug}\` — ${r.detail}`
+				: `❌ ${r.detail ?? r.error}`;
+			pendingHygieneButtons.delete(parsed.id);
+			break;
+		}
+		case 'hyg-reviewed': {
+			// Fresh 90-day cycle from today — operator is signalling a
+			// real review happened, so the clock restarts now.
+			const next = new Date(Date.now() + 90 * 86_400_000).toISOString().slice(0, 10);
+			const r = await setReviewDate(row.slug, next, vaultDir);
+			resultText = r.ok
+				? `✅ Marked \`${row.slug}\` reviewed — ${r.detail}`
+				: `❌ ${r.detail ?? r.error}`;
+			pendingHygieneButtons.delete(parsed.id);
+			break;
+		}
 	}
 
+	let editOk = true;
 	try {
-		await editMessageText({
+		const editResult = await editMessageText({
 			chat_id: row.chatJid,
 			message_id: row.messageId,
 			text: resultText,
 			parse_mode: 'Markdown',
 		});
-	} catch {
-		/* swallow */
+		editOk = editResult.ok;
+		if (!editOk) {
+			console.warn(
+				`[telegram/hygiene] editMessageText failed for ${row.slug}:${row.bucket} verb=${parsed.verb} — ${editResult.error ?? 'unknown'}`,
+			);
+		}
+	} catch (err) {
+		editOk = false;
+		console.warn(
+			`[telegram/hygiene] editMessageText threw for ${row.slug}:${row.bucket} verb=${parsed.verb} — ${(err as Error).message}`,
+		);
 	}
-	await answerCallbackQuery({ callback_query_id: query.id });
+	// If the bubble edit failed, fall back to a toast carrying the
+	// result text — strip Markdown so the alert reads cleanly. This
+	// guarantees the operator gets visible feedback even when Markdown
+	// parse fails on the success line.
+	const toastText = editOk
+		? undefined
+		: resultText.replace(/[`*_]/g, '').slice(0, 200);
+	await answerCallbackQuery({
+		callback_query_id: query.id,
+		...(toastText ? { text: toastText, show_alert: true } : {}),
+	});
 }
 
 // ─── Vault-hygiene remediation (ADR-043) ───────────────────────────────
