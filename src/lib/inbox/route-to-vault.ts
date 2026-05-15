@@ -25,6 +25,7 @@ import type { InboxMessage, TransactionalExtract } from './types.js';
 import { getMessage, markMessageProcessed, recordAgentAction } from './db.js';
 import { getExtractedData } from './db.js';
 import { dispatchVaultSave } from '../vault-save/index.js';
+import { getVaultEngine } from '../vault/index.js';
 
 /** Shipping subject/sender heuristic — shared between `pickZone` (where to
  *  write) and `composeNote` (what to title). Conservative keyword list; the
@@ -184,6 +185,31 @@ export async function routeMessageToVault(
 			console.warn(
 				`[inbox-route-to-vault] markMessageProcessed(${messageId}) failed after save: ${(err as Error).message}`,
 			);
+		}
+
+		// ADR-044 Phase C — append a wikilink to the zone's index.md so
+		// the new note doesn't become an orphan. Best-effort: if the
+		// zone has no index.md (operator hasn't bootstrapped one) or the
+		// update fails for any reason, log + carry on. The vault save
+		// itself already succeeded; failing the whole route on an index
+		// touch would be a regression.
+		const engine = getVaultEngine();
+		if (engine) {
+			const indexResult = await engine.appendToZoneIndex(
+				zone,
+				saveResult.path,
+				saveResult.title,
+			);
+			if (!('success' in indexResult) || !indexResult.success) {
+				const err = 'error' in indexResult ? indexResult.error : 'unknown';
+				// Missing-index is the common silent case (zone hasn't opted
+				// in) — don't log noisily for that.
+				if (!err.startsWith('Zone index not found:')) {
+					console.warn(
+						`[inbox-route-to-vault] appendToZoneIndex(${zone}) failed for msg ${messageId}: ${err}`,
+					);
+				}
+			}
 		}
 
 		const result: RouteToVaultResult = {

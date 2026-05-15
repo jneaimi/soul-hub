@@ -701,6 +701,42 @@ export class VaultEngine {
 		return { success: true, path };
 	}
 
+	/** Append a wikilink for `notePath` to `<zone>/index.md` under an
+	 *  "## Auto-linked" section. No-op cases:
+	 *    - Zone index doesn't exist (operator-bootstrapped only — we
+	 *      don't auto-create indexes for zones that haven't opted in).
+	 *    - Link target already present in the index (idempotent — repeat
+	 *      calls during retries don't duplicate the line).
+	 *  Used by the inbox L3 S4 auto-route worker (per ADR-044 Phase C)
+	 *  so security/ + finance/ notes don't accumulate as orphans the
+	 *  moment they land in the vault. The Telegram inline-action Save
+	 *  path (saveInboxToVault) is a future caller. */
+	async appendToZoneIndex(
+		zone: string,
+		notePath: string,
+		noteTitle: string,
+	): Promise<WriteResult | WriteError> {
+		const indexPath = `${zone}/index.md`;
+		const index = this.indexer.get(indexPath);
+		if (!index) {
+			return { success: false, error: `Zone index not found: ${indexPath}` };
+		}
+
+		const linkTarget = notePath.replace(/\.md$/, '');
+		if (index.content.includes(linkTarget)) {
+			return { success: true, path: indexPath };
+		}
+
+		const bullet = `- [[${linkTarget}|${noteTitle}]]`;
+		const SECTION = '## Auto-linked';
+		const existingContent = index.content.trimEnd();
+		const newContent = existingContent.includes(SECTION)
+			? `${existingContent}\n${bullet}\n`
+			: `${existingContent}\n\n${SECTION}\n\n${bullet}\n`;
+
+		return this.updateNote(indexPath, { content: newContent });
+	}
+
 	async archiveNote(path: string): Promise<WriteResult | WriteError> {
 		const existing = this.indexer.get(path);
 		if (!existing) {
