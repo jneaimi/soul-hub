@@ -3,6 +3,7 @@
 	import { TYPE_COLORS } from '$lib/vault/types';
 	import VaultAttachments from './VaultAttachments.svelte';
 	import CrmSenderCard from './CrmSenderCard.svelte';
+	import EmailDraftCard from './EmailDraftCard.svelte';
 
 	interface Props {
 		note: VaultNote & { rendered?: string; contentIsRtl?: boolean; titleIsRtl?: boolean };
@@ -171,6 +172,13 @@
 	     have `crm_sender_status` in frontmatter; nothing otherwise. -->
 	{#if note.meta.crm_sender_status}
 		<CrmSenderCard notePath={note.path} meta={note.meta as Record<string, unknown>} />
+	{/if}
+
+	<!-- ADR-044 Phase B — Draft-reply card. Renders on email-save notes
+	     that carry `inbox_message_id` (added Phase A + backfilled). One
+	     click dispatches mailwright via /api/inbox/messages/[id]/draft. -->
+	{#if note.meta.inbox_message_id}
+		<EmailDraftCard meta={note.meta as Record<string, unknown>} />
 	{/if}
 
 	<!-- Rendered content -->
