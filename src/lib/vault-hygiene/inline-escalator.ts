@@ -13,12 +13,12 @@
  *     ADR-042 pass 2.
  */
 
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { sendText } from '../channels/telegram/outbound.js';
 import {
-	buildHygieneStandardKeyboard,
+	buildHygieneKeyboardFor,
 	rememberHygieneButtons,
 } from '../channels/telegram/callback.js';
 import { config as soulHubConfig } from '../config.js';
@@ -34,8 +34,22 @@ export interface EscalationResult {
 	digestPath?: string;
 	totalRows?: number;
 	sent?: number;
+	skipped?: number;
 	failures?: { slug: string; error: string }[];
 	error?: string;
+}
+
+/** Cross-run dedup state. Keyed on (digestPath, mtimeMs) so a freshly
+ *  rewritten digest (Python script reruns) gets a fresh tracking set,
+ *  while repeated curls of the same digest skip already-sent rows.
+ *  Restart-loss accepted — the digest only writes weekly. */
+let lastEmittedKey: string | null = null;
+const emittedFromCurrentDigest = new Set<string>(); // `${slug}:${bucket}`
+
+/** Test-only: reset dedup state. Production paths don't call this. */
+export function _resetEscalatorDedupState(): void {
+	lastEmittedKey = null;
+	emittedFromCurrentDigest.clear();
 }
 
 /** Walk both digest locations, return path to the most recent file. */
@@ -72,6 +86,12 @@ async function findLatestDigest(): Promise<string | null> {
 const SECTION_TO_BUCKET: { match: string; bucket: string }[] = [
 	{ match: 'archive-zone mismatch', bucket: 'archive_zone_mismatch' },
 	{ match: 'empty stub', bucket: 'empty_stub' },
+	{ match: 'template-only', bucket: 'template_only_index' },
+	{ match: 'stale `active` (30+', bucket: 'stale_active_30' },
+	{ match: 'stale `active` (14', bucket: 'stale_active_14' },
+	{ match: '`complete` but recently touched', bucket: 'complete_recent_activity' },
+	{ match: 'needs `status:` field', bucket: 'no_status' },
+	{ match: 'missing `index.md`', bucket: 'missing_index' },
 ];
 
 interface DigestRow {
@@ -98,8 +118,18 @@ export function parseActionableRows(digestBody: string): DigestRow[] {
 		}
 		if (!currentBucket) continue;
 		if (!trimmed.startsWith('- ')) continue;
-		const m = trimmed.match(/\[\[projects\/([a-z][a-z0-9-]*)\/index/);
-		if (m) rows.push({ slug: m[1], bucket: currentBucket });
+		// Two bullet formats from the python renderer:
+		//   wiki style: `- [[projects/<slug>/index|<slug>]] — ...` (most buckets)
+		//   bare style: `- \`<slug>/\`` (missing_index only)
+		const wiki = trimmed.match(/\[\[projects\/([a-z][a-z0-9-]*)\/index/);
+		if (wiki) {
+			rows.push({ slug: wiki[1], bucket: currentBucket });
+			continue;
+		}
+		const bare = trimmed.match(/^- `([a-z][a-z0-9-]*)\/?`/);
+		if (bare) {
+			rows.push({ slug: bare[1], bucket: currentBucket });
+		}
 	}
 	return rows;
 }
@@ -134,6 +164,41 @@ function formatRowMessage(slug: string, bucket: string): string {
 				`auto-scaffolded but never grew. Tap to archive (flips status + moves), ` +
 				`pause for 60 days, or ignore for 30.`
 			);
+		case 'template_only_index':
+			return (
+				`📄 *Template-only index* — \`${slug}\`\n\n` +
+				`Body is the auto-scaffold boilerplate. No real index content has been written. ` +
+				`Tap to archive (flips status + moves), pause for 60 days, or ignore for 30.`
+			);
+		case 'stale_active_14':
+			return (
+				`🟡 *Stale active (14d+)* — \`${slug}\`\n\n` +
+				`Marked active but no file touched in 14+ days. Confirm activity, ` +
+				`pause for 30 days, or archive.`
+			);
+		case 'stale_active_30':
+			return (
+				`🟠 *Stale active (30d+)* — \`${slug}\`\n\n` +
+				`Marked active but no file touched in 30+ days — likely lying. ` +
+				`Confirm activity, reconcile to \`maintained\`, or archive.`
+			);
+		case 'complete_recent_activity':
+			return (
+				`🤔 *Complete but recently touched* — \`${slug}\`\n\n` +
+				`Status is \`complete\` but a file was edited in the past week. ` +
+				`Re-opened, or polish pass? Reconcile the status.`
+			);
+		case 'no_status':
+			return (
+				`🏷 *No status* — \`${slug}\`\n\n` +
+				`Project has no \`status:\` frontmatter field. Mark it active, archive, ` +
+				`or ignore.`
+			);
+		case 'missing_index':
+			return (
+				`📂 *Missing \`index.md\`* — \`${slug}\`\n\n` +
+				`Folder exists but has no index.md. Scaffold a stub or archive the folder.`
+			);
 		default:
 			return `⚠️ *${bucket}* — \`${slug}\`\n\nReview and decide.`;
 	}
@@ -148,10 +213,18 @@ export async function emitInlineEscalations(): Promise<EscalationResult> {
 	const digestPath = await findLatestDigest();
 	if (!digestPath) return { ok: false, error: 'no-digest-found' };
 
+	const digestStat = await stat(digestPath);
+	const digestKey = `${digestPath}:${digestStat.mtimeMs}`;
+	// Fresh digest (different file or rewritten) → reset the dedup set.
+	if (digestKey !== lastEmittedKey) {
+		lastEmittedKey = digestKey;
+		emittedFromCurrentDigest.clear();
+	}
+
 	const body = await readFile(digestPath, 'utf-8');
 	const rows = parseActionableRows(body);
 	if (rows.length === 0) {
-		return { ok: true, digestPath, totalRows: 0, sent: 0, failures: [] };
+		return { ok: true, digestPath, totalRows: 0, sent: 0, skipped: 0, failures: [] };
 	}
 
 	const chatId = resolveTelegramChatId();
@@ -162,11 +235,17 @@ export async function emitInlineEscalations(): Promise<EscalationResult> {
 
 	const failures: { slug: string; error: string }[] = [];
 	let sent = 0;
+	let skipped = 0;
 
 	for (const row of rows) {
+		const rowKey = `${row.slug}:${row.bucket}`;
+		if (emittedFromCurrentDigest.has(rowKey)) {
+			skipped++;
+			continue;
+		}
 		const text = formatRowMessage(row.slug, row.bucket);
 		const result = await sendText(chatId, text, delivery, {
-			replyMarkup: buildHygieneStandardKeyboard(row.slug, row.bucket),
+			replyMarkup: buildHygieneKeyboardFor(row.slug, row.bucket),
 		});
 		if (!result.ok || result.messageIds.length === 0) {
 			failures.push({ slug: row.slug, error: result.error ?? 'send-failed' });
@@ -178,10 +257,11 @@ export async function emitInlineEscalations(): Promise<EscalationResult> {
 			chatJid: String(chatId),
 			messageId: result.messageIds[0],
 		});
+		emittedFromCurrentDigest.add(rowKey);
 		sent++;
 	}
 
-	return { ok: true, digestPath, totalRows: rows.length, sent, failures };
+	return { ok: true, digestPath, totalRows: rows.length, sent, skipped, failures };
 }
 
 /** Legacy export — kept so the scheduler handler and existing callers

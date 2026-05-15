@@ -204,6 +204,80 @@ export async function setPauseUntil(
 	return { ok: true, detail: `pause_until set to ${dateIso}` };
 }
 
+/** Bump the project's `updated:` frontmatter field to today (YYYY-MM-DD).
+ *  Used by the "🟢 Still active (touch)" button on stale_active_* — the
+ *  operator is confirming the project really is active, just hasn't
+ *  produced output recently. Writing `updated:` is more honest than
+ *  artificially touching all .md files; the Python script's latest_mtime
+ *  picks the index.md change up on its next walk. */
+export async function touchProjectUpdated(
+	slug: string,
+	vaultDir: string,
+): Promise<ActionResult> {
+	if (!PROJECT_SLUG_RX.test(slug)) {
+		return { ok: false, error: 'invalid-slug' };
+	}
+	const idxPath = join(vaultDir, 'projects', slug, 'index.md');
+	if (!(await pathExists(idxPath))) {
+		return { ok: false, error: 'not-found' };
+	}
+	const original = await readFile(idxPath, 'utf-8');
+	if (!original.startsWith('---')) {
+		return { ok: false, error: 'no-frontmatter' };
+	}
+	const fmEnd = original.indexOf('\n---', 3);
+	if (fmEnd === -1) {
+		return { ok: false, error: 'malformed-frontmatter' };
+	}
+	const fmBlock = original.slice(0, fmEnd);
+	const rest = original.slice(fmEnd);
+	const today = new Date().toISOString().slice(0, 10);
+	let newFm: string;
+	if (/^updated:/m.test(fmBlock)) {
+		newFm = fmBlock.replace(/^updated:.*$/m, `updated: ${today}`);
+	} else {
+		newFm = fmBlock.replace(/\n$/, '') + `\nupdated: ${today}`;
+	}
+	await writeFile(idxPath, newFm + rest, 'utf-8');
+	return { ok: true, detail: `updated → ${today}` };
+}
+
+/** Write a minimal stub `index.md` into `projects/<slug>/`. Used by the
+ *  "📝 Scaffold stub" button on missing_index — fills the gap so the
+ *  hygiene script's existing buckets can take it from there. Refuses
+ *  to overwrite an existing file. */
+export async function scaffoldProjectIndex(
+	slug: string,
+	vaultDir: string,
+): Promise<ActionResult> {
+	if (!PROJECT_SLUG_RX.test(slug)) {
+		return { ok: false, error: 'invalid-slug' };
+	}
+	const dir = join(vaultDir, 'projects', slug);
+	const idxPath = join(dir, 'index.md');
+	if (await pathExists(idxPath)) {
+		return { ok: false, error: 'already-exists' };
+	}
+	const today = new Date().toISOString().slice(0, 10);
+	const stub =
+		`---\n` +
+		`type: index\n` +
+		`status: active\n` +
+		`project: ${slug}\n` +
+		`created: ${today}\n` +
+		`updated: ${today}\n` +
+		`---\n\n` +
+		`# ${slug}\n\n` +
+		`> Scaffolded by ADR-042 hygiene button on ${today}. Fill in the sections below or archive the project.\n\n` +
+		`## Decisions\n\n` +
+		`## Learnings\n\n` +
+		`## Debugging\n\n` +
+		`## Outputs\n`;
+	await mkdir(dir, { recursive: true });
+	await writeFile(idxPath, stub, 'utf-8');
+	return { ok: true, detail: `wrote ${idxPath}` };
+}
+
 /** Suppress an anomaly bucket for this slug for `days` days. Writes to
  *  ~/.soul-hub/data/hygiene-suppressions.json — cross-language readable
  *  so the Python project_hygiene.py script can skip suppressed entries

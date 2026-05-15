@@ -36,9 +36,11 @@ import { dispatchVaultSave } from '../../vault-save/index.js';
 import { fetchYoutube } from '../../youtube/index.js';
 import {
 	archiveProject,
+	scaffoldProjectIndex,
 	setPauseUntil,
 	setProjectStatus,
 	suppressAnomaly,
+	touchProjectUpdated,
 } from '../../vault-hygiene/actions.js';
 import { getVaultEngine } from '../../vault/index.js';
 import {
@@ -67,7 +69,19 @@ import type {
 type Verb = 'confirm' | 'decline' | 'web';
 type YoutubeVerb = 'yt-save' | 'yt-tx' | 'yt-skip';
 type IntentVerb = 'ip-review' | 'ip-all' | 'ip-skip' | 'ip-yes' | 'ip-no';
-type HygieneVerb = 'hyg-arc' | 'hyg-arc-y' | 'hyg-arc-n' | 'hyg-pause' | 'hyg-ig';
+type HygieneVerb =
+	| 'hyg-arc'
+	| 'hyg-arc-y'
+	| 'hyg-arc-n'
+	| 'hyg-pause'
+	| 'hyg-ig'
+	// Pass 3 verbs (ADR-042)
+	| 'hyg-touch' // bump updated: field (stale_active_*)
+	| 'hyg-reopen' // status → active (complete_recent_activity)
+	| 'hyg-complete' // status → shipped (complete_recent_activity)
+	| 'hyg-active' // status → active (no_status default)
+	| 'hyg-recon' // status → maintained (stale_active_30)
+	| 'hyg-scaffold'; // write template index.md (missing_index)
 
 interface PendingButtonRow {
 	conversationKey: string;
@@ -206,7 +220,13 @@ function parseCallbackData(data: string): ParsedCallback | null {
 		verb === 'hyg-arc-y' ||
 		verb === 'hyg-arc-n' ||
 		verb === 'hyg-pause' ||
-		verb === 'hyg-ig'
+		verb === 'hyg-ig' ||
+		verb === 'hyg-touch' ||
+		verb === 'hyg-reopen' ||
+		verb === 'hyg-complete' ||
+		verb === 'hyg-active' ||
+		verb === 'hyg-recon' ||
+		verb === 'hyg-scaffold'
 	) {
 		return { kind: 'hygiene', verb, id };
 	}
@@ -724,6 +744,104 @@ export function buildHygieneStandardKeyboard(
  *  working. New code uses buildHygieneStandardKeyboard. */
 export const buildHygieneArchiveZoneKeyboard = buildHygieneStandardKeyboard;
 
+/** stale_active_14 / stale_active_30 — project says "active" but hasn't
+ *  been touched in 14–30+ days. Operator can confirm activity (touch),
+ *  back-burner (pause), reconcile down to maintained, or archive. */
+export function buildHygieneStaleActiveKeyboard(
+	slug: string,
+	bucket: string,
+): InlineKeyboardMarkup {
+	const id = hygieneIdFor(slug, bucket);
+	const secondAction =
+		bucket === 'stale_active_30'
+			? { text: '🔧 → maintained', callback_data: `hyg-recon:${id}` }
+			: { text: '⏸ Pause 30d', callback_data: `hyg-pause:${id}` };
+	return {
+		inline_keyboard: [
+			[
+				{ text: '🟢 Still active (touch)', callback_data: `hyg-touch:${id}` },
+				secondAction,
+			],
+			[{ text: '📦 Archive', callback_data: `hyg-arc:${id}` }],
+		],
+	};
+}
+
+/** complete_recent_activity — project marked `complete` but touched
+ *  recently. Re-opened or just polish? Operator confirms by status. */
+export function buildHygieneCompleteRecentKeyboard(
+	slug: string,
+	bucket: string,
+): InlineKeyboardMarkup {
+	const id = hygieneIdFor(slug, bucket);
+	return {
+		inline_keyboard: [
+			[
+				{ text: '🔄 Re-open (active)', callback_data: `hyg-reopen:${id}` },
+				{ text: '✅ Confirm complete', callback_data: `hyg-complete:${id}` },
+			],
+			[{ text: '🔇 Ignore 30d', callback_data: `hyg-ig:${id}` }],
+		],
+	};
+}
+
+/** no_status — frontmatter has no `status:` field. Default action is
+ *  to mark active; rare to want anything else for a project that
+ *  reached the digest. Archive + ignore remain available. */
+export function buildHygieneNoStatusKeyboard(
+	slug: string,
+	bucket: string,
+): InlineKeyboardMarkup {
+	const id = hygieneIdFor(slug, bucket);
+	return {
+		inline_keyboard: [
+			[
+				{ text: '🏷 Mark active', callback_data: `hyg-active:${id}` },
+				{ text: '📦 Archive', callback_data: `hyg-arc:${id}` },
+			],
+			[{ text: '🔇 Ignore 30d', callback_data: `hyg-ig:${id}` }],
+		],
+	};
+}
+
+/** missing_index — folder exists but no index.md. Scaffold a minimal
+ *  stub or archive the folder. */
+export function buildHygieneMissingIndexKeyboard(
+	slug: string,
+	bucket: string,
+): InlineKeyboardMarkup {
+	const id = hygieneIdFor(slug, bucket);
+	return {
+		inline_keyboard: [
+			[
+				{ text: '📝 Scaffold stub', callback_data: `hyg-scaffold:${id}` },
+				{ text: '📦 Archive folder', callback_data: `hyg-arc:${id}` },
+			],
+			[{ text: '🔇 Ignore 30d', callback_data: `hyg-ig:${id}` }],
+		],
+	};
+}
+
+/** Bucket → keyboard dispatcher. The escalator and any other inline-
+ *  button emitter calls this rather than hard-coding the standard
+ *  builder, so new buckets pick up their own keyboards automatically. */
+export function buildHygieneKeyboardFor(slug: string, bucket: string): InlineKeyboardMarkup {
+	switch (bucket) {
+		case 'stale_active_14':
+		case 'stale_active_30':
+			return buildHygieneStaleActiveKeyboard(slug, bucket);
+		case 'complete_recent_activity':
+			return buildHygieneCompleteRecentKeyboard(slug, bucket);
+		case 'no_status':
+			return buildHygieneNoStatusKeyboard(slug, bucket);
+		case 'missing_index':
+			return buildHygieneMissingIndexKeyboard(slug, bucket);
+		// archive_zone_mismatch, empty_stub, template_only_index → standard
+		default:
+			return buildHygieneStandardKeyboard(slug, bucket);
+	}
+}
+
 /** Stash the (slug, bucket, chatJid, messageId) so the callback handler
  *  can resolve which anomaly a tap belongs to. Older entries GC'd
  *  lazily on each insert. */
@@ -838,6 +956,54 @@ async function handleHygieneCallback(
 			const r = await suppressAnomaly(row.slug, row.bucket, 30);
 			resultText = r.ok
 				? `🔇 Ignored \`${row.slug}:${row.bucket}\` for 30 days`
+				: `❌ ${r.detail ?? r.error}`;
+			pendingHygieneButtons.delete(parsed.id);
+			break;
+		}
+		case 'hyg-touch': {
+			const r = await touchProjectUpdated(row.slug, vaultDir);
+			resultText = r.ok
+				? `🟢 Touched \`${row.slug}\` — ${r.detail}`
+				: `❌ ${r.detail ?? r.error}`;
+			pendingHygieneButtons.delete(parsed.id);
+			break;
+		}
+		case 'hyg-reopen': {
+			const r = await setProjectStatus(row.slug, 'active', vaultDir);
+			resultText = r.ok
+				? `🔄 Re-opened \`${row.slug}\` — ${r.detail}`
+				: `❌ ${r.detail ?? r.error}`;
+			pendingHygieneButtons.delete(parsed.id);
+			break;
+		}
+		case 'hyg-complete': {
+			const r = await setProjectStatus(row.slug, 'shipped', vaultDir);
+			resultText = r.ok
+				? `✅ Marked \`${row.slug}\` shipped — ${r.detail}`
+				: `❌ ${r.detail ?? r.error}`;
+			pendingHygieneButtons.delete(parsed.id);
+			break;
+		}
+		case 'hyg-active': {
+			const r = await setProjectStatus(row.slug, 'active', vaultDir);
+			resultText = r.ok
+				? `🏷 Marked \`${row.slug}\` active — ${r.detail}`
+				: `❌ ${r.detail ?? r.error}`;
+			pendingHygieneButtons.delete(parsed.id);
+			break;
+		}
+		case 'hyg-recon': {
+			const r = await setProjectStatus(row.slug, 'maintained', vaultDir);
+			resultText = r.ok
+				? `🔧 Reconciled \`${row.slug}\` to maintained — ${r.detail}`
+				: `❌ ${r.detail ?? r.error}`;
+			pendingHygieneButtons.delete(parsed.id);
+			break;
+		}
+		case 'hyg-scaffold': {
+			const r = await scaffoldProjectIndex(row.slug, vaultDir);
+			resultText = r.ok
+				? `📝 Scaffolded \`${row.slug}/index.md\``
 				: `❌ ${r.detail ?? r.error}`;
 			pendingHygieneButtons.delete(parsed.id);
 			break;
