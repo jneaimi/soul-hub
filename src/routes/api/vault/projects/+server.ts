@@ -176,7 +176,11 @@ export const GET: RequestHandler = async ({ url }) => {
 			const full = engine.getNote(note.path);
 			if (!full) continue;
 
-			if (note.path.endsWith('/index.md') || note.path.endsWith(`/${slug}/index.md`)) {
+			// Only the project ROOT index.md owns the rollup metadata. Nested
+			// `index.md` files (design/, content-bank/, docs/) would otherwise
+			// clobber `parentProject` to null, since they don't carry the
+			// parent_project frontmatter.
+			if (note.path === `projects/${slug}/index.md`) {
 				hasIndex = true;
 				indexPath = note.path;
 				parentProject = parseParentSlug(full.meta.parent_project);
