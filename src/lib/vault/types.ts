@@ -211,6 +211,20 @@ export interface WriteResult {
 	/** ADR-047 — link-validator warnings (non-fatal). Empty array elided on the
 	 *  wire by the API route when there are no warnings. */
 	warnings?: LinkIssue[];
+	/** ADR-049 — stub notes materialised for forward refs when the caller set
+	 *  `meta.scaffold_stubs: true`. Each entry is a vault-relative path to a
+	 *  newly-created empty stub. Elided when none were created. */
+	stubs_created?: StubInfo[];
+}
+
+/** ADR-049 — record of one stub note created by the scaffold_stubs flow. */
+export interface StubInfo {
+	/** Vault-relative path of the new stub (e.g., "projects/foo/bar.md"). */
+	path: string;
+	/** The raw wikilink in the parent that triggered the stub creation. */
+	for_link: string;
+	/** Parent note's vault-relative path. */
+	source: string;
 }
 
 export interface WriteError {

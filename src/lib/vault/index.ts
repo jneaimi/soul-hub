@@ -5,7 +5,7 @@ import type {
 	VaultNote, VaultConfig, SearchQuery, SearchResult,
 	GraphData, VaultStats, VaultHealth, VaultZone, VaultTemplate,
 	CreateNoteRequest, UpdateNoteRequest, WriteAssetRequest, WriteResult, WriteError,
-	WriteLogEntry
+	WriteLogEntry, LinkIssue, StubInfo, VaultMeta
 } from './types.js';
 import { GLOBAL_REQUIRED_FIELDS, MAX_NOTE_SIZE, MAX_ASSET_SIZE } from './types.js';
 import { VaultIndexer } from './indexer.js';
@@ -456,7 +456,7 @@ export class VaultEngine {
 		// bare-project-slug; WARN (auto-tag `has-link-warnings`) on
 		// unresolved targets unless `meta.strict_links === true`.
 		const relPath = join(req.zone, req.filename);
-		const linkResult = validateLinks(req.content, {
+		let linkResult = validateLinks(req.content, {
 			sourcePath: relPath,
 			strict: req.meta.strict_links === true,
 			hasNote: (p) => this.indexer.hasNote(p),
@@ -471,6 +471,29 @@ export class VaultEngine {
 				linkErrors: linkResult.errors,
 			};
 		}
+
+		// ADR-049 — opt-in stub scaffolding for legitimate index-then-children
+		// workflows. When set, every `unresolved-target` warning becomes an
+		// empty stub note so the index ships internally consistent and the
+		// hygiene dashboard stops surfacing forward refs as warnings.
+		let stubsCreated: StubInfo[] = [];
+		if (linkResult.warnings.length > 0 && req.meta.scaffold_stubs === true) {
+			stubsCreated = await this.scaffoldStubsForWarnings(
+				linkResult.warnings,
+				relPath,
+				req.meta,
+			);
+			if (stubsCreated.length > 0) {
+				// Re-validate now that stubs exist — warnings should clear.
+				linkResult = validateLinks(req.content, {
+					sourcePath: relPath,
+					strict: req.meta.strict_links === true,
+					hasNote: (p) => this.indexer.hasNote(p),
+					resolver: { resolve: (raw, src) => this.indexer.resolveLink(raw, src ?? relPath) },
+				});
+			}
+		}
+
 		if (linkResult.warnings.length > 0) {
 			const tags = Array.isArray(req.meta.tags) ? [...req.meta.tags] : [];
 			if (!tags.includes('has-link-warnings')) tags.push('has-link-warnings');
@@ -538,7 +561,10 @@ export class VaultEngine {
 			context: req.meta.source_context as string | undefined,
 		});
 
-		return { success: true, path: relPath };
+		const result: WriteResult = { success: true, path: relPath };
+		if (linkResult.warnings.length > 0) result.warnings = linkResult.warnings;
+		if (stubsCreated.length > 0) result.stubs_created = stubsCreated;
+		return result;
 	}
 
 	/** Slice 0 — write a binary asset (image, voice, video, document) into
@@ -680,7 +706,7 @@ export class VaultEngine {
 		// ADR-047 — same wikilink validation as createNote. Always re-validates
 		// against the post-merge body, even when the caller only sent meta —
 		// frontmatter changes (aliases, strict_links) can shift link semantics.
-		const linkResult = validateLinks(newContent, {
+		let linkResult = validateLinks(newContent, {
 			sourcePath: path,
 			strict: mergedMeta.strict_links === true,
 			hasNote: (p) => this.indexer.hasNote(p),
@@ -695,6 +721,29 @@ export class VaultEngine {
 				linkErrors: linkResult.errors,
 			};
 		}
+
+		// ADR-049 — opt-in stub scaffolding on update too. Useful when an
+		// operator edits an existing index to add new sections of children
+		// that don't exist yet. The persisted `scaffold_stubs` flag on the
+		// note's frontmatter means subsequent updates honour the same intent
+		// without the caller needing to re-set it each time.
+		let stubsCreated: StubInfo[] = [];
+		if (linkResult.warnings.length > 0 && mergedMeta.scaffold_stubs === true) {
+			stubsCreated = await this.scaffoldStubsForWarnings(
+				linkResult.warnings,
+				path,
+				mergedMeta,
+			);
+			if (stubsCreated.length > 0) {
+				linkResult = validateLinks(newContent, {
+					sourcePath: path,
+					strict: mergedMeta.strict_links === true,
+					hasNote: (p) => this.indexer.hasNote(p),
+					resolver: { resolve: (raw, src) => this.indexer.resolveLink(raw, src ?? path) },
+				});
+			}
+		}
+
 		if (linkResult.warnings.length > 0) {
 			const tags = Array.isArray(mergedMeta.tags) ? [...mergedMeta.tags] : [];
 			if (!tags.includes('has-link-warnings')) tags.push('has-link-warnings');
@@ -754,9 +803,10 @@ export class VaultEngine {
 			context: existing.meta.source_context as string | undefined,
 		});
 
-		return linkResult.warnings.length > 0
-			? { success: true, path, warnings: linkResult.warnings }
-			: { success: true, path };
+		const updateResult: WriteResult = { success: true, path };
+		if (linkResult.warnings.length > 0) updateResult.warnings = linkResult.warnings;
+		if (stubsCreated.length > 0) updateResult.stubs_created = stubsCreated;
+		return updateResult;
 	}
 
 	/** Append a wikilink for `notePath` to `<zone>/index.md` under an
@@ -1049,6 +1099,129 @@ export class VaultEngine {
 			console.warn(`[vault] Failed to archive asset ${relPath}: ${err instanceof Error ? err.message : String(err)}`);
 			return false;
 		}
+	}
+
+	/** ADR-049 — materialise empty stub notes for every `unresolved-target`
+	 *  warning. Caller already gates on `meta.scaffold_stubs === true`.
+	 *
+	 *  Target path rules:
+	 *    - `[[multi/segment]]` → vault-relative `multi/segment.md`
+	 *    - `[[single]]`        → sibling of source: `<dirname(source)>/single.md`
+	 *
+	 *  Wikilinks with embedded headings/aliases (`[[foo#heading|Display]]`)
+	 *  are already normalised at the validator — we only see the bare target
+	 *  in the warning's `.link` field.
+	 *
+	 *  Stub frontmatter inherits project + source_agent from the parent for
+	 *  audit continuity, and stamps `stub_for` so future cleanup can find
+	 *  them. Body is intentionally minimal — these are placeholders, not
+	 *  real notes.
+	 *
+	 *  Skipped silently:
+	 *    - `auto-memory-wikilink` / `bare-project-slug` rules (those are
+	 *      REFUSE-only and never reach this method anyway, but defensive).
+	 *    - Target path that already exists (race / partial scaffolding from
+	 *      a prior write).
+	 *    - Invalid link shapes (path traversal, absolute paths).
+	 *
+	 *  Writes bypass `createNote` to avoid recursive validation / rate
+	 *  limiting / dedup overhead — stubs are sub-writes of the parent and
+	 *  share its provenance.
+	 */
+	private async scaffoldStubsForWarnings(
+		warnings: LinkIssue[],
+		sourcePath: string,
+		parentMeta: VaultMeta,
+	): Promise<StubInfo[]> {
+		const today = new Date().toISOString().slice(0, 10);
+		const sourceDir = dirname(sourcePath);
+		const created: StubInfo[] = [];
+		const seen = new Set<string>();
+
+		for (const w of warnings) {
+			if (w.rule !== 'unresolved-target') continue;
+			const raw = w.link.trim();
+			if (!raw || raw.includes('..') || raw.startsWith('/')) continue;
+
+			const target = raw.endsWith('.md') ? raw : `${raw}.md`;
+			const stubPath = target.includes('/')
+				? target
+				: (sourceDir === '.' ? target : `${sourceDir}/${target}`);
+
+			if (seen.has(stubPath)) continue;
+			seen.add(stubPath);
+
+			const absPath = resolve(this.config.rootDir, stubPath);
+			try {
+				await stat(absPath);
+				continue; // already exists — skip silently
+			} catch {
+				// good, file doesn't exist
+			}
+
+			const title = this.stubTitle(raw);
+			const stubMeta: VaultMeta = {
+				type: 'stub',
+				created: today,
+				tags: ['auto-generated', 'stub'],
+				stub_for: `[[${raw}]]`,
+				source_agent: parentMeta.source_agent as string | undefined,
+				source_context: `Scaffolded from ${sourcePath}`,
+			};
+			if (parentMeta.project) stubMeta.project = parentMeta.project as string;
+
+			const body = `# ${title}\n\n> Stub placeholder. Created via \`scaffold_stubs\` from [[${sourcePath.replace(/\.md$/, '')}]].\n> Fill in when ready, or delete if the parent link no longer needs a target.\n`;
+			const content = matter.stringify(body, stubMeta);
+
+			this.watcher.suppress(stubPath);
+			try {
+				await mkdir(dirname(absPath), { recursive: true });
+				const tmpPath = absPath + '.tmp';
+				await writeFile(tmpPath, content, 'utf-8');
+				await rename(tmpPath, absPath);
+			} catch {
+				continue; // skip this stub on write failure; parent write proceeds
+			}
+
+			await this.indexer.reindex(stubPath);
+			const note = this.indexer.get(stubPath);
+			if (note) this.searcher.upsert(note);
+
+			this.logWrite({
+				action: 'create',
+				path: stubPath,
+				agent: parentMeta.source_agent as string | undefined,
+				context: `stub for [[${raw}]] from ${sourcePath}`,
+				zone: stubPath.split('/')[0],
+				type: 'stub',
+				success: true,
+			});
+
+			this.committer.enqueue({
+				action: 'create',
+				path: stubPath,
+				zone: stubPath.split('/')[0],
+				type: 'stub',
+				agent: parentMeta.source_agent as string | undefined,
+				context: `stub for [[${raw}]] from ${sourcePath}`,
+			});
+
+			created.push({ path: stubPath, for_link: raw, source: sourcePath });
+		}
+
+		return created;
+	}
+
+	/** Convert a wikilink target ("research/early-draft" or "early-draft") into
+	 *  a human-readable title for the stub heading. */
+	private stubTitle(raw: string): string {
+		const last = raw.split('/').pop() ?? raw;
+		return last
+			.replace(/\.md$/i, '')
+			.split('-')
+			.map((w) => (w ? w.charAt(0).toUpperCase() + w.slice(1) : w))
+			.join(' ')
+			.trim() || raw;
 	}
 
 	async scaffoldProject(projectName: string): Promise<{ created: string[]; existed: string[] }> {
