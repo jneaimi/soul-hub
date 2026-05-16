@@ -268,7 +268,87 @@ try {
   }
 }
 
-// ── 14. Platform sanity ────────────────────────────────────────
+// ── 14. Vault chokepoint (ADR-046 / 048 / 050) ────────────────
+// Verifies the four out-of-repo artifacts are deployed. L3 + L5 are
+// code-resident and don't have a doctor check (they're either present
+// because the soul-hub binary exists, or they aren't).
+{
+  const CLAUDE_HOME = process.env.CLAUDE_HOME
+    ? resolve(process.env.CLAUDE_HOME.replace(/^~/, HOME))
+    : join(HOME, '.claude');
+  const VAULT_DIR = process.env.VAULT_DIR
+    ? resolve(process.env.VAULT_DIR.replace(/^~/, HOME))
+    : join(HOME, 'vault');
+  const REPO_ROOT = resolve(new URL('..', import.meta.url).pathname);
+  const INSTALL_DIR = join(REPO_ROOT, 'install');
+
+  // L1 + L2 hooks deployed
+  for (const name of ['vault-write-guard.sh', 'vault-write-guard-bash.sh']) {
+    const target = join(CLAUDE_HOME, 'hooks', name);
+    if (!existsSync(target)) {
+      add(`chokepoint/${name}`, 'fail', 'missing — run: bash scripts/install-chokepoint.sh');
+    } else {
+      try { accessSync(target, constants.X_OK); }
+      catch { add(`chokepoint/${name}`, 'fail', 'not executable'); continue; }
+      add(`chokepoint/${name}`, 'ok', 'deployed');
+    }
+  }
+
+  // settings.json has both PreToolUse entries
+  const settingsPath = join(CLAUDE_HOME, 'settings.json');
+  if (!existsSync(settingsPath)) {
+    add('chokepoint/settings.json', 'fail', 'missing');
+  } else {
+    try {
+      const s = JSON.parse(readFileSync(settingsPath, 'utf8'));
+      const hooks = s?.hooks?.PreToolUse ?? [];
+      const allCommands = hooks.flatMap((h) => (h.hooks ?? []).map((x) => x.command ?? ''));
+      const hasP1 = allCommands.some((c) => c.includes('vault-write-guard.sh'));
+      const hasP2 = allCommands.some((c) => c.includes('vault-write-guard-bash.sh'));
+      if (hasP1 && hasP2) add('chokepoint/settings.json', 'ok', 'both PreToolUse matchers registered');
+      else add('chokepoint/settings.json', 'fail', `missing matchers — P1:${hasP1} P2:${hasP2}`);
+    } catch (e) {
+      add('chokepoint/settings.json', 'fail', `invalid JSON: ${e.message}`);
+    }
+  }
+
+  // /vault-write skill deployed
+  const skillSkill = join(CLAUDE_HOME, 'skills', 'vault-write', 'SKILL.md');
+  if (!existsSync(skillSkill)) {
+    add('chokepoint/vault-write skill', 'fail', 'missing — run: bash scripts/install-chokepoint.sh');
+  } else {
+    add('chokepoint/vault-write skill', 'ok', 'deployed');
+  }
+
+  // L4 vault pre-commit (only check if vault exists)
+  if (existsSync(VAULT_DIR)) {
+    const hookPath = join(VAULT_DIR, '.git', 'hooks', 'pre-commit');
+    if (!existsSync(hookPath)) {
+      add('chokepoint/L4 pre-commit', 'fail', 'missing — run ~/vault/.vault/hooks/install.sh');
+    } else {
+      add('chokepoint/L4 pre-commit', 'ok', 'installed');
+    }
+  } else {
+    add('chokepoint/L4 pre-commit', 'warn', 'vault dir missing — skipped');
+  }
+
+  // Canonical sources present in repo
+  const canonicals = [
+    'hooks/vault-write-guard.sh',
+    'hooks/vault-write-guard-bash.sh',
+    'hooks/vault-pre-commit',
+    'skills/vault-write/SKILL.md',
+    'claude-settings.snippet.json',
+  ];
+  const missing = canonicals.filter((f) => !existsSync(join(INSTALL_DIR, f)));
+  if (missing.length === 0) {
+    add('chokepoint/install sources', 'ok', `${canonicals.length} canonicals present`);
+  } else {
+    add('chokepoint/install sources', 'fail', `missing in install/: ${missing.join(', ')}`);
+  }
+}
+
+// ── 15. Platform sanity ────────────────────────────────────────
 if (platform() === 'win32') {
   add('platform', 'fail', 'native Windows is unsupported. Use WSL2 (Ubuntu). See INSTALL.md.');
 } else if (platform() === 'linux') {

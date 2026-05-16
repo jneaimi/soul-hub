@@ -338,6 +338,17 @@ GITIGNORE
   fi
 fi
 
+# ── 8b. Vault chokepoint (ADR-046 / 047 / 048 / 049 / 050) ──────
+# Wires the Claude Code hooks (L1+L2), /vault-write skill, and vault
+# pre-commit hook (L4). Idempotent — installer handles already-current
+# state internally. L3 + L5 are code-resident (no install step).
+step "Installing vault chokepoint"
+if bash "$REPO_ROOT/scripts/install-chokepoint.sh" --quiet --symlink; then
+  ok "chokepoint installed (L1, L2, /vault-write skill, L4)"
+else
+  warn "chokepoint installer reported issues — run: bash scripts/install-chokepoint.sh"
+fi
+
 # ── 9. Optional: TikTok transcription deps (ADR-024) ────────────
 step "Optional: TikTok transcription deps"
 if command -v yt-dlp >/dev/null 2>&1 \
