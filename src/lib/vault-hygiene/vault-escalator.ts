@@ -32,6 +32,7 @@ import {
 	buildVaultHygieneOrphanKeyboard,
 	buildVaultHygieneStaleInboxKeyboard,
 	buildVaultHygieneUnresolvedKeyboard,
+	hasPendingVaultHygiene,
 	rememberVaultHygieneButtons,
 } from '../channels/telegram/callback.js';
 import { config as soulHubConfig } from '../config.js';
@@ -128,24 +129,6 @@ function formatStaleInboxMessage(issue: StaleInboxIssue): string {
 	);
 }
 
-/** Per-run dedup: skip emitting if the same bucket-keyed item was
- *  already sent in this process during the current emission window.
- *  Resets every time `emitVaultHygieneEscalations()` starts a new run
- *  (timestamp-based — each invocation gets a fresh window). */
-let lastEmittedAt: string | null = null;
-const emittedThisRun = new Set<string>();
-
-export function _resetVaultEscalatorDedupState(): void {
-	lastEmittedAt = null;
-	emittedThisRun.clear();
-}
-
-/** Bucket-scoped dedup key. Same string-shape we use for suppression so
- *  one `Set<string>` covers all 3 buckets without collision. */
-function dedupKeyFor(bucket: string, key: string): string {
-	return `${bucket}::${key}`;
-}
-
 export async function emitVaultHygieneEscalations(): Promise<VaultEscalationResult> {
 	const chatId = resolveTelegramChatId();
 	if (!chatId) return { ok: false, error: 'no-telegram-chat-id' };
@@ -162,12 +145,6 @@ export async function emitVaultHygieneEscalations(): Promise<VaultEscalationResu
 	const unresolved = engine.getUnresolved();
 	const orphans = engine.getOrphans();
 	const staleInbox = getStaleInbox(engine);
-
-	const generatedAt = new Date().toISOString();
-	if (generatedAt !== lastEmittedAt) {
-		lastEmittedAt = generatedAt;
-		emittedThisRun.clear();
-	}
 
 	const failures: { source: string; raw: string; error: string }[] = [];
 	const byBucket: Record<string, { totalRows: number; sent: number; skipped: number }> = {};
@@ -193,6 +170,19 @@ export async function emitVaultHygieneEscalations(): Promise<VaultEscalationResu
 			suggestedFix: `Link from a related note, or archive if no longer relevant.`,
 		}));
 
+	// Mirror report.ts filtering for `unresolved` — archive/inbox are
+	// frozen/transient zones and `operations/hygiene/` snapshots are this
+	// generator's own past output. Wikilinks in those areas are cosmetic
+	// noise, not operational debt; the report classifies them as
+	// un-actionable and the escalator must match, otherwise the operator
+	// gets fan-out for anomalies the report itself says don't exist.
+	const unresolvedIssues = unresolved.filter((u) => {
+		const zone = u.source.split('/')[0];
+		if (zone === 'archive' || zone === 'inbox') return false;
+		if (u.source.startsWith('operations/hygiene/')) return false;
+		return true;
+	});
+
 	// Bucket order: rare buckets first (orphan, stale-inbox) so their
 	// independent caps stay separate from the high-volume unresolved
 	// pool. Each bucket has its own cap from BUCKET_CAPS — no global
@@ -210,7 +200,7 @@ export async function emitVaultHygieneEscalations(): Promise<VaultEscalationResu
 				for (const issue of orphanIssues) {
 					if (bucketSent >= cap) break;
 					const key = issue.path;
-					if (suppressed.has(key) || emittedThisRun.has(dedupKeyFor(bucket, key))) {
+					if (suppressed.has(key) || hasPendingVaultHygiene(issue.path, '', bucket)) {
 						byBucket[bucket].skipped++;
 						skipped++;
 						continue;
@@ -229,7 +219,6 @@ export async function emitVaultHygieneEscalations(): Promise<VaultEscalationResu
 						chatJid: String(chatId),
 						messageId: result.messageIds[0],
 					});
-					emittedThisRun.add(dedupKeyFor(bucket, key));
 					byBucket[bucket].sent++;
 					sent++;
 					bucketSent++;
@@ -247,7 +236,7 @@ export async function emitVaultHygieneEscalations(): Promise<VaultEscalationResu
 				for (const issue of staleInbox) {
 					if (bucketSent >= cap) break;
 					const key = issue.path;
-					if (suppressed.has(key) || emittedThisRun.has(dedupKeyFor(bucket, key))) {
+					if (suppressed.has(key) || hasPendingVaultHygiene(issue.path, '', bucket)) {
 						byBucket[bucket].skipped++;
 						skipped++;
 						continue;
@@ -266,7 +255,6 @@ export async function emitVaultHygieneEscalations(): Promise<VaultEscalationResu
 						chatJid: String(chatId),
 						messageId: result.messageIds[0],
 					});
-					emittedThisRun.add(dedupKeyFor(bucket, key));
 					byBucket[bucket].sent++;
 					sent++;
 					bucketSent++;
@@ -275,13 +263,13 @@ export async function emitVaultHygieneEscalations(): Promise<VaultEscalationResu
 		},
 		{
 			name: 'unresolved',
-			total: unresolved.length,
+			total: unresolvedIssues.length,
 			run: async () => {
 				const bucket = 'unresolved';
 				const cap = BUCKET_CAPS[bucket] ?? 10;
 				const suppressed = await loadActiveSuppressions(bucket);
 				let bucketSent = 0;
-				for (const link of unresolved) {
+				for (const link of unresolvedIssues) {
 					if (bucketSent >= cap) break;
 					const issue: UnresolvedIssue = {
 						source: link.source,
@@ -289,7 +277,10 @@ export async function emitVaultHygieneEscalations(): Promise<VaultEscalationResu
 						suggestedFix: `Fuzzy-match \`${link.raw}\` against vault titles in \`${link.source}\` directory; correct the link or remove the line.`,
 					};
 					const key = vaultHygieneKeyFor(issue.source, issue.raw);
-					if (suppressed.has(key) || emittedThisRun.has(dedupKeyFor(bucket, key))) {
+					if (
+						suppressed.has(key) ||
+						hasPendingVaultHygiene(issue.source, issue.raw, bucket)
+					) {
 						byBucket[bucket].skipped++;
 						skipped++;
 						continue;
@@ -312,7 +303,6 @@ export async function emitVaultHygieneEscalations(): Promise<VaultEscalationResu
 						chatJid: String(chatId),
 						messageId: result.messageIds[0],
 					});
-					emittedThisRun.add(dedupKeyFor(bucket, key));
 					byBucket[bucket].sent++;
 					sent++;
 					bucketSent++;

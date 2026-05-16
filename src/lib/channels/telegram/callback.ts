@@ -1315,6 +1315,22 @@ export function buildVaultHygieneStaleInboxKeyboard(notePath: string): InlineKey
 	};
 }
 
+/** Probe: is there a still-live pending button row for this anomaly?
+ *  Used by the escalator to suppress re-emission across heartbeat ticks
+ *  while the operator hasn't actioned (or ignored) the previous message.
+ *  Naturally clears on operator action (handlers delete the row) and on
+ *  TTL expiry (7 days, see VAULT_HYG_PENDING_TTL_MS). */
+export function hasPendingVaultHygiene(
+	source: string,
+	raw: string,
+	bucket: string,
+): boolean {
+	const id = vaultHygieneIdFor(source, raw, bucket);
+	const row = pendingVaultHygieneButtons.get(id);
+	if (!row) return false;
+	return Date.now() - row.createdAt <= VAULT_HYG_PENDING_TTL_MS;
+}
+
 /** Stash the (source, raw, chatJid, messageId) so the callback handler
  *  can resolve which broken-link a tap belongs to. Older entries GC'd
  *  lazily on each insert. */
