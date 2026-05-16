@@ -248,13 +248,23 @@ export class VaultEngine {
 			// ADR-039 R3 — scope discipline. Flag oversized ADRs so the
 			// operator can decide whether to split the next phase into a
 			// new ADR (via `extends:`). Soft warning, not a block.
+			// Per ADR-039 § Consequences/Neutral: ADRs created before the
+			// rule shipped (2026-05-15) are grandfathered.
 			if (note.meta.type === 'decision') {
-				const bodyBytes = Buffer.byteLength(note.content, 'utf8');
-				const shippedMarkers = (note.content.match(/\bSHIPPED\b|shipped on/g) || []).length;
-				if (bodyBytes > 15000 || shippedMarkers > 5) {
-					violations.push(
-						`ADR scope (ADR-039): body ${bodyBytes} bytes, ${shippedMarkers} shipped markers — consider splitting next phase into a new ADR with \`extends:\``,
-					);
+				const createdRaw = note.meta.created;
+				const created = createdRaw ? new Date(String(createdRaw)) : null;
+				const grandfathered =
+					created !== null &&
+					!Number.isNaN(created.getTime()) &&
+					created.getTime() < Date.UTC(2026, 4, 15);
+				if (!grandfathered) {
+					const bodyBytes = Buffer.byteLength(note.content, 'utf8');
+					const shippedMarkers = (note.content.match(/\bSHIPPED\b|shipped on/g) || []).length;
+					if (bodyBytes > 15000 || shippedMarkers > 5) {
+						violations.push(
+							`ADR scope (ADR-039): body ${bodyBytes} bytes, ${shippedMarkers} shipped markers — consider splitting next phase into a new ADR with \`extends:\``,
+						);
+					}
 				}
 			}
 
