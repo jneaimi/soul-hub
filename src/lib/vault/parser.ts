@@ -30,14 +30,20 @@ export function extractLinks(content: string): VaultLink[] {
 	const re = new RegExp(WIKILINK_RE.source, WIKILINK_RE.flags);
 
 	// Strip fenced code blocks and inline code so we don't parse example wikilinks.
-	// Fenced blocks first (both ``` and ~~~ of length 3+; closing run must match opening).
-	// Inline code second, using CommonMark variable-backtick matching: a run of N backticks
-	// opens, content (not containing N consecutive backticks) follows, run of N closes.
-	// Old regex `/`[^`]+`/g` missed double-backtick spans containing a single ` inside —
-	// the canonical reason to use ``…`` in CommonMark — and missed ~~~ fenced blocks entirely.
+	//
+	// Fenced blocks per CommonMark: opener + closer must be at the START of a
+	// line (up to 3 spaces of indent), and only the closer-run matters — runs
+	// of backticks/tildes appearing mid-line inside the content do NOT close
+	// the fence. A naive `(`{3,})[\s\S]*?\1` matches the first 3-backtick run
+	// anywhere, so a JSON example mentioning the literal text ```json inside
+	// the fence's content closes the fence early and corrupts downstream parse.
+	//
+	// Inline code spans are constrained to a single line (no blank-line spans),
+	// which mirrors how authors actually use them and prevents one stray
+	// unclosed backtick from swallowing the rest of the document.
 	let stripped = content
-		.replace(/(`{3,}|~{3,})[\s\S]*?\1/g, '')
-		.replace(/(`+)[\s\S]*?\1/g, '');
+		.replace(/^[ \t]{0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n[ \t]{0,3}\1[ \t]*$/gm, '')
+		.replace(/(`+)[^\n]+?\1/g, '');
 
 	// Normalise legacy `\|` table-escapes inside wikilinks so the regex can
 	// pick the alias separator correctly. Without this, `[[note\|alias]]`
