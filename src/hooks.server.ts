@@ -1,13 +1,10 @@
 import type { Handle } from '@sveltejs/kit';
-import { resolve, dirname } from 'node:path';
 import { config } from '$lib/config.js';
-import { initScheduler } from '$lib/pipeline/index.js';
 import {
 	initSchedulerCore,
 	shutdownScheduler,
 	registerTaskHandler,
 } from '$lib/scheduler/index.js';
-import { triggerPipelineFactory } from '$lib/scheduler/handlers/trigger-pipeline.js';
 import { shellScriptFactory } from '$lib/scheduler/handlers/shell-script.js';
 import { dailyFocusFactory } from '$lib/scheduler/handlers/daily-focus.js';
 import { vaultScoutFactory } from '$lib/scheduler/handlers/vault-scout.js';
@@ -34,11 +31,7 @@ import { soulHubDataDir, soulHubSettingsPath } from '$lib/paths.js';
 import '$lib/secrets.js'; // Load platform secrets into process.env at startup
 import { existsSync } from 'node:fs';
 
-const PIPELINES_DIR = resolve(dirname(config.resolved.catalogDir), 'pipelines');
 const DATA_DIR = soulHubDataDir();
-
-// Initialize scheduler on server startup
-initScheduler(PIPELINES_DIR, DATA_DIR);
 
 // Seed file-explorer roots on first run with the previously-hardcoded paths
 // so existing flows (vault attachments, project file browsers) keep working
@@ -117,11 +110,6 @@ try {
 // so reconcileFromSettings finds the handlers when it walks the task
 // list. New task types (Phase 3+) register here too.
 try {
-	registerTaskHandler(
-		'trigger-pipeline',
-		triggerPipelineFactory,
-		'Run a Soul Hub pipeline on a cron schedule.',
-	);
 	registerTaskHandler(
 		'shell-script',
 		shellScriptFactory,

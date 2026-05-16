@@ -172,8 +172,8 @@
 
 	/** Resolve a frontmatter wikilink target to a vault-relative file path.
 	 *  - Slug form (`adr-018-author-agent`) → same directory as `fromPath`.
-	 *  - Path form (`../soul-hub-pipeline/adr-001-...`) → resolved relative
-	 *    to `fromPath`'s directory, with `..` segments collapsed. */
+	 *  - Path form (`../soul-hub-whatsapp/adr-019-vault-git-migration`) →
+	 *    resolved relative to `fromPath`'s directory, with `..` segments collapsed. */
 	function resolveRelLink(raw: string, fromPath: string): string {
 		const fromDir = fromPath.split('/').slice(0, -1);
 		if (!raw.includes('/')) {

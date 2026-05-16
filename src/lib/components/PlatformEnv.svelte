@@ -11,8 +11,8 @@
 	}
 
 	/** Local descriptions for env vars that aren't yet declared by an adapter
-	 *  (skills, pipelines, etc.). When/if these consumers register via the
-	 *  channel/provider registry, these rows can be removed. */
+	 *  (skills, etc.). When/if these consumers register via the channel/provider
+	 *  registry, these rows can be removed. */
 	interface KnownVar {
 		key: string;
 		description: string;
@@ -30,7 +30,7 @@
 		{ key: 'GEMINI_API_KEY', description: 'Gemini API for image + Veo video generation', usedBy: ['generate skill', 'media-creator agent'] },
 		{ key: 'ELEVENLABS_API_KEY', description: 'ElevenLabs text-to-speech', usedBy: ['generate skill', 'media-creator agent'] },
 		{ key: 'RESEND_API_KEY', description: 'Resend email API for newsletters', usedBy: ['newsletter skill'] },
-		{ key: 'GOOGLE_API_KEY', description: 'Google Cloud Platform (Geocoding, Places, Maps)', usedBy: ['cafe-deals pipeline'] },
+		{ key: 'GOOGLE_API_KEY', description: 'Google Cloud Platform (Geocoding, Places, Maps)', usedBy: ['google maps/places integrations'] },
 		// Gmail/Outlook OAuth client_id/secret pairs are now managed in
 		// Settings → Connections (see ADR
 		// 2026-05-11-oauth-clients-as-first-class-connections). Migration #5

@@ -4,13 +4,12 @@ import { readdir, readFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { config } from '$lib/config.js';
 import { isEnvSet } from '$lib/secrets.js';
-import { parseBlockManifest, type BlockManifest } from '$lib/pipeline/block.js';
 
 const HOME = process.env.HOME || '';
 const SKILLS_DIR = resolve(HOME, '.claude', 'skills');
 const AGENTS_DIR = resolve(HOME, '.claude', 'agents');
-const PIPELINES_DIR = resolve(config.resolved.catalogDir, '..', 'pipelines');
-const CATALOG_DIR = config.resolved.catalogDir;
+// ADR-002: pipeline + catalog block scanners removed 2026-05-16 (pipeline module
+// retired). Naseej component scanner will land with the orchestrator-v2 fold.
 
 export interface LibraryItem {
 	name: string;
@@ -115,30 +114,6 @@ async function scanAgents(): Promise<LibraryItem[]> {
 	return items;
 }
 
-/** Scan pipelines — skips _archive directory */
-async function scanPipelines(): Promise<LibraryItem[]> {
-	const items: LibraryItem[] = [];
-	try {
-		const entries = await readdir(PIPELINES_DIR, { withFileTypes: true });
-		for (const entry of entries) {
-			if (!entry.isDirectory() || entry.name.startsWith('_') || entry.name.startsWith('.')) continue;
-			const yamlPath = join(PIPELINES_DIR, entry.name, 'pipeline.yaml');
-			try {
-				const content = await readFile(yamlPath, 'utf-8');
-				const descMatch = content.match(/description:\s*(.+)/);
-				items.push({
-					name: entry.name,
-					type: 'pipeline',
-					source: 'yours',
-					description: descMatch?.[1]?.trim() || '',
-					path: resolve(PIPELINES_DIR, entry.name),
-				});
-			} catch { /* skip invalid */ }
-		}
-	} catch { /* dir doesn't exist */ }
-	return items;
-}
-
 /** MCP server config as found in .mcp.json files */
 interface McpServerConfig {
 	command?: string;
@@ -212,69 +187,18 @@ async function scanMcpServers(): Promise<LibraryItem[]> {
 	return items;
 }
 
-/** Convert a BlockManifest to a LibraryItem */
-function manifestToLibraryItem(manifest: BlockManifest, blockDir: string): LibraryItem {
-	const envVars = manifest.env?.map((e) => ({
-		name: e.name,
-		description: e.description || '',
-		required: e.required !== false,
-		set: isEnvSet(e.name),
-	}));
-
-	return {
-		name: manifest.name,
-		type: manifest.type === 'script' ? 'script' : manifest.type as LibraryItem['type'],
-		source: 'catalog',
-		description: manifest.description,
-		runtime: manifest.runtime,
-		env_vars: envVars && envVars.length > 0 ? envVars : undefined,
-		path: blockDir,
-	};
-}
-
-/** Scan catalog directories for BLOCK.md manifests */
-async function scanCatalogBlocks(): Promise<LibraryItem[]> {
-	const items: LibraryItem[] = [];
-	const subdirs = ['scripts', 'agents', 'skills', 'mcp'];
-
-	for (const subdir of subdirs) {
-		const dir = join(CATALOG_DIR, subdir);
-		let entries;
-		try {
-			entries = await readdir(dir, { withFileTypes: true });
-		} catch {
-			continue; // subdir doesn't exist
-		}
-
-		for (const entry of entries) {
-			if (!entry.isDirectory() || entry.name.startsWith('_') || entry.name.startsWith('.')) continue;
-			const blockDir = resolve(dir, entry.name);
-			try {
-				const manifest = await parseBlockManifest(blockDir);
-				items.push(manifestToLibraryItem(manifest, blockDir));
-			} catch {
-				// Invalid or missing BLOCK.md — skip
-			}
-		}
-	}
-
-	return items;
-}
-
 /** GET /api/library — list all items from My Library + Catalog */
 export const GET: RequestHandler = async ({ url }) => {
-	const typeFilter = url.searchParams.get('type'); // skill, agent, pipeline, mcp, script
+	const typeFilter = url.searchParams.get('type'); // skill, agent, mcp
 	const sourceFilter = url.searchParams.get('source'); // yours, catalog
 
-	const [skills, agents, pipelines, mcpServers, catalogBlocks] = await Promise.all([
+	const [skills, agents, mcpServers] = await Promise.all([
 		scanSkills(),
 		scanAgents(),
-		scanPipelines(),
 		scanMcpServers(),
-		scanCatalogBlocks(),
 	]);
 
-	let items = [...skills, ...agents, ...pipelines, ...mcpServers, ...catalogBlocks];
+	let items = [...skills, ...agents, ...mcpServers];
 
 	if (typeFilter) {
 		items = items.filter((i) => i.type === typeFilter);

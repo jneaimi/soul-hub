@@ -3,9 +3,11 @@
 	import SystemNotifications from '$lib/components/SystemNotifications.svelte';
 	import SchedulerMiniTimeline from '$lib/components/scheduler/SchedulerMiniTimeline.svelte';
 
-	interface DashboardData {
-		pipelineSummary: { total: number; items: { name: string; type: 'pipeline' | 'chain' }[] };
-	}
+	// ADR-002: DashboardData previously held `pipelineSummary` for the Pipelines
+	// card. Both the field and the card were removed 2026-05-16; the response
+	// now returns `recentActivity` + `projectSummary` only and the homepage no
+	// longer reads dashboard at all. Kept as an empty marker for future fields.
+	type DashboardData = Record<string, never>;
 
 	interface VaultRecent {
 		path: string;
@@ -323,48 +325,11 @@
 			<!-- System Notifications -->
 			<SystemNotifications />
 
-			<!-- Bento layout — Vault is the hero (4 cols), Pipelines + Playbooks/Files balance the rows -->
+			<!-- Bento layout — Vault is the hero (full width), Playbooks/Files balance below.
+			     ADR-002: Pipelines card removed 2026-05-16. Naseej replaces it; surface is at /naseej. -->
 			<div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-4">
-				<!-- Pipelines -->
-				<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-2">
-					<div class="flex items-center justify-between mb-3">
-						<h3 class="text-sm font-semibold text-hub-text">
-							Pipelines
-							{#if dashboard?.pipelineSummary}
-								<span class="text-hub-dim font-normal ml-1">({dashboard.pipelineSummary.total})</span>
-							{/if}
-						</h3>
-						<div class="flex items-center gap-2">
-							<a
-								href="/pipelines/builder?type=pipeline"
-								class="w-7 h-7 grid place-items-center rounded-md text-hub-dim hover:text-hub-cta hover:bg-hub-surface transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-hub-cta/50"
-								aria-label="New pipeline"
-								title="New pipeline"
-							>
-								<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-							</a>
-							<a href="/pipelines" class="text-[11px] text-hub-info hover:text-hub-text transition-colors cursor-pointer">View all</a>
-						</div>
-					</div>
-					{#if dashboard?.pipelineSummary && dashboard.pipelineSummary.items.length > 0}
-						<div class="space-y-1.5">
-							{#each dashboard.pipelineSummary.items.slice(0, 5) as item}
-								<a
-									href="/pipelines?name={encodeURIComponent(item.name)}"
-									class="flex items-center justify-between py-1.5 px-2 rounded-lg hover:bg-hub-surface transition-colors cursor-pointer group"
-								>
-									<span class="text-xs text-hub-muted group-hover:text-hub-text transition-colors truncate">{item.name}</span>
-									<span class="flex-shrink-0 w-2 h-2 rounded-full bg-hub-cta/60"></span>
-								</a>
-							{/each}
-						</div>
-					{:else}
-						<p class="text-xs text-hub-dim py-3 text-center">No pipelines yet</p>
-					{/if}
-				</div>
-
 				<!-- Vault (hero) -->
-				<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-4">
+				<div class="bg-hub-card rounded-xl p-4 border border-hub-border xl:col-span-6">
 					<div class="flex items-center justify-between mb-3">
 						<div class="flex items-center gap-1.5">
 							<h3 class="text-sm font-semibold text-hub-text">

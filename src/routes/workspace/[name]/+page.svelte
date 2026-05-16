@@ -328,16 +328,16 @@
 							'on-commit': 'text-hub-cta',
 							scheduled: 'text-hub-purple',
 						}}
-						<a
-							href="/pipelines?name={encodeURIComponent(pipeline.name)}"
-							class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-hub-card border border-hub-border hover:border-hub-info/50 transition-colors cursor-pointer group"
+						<span
+							class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-hub-card border border-hub-border opacity-70"
+							title="Pipeline module retired (ADR-002) — see /naseej for the replacement"
 						>
-							<span class="text-hub-text group-hover:text-hub-info transition-colors">{pipeline.name}</span>
+							<span class="text-hub-text">{pipeline.name}</span>
 							<span class="text-hub-dim">{pipeline.role}</span>
 							<span class="px-1 py-px rounded text-[9px] font-medium {triggerColors[pipeline.trigger] ?? 'text-hub-dim'} bg-hub-surface">
 								{pipeline.trigger}
 							</span>
-						</a>
+						</span>
 					{/each}
 				</div>
 			{/if}

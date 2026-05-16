@@ -43,16 +43,18 @@
     return notes;
   });
 
-  // File browser state
+  // File browser state.
+  // ADR-002 (2026-05-16): the 'outputs' root (Pipeline Outputs) was retired
+  // along with the pipeline module. Naseej recipe outputs live under
+  // ~/vault/projects/<project>/outputs/ and are reachable through the vault
+  // root, so a separate toggle is no longer needed.
   interface FileEntry { name: string; type: string; size?: number; }
-  let fileRoot = $state<'vault' | 'outputs'>('vault');
   let currentDir = $state('');
   let dirEntries = $state<FileEntry[]>([]);
   let loadingDir = $state(false);
   let dirError = $state<string | null>(null);
 
   function getBasePath(): string {
-    if (fileRoot === 'outputs' && store.pipelinesDir) return store.pipelinesDir;
     return store.vaultDir;
   }
 
@@ -70,25 +72,14 @@
         return;
       }
       const data = await res.json();
-        let entries = (data.entries || []) as FileEntry[];
-        if (fileRoot === 'vault') {
-          entries = entries.filter((e: FileEntry) => !e.name.startsWith('.') && e.name !== 'CLAUDE.md');
-        }
-        if (fileRoot === 'outputs' && !dir) {
-          const withOutput: FileEntry[] = [];
-          for (const e of entries) {
-            if (e.type !== 'dir') continue;
-            const outRes = await fetch(`/api/files?path=${encodeURIComponent(store.pipelinesDir + '/' + e.name + '/output')}`);
-            if (outRes.ok) withOutput.push(e);
-          }
-          entries = withOutput;
-        }
-        dirEntries = entries.sort((a: FileEntry, b: FileEntry) => {
-          const aDir = a.type === 'dir';
-          const bDir = b.type === 'dir';
-          if (aDir !== bDir) return aDir ? -1 : 1;
-          return a.name.localeCompare(b.name);
-        });
+      let entries = (data.entries || []) as FileEntry[];
+      entries = entries.filter((e: FileEntry) => !e.name.startsWith('.') && e.name !== 'CLAUDE.md');
+      dirEntries = entries.sort((a: FileEntry, b: FileEntry) => {
+        const aDir = a.type === 'dir';
+        const bDir = b.type === 'dir';
+        if (aDir !== bDir) return aDir ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
     } catch (e) {
       dirError = (e as Error).name === 'AbortError' ? null : 'Network error';
       dirEntries = [];
@@ -97,12 +88,8 @@
 
   function handleFileClick(entry: FileEntry) {
     if (entry.type === 'dir') {
-      if (fileRoot === 'outputs' && !currentDir) {
-        browseDir(entry.name + '/output');
-      } else {
-        browseDir(currentDir ? `${currentDir}/${entry.name}` : entry.name);
-      }
-    } else if (fileRoot === 'vault') {
+      browseDir(currentDir ? `${currentDir}/${entry.name}` : entry.name);
+    } else {
       const relPath = currentDir ? `${currentDir}/${entry.name}` : entry.name;
       // Markdown opens as a vault note; everything else previews as a raw file
       // so SVG/PNG/PDF/etc render in FilePreview instead of erroring at /api/vault/notes.
@@ -111,9 +98,6 @@
       } else {
         onSelect('__file__:' + getBasePath() + '/' + relPath);
       }
-    } else {
-      const absPath = getBasePath() + '/' + (currentDir ? `${currentDir}/${entry.name}` : entry.name);
-      onSelect('__file__:' + absPath);
     }
   }
 
@@ -121,13 +105,6 @@
     const parts = currentDir.split('/');
     parts.pop();
     browseDir(parts.join('/'));
-  }
-
-  function switchFileRoot(root: 'vault' | 'outputs') {
-    fileRoot = root;
-    currentDir = '';
-    dirEntries = [];
-    browseDir('');
   }
 
   const zoneIcons: Record<string, string> = {
@@ -209,29 +186,15 @@
 
   <div class="flex-1 overflow-y-auto overflow-x-hidden">
   {#if sidebarTab === 'files'}
-    <!-- File browser -->
+    <!-- File browser — vault root only (ADR-002, 2026-05-16) -->
     <div class="p-3">
-      <!-- Root switcher -->
-      {#if store.pipelinesDir}
-        <div class="flex gap-1 mb-2">
-          <button
-            class="flex-1 text-[11px] py-1 rounded transition-colors {fileRoot === 'vault' ? 'bg-hub-cta/15 text-hub-cta' : 'text-hub-dim hover:text-hub-muted'}"
-            onclick={() => switchFileRoot('vault')}
-          >Vault</button>
-          <button
-            class="flex-1 text-[11px] py-1 rounded transition-colors {fileRoot === 'outputs' ? 'bg-hub-cta/15 text-hub-cta' : 'text-hub-dim hover:text-hub-muted'}"
-            onclick={() => switchFileRoot('outputs')}
-          >Pipeline Outputs</button>
-        </div>
-      {/if}
-
       <div class="flex items-center gap-2 mb-2">
         {#if currentDir}
           <button onclick={navigateUp} class="text-hub-muted hover:text-hub-text text-sm" aria-label="Go up">
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
           </button>
         {/if}
-        <span class="text-xs text-hub-dim truncate">/{currentDir || (fileRoot === 'outputs' ? 'pipelines' : 'vault')}</span>
+        <span class="text-xs text-hub-dim truncate">/{currentDir || 'vault'}</span>
       </div>
 
       {#if loadingDir}

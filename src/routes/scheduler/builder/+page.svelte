@@ -16,22 +16,14 @@
 	}
 
 	type Mode = 'presets' | 'builder' | 'raw';
-	type TaskType = 'shell-script' | 'trigger-pipeline';
+	// ADR-002: trigger-pipeline retired 2026-05-16; only shell-script remains in the
+	// builder. The orchestrator-v2 fold will add a 'naseej-recipe' task type later.
+	type TaskType = 'shell-script';
 
 	interface ShellScriptParams {
 		command: string[];
 		cwd?: string;
 		timeoutMs?: number;
-	}
-
-	interface TriggerPipelineParams {
-		pipeline: string;
-	}
-
-	interface PipelineSummary {
-		name: string;
-		path: string;
-		description: string;
 	}
 
 	const PRESETS: Array<{ label: string; cron: string }> = [
@@ -67,10 +59,6 @@
 	let command = $state('');
 	let cwd = $state('');
 	let timeoutMin = $state(60);
-
-	// trigger-pipeline params
-	let pipelineName = $state('');
-	let pipelines = $state<PipelineSummary[]>([]);
 
 	// Builder mode state (UI-only inputs that compose into cronExpr)
 	let bMinute = $state('0');
@@ -122,7 +110,6 @@
 		if (!idValid || !id) return false;
 		if (!isValid) return false;
 		if (type === 'shell-script' && !command.trim()) return false;
-		if (type === 'trigger-pipeline' && !pipelineName) return false;
 		return true;
 	});
 
@@ -166,17 +153,6 @@
 		return `in ${secs}s`;
 	}
 
-	async function loadPipelines() {
-		try {
-			const res = await fetch('/api/pipelines');
-			if (!res.ok) return;
-			const data = await res.json();
-			pipelines = (data.pipelines ?? []) as PipelineSummary[];
-		} catch {
-			pipelines = [];
-		}
-	}
-
 	async function loadExisting(taskId: string) {
 		loadingExisting = true;
 		try {
@@ -201,9 +177,6 @@
 				command = Array.isArray(p.command) ? p.command.join(' ') : '';
 				cwd = p.cwd ?? '';
 				timeoutMin = p.timeoutMs ? Math.round(p.timeoutMs / 60_000) : 60;
-			} else if (task.type === 'trigger-pipeline') {
-				const p = task.params as TriggerPipelineParams;
-				pipelineName = p.pipeline ?? '';
 			}
 
 			// Edit mode opens on Raw per ADR Q2.
@@ -225,14 +198,11 @@
 			const settings = await settingsRes.json();
 			const existing: Array<Record<string, unknown>> = settings.scheduler?.tasks ?? [];
 
-			const params: Record<string, unknown> =
-				type === 'shell-script'
-					? {
-							command: command.trim().split(/\s+/).filter(Boolean),
-							cwd: cwd.trim() || undefined,
-							timeoutMs: timeoutMin > 0 ? timeoutMin * 60_000 : undefined,
-						}
-					: { pipeline: pipelineName };
+			const params: Record<string, unknown> = {
+				command: command.trim().split(/\s+/).filter(Boolean),
+				cwd: cwd.trim() || undefined,
+				timeoutMs: timeoutMin > 0 ? timeoutMin * 60_000 : undefined,
+			};
 
 			const newSpec = {
 				id,
@@ -279,20 +249,10 @@
 	}
 
 	onMount(() => {
-		loadPipelines();
 		const url = new URL(window.location.href);
 		const taskId = url.searchParams.get('id');
 		if (taskId) {
 			loadExisting(taskId);
-			return;
-		}
-		// ADR-008 P3 — deep link from /pipelines: pre-fill a new trigger-pipeline task.
-		const source = url.searchParams.get('source');
-		const pipelineParam = url.searchParams.get('pipeline');
-		if (source === 'pipeline' && pipelineParam) {
-			type = 'trigger-pipeline';
-			pipelineName = pipelineParam;
-			if (!id) id = `pipeline-${pipelineParam}`.toLowerCase().replace(/[^a-z0-9-_]+/g, '-');
 		}
 	});
 
@@ -513,89 +473,45 @@
 				<h2 class="text-sm font-semibold text-hub-text">Task body</h2>
 
 				<div>
-					<label for="type-select" class="block text-xs text-hub-muted mb-1.5">Type</label>
-					<div class="flex flex-col sm:flex-row gap-2">
-						<label class="flex items-start gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors flex-1
-							{type === 'shell-script' ? 'border-hub-cta/60 bg-hub-cta/10' : 'border-hub-border bg-hub-bg hover:border-hub-border/80'}"
-						>
-							<input type="radio" bind:group={type} value="shell-script" class="mt-0.5 cursor-pointer" />
-							<div>
-								<div class="text-sm font-medium text-hub-text">Subprocess</div>
-								<div class="text-[11px] text-hub-dim">Run a shell command (script, python, etc.)</div>
-							</div>
-						</label>
-						<label class="flex items-start gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors flex-1
-							{type === 'trigger-pipeline' ? 'border-hub-cta/60 bg-hub-cta/10' : 'border-hub-border bg-hub-bg hover:border-hub-border/80'}"
-						>
-							<input type="radio" bind:group={type} value="trigger-pipeline" class="mt-0.5 cursor-pointer" />
-							<div>
-								<div class="text-sm font-medium text-hub-text">Trigger pipeline</div>
-								<div class="text-[11px] text-hub-dim">Run an existing Soul Hub pipeline</div>
-							</div>
-						</label>
-					</div>
+					<p class="text-[11px] text-hub-dim mb-2">
+						Task type: <code class="font-mono text-hub-muted">shell-script</code>
+						<span class="text-hub-dim">— pipeline-trigger retired per ADR-002 (2026-05-16); a Naseej-recipe task type will land with the orchestrator-v2 fold.</span>
+					</p>
 				</div>
 
-				{#if type === 'shell-script'}
+				<div>
+					<label for="cmd" class="block text-xs text-hub-muted mb-1">Command</label>
+					<input
+						id="cmd"
+						type="text"
+						bind:value={command}
+						placeholder="python3 /path/to/script.py"
+						class="w-full px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50"
+					/>
+					<p class="text-[11px] text-hub-dim mt-1">Whitespace-separated. For args containing spaces, edit <code class="font-mono">~/.soul-hub/settings.json</code> directly.</p>
+				</div>
+				<div class="grid grid-cols-1 sm:grid-cols-[1fr_120px] gap-3">
 					<div>
-						<label for="cmd" class="block text-xs text-hub-muted mb-1">Command</label>
+						<label for="cwd" class="block text-xs text-hub-muted mb-1">Working dir <span class="text-hub-dim">(optional)</span></label>
 						<input
-							id="cmd"
+							id="cwd"
 							type="text"
-							bind:value={command}
-							placeholder="python3 /path/to/script.py"
+							bind:value={cwd}
+							placeholder="/Users/jneaimi/dev/your-project"
 							class="w-full px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50"
 						/>
-						<p class="text-[11px] text-hub-dim mt-1">Whitespace-separated. For args containing spaces, edit <code class="font-mono">~/.soul-hub/settings.json</code> directly.</p>
 					</div>
-					<div class="grid grid-cols-1 sm:grid-cols-[1fr_120px] gap-3">
-						<div>
-							<label for="cwd" class="block text-xs text-hub-muted mb-1">Working dir <span class="text-hub-dim">(optional)</span></label>
-							<input
-								id="cwd"
-								type="text"
-								bind:value={cwd}
-								placeholder="/Users/jneaimi/dev/your-project"
-								class="w-full px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50"
-							/>
-						</div>
-						<div>
-							<label for="timeout" class="block text-xs text-hub-muted mb-1">Timeout (min)</label>
-							<input
-								id="timeout"
-								type="number"
-								bind:value={timeoutMin}
-								min="0"
-								class="w-full px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50"
-							/>
-						</div>
-					</div>
-				{:else if type === 'trigger-pipeline'}
 					<div>
-						<label for="pipeline-select" class="block text-xs text-hub-muted mb-1">Pipeline</label>
-						<select
-							id="pipeline-select"
-							bind:value={pipelineName}
-							class="w-full px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-sm text-hub-text focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50"
-						>
-							<option value="">— Choose a pipeline —</option>
-							{#each pipelines as p (p.path)}
-								<option value={p.name}>{p.name}</option>
-							{/each}
-						</select>
-						{#if pipelineName}
-							{@const picked = pipelines.find((p) => p.name === pipelineName)}
-							{#if picked}
-								<div class="mt-2 p-3 rounded-lg bg-hub-bg/60 border border-hub-border/60 text-xs">
-									<p class="text-hub-muted">{picked.description || 'No description'}</p>
-									<a href="/pipelines?name={encodeURIComponent(picked.name)}" class="text-hub-info hover:text-hub-text mt-1.5 inline-block">
-										Open in pipeline builder ↗
-									</a>
-								</div>
-							{/if}
-						{/if}
+						<label for="timeout" class="block text-xs text-hub-muted mb-1">Timeout (min)</label>
+						<input
+							id="timeout"
+							type="number"
+							bind:value={timeoutMin}
+							min="0"
+							class="w-full px-3 py-2 rounded-lg bg-hub-bg border border-hub-border text-sm text-hub-text font-mono focus:outline-none focus:ring-1 focus:ring-hub-cta/50 focus:border-hub-cta/50"
+						/>
 					</div>
-				{/if}
+				</div>
 			</section>
 
 			<!-- Behavior -->

@@ -76,9 +76,9 @@ export async function recordRun(
 		const output = await fn({ signal: controller.signal });
 		const durationMs = Date.now() - startedAtMs;
 		// If the run was cancelled mid-flight but the handler still
-		// returned cleanly (e.g. trigger-pipeline today doesn't honour
-		// the signal), record it as cancelled rather than success — the
-		// user pressed cancel for a reason.
+		// returned cleanly (some handlers don't honour the signal),
+		// record it as cancelled rather than success — the user pressed
+		// cancel for a reason.
 		if (controller.signal.aborted) {
 			recordRunError(runId, {
 				durationMs,

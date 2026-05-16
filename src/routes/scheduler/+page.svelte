@@ -127,7 +127,7 @@
 	}
 
 	function isEditable(t: Task): boolean {
-		return t.type === 'shell-script' || t.type === 'trigger-pipeline';
+		return t.type === 'shell-script';
 	}
 
 	function toggleExpand(id: string) {

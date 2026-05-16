@@ -163,34 +163,11 @@ export function generateClaudeMd(config: SoulHubConfig, availablePipelines?: Pip
 		}
 	}
 
-	// Pipeline Integration section
-	const pipelineEntries = config.pipelines ?? [];
-	if (pipelineEntries.length > 0) {
-		sections.push('## Pipeline Integration\n');
-
-		sections.push('### Linked Pipelines\n');
-		sections.push('| Pipeline | Role | Inputs | Outputs | Trigger |');
-		sections.push('|----------|------|--------|---------|---------|');
-		for (const p of pipelineEntries) {
-			const info = availablePipelines?.find((ap) => ap.name === p.name);
-			const inputs = info?.inputs.map((i) => `${i.name} (${i.type})`).join(', ') || '-';
-			const outputs = info?.outputs.join(', ') || '-';
-			sections.push(`| ${p.name} | ${p.role} | ${inputs} | ${outputs} | ${p.trigger} |`);
-		}
-		sections.push('');
-
-		sections.push('### How to use pipelines\n');
-		sections.push('- To run a linked pipeline: direct the user to Soul Hub → Pipelines → {name}');
-		sections.push('- To suggest a new pipeline: describe the need and suggest creating one in the Builder');
-		sections.push('- Pipeline outputs are in ~/dev/soul-hub/pipelines/{name}/output/\n');
-
-		sections.push('### When to suggest pipelines\n');
-		sections.push('- User is writing tests → suggest QA pipeline if linked');
-		sections.push('- User needs generated content → suggest content pipeline if linked');
-		sections.push('- User is debugging → suggest running the pipeline in troubleshoot mode');
-		sections.push('- User needs something no pipeline provides → suggest creating one in the Builder');
-		sections.push('');
-	}
+	// ADR-002: pipeline module retired 2026-05-16. The "Linked Pipelines" section
+	// the generator used to emit referenced /pipelines (which is now 410). A
+	// Naseej "Linked Recipes" section will replace it once the orchestrator-v2
+	// fold lands. `config.pipelines` (if present from a legacy workspace) is now
+	// ignored rather than rendered into misleading guidance.
 
 	// Anti-patterns section
 	if (config.stack?.framework) {
