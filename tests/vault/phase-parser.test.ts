@@ -137,6 +137,45 @@ describe('phase-parser — Pattern B (in-ADR inline markers)', () => {
 		assert.equal(phases[0].shipped_at, '2026-05-14', 'prose date wins over frontmatter');
 	});
 
+	test('inline-code markers are ignored (pedagogical examples)', () => {
+		// ADRs documenting marker syntax must not have their examples
+		// picked up as real phases. Dogfooding caught this on the
+		// project-phases ADR-001 (commit "feat(vault): phase-parser ...").
+		const body = `
+The parser recognizes \`Phase 1 SHIPPED\` and \`Phase 0 + 1 + 4 lite SHIPPED\`
+as documentation of marker shape. Only real markers should land:
+
+**Phase 2 SHIPPED 2026-05-17** — real shipment.
+`;
+		const { phases } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody: body,
+			adrMeta: makeMeta({ status: 'shipped' })
+		});
+		assert.equal(phases.length, 1, 'only the real Phase 2 marker, not the inline-code examples');
+		assert.equal(phases[0].ordinal, 2);
+	});
+
+	test('fenced code-block markers are ignored', () => {
+		const body = `
+Here is a marker syntax example:
+
+\`\`\`
+Phase 1 SHIPPED 2026-01-01
+PASS 2 ACCEPTED 2026-01-02
+\`\`\`
+
+**Phase 3 SHIPPED 2026-05-17** — real one.
+`;
+		const { phases } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody: body,
+			adrMeta: makeMeta()
+		});
+		assert.equal(phases.length, 1);
+		assert.equal(phases[0].ordinal, 3);
+	});
+
 	test('commit short-SHA extracted within ±120 chars', () => {
 		const body = '**Phase 1 SHIPPED 2026-05-14** commit `abc1234` — landed.';
 		const { phases } = parsePhases({
@@ -220,6 +259,28 @@ Six phases. Sized honestly.
 		const p1 = phases.find((p) => p.ordinal === 1)!;
 		assert.ok(p1.scope?.includes('First 3 components'), 'scope contains the table description');
 		assert.ok(p1.scope?.includes('3-5 days'), 'scope also includes estimate');
+	});
+
+	test('roadmap scope cell with status verb inside backticks does NOT upgrade status', () => {
+		// Real-world regression: P3 scope said `PHASES N shipped / M open / K blocked`
+		// — "shipped" is inside backticks describing a UI label, not a status
+		// claim. Phase must stay proposed.
+		const roadmap = `
+## Roadmap
+
+| Phase | Scope | Estimate |
+|---|---|---|
+| **P3** | Tree expansion + replace LAST ACTIVITY with \`PHASES N shipped / M open / K blocked\` | 1-2 days |
+`;
+		const { phases } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody: '',
+			adrMeta: makeMeta(),
+			projectIndexBody: roadmap
+		});
+		assert.equal(phases.length, 1);
+		assert.equal(phases[0].label, 'P3');
+		assert.equal(phases[0].status, 'proposed', 'inline-code "shipped" must not upgrade status');
 	});
 
 	test('roadmap row with explicit (shipped) marker upgrades status', () => {
@@ -392,7 +453,7 @@ ADR-046 still under R2 scope (2 phases; cap is 3). Pass 3 only if the wikilink-v
 });
 
 describe('phase-parser — id generation', () => {
-	test('id format: <adr-slug>#phase-<ordinal>', () => {
+	test('id format for ADR-body phases: <adr-slug>#phase-<ordinal>', () => {
 		const body = '**Phase 2 SHIPPED 2026-05-14**.';
 		const { phases } = parsePhases({
 			adrPath: 'projects/naseej/adr-003-foundation-scope.md',
@@ -400,6 +461,38 @@ describe('phase-parser — id generation', () => {
 			adrMeta: makeMeta()
 		});
 		assert.equal(phases[0].id, 'adr-003-foundation-scope#phase-2');
+	});
+
+	test('project-index phases share IDs across ADRs in the same project', () => {
+		// Two ADRs in the same project, both parsed against the same roadmap.
+		// The resulting Phase[]s must have identical IDs for the same logical
+		// milestone, so the next-actions endpoint can dedupe by ID.
+		const indexBody = `
+## Roadmap
+
+| Phase | Scope | Estimate |
+|---|---|---|
+| **P0** | Foundation | 1d |
+| **P1** | First feature | 2d |
+`;
+		const adr001 = parsePhases({
+			adrPath: 'projects/naseej/adr-001-foo.md',
+			adrBody: '',
+			adrMeta: makeMeta(),
+			projectIndexBody: indexBody
+		});
+		const adr002 = parsePhases({
+			adrPath: 'projects/naseej/adr-002-bar.md',
+			adrBody: '',
+			adrMeta: makeMeta(),
+			projectIndexBody: indexBody
+		});
+		assert.deepEqual(
+			adr001.phases.map((p) => p.id),
+			adr002.phases.map((p) => p.id),
+			'same project-index roadmap → same phase IDs regardless of ADR slug'
+		);
+		assert.equal(adr001.phases[0].id, 'naseej#phase-0');
 	});
 
 	test('fractional ordinals preserve decimal in id', () => {
@@ -416,6 +509,8 @@ describe('phase-parser — id generation', () => {
 			adrMeta: makeMeta(),
 			projectIndexBody: indexBody
 		});
-		assert.equal(phases[0].id, 'adr-001#phase-1.5');
+		// Project-index phases use the project slug (not the ADR slug) so
+		// multiple ADRs sharing the same roadmap produce identical IDs.
+		assert.equal(phases[0].id, 'foo#phase-1.5');
 	});
 });

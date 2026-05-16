@@ -133,14 +133,47 @@ function adrSlugFromPath(adrPath: string): string {
 	return basename.replace(/\.md$/i, '');
 }
 
-/** Pattern B — walk the ADR body for inline phase markers. */
+/** Project slug from an ADR path. Used for project-index phase IDs so that
+ *  multiple ADRs sharing the same roadmap produce phases with IDENTICAL IDs
+ *  (one logical milestone per project, not per-ADR). Example:
+ *  `projects/naseej/adr-001-foo.md` → `naseej`. Returns null if the path
+ *  doesn't have the expected `projects/<slug>/...` shape. */
+function projectSlugFromAdrPath(adrPath: string): string | null {
+	const parts = adrPath.split('/');
+	if (parts.length < 3 || parts[0] !== 'projects') return null;
+	return parts[1] || null;
+}
+
+/** Strip fenced code blocks and inline code spans before pattern matching,
+ *  same approach as `src/lib/vault/parser.ts:extractLinks`. ADRs frequently
+ *  document the marker syntax pedagogically (`` `Phase 1 SHIPPED` `` inside
+ *  a table cell or fenced example); without this stripping the parser would
+ *  treat those examples as real phase markers. */
+function stripCodeForMarkerScan(content: string): string {
+	let stripped = content
+		// Fenced blocks: opener + closer must be at start-of-line (per CommonMark)
+		.replace(/^[ \t]{0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n[ \t]{0,3}\1[ \t]*$/gm, '')
+		// Inline code spans, constrained to a single line
+		.replace(/(`+)[^\n]+?\1/g, '');
+	return stripped;
+}
+
+/** Pattern B — walk the ADR body for inline phase markers.
+ *
+ *  Scans the code-stripped body for matches (so pedagogical examples in
+ *  backticks/fences don't leak), then locates each match in the ORIGINAL
+ *  body to extract surrounding dates/commits — commits are by convention
+ *  written as `commit \`<sha>\`` so the SHA itself lives inside inline
+ *  code and would be lost if we extracted from the stripped body. */
 function extractInAdrMarkers(adrPath: string, body: string, warnings: ParserWarning[]): Phase[] {
 	const slug = adrSlugFromPath(adrPath);
 	const phases: Phase[] = [];
+	const scanBody = stripCodeForMarkerScan(body);
 	const re = new RegExp(INLINE_MARKER_RE.source, INLINE_MARKER_RE.flags);
 	let match: RegExpExecArray | null;
+	let bodyCursor = 0;
 
-	while ((match = re.exec(body)) !== null) {
+	while ((match = re.exec(scanBody)) !== null) {
 		const family = match[1];
 		const ordinalGroup = match[2].trim();
 		const verb = match[3];
@@ -159,11 +192,21 @@ function extractInAdrMarkers(adrPath: string, body: string, warnings: ParserWarn
 		if (/\blite\b/i.test(ordinalGroup)) qualifiers.push('lite');
 
 		const status = normalizeStatus(verb);
-		const markerEnd = match.index + match[0].length;
+
+		// Locate this marker's position in the ORIGINAL body (not the
+		// code-stripped scan body) so commit-SHA extraction sees backticked
+		// short-SHAs. Each scan match has at least one corresponding
+		// occurrence in the original (since stripping only removed text,
+		// not the markers themselves).
+		const bodyIdx = body.indexOf(match[0], bodyCursor);
+		const markerEnd = bodyIdx >= 0 ? bodyIdx + match[0].length : match.index + match[0].length;
+		const dateCommitSource = bodyIdx >= 0 ? body : scanBody;
+		if (bodyIdx >= 0) bodyCursor = markerEnd;
+
 		const shipped_at =
-			status === 'shipped' ? (extractNearbyDate(body, markerEnd) ?? undefined) : undefined;
+			status === 'shipped' ? (extractNearbyDate(dateCommitSource, markerEnd) ?? undefined) : undefined;
 		const commit =
-			status === 'shipped' ? (extractNearbyCommit(body, markerEnd) ?? undefined) : undefined;
+			status === 'shipped' ? (extractNearbyCommit(dateCommitSource, markerEnd) ?? undefined) : undefined;
 
 		for (const ord of ordinals) {
 			const label = `${family} ${ord}`;
@@ -185,13 +228,15 @@ function extractInAdrMarkers(adrPath: string, body: string, warnings: ParserWarn
 }
 
 /** Pattern A — extract phases from a project-index `## Roadmap` heading
- *  followed by a 3-column markdown table. */
+ *  followed by a 3-column markdown table. Phase IDs use the project slug
+ *  (not the ADR slug) so that multiple ADRs sharing the same roadmap
+ *  produce identical IDs — one logical milestone per project. */
 function extractRoadmapPhases(
 	adrPath: string,
 	indexBody: string,
 	warnings: ParserWarning[]
 ): Phase[] {
-	const slug = adrSlugFromPath(adrPath);
+	const slug = projectSlugFromAdrPath(adrPath) ?? adrSlugFromPath(adrPath);
 	const phases: Phase[] = [];
 
 	const headingMatch = /^##\s+Roadmap\b/im.exec(indexBody);
@@ -231,14 +276,17 @@ function extractRoadmapPhases(
 		if (!Number.isFinite(ordinal)) continue;
 
 		// Status: default proposed; upgrade if scope cell has explicit marker.
+		// Strip code first so backticked phrases like `PHASES N shipped /
+		// M open / K blocked` don't match the verb regex falsely.
+		const scopeForVerbMatch = stripCodeForMarkerScan(scopeCell);
 		let status: PhaseStatus = 'proposed';
 		const verbMatch = /\b(SHIPPED|ACCEPTED|PARKED|SUPERSEDED|REJECTED|MERGED|shipped|accepted|parked|superseded|rejected|merged)\b/.exec(
-			scopeCell
+			scopeForVerbMatch
 		);
 		if (verbMatch) status = normalizeStatus(verbMatch[1]);
 
 		const qualifiers: string[] = [];
-		if (/\blite\b/i.test(scopeCell)) qualifiers.push('lite');
+		if (/\blite\b/i.test(scopeForVerbMatch)) qualifiers.push('lite');
 
 		phases.push({
 			id: `${slug}#phase-${ordinal}`,

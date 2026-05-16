@@ -13,6 +13,8 @@ import { json } from '@sveltejs/kit';
 import { readdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { getVaultEngine } from '$lib/vault/index.js';
+import { parsePhases, type Phase } from '$lib/vault/phase-parser.js';
+import type { VaultMeta } from '$lib/vault/types.js';
 
 const PROJECT_ZONE = 'projects';
 
@@ -43,6 +45,11 @@ interface DecisionRow {
 	falsifierDaysAway: number | null;
 	tags: string[];
 	blockedBy: string[];
+	/** Structured phase milestones extracted from the ADR body and the
+	 *  project-index roadmap (project-phases ADR-001 Phase 2). Empty on
+	 *  parse failure — never breaks the list view. Only attached when
+	 *  the caller requested per-decision detail (single-slug query). */
+	phases?: Phase[];
 }
 
 interface ProjectRollup {
@@ -172,6 +179,13 @@ export const GET: RequestHandler = async ({ url }) => {
 		const upcomingFalsifiers: ProjectRollup['upcomingFalsifiers'] = [];
 		const decisions: DecisionRow[] = [];
 
+		// project-phases ADR-001 P2: per-ADR phase extraction needs both the
+		// ADR body and the parent project-index body (Pattern A roadmap rows).
+		// Capture both during the first pass; attach phases in a second pass
+		// once the index body is known.
+		let projectIndexContent: string | undefined;
+		const phaseTargets: Array<{ row: DecisionRow; body: string; meta: VaultMeta }> = [];
+
 		for (const note of notes) {
 			const full = engine.getNote(note.path);
 			if (!full) continue;
@@ -184,6 +198,7 @@ export const GET: RequestHandler = async ({ url }) => {
 				hasIndex = true;
 				indexPath = note.path;
 				parentProject = parseParentSlug(full.meta.parent_project);
+				projectIndexContent = full.content;
 			}
 
 			if (full.mtime && (!lastActivity || full.mtime > lastActivity)) {
@@ -207,7 +222,7 @@ export const GET: RequestHandler = async ({ url }) => {
 
 				if (includeDecisions) {
 					const created = asIsoDate(full.meta.created);
-					decisions.push({
+					const row: DecisionRow = {
 						path: note.path,
 						title:
 							typeof full.meta.title === 'string' && full.meta.title
@@ -223,7 +238,28 @@ export const GET: RequestHandler = async ({ url }) => {
 						falsifierDaysAway: falsifier ? daysBetween(falsifier) : null,
 						tags: asStringArray(full.meta.tags),
 						blockedBy: asStringArray(full.meta.blocked_by ?? full.meta.blockedBy),
+					};
+					decisions.push(row);
+					phaseTargets.push({ row, body: full.content, meta: full.meta });
+				}
+			}
+		}
+
+		// Second pass — attach phases now that the project-index body is known.
+		// Wrap each call in try/catch so a parser failure on one ADR cannot
+		// break the list view (per ADR-001 contract: "never break the list").
+		if (includeDecisions && phaseTargets.length > 0) {
+			for (const target of phaseTargets) {
+				try {
+					const { phases } = parsePhases({
+						adrPath: target.row.path,
+						adrBody: target.body,
+						adrMeta: target.meta,
+						projectIndexBody: projectIndexContent,
 					});
+					target.row.phases = phases;
+				} catch {
+					target.row.phases = [];
 				}
 			}
 		}
