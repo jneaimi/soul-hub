@@ -105,6 +105,17 @@ export class VaultIndexer {
 				link.resolved = this.resolver.resolve(link.raw, note.path);
 			}
 
+			// Re-resolve drift in OTHER notes. Adding a note (or an alias) may
+			// retroactively resolve previously-null links elsewhere; without
+			// this sweep, links cached as `null` at parse time stay `null`
+			// forever until the next full `scan()` at startup. This was the
+			// root cause of phantom broken-wikilink alerts on new projects
+			// (operator creates index.md → wikilinks fire null → children
+			// appear seconds later → resolver knows about them but the cached
+			// `null` on the index never refreshes). Bounded by the count of
+			// stale links across the vault, not total links.
+			this.resolveStaleLinks(relPath);
+
 			this.computeBacklinks();
 
 			const cachePath = resolve(this.vaultRoot, '.vault', 'mtime-cache.json');
@@ -118,6 +129,12 @@ export class VaultIndexer {
 		this.notes.delete(relPath);
 		this.mtimeCache.delete(relPath);
 		this.resolver.remove(relPath);
+		// Re-resolve drift caused by the removal. Links that previously
+		// resolved to `relPath` would otherwise keep that path cached even
+		// though the target is gone — invisible to the broken-link counter
+		// (which only counts `resolved === null`). This sweep flips those
+		// stale pointers to `null` so they surface as actionable anomalies.
+		this.resolveStaleLinks(relPath);
 		this.computeBacklinks();
 	}
 
@@ -280,6 +297,36 @@ export class VaultIndexer {
 		for (const note of this.notes.values()) {
 			for (const link of note.links) {
 				link.resolved = this.resolver.resolve(link.raw, note.path);
+			}
+		}
+	}
+
+	/** Re-resolve only the links that may have drifted as a result of one
+	 *  note being added, edited, or removed. Two shapes drift:
+	 *    1. `link.resolved === null` — might now hit (the just-added note
+	 *       or one of its aliases is a candidate the prior parse missed).
+	 *    2. `link.resolved` points at a path no longer in `this.notes` —
+	 *       the target was removed; the cache must flip to a fresh resolve
+	 *       (which may return `null` if there's no shadow match).
+	 *  We skip `link.resolved === 'external'` and the just-changed note
+	 *  itself (its own links were re-resolved by the caller). Cost is
+	 *  bounded by the count of stale links across the vault, not total
+	 *  links — typically <100 ops in steady state.
+	 *
+	 *  See indexer.ts comments in reindex()/remove() for the bug history
+	 *  this fixes. */
+	private resolveStaleLinks(skipPath: string): void {
+		for (const note of this.notes.values()) {
+			if (note.path === skipPath) continue;
+			for (const link of note.links) {
+				if (link.resolved === null) {
+					link.resolved = this.resolver.resolve(link.raw, note.path);
+				} else if (
+					!WikilinkResolver.isExternalResult(link.resolved) &&
+					!this.notes.has(link.resolved)
+				) {
+					link.resolved = this.resolver.resolve(link.raw, note.path);
+				}
 			}
 		}
 	}
