@@ -11,6 +11,14 @@
 #   ~/vault/.git/     — git internals (never written by agents anyway)
 #   ~/vault/.gitnexus — runtime index (excluded from git as well)
 #   ~/vault/.obsidian — Obsidian config
+#
+# Exempt files (any depth):
+#   CLAUDE.md         — operator-curated zone-governance config (Allowed
+#                       Types, Naming Pattern). Read by governance.ts as
+#                       raw markdown; not a content note — /vault-write
+#                       API has no endpoint for it. Stderr audit echo on
+#                       each pass-through so zone-schema edits remain
+#                       visible to the operator (git log + this log).
 
 set -euo pipefail
 
@@ -48,6 +56,15 @@ case "$ABS_PATH" in
 esac
 
 REL_PATH="${ABS_PATH#$VAULT_ROOT/}"
+
+# Exempt CLAUDE.md (operator-curated zone-governance config). Audit echo
+# so zone-schema edits surface in the operator's hook log.
+case "$ABS_PATH" in
+  */CLAUDE.md)
+    echo "[chokepoint] CLAUDE.md edit allowed: $REL_PATH (zone schema, ADR-046 exempt)" >&2
+    exit 0
+    ;;
+esac
 
 cat >&2 <<EOF
 BLOCKED: Direct $TOOL_NAME on vault path is not allowed (ADR-046).

@@ -64,12 +64,31 @@ BROAD_PATTERNS = [
     (r'\bperl\b[^|;&\n]*\s-i\b', 'perl-in-place'),
 ]
 
+def is_claude_md_target(matched_text):
+    """Strip trailing quotes/whitespace from the matched fragment and
+    test whether the actual vault target ends with /CLAUDE.md. The path
+    regexes capture greedily up to whitespace/quotes/pipes/etc, so the
+    matched span ends at the path."""
+    s = matched_text.strip().rstrip("'\"")
+    return s.endswith("/CLAUDE.md")
+
+
 for pat, label in PATTERNS:
-    if re.search(pat, cmd):
+    m = re.search(pat, cmd)
+    if m:
+        # Literal-path patterns capture the full vault target — we can
+        # tell exactly which file is being written and exempt CLAUDE.md
+        # (operator-curated zone schema, parallel to ADR-046 L1 carve-out).
+        if is_claude_md_target(m.group(0)):
+            print(f'exempt:claudemd:{m.group(0).strip()}')
+            sys.exit(0)
         print(f'match:{label}')
         sys.exit(0)
 
 for pat, label in BROAD_PATTERNS:
+    # sed -i / perl -i broad patterns don't pinpoint a single target.
+    # Conservative: do NOT exempt CLAUDE.md here — if the operator needs
+    # in-place edits to CLAUDE.md they have Edit (already exempt via L1).
     if re.search(pat, cmd) and re.search(VAULT_REF, cmd):
         print(f'match:{label}')
         sys.exit(0)
@@ -79,6 +98,12 @@ PYEOF
 )
 
 if [[ "$RESULT" == "ok" || -z "$RESULT" ]]; then
+  exit 0
+fi
+
+if [[ "$RESULT" == exempt:claudemd:* ]]; then
+  TARGET="${RESULT#exempt:claudemd:}"
+  echo "[chokepoint] CLAUDE.md bash-write allowed: $TARGET (zone schema, ADR-046 exempt)" >&2
   exit 0
 fi
 
