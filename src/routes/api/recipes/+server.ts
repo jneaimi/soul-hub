@@ -4,13 +4,15 @@
  * GET   ?project=&q=          — list recipes under catalog/recipes/.
  * POST  { name: string }      — validate a recipe against the publish gate.
  *
- * The POST publish gate enforces four checks:
+ * The POST publish gate enforces five checks:
  *   1. schema          — recipe.yaml parses against the Zod schema
  *   2. components      — every step.component name exists in the catalog
  *   3. version_pins    — every pinned step.component@<version> resolves to
  *                        an exact-match BLOCK.md (bare names are trivially
  *                        satisfied if any version exists; covered by `components`)
- *   4. project_exists  — recipe.project resolves to ~/vault/projects/<p>/index.md
+ *   4. agents_exist    — every step.agent resolves to a known ~/.claude/agents/<id>.md
+ *                        agent (ADR-005 falsifier #3)
+ *   5. project_exists  — recipe.project resolves to ~/vault/projects/<p>/index.md
  *
  * Status codes:
  *   200 — all checks passed (safe to git-add and publish)
@@ -27,11 +29,13 @@ import { parse as parseYaml } from 'yaml';
 import { fileExists } from '$lib/naseej/manifest.js';
 import { buildCatalogIndex } from '$lib/naseej/manifest.js';
 import {
+	isAgentStep,
 	isComponentStep,
 	parseComponentRef,
 	safeParseRecipe,
 	type Recipe,
 } from '$lib/naseej/schemas/recipe.js';
+import { getAgent } from '$lib/agents/store.js';
 
 const RECIPES_DIR = resolvePath(process.cwd(), 'catalog/recipes');
 const VAULT_PROJECTS_DIR = resolvePath(homedir(), 'vault/projects');
@@ -63,6 +67,11 @@ type CheckResult =
 				requested: string;
 				available: string;
 			}>;
+	  }
+	| {
+			name: 'agents_exist';
+			status: 'passed' | 'failed';
+			missing?: Array<{ step: string; agent: string }>;
 	  }
 	| {
 			name: 'project_exists';
@@ -255,7 +264,23 @@ export const POST: RequestHandler = async ({ request }) => {
 		...(unsatisfied.length > 0 ? { unsatisfied } : {}),
 	});
 
-	// Check 4: project_exists
+	// Check 4: agents_exist (ADR-005 falsifier #3)
+	// Every agent step must reference an ~/.claude/agents/<id>.md known to
+	// the in-memory store. getAgent() returns null if the slug is unknown.
+	const missingAgents: Array<{ step: string; agent: string }> = [];
+	for (const step of recipe.steps) {
+		if (!isAgentStep(step)) continue;
+		if (!getAgent(step.agent)) {
+			missingAgents.push({ step: step.id, agent: step.agent });
+		}
+	}
+	checks.push({
+		name: 'agents_exist',
+		status: missingAgents.length === 0 ? 'passed' : 'failed',
+		...(missingAgents.length > 0 ? { missing: missingAgents } : {}),
+	});
+
+	// Check 5: project_exists
 	const projectIndex = join(VAULT_PROJECTS_DIR, recipe.project, 'index.md');
 	const projectOk = await fileExists(projectIndex);
 	checks.push({

@@ -152,4 +152,4 @@ function persistRun(
 	}
 }
 
-export type { DispatchEvent, DispatchResult } from './types.js';
+export type { DispatchEvent, DispatchResult, DispatchMode } from './types.js';

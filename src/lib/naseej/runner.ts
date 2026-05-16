@@ -36,7 +36,12 @@ import {
 	type Recipe,
 	type RecipeStep,
 } from './schemas/recipe.js';
-import { dispatchAgent, type DispatchEvent, type DispatchResult } from '$lib/agents/dispatch/index.js';
+import {
+	dispatchAgent,
+	type DispatchEvent,
+	type DispatchMode,
+	type DispatchResult,
+} from '$lib/agents/dispatch/index.js';
 import { getAgent } from '$lib/agents/store.js';
 
 const RECIPES_DIR = resolvePath(process.cwd(), 'catalog/recipes');
@@ -265,11 +270,16 @@ async function runComponentStep(
 /** Agent-step branch (ADR-005). Drives `dispatchAgent()` for-await, buffers
  *  the last MAX_EVENT_BUFFER events, parses the optional ARTIFACT marker,
  *  maps `DispatchResult.status` to exit-code semantics so the main loop's
- *  halt-on-error treats success+goal_achieved as pass. */
+ *  halt-on-error treats success+goal_achieved as pass.
+ *
+ *  `mode` controls which dispatch backend handles the agent. 'production'
+ *  (default) routes through claude-pty; 'test' routes through claude-cli-flag
+ *  for cheaper/faster CI smokes (no PTY, single-shot). */
 async function runAgentStep(
 	step: AgentStep,
 	ctx: Record<string, unknown>,
 	signal: AbortSignal | undefined,
+	mode: DispatchMode,
 ): Promise<StepResult> {
 	const startedAt = Date.now();
 
@@ -312,6 +322,7 @@ async function runAgentStep(
 	let final: DispatchResult | undefined;
 	try {
 		const gen = dispatchAgent(step.agent, task, {
+			mode,
 			signal,
 			context,
 			goal_condition: goalCondition,
@@ -380,14 +391,24 @@ async function runAgentStep(
 	return result;
 }
 
+export interface RunRecipeOptions {
+	signal?: AbortSignal;
+	/** ADR-005 CP2 — dispatch backend selector for agent steps.
+	 *  'production' (default) uses claude-pty; 'test' uses claude-cli-flag
+	 *  for CI smokes (no PTY, no terminal, single-shot). Component steps
+	 *  are unaffected — they spawn subprocesses regardless. */
+	mode?: DispatchMode;
+}
+
 export async function runRecipe(
 	recipePath: string,
 	operatorInputs?: Record<string, unknown>,
-	opts: { signal?: AbortSignal } = {},
+	opts: RunRecipeOptions = {},
 ): Promise<RunResult> {
 	const recipe = await loadRecipe(recipePath);
 	const catalog = await buildCatalogIndex();
 	const order = topoSort(recipe.steps);
+	const mode: DispatchMode = opts.mode ?? 'production';
 
 	// Pre-flight: every component-step references an existing catalog entry,
 	// every agent-step references a known agent. Surface as a throw — these
@@ -418,7 +439,7 @@ export async function runRecipe(
 
 	for (const step of order) {
 		const stepResult = isAgentStep(step)
-			? await runAgentStep(step, ctx, opts.signal)
+			? await runAgentStep(step, ctx, opts.signal, mode)
 			: await runComponentStep(step, catalog, ctx);
 		stepResults.push(stepResult);
 		stepsCtx[step.id] = { outputs: stepResult.outputs ?? {} };
