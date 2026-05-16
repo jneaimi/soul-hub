@@ -155,6 +155,178 @@ touch ~/.soul-hub/.env && chmod 600 ~/.soul-hub/.env
 echo "SOUL_HUB_SECRET=$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')" >> ~/.soul-hub/.env
 ```
 
+## Vault chokepoint (ADR-046 / 047 / 048 / 049)
+
+The vault has a five-layer write defense stack. Three of the layers live
+**outside this repo** — in `~/.claude/` (Claude Code's user-global config)
+and in the vault's own git repo at `~/vault/`. They don't ship with
+`npm run setup` today. The canonical sources are bundled in `install/` and
+this section walks through wiring them up. (Automated installer: ADR-050,
+planned — until it ships, the manual steps below are the path.)
+
+### Layer reference
+
+| Layer | Lives at | Purpose |
+|---|---|---|
+| **L1** (ADR-046 Pass 1) | `~/.claude/hooks/vault-write-guard.sh` | Block direct `Write`/`Edit`/`NotebookEdit` on vault paths |
+| **L2** (ADR-046 Pass 2) | `~/.claude/hooks/vault-write-guard-bash.sh` | Block `Bash` shell-redirect / `tee` / `cp` / `sed -i` / `touch` on vault paths |
+| **L3** (ADR-047) | `src/lib/vault/link-validator.ts` (already in this repo) | REFUSE auto-memory + bare-slug wikilinks at the API; WARN unresolved |
+| **L4** (ADR-048) | `~/vault/.vault/hooks/pre-commit` | Re-run L3 REFUSE rules at git-commit time (catches inline-interpreter bypasses) |
+| **L5** (ADR-049) | `src/lib/vault/index.ts` (already in this repo) | Opt-in `scaffold_stubs: true` materialises empty stub notes for forward refs |
+
+L3 and L5 ship with the soul-hub code itself — no install step. L1, L2, L4
+are what this section adds. The `/vault-write` skill (ADR-046's redirect
+target) also lives in `~/.claude/skills/` and is part of the same wiring.
+
+### Step 1 — Install the Claude Code hooks (L1 + L2)
+
+```bash
+mkdir -p ~/.claude/hooks
+cp install/hooks/vault-write-guard.sh      ~/.claude/hooks/
+cp install/hooks/vault-write-guard-bash.sh ~/.claude/hooks/
+chmod +x ~/.claude/hooks/vault-write-guard*.sh
+```
+
+**Recommended for active development — symlink instead of copy:**
+
+```bash
+ln -sf "$(pwd)/install/hooks/vault-write-guard.sh"      ~/.claude/hooks/vault-write-guard.sh
+ln -sf "$(pwd)/install/hooks/vault-write-guard-bash.sh" ~/.claude/hooks/vault-write-guard-bash.sh
+```
+
+### Step 2 — Register the hooks in `~/.claude/settings.json`
+
+The canonical block is at `install/claude-settings.snippet.json`. Merge it
+into your existing settings (do NOT clobber other hooks you have):
+
+```bash
+cp ~/.claude/settings.json ~/.claude/settings.json.bak.$(date +%s) 2>/dev/null || true
+
+python3 <<'PY'
+import json, os
+p = os.path.expanduser('~/.claude/settings.json')
+try: s = json.load(open(p))
+except FileNotFoundError: s = {}
+s.setdefault('hooks', {}).setdefault('PreToolUse', [])
+needed = [
+    {"matcher":"Write|Edit|NotebookEdit","hooks":[{"type":"command","command":"bash ~/.claude/hooks/vault-write-guard.sh","timeout":5,"statusMessage":"Vault-write chokepoint (ADR-046)..."}]},
+    {"matcher":"Bash","hooks":[{"type":"command","command":"bash ~/.claude/hooks/vault-write-guard-bash.sh","timeout":5,"statusMessage":"Vault-write chokepoint Bash (ADR-046 Pass 2)..."}]},
+]
+existing = s['hooks']['PreToolUse']
+for entry in needed:
+    cmd = entry['hooks'][0]['command']
+    if not any(cmd in (h.get('command','') for h in (e.get('hooks') or [])) for e in existing):
+        existing.append(entry); print('added:', entry['matcher'])
+    else:
+        print('already present:', entry['matcher'])
+open(p, 'w').write(json.dumps(s, indent=2))
+PY
+```
+
+### Step 3 — Install the `/vault-write` skill
+
+```bash
+mkdir -p ~/.claude/skills
+cp -R install/skills/vault-write ~/.claude/skills/
+chmod +x ~/.claude/skills/vault-write/scripts/vault-write.sh
+```
+
+**Or symlink:**
+
+```bash
+ln -sfn "$(pwd)/install/skills/vault-write" ~/.claude/skills/vault-write
+```
+
+### Step 4 — Install the vault pre-commit hook (L4)
+
+The hook source is versioned **inside the vault itself** at
+`~/vault/.vault/hooks/pre-commit`. On an existing vault clone it should
+already be present; if it isn't, get it from soul-hub:
+
+```bash
+mkdir -p ~/vault/.vault/hooks
+
+# If your vault is already cloned with the hook, skip this. Otherwise:
+test -f ~/vault/.vault/hooks/pre-commit || {
+  echo "Seed the hook from soul-hub's bundled copy:"
+  cp install/hooks/vault-pre-commit            ~/vault/.vault/hooks/pre-commit 2>/dev/null || true
+  cp install/hooks/vault-pre-commit-install.sh ~/vault/.vault/hooks/install.sh 2>/dev/null || true
+  chmod +x ~/vault/.vault/hooks/pre-commit ~/vault/.vault/hooks/install.sh
+}
+
+# Install the symlink into the vault's .git/hooks/
+~/vault/.vault/hooks/install.sh
+# expect: "installed: pre-commit → /Users/<you>/vault/.vault/hooks/pre-commit"
+```
+
+> The bundled-from-soul-hub copy is not yet shipped in `install/hooks/` —
+> see ADR-050 (planned) for the seed-script that brings them under this
+> repo so a fresh vault doesn't have a chicken-and-egg.
+
+### Step 5 — Verify all five layers
+
+```bash
+TODAY=$(date +%Y-%m-%d)
+
+# L1 — In a Claude Code session, try Write under ~/vault/. Expect: blocked.
+# L2 — In a Claude Code session, try:  echo x > ~/vault/test.md. Expect: blocked.
+
+# L3 — auto-memory link must be REFUSED at the API:
+curl -s -X POST http://localhost:2400/api/vault/notes \
+  -H 'Content-Type: application/json' \
+  -d "{\"zone\":\"inbox\",\"filename\":\"l3-test.md\",\"meta\":{\"type\":\"note\",\"created\":\"$TODAY\",\"tags\":[\"test\",\"auto-generated\"],\"source_agent\":\"install-test\"},\"content\":\"# L3\n[[feedback_xyz]]\"}" \
+  | jq '.error'
+# expect: "Wikilink validation failed: Wikilinks to auto-memory filenames are forbidden..."
+
+# L4 — interpreter bypass + pre-commit:
+python3 -c "open('$HOME/vault/inbox/adr-048-smoke.md','w').write('''---
+type: note
+created: $TODAY
+tags: [test]
+---
+# Smoke
+[[feedback_evil]]
+''')"
+cd ~/vault && git add inbox/adr-048-smoke.md && .git/hooks/pre-commit
+echo "exit=$?"   # expect 1 + auto-memory violation
+git reset HEAD inbox/adr-048-smoke.md && rm ~/vault/inbox/adr-048-smoke.md
+
+# L5 — scaffold_stubs:
+curl -s -X POST http://localhost:2400/api/vault/notes \
+  -H 'Content-Type: application/json' \
+  -d "{\"zone\":\"inbox\",\"filename\":\"l5-test.md\",\"meta\":{\"type\":\"note\",\"created\":\"$TODAY\",\"tags\":[\"test\",\"auto-generated\"],\"scaffold_stubs\":true,\"source_agent\":\"install-test\"},\"content\":\"# L5\n[[l5-scaffold-target]]\"}" \
+  | jq '.stubs_created'
+# expect: array with inbox/l5-scaffold-target.md
+
+# Cleanup
+curl -s -X DELETE "http://localhost:2400/api/vault/notes/inbox/l5-test.md" -o /dev/null
+curl -s -X DELETE "http://localhost:2400/api/vault/notes/inbox/l5-scaffold-target.md" -o /dev/null
+```
+
+If all five fire as expected, the chokepoint is fully installed.
+
+### Editing the hooks
+
+Edit the canonical source in `install/hooks/` and re-deploy:
+
+- **If you symlinked** in Step 1 / Step 3: edits are live immediately on
+  the next tool invocation. No re-deploy.
+- **If you copied:** re-run Step 1 to overwrite, or just re-copy the
+  changed file.
+
+`~/.claude/hooks/*` should be treated as **derived state**, not source.
+Anyone editing those directly is fighting the install model.
+
+### Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| L1/L2 didn't block; Write went through | settings.json not loaded | restart your Claude Code session |
+| `Permission denied` running hook | chmod missing | `chmod +x ~/.claude/hooks/vault-write-guard*.sh` |
+| L4 exit 0 on a bad note | symlink not installed | re-run `~/vault/.vault/hooks/install.sh` |
+| L4 exit 0 + `[vault-pre-commit] skipped` | `VAULT_SKIP_LINK_CHECK=1` set in env | unset it |
+| L3/L5 returns connection error | soul-hub not running | start it (`npm run dev` or PM2) |
+
 ## Optional: TikTok transcription (ADR-024)
 
 The `tiktokFetch` orchestrator tool turns a TikTok URL pasted into WhatsApp/Telegram into structured metadata + speech transcript + (optional) Gemini summary. It is **off by default on fresh installs** because it requires ~250 MB of additional dependencies. The bootstrap prompts at install time; pass `--with-tiktok` for non-interactive installs or `--no-tiktok` to skip.

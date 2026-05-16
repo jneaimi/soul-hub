@@ -1,0 +1,29 @@
+{
+  "_comment": "Merge this `hooks.PreToolUse` block into ~/.claude/settings.json. ADR-046 P1 (Write/Edit/NotebookEdit) + P2 (Bash). Both fail-closed; bypass requires explicit operator override per ADR-046.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/vault-write-guard.sh",
+            "timeout": 5,
+            "statusMessage": "Vault-write chokepoint (ADR-046)..."
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/vault-write-guard-bash.sh",
+            "timeout": 5,
+            "statusMessage": "Vault-write chokepoint Bash (ADR-046 Pass 2)..."
+          }
+        ]
+      }
+    ]
+  }
+}
