@@ -145,11 +145,17 @@
 		if (d.shippedOn) parts.push(`shipped: ${d.shippedOn}`);
 		if (d.targetDate) parts.push(`target: ${d.targetDate}`);
 		if (d.falsifierDate) {
-			const daysSuffix =
-				d.falsifierDaysAway !== null
-					? ` (${d.falsifierDaysAway >= 0 ? `${d.falsifierDaysAway}d away` : `${Math.abs(d.falsifierDaysAway)}d overdue`})`
-					: '';
-			parts.push(`falsifier: ${d.falsifierDate}${daysSuffix}`);
+			const da = d.falsifierDaysAway;
+			let suffix = '';
+			if (da !== null) {
+				// Mirror the urgency buckets from falsifierFill() so the
+				// tooltip explains the diamond colour the reader is seeing.
+				if (da < 0) suffix = ` (${Math.abs(da)}d overdue — red diamond)`;
+				else if (da <= 7) suffix = ` (${da}d — urgent, red diamond)`;
+				else if (da <= 30) suffix = ` (${da}d — review soon, amber diamond)`;
+				else suffix = ` (${da}d — on track, muted diamond)`;
+			}
+			parts.push(`falsifier: ${d.falsifierDate}${suffix}`);
 		}
 		if (d.dateInferred) parts.push('', 'dates inferred from git history');
 		return parts.join('\n');
@@ -212,10 +218,19 @@
 				</span>
 			{/if}
 			{#if falsifierCount > 0}
-				<span class="inline-flex items-center gap-1.5" title="Falsifier review deadline">
-					<span class="w-2 h-2 rotate-45 bg-hub-warning"></span>
-					falsifier ({falsifierCount})
+				<span class="inline-flex items-center gap-1.5" title="Falsifier ≤7 days — urgent review">
+					<span class="w-2 h-2 rotate-45 bg-hub-danger"></span>
+					≤7d
 				</span>
+				<span class="inline-flex items-center gap-1.5" title="Falsifier ≤30 days — review soon">
+					<span class="w-2 h-2 rotate-45 bg-hub-warning"></span>
+					≤30d
+				</span>
+				<span class="inline-flex items-center gap-1.5" title="Falsifier >30 days — on track">
+					<span class="w-2 h-2 rotate-45 bg-hub-muted/60"></span>
+					&gt;30d
+				</span>
+				<span class="text-hub-dim">· falsifier ({falsifierCount})</span>
 			{/if}
 			<button
 				class="ml-auto text-[11px] text-hub-info hover:text-hub-text cursor-pointer"

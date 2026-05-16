@@ -231,6 +231,20 @@
 		return 'text-hub-dim';
 	}
 
+	/** Human-readable explanation of why a date is coloured the way it is.
+	 *  Surfaces as a `title` attribute on falsifier badges + dates so the
+	 *  reader can hover to learn the threshold without us having to print
+	 *  the legend everywhere. Same buckets as `falsifierClass` and the
+	 *  Gantt's `falsifierFill` — single source of truth in spec, even
+	 *  though the function lives in three places (one per consumer). */
+	function falsifierMeaning(daysAway: number | null): string {
+		if (daysAway === null) return 'No falsifier date set';
+		if (daysAway < 0) return `Overdue by ${Math.abs(daysAway)}d — review past due`;
+		if (daysAway <= 7) return `Due within 7 days — urgent review`;
+		if (daysAway <= 30) return `Due within 30 days — review soon`;
+		return `>30 days away — on track`;
+	}
+
 	$effect(() => { if (slug) load(); });
 </script>
 
@@ -413,15 +427,32 @@
 				<!-- Falsifier alerts -->
 				{#if detail.upcomingFalsifiers.length > 0}
 					<div class="mb-6 p-3 rounded-lg border border-hub-warning/30 bg-hub-warning/5">
-						<div class="text-xs font-medium text-hub-warning mb-2">Upcoming falsifier dates</div>
+						<div class="flex items-center justify-between gap-3 mb-2 flex-wrap">
+							<div class="text-xs font-medium text-hub-warning">Upcoming falsifier dates</div>
+							<!-- Urgency legend. Same thresholds as falsifierClass() and
+							     AdrGantt.falsifierFill(). Hover any date row for the
+							     exact meaning. -->
+							<div class="flex items-center gap-3 text-[10px] text-hub-dim">
+								<span class="inline-flex items-center gap-1" title="≤7 days — urgent review">
+									<span class="w-1.5 h-1.5 rounded-full bg-hub-danger"></span>≤7d
+								</span>
+								<span class="inline-flex items-center gap-1" title="≤30 days — review soon">
+									<span class="w-1.5 h-1.5 rounded-full bg-hub-warning"></span>≤30d
+								</span>
+								<span class="inline-flex items-center gap-1" title=">30 days — on track">
+									<span class="w-1.5 h-1.5 rounded-full bg-hub-dim/60"></span>&gt;30d
+								</span>
+							</div>
+						</div>
 						<div class="space-y-1">
 							{#each detail.upcomingFalsifiers as f}
 								<button
 									onclick={() => drawerPath = f.path}
 									class="w-full flex items-center justify-between text-xs hover:bg-hub-card/60 px-1 py-0.5 rounded transition-colors cursor-pointer text-left"
+									title={falsifierMeaning(f.daysAway)}
 								>
 									<span class="font-mono text-hub-text truncate">{f.path.split('/').pop()}</span>
-									<span class="text-hub-warning ml-2 flex-shrink-0">⏱ {f.daysAway}d ({f.date})</span>
+									<span class="{falsifierClass(f.daysAway)} ml-2 flex-shrink-0">⏱ {f.daysAway}d ({f.date})</span>
 								</button>
 							{/each}
 						</div>
