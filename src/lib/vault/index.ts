@@ -83,7 +83,14 @@ export class VaultEngine {
 		this.searcher.rebuild(this.indexer.all());
 
 		this.watcher.start(this.config.rootDir, async (event) => {
-			if (event.type === 'add' || event.type === 'change') {
+			if (event.type === 'governance-change') {
+				// CLAUDE.md edit/create/delete: re-parse all zone configs so
+				// allowedTypes/requiredFields/namingPattern etc. reflect the
+				// new schema immediately (no PM2 reload required). Note: the
+				// existing note index doesn't change — only the validation
+				// rules applied to subsequent governance checks.
+				await this.governance.scan(this.config.rootDir);
+			} else if (event.type === 'add' || event.type === 'change') {
 				await this.indexer.reindex(event.path);
 				const note = this.indexer.get(event.path);
 				if (note) this.searcher.upsert(note);

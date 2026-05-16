@@ -4,7 +4,8 @@ import { IGNORED_FOLDERS } from './types.js';
 
 type WatcherEvent =
 	| { type: 'add' | 'change'; path: string }
-	| { type: 'unlink'; path: string };
+	| { type: 'unlink'; path: string }
+	| { type: 'governance-change'; path: string };
 
 export class VaultWatcher {
 	private watcher: FSWatcher | null = null;
@@ -30,7 +31,10 @@ export class VaultWatcher {
 					return ignoredFoldersSet.has(name);
 				}
 				if (!path.endsWith('.md')) return true;
-				if (path.endsWith('/CLAUDE.md') || path.endsWith('CLAUDE.md')) return true;
+				// CLAUDE.md files are watched (not ignored) so governance can
+				// re-scan when zone schemas change. The emit() handler routes
+				// them to a `governance-change` event instead of `add/change`
+				// so they never enter the note indexer.
 				return false;
 			},
 			persistent: true,
@@ -46,6 +50,15 @@ export class VaultWatcher {
 				: filePath;
 			if (this.suppressedPaths.has(relPath)) {
 				this.suppressedPaths.delete(relPath);
+				return;
+			}
+			// Zone-governance files (CLAUDE.md at any depth, strict basename
+			// match) re-trigger governance.scan() rather than note indexing.
+			// All three event types (add/change/unlink) collapse to a single
+			// `governance-change` since the resolver re-walks the vault tree
+			// each scan — distinguishing add vs change vs unlink doesn't help.
+			if (relPath === 'CLAUDE.md' || relPath.endsWith('/CLAUDE.md')) {
+				this.handler({ type: 'governance-change', path: relPath });
 				return;
 			}
 			this.handler({ type, path: relPath });
