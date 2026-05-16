@@ -266,7 +266,17 @@ export class VaultEngine {
 					created.getTime() < Date.UTC(2026, 4, 15);
 				if (!grandfathered) {
 					const bodyBytes = Buffer.byteLength(note.content, 'utf8');
-					const shippedMarkers = (note.content.match(/\bSHIPPED\b|shipped on/g) || []).length;
+					// Structural shipped markers only: bold + line-start + contains
+					// SHIPPED. Drops narrative false positives like prose mentioning
+					// "10 SHIPPED markers" or "0 SHIPPED markers". Matches the
+					// canonical phase-flip shapes:
+					//   **SHIPPED 2026-05-15** ...
+					//   **PASS 4 SHIPPED 2026-05-15** ...
+					//   **Pass 3 deferred → SHIPPED above** ...
+					//   **PILOT SHIPPED** ...
+					// Whole-word boundary on SHIPPED so `**SHIPPABLE**` etc. wouldn't
+					// match. Multiline flag anchors `^` to line starts.
+					const shippedMarkers = (note.content.match(/^\*\*[^*\n]*?\bSHIPPED\b/gm) || []).length;
 					if (bodyBytes > 15000 || shippedMarkers > 5) {
 						violations.push(
 							`ADR scope (ADR-039): body ${bodyBytes} bytes, ${shippedMarkers} shipped markers — consider splitting next phase into a new ADR with \`extends:\``,
