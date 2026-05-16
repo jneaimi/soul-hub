@@ -90,10 +90,13 @@
 	const others = $derived(decisions.filter((d) => d.status !== 'proposed'));
 
 	// Phase rollup across BOTH project-level and ADR-level phases.
-	// Dedupes by phase.id so a merged phase (same logical milestone
-	// described in both the project-index roadmap AND an ADR body) is
-	// counted once. Project-index-only phases (`source: 'project-index'`)
-	// never participate in the blocked-check — that's an ADR-level signal.
+	// Dedupes in two stages:
+	//   1. By phase.id — catches exact duplicates.
+	//   2. Project-index phases are dropped when an adr-body phase claims
+	//      the same ordinal (e.g. ADR-003 declaring "**Phase 1 SHIPPED**"
+	//      IS the project's P1 milestone; counting both would inflate).
+	// Project-index-only phases never participate in the blocked-check —
+	// that's an ADR-level signal.
 	const phaseRollup = $derived.by(() => {
 		const seen = new Set<string>();
 		let shipped = 0;
@@ -102,6 +105,12 @@
 		const blockedAdrPaths = new Set(
 			(nextActions?.blocked_phases ?? []).map((p) => p.id.split('#')[0])
 		);
+		const adrBodyOrdinals = new Set<number>();
+		for (const d of decisions) {
+			for (const p of d.phases ?? []) {
+				if (p.source === 'adr-body') adrBodyOrdinals.add(p.ordinal);
+			}
+		}
 		const tally = (p: Phase) => {
 			if (seen.has(p.id)) return;
 			seen.add(p.id);
@@ -111,7 +120,10 @@
 				else open++;
 			}
 		};
-		for (const p of detail?.projectPhases ?? []) tally(p);
+		for (const p of detail?.projectPhases ?? []) {
+			if (p.source === 'project-index' && adrBodyOrdinals.has(p.ordinal)) continue;
+			tally(p);
+		}
 		for (const d of decisions) {
 			for (const p of d.phases ?? []) tally(p);
 		}

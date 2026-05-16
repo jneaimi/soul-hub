@@ -17,7 +17,7 @@
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { getVaultEngine } from '$lib/vault/index.js';
-import { parsePhases, type Phase } from '$lib/vault/phase-parser.js';
+import { parsePhases, parseProjectRoadmap, type Phase } from '$lib/vault/phase-parser.js';
 import type { VaultMeta } from '$lib/vault/types.js';
 
 interface NextActionsResponse {
@@ -89,10 +89,20 @@ export const GET: RequestHandler = async ({ params }) => {
 		}
 	}
 
-	// Compute phases per ADR + tag each with the originating ADR path so we
-	// can apply the blocked-check later. parsePhases failures are skipped
-	// silently (same contract as the projects endpoint — never break).
-	const allPhases: Array<{ phase: Phase; adrPath: string }> = [];
+	// Two-channel phase collection (mirrors the rollup endpoint's model):
+	//   - project-level phases come from the project-index roadmap, parsed
+	//     once via parseProjectRoadmap (no per-ADR merging)
+	//   - adr-body phases come from each ADR's parsePhases, filtered to
+	//     `source: 'adr-body'` (in-body markers + merged-with-roadmap)
+	// When an adr-body phase claims an ordinal that a project-level phase
+	// also describes, the adr-body version replaces the project-level one —
+	// they're the same logical milestone, ADR has richer info (commit,
+	// shipped_at, ADR-scoped id for blocked-check). No double-count.
+	const projectPhases: Phase[] = projectIndexContent
+		? parseProjectRoadmap(slug, projectIndexContent)
+		: [];
+
+	const adrBodyPhases: Array<{ phase: Phase; adrPath: string }> = [];
 	for (const dn of decisionNotes) {
 		try {
 			const { phases } = parsePhases({
@@ -101,13 +111,24 @@ export const GET: RequestHandler = async ({ params }) => {
 				adrMeta: dn.meta,
 				projectIndexBody: projectIndexContent,
 			});
-			for (const phase of phases) allPhases.push({ phase, adrPath: dn.path });
+			for (const phase of phases) {
+				if (phase.source === 'adr-body') adrBodyPhases.push({ phase, adrPath: dn.path });
+			}
 		} catch {
 			// skip
 		}
 	}
 
-	const isBlocked = (adrPath: string): boolean => {
+	const adrBodyOrdinals = new Set(adrBodyPhases.map((x) => x.phase.ordinal));
+	const allPhases: Array<{ phase: Phase; adrPath: string | null }> = [];
+	for (const p of projectPhases) {
+		if (adrBodyOrdinals.has(p.ordinal)) continue; // adr-body claims this milestone
+		allPhases.push({ phase: p, adrPath: null });
+	}
+	for (const x of adrBodyPhases) allPhases.push(x);
+
+	const isBlocked = (adrPath: string | null): boolean => {
+		if (!adrPath) return false; // project-level phase, no ADR-level deps
 		const deps = blockedByPerAdr.get(adrPath);
 		if (!deps || deps.length === 0) return false;
 		// Blocked if ANY dep slug is not in the shipped set. Cross-project
