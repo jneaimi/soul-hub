@@ -53,6 +53,20 @@
         }
       },
       {
+        "id": "soul-hub-backup-daily",
+        "type": "shell-script",
+        "cron": "30 23 * * *",
+        "timezone": "Asia/Dubai",
+        "enabled": true,
+        "noOverlap": true,
+        "description": "Daily soul-hub git push — flushes unpushed main commits to origin (push-only mirror of vault-backup-daily safety-net)",
+        "params": {
+          "command": ["bash", "scripts/soul-hub-backup-daily.sh"],
+          "cwd": "<REPO_ROOT>",
+          "timeoutMs": 60000
+        }
+      },
+      {
         "id": "intent-mining-daily",
         "type": "intent-mining",
         "cron": "0 2 * * *",

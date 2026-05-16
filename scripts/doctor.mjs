@@ -172,6 +172,17 @@ try {
   else add('vault-backup task', 'warn', 'not in settings.json — re-run: bash scripts/bootstrap.sh, or copy from settings.example.json');
 }
 
+// ── 11.5 soul-hub-backup-daily scheduler task ──────────────────
+// Sibling of #11: pushes committed-but-unpushed main commits to
+// origin nightly. Push-only (no auto-stage) since soul-hub is
+// operator-driven, unlike vault's event-driven commit pattern.
+{
+  const tasks = settings?.scheduler?.tasks ?? [];
+  const found = Array.isArray(tasks) && tasks.some((t) => t?.id === 'soul-hub-backup-daily');
+  if (found) add('soul-hub-backup task', 'ok', 'scheduler task registered');
+  else add('soul-hub-backup task', 'warn', 'not in settings.json — copy soul-hub-backup-daily entry from settings.example.json');
+}
+
 // ── 12. TikTok transcription deps (ADR-024) ──────────────────
 {
   const tiktokEnabled = settings?.channels?.whatsapp?.tiktok?.enabled ?? true;
