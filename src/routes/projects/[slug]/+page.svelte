@@ -5,6 +5,23 @@
 	import AdrDrawer from '$lib/components/projects/AdrDrawer.svelte';
 	import AdrGantt from '$lib/components/projects/AdrGantt.svelte';
 
+	type PhaseStatus = 'proposed' | 'accepted' | 'shipped' | 'parked' | 'superseded' | 'rejected' | 'unknown';
+
+	interface Phase {
+		id: string;
+		ordinal: number;
+		label: string;
+		status: PhaseStatus;
+		shipped_at?: string;
+		target_date?: string;
+		falsifier_date?: string;
+		commit?: string;
+		source: 'adr-body' | 'project-index' | 'frontmatter';
+		scope?: string;
+		raw_marker: string;
+		qualifiers: string[];
+	}
+
 	interface DecisionRow {
 		path: string;
 		title: string;
@@ -18,6 +35,16 @@
 		falsifierDaysAway: number | null;
 		tags: string[];
 		blockedBy: string[];
+		phases?: Phase[];
+	}
+
+	interface NextActionsResponse {
+		project: string;
+		generated_at: string;
+		open_phases: Phase[];
+		blocked_phases: Phase[];
+		recent_shipped: Phase[];
+		next: Phase | null;
 	}
 
 	interface ProjectDetail {
@@ -46,10 +73,43 @@
 
 	let timelineExpanded = $state(true);
 
+	// project-phases P3: phase tree expansion state + next-actions cache.
+	// Expanded decisions show their phase[] inline. The next-actions endpoint
+	// is fetched separately so the "Next up" strip + phase counts work even
+	// when individual decision rows are collapsed.
+	let expandedDecisions = $state<Set<string>>(new Set());
+	let nextActions = $state<NextActionsResponse | null>(null);
+
 	const slug = $derived($page.params.slug);
 	const decisions = $derived(detail?.decisions ?? []);
 	const proposed = $derived(decisions.filter((d) => d.status === 'proposed'));
 	const others = $derived(decisions.filter((d) => d.status !== 'proposed'));
+
+	// Phase rollup across all decisions for the project-level stat tile.
+	// Dedupes by phase.id so project-index phases shared across ADRs count
+	// once.
+	const phaseRollup = $derived.by(() => {
+		const seen = new Set<string>();
+		let shipped = 0;
+		let open = 0;
+		let blocked = 0;
+		const blockedAdrPaths = new Set(
+			(nextActions?.blocked_phases ?? []).map((p) => p.id.split('#')[0])
+		);
+		for (const d of decisions) {
+			if (!d.phases) continue;
+			for (const p of d.phases) {
+				if (seen.has(p.id)) continue;
+				seen.add(p.id);
+				if (p.status === 'shipped') shipped++;
+				else if (p.status === 'proposed' || p.status === 'accepted') {
+					if (blockedAdrPaths.has(p.id.split('#')[0]) && p.source === 'adr-body') blocked++;
+					else open++;
+				}
+			}
+		}
+		return { shipped, open, blocked, total: seen.size };
+	});
 
 	async function load() {
 		error = '';
@@ -64,11 +124,50 @@
 			planLoaded = false;
 			planHtml = '';
 			planError = '';
+			expandedDecisions = new Set();
+			// Fire-and-forget next-actions fetch (separate state path so the
+			// main page renders even if this endpoint is slow/fails).
+			loadNextActions();
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Load failed';
 		} finally {
 			loading = false;
 		}
+	}
+
+	async function loadNextActions() {
+		if (!slug) return;
+		try {
+			const res = await fetch(`/api/vault/projects/${encodeURIComponent(slug)}/next-actions`);
+			if (!res.ok) {
+				nextActions = null;
+				return;
+			}
+			nextActions = await res.json();
+		} catch {
+			nextActions = null;
+		}
+	}
+
+	function toggleDecisionExpand(path: string) {
+		const next = new Set(expandedDecisions);
+		if (next.has(path)) next.delete(path);
+		else next.add(path);
+		expandedDecisions = next;
+	}
+
+	function phaseStatusClass(status: PhaseStatus): string {
+		if (status === 'shipped') return 'bg-hub-cta/15 text-hub-cta';
+		if (status === 'accepted') return 'bg-hub-info/15 text-hub-info';
+		if (status === 'proposed') return 'bg-hub-warning/15 text-hub-warning';
+		if (status === 'parked') return 'bg-hub-dim/15 text-hub-dim';
+		if (status === 'superseded') return 'bg-hub-muted/15 text-hub-muted line-through';
+		if (status === 'rejected') return 'bg-hub-danger/15 text-hub-danger';
+		return 'bg-hub-card text-hub-dim';
+	}
+
+	function adrSlugFromId(phaseId: string): string {
+		return phaseId.split('#')[0];
 	}
 
 	async function loadPlan() {
@@ -205,11 +304,47 @@
 							<div class="text-lg font-semibold text-hub-danger">{detail.statusCounts.rejected}</div>
 						</div>
 					{/if}
+					{#if phaseRollup.total > 0}
+						<div class="p-3 rounded-lg bg-hub-card/40 border border-hub-border" title="From phase-parser across all ADRs in this project (project-phases ADR-001)">
+							<div class="text-[10px] uppercase tracking-wider text-hub-dim mb-1">Phases</div>
+							<div class="text-sm font-medium text-hub-text">
+								<span class="text-hub-cta">{phaseRollup.shipped}</span>
+								<span class="text-hub-dim">/</span>
+								<span class="text-hub-warning">{phaseRollup.open}</span>
+								{#if phaseRollup.blocked > 0}<span class="text-hub-dim">/</span><span class="text-hub-danger">{phaseRollup.blocked}</span>{/if}
+							</div>
+							<div class="text-[10px] text-hub-dim mt-0.5">
+								shipped / open{phaseRollup.blocked > 0 ? ' / blocked' : ''}
+							</div>
+						</div>
+					{/if}
 					<div class="p-3 rounded-lg bg-hub-card/40 border border-hub-border">
 						<div class="text-[10px] uppercase tracking-wider text-hub-dim mb-1">Last activity</div>
 						<div class="text-sm font-medium text-hub-text">{timeAgoMs(detail.lastActivity)}</div>
 					</div>
 				</div>
+
+				<!-- Next up strip (project-phases P3). Surfaces the open phase
+				     with the nearest falsifier across all ADRs. Hidden when
+				     no open phases exist (all shipped, or no parseable data). -->
+				{#if nextActions?.next}
+					<div class="mb-6 p-3 rounded-lg border border-hub-info/30 bg-hub-info/5 flex items-center gap-3 flex-wrap">
+						<span class="text-[10px] uppercase tracking-wider text-hub-info font-semibold">Next up</span>
+						<span class="text-[10px] px-1.5 py-0.5 rounded {phaseStatusClass(nextActions.next.status)} flex-shrink-0">
+							{nextActions.next.status}
+						</span>
+						<span class="text-sm font-medium text-hub-text">{nextActions.next.label}</span>
+						{#if nextActions.next.source === 'adr-body'}
+							<span class="text-[11px] font-mono text-hub-dim truncate">{adrSlugFromId(nextActions.next.id)}</span>
+						{/if}
+						{#if nextActions.next.scope}
+							<span class="text-xs text-hub-muted truncate flex-1 min-w-0">{nextActions.next.scope}</span>
+						{/if}
+						{#if nextActions.next.falsifier_date}
+							<span class="text-[11px] text-hub-warning flex-shrink-0">⏱ {nextActions.next.falsifier_date}</span>
+						{/if}
+					</div>
+				{/if}
 
 				<!-- Plan / index.md preview -->
 				{#if detail.indexPath}
@@ -306,6 +441,18 @@
 							{#each proposed as d (d.path)}
 								<div class="border border-hub-warning/25 rounded-lg bg-hub-warning/5 p-4">
 									<div class="flex items-start justify-between gap-3 mb-2">
+										{#if d.phases && d.phases.length > 0}
+											<button
+												onclick={() => toggleDecisionExpand(d.path)}
+												class="flex-shrink-0 self-start p-1 -ml-1 rounded hover:bg-hub-card/60 cursor-pointer"
+												aria-label="Toggle phases"
+												aria-expanded={expandedDecisions.has(d.path)}
+											>
+												<svg class="w-3.5 h-3.5 text-hub-dim transition-transform" style:transform={expandedDecisions.has(d.path) ? 'rotate(90deg)' : ''} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+													<polyline points="9 18 15 12 9 6"/>
+												</svg>
+											</button>
+										{/if}
 										<button
 											onclick={() => drawerPath = d.path}
 											class="min-w-0 flex-1 text-left cursor-pointer group"
@@ -337,6 +484,20 @@
 											{/each}
 										</div>
 									{/if}
+									{#if expandedDecisions.has(d.path) && d.phases && d.phases.length > 0}
+										<div class="mt-3 pt-3 border-t border-hub-warning/20 space-y-1">
+											{#each d.phases as p (p.id)}
+												<div class="flex items-center gap-2 text-xs py-0.5" title={p.raw_marker}>
+													<span class="text-[10px] px-1.5 py-0.5 rounded {phaseStatusClass(p.status)} flex-shrink-0 min-w-[60px] text-center">{p.status}</span>
+													<span class="font-medium text-hub-text flex-shrink-0">{p.label}</span>
+													{#if p.scope}<span class="text-hub-dim truncate min-w-0">{p.scope}</span>{/if}
+													{#if p.shipped_at}<span class="text-hub-cta text-[10px] flex-shrink-0">✓ {p.shipped_at}</span>{/if}
+													{#if p.target_date && !p.shipped_at}<span class="text-hub-info text-[10px] flex-shrink-0">→ {p.target_date}</span>{/if}
+													{#if p.commit}<span class="text-hub-dim font-mono text-[10px] flex-shrink-0">{p.commit.slice(0, 7)}</span>{/if}
+												</div>
+											{/each}
+										</div>
+									{/if}
 								</div>
 							{/each}
 						</div>
@@ -361,32 +522,67 @@
 					{:else}
 						<div class="divide-y divide-hub-border/60 border border-hub-border rounded-lg bg-hub-card/40">
 							{#each others as d (d.path)}
-								<button
-									onclick={() => drawerPath = d.path}
-									class="w-full px-4 py-3 hover:bg-hub-card/60 transition-colors text-left cursor-pointer"
-								>
-									<div class="flex items-center gap-2 min-w-0">
-										{#if d.status}
-											<span class="text-[10px] px-1.5 py-0.5 rounded {statusClass(d.status)} flex-shrink-0">
-												{d.status}
-											</span>
+								<div>
+									<div class="flex items-stretch hover:bg-hub-card/60 transition-colors">
+										{#if d.phases && d.phases.length > 0}
+											<button
+												onclick={() => toggleDecisionExpand(d.path)}
+												class="flex items-center justify-center px-3 cursor-pointer hover:bg-hub-card/80 transition-colors"
+												aria-label="Toggle phases"
+												aria-expanded={expandedDecisions.has(d.path)}
+											>
+												<svg class="w-3.5 h-3.5 text-hub-dim transition-transform" style:transform={expandedDecisions.has(d.path) ? 'rotate(90deg)' : ''} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+													<polyline points="9 18 15 12 9 6"/>
+												</svg>
+											</button>
+										{:else}
+											<div class="w-10 flex-shrink-0"></div>
 										{/if}
-										<span class="text-sm font-medium text-hub-text truncate flex-1">
-											{d.title}
-										</span>
-										{#if d.tags.length > 0}
-											<div class="flex items-center gap-1 flex-shrink-0">
-												{#each d.tags.slice(0, 3) as tag}
-													<span class="text-[10px] px-1.5 py-0.5 rounded bg-hub-card text-hub-dim">{tag}</span>
-												{/each}
+										<button
+											onclick={() => drawerPath = d.path}
+											class="flex-1 min-w-0 px-4 py-3 text-left cursor-pointer"
+										>
+											<div class="flex items-center gap-2 min-w-0">
+												{#if d.status}
+													<span class="text-[10px] px-1.5 py-0.5 rounded {statusClass(d.status)} flex-shrink-0">
+														{d.status}
+													</span>
+												{/if}
+												<span class="text-sm font-medium text-hub-text truncate flex-1">
+													{d.title}
+												</span>
+												{#if d.phases && d.phases.length > 0}
+													<span class="text-[10px] text-hub-dim flex-shrink-0">{d.phases.filter(p => p.status === 'shipped').length}/{d.phases.length} ph</span>
+												{/if}
+												{#if d.tags.length > 0}
+													<div class="flex items-center gap-1 flex-shrink-0">
+														{#each d.tags.slice(0, 3) as tag}
+															<span class="text-[10px] px-1.5 py-0.5 rounded bg-hub-card text-hub-dim">{tag}</span>
+														{/each}
+													</div>
+												{/if}
 											</div>
-										{/if}
+											<div class="text-[11px] text-hub-dim font-mono truncate mt-0.5">
+												{d.path}
+												{#if d.created}<span class="ml-2">· {d.created}</span>{/if}
+											</div>
+										</button>
 									</div>
-									<div class="text-[11px] text-hub-dim font-mono truncate mt-0.5">
-										{d.path}
-										{#if d.created}<span class="ml-2">· {d.created}</span>{/if}
-									</div>
-								</button>
+									{#if expandedDecisions.has(d.path) && d.phases && d.phases.length > 0}
+										<div class="px-4 pb-3 pt-1 ml-10 space-y-1 border-t border-hub-border/40">
+											{#each d.phases as p (p.id)}
+												<div class="flex items-center gap-2 text-xs py-0.5" title={p.raw_marker}>
+													<span class="text-[10px] px-1.5 py-0.5 rounded {phaseStatusClass(p.status)} flex-shrink-0 min-w-[60px] text-center">{p.status}</span>
+													<span class="font-medium text-hub-text flex-shrink-0">{p.label}</span>
+													{#if p.scope}<span class="text-hub-dim truncate min-w-0">{p.scope}</span>{/if}
+													{#if p.shipped_at}<span class="text-hub-cta text-[10px] flex-shrink-0">✓ {p.shipped_at}</span>{/if}
+													{#if p.target_date && !p.shipped_at}<span class="text-hub-info text-[10px] flex-shrink-0">→ {p.target_date}</span>{/if}
+													{#if p.commit}<span class="text-hub-dim font-mono text-[10px] flex-shrink-0">{p.commit.slice(0, 7)}</span>{/if}
+												</div>
+											{/each}
+										</div>
+									{/if}
+								</div>
 							{/each}
 						</div>
 					{/if}
