@@ -81,17 +81,24 @@ const INLINE_MARKER_RE =
 	/\b(Phase|PASS|Pass|Stage)\s+([\d+\s/.\-]+?(?:\s+lite)?)\s+(SHIPPED|ACCEPTED|PROPOSED|PARKED|SUPERSEDED|REJECTED|MERGED)\b/g;
 
 /** Status verbs → canonical 6-status vocabulary. `MERGED` collapses to
- *  `shipped` silently (operator prose uses both interchangeably). */
+ *  `shipped`; `DEFERRED` collapses to `parked` (operator convention in
+ *  naseej and project-phases roadmap tables — "deferred until a workflow
+ *  asks" maps semantically to "actively paused"). */
 function normalizeStatus(verb: string): PhaseStatus {
 	const v = verb.toUpperCase();
 	if (v === 'SHIPPED' || v === 'MERGED') return 'shipped';
 	if (v === 'ACCEPTED') return 'accepted';
 	if (v === 'PROPOSED') return 'proposed';
-	if (v === 'PARKED') return 'parked';
+	if (v === 'PARKED' || v === 'DEFERRED') return 'parked';
 	if (v === 'SUPERSEDED') return 'superseded';
 	if (v === 'REJECTED') return 'rejected';
 	return 'unknown';
 }
+
+/** Regex covering every canonical status verb + the documented synonyms.
+ *  Case-insensitive so `Shipped`, `shipped`, `SHIPPED` all match. */
+const STATUS_VERB_RE =
+	/\b(SHIPPED|ACCEPTED|PROPOSED|PARKED|SUPERSEDED|REJECTED|MERGED|DEFERRED)\b/i;
 
 /** Expand an ordinal group string into individual numeric ordinals.
  *  Handles `1`, `1+2`, `0 + 1 + 4`, `2/3`, `1.5`. Returns `[]` on
@@ -268,6 +275,7 @@ function extractRoadmapPhases(
 		const labelCell = cells[0].replace(/\*\*/g, '').trim();
 		const scopeCell = cells[1] ?? '';
 		const estimateCell = cells[2] ?? '';
+		const extraCells = cells.slice(3); // status / notes / whatever columns
 
 		// Ordinal extraction: `P0`, `P1`, `P1.5`, `Phase 2`, etc.
 		const ordMatch = /\b[A-Z]?(\d+(?:\.\d+)?)\b/.exec(labelCell);
@@ -275,24 +283,35 @@ function extractRoadmapPhases(
 		const ordinal = Number.parseFloat(ordMatch[1]);
 		if (!Number.isFinite(ordinal)) continue;
 
-		// Status: default proposed; upgrade if scope cell has explicit marker.
-		// Strip code first so backticked phrases like `PHASES N shipped /
-		// M open / K blocked` don't match the verb regex falsely.
-		const scopeForVerbMatch = stripCodeForMarkerScan(scopeCell);
+		// Status: default proposed; upgrade by scanning every cell beyond
+		// the label for an explicit status verb. Some tables put status
+		// inline in the scope cell (project-phases convention); others use
+		// a dedicated 4th column (naseej convention with `✅ shipped
+		// YYYY-MM-DD`). Both work. Strip code first so backticked phrases
+		// like `PHASES N shipped / M open / K blocked` don't match falsely.
 		let status: PhaseStatus = 'proposed';
-		const verbMatch = /\b(SHIPPED|ACCEPTED|PARKED|SUPERSEDED|REJECTED|MERGED|shipped|accepted|parked|superseded|rejected|merged)\b/.exec(
-			scopeForVerbMatch
-		);
-		if (verbMatch) status = normalizeStatus(verbMatch[1]);
+		let shipped_at: string | undefined;
+		const statusCandidates = [scopeCell, estimateCell, ...extraCells];
+		for (const cell of statusCandidates) {
+			const cleaned = stripCodeForMarkerScan(cell);
+			const verbMatch = STATUS_VERB_RE.exec(cleaned);
+			if (!verbMatch) continue;
+			status = normalizeStatus(verbMatch[1]);
+			// Extract a YYYY-MM-DD adjacent to the verb (same cell).
+			const dateMatch = /\b(\d{4}-\d{2}-\d{2})\b/.exec(cleaned);
+			if (status === 'shipped' && dateMatch) shipped_at = dateMatch[1];
+			break;
+		}
 
 		const qualifiers: string[] = [];
-		if (/\blite\b/i.test(scopeForVerbMatch)) qualifiers.push('lite');
+		if (/\blite\b/i.test(stripCodeForMarkerScan(scopeCell))) qualifiers.push('lite');
 
 		phases.push({
 			id: `${slug}#phase-${ordinal}`,
 			ordinal,
 			label: labelCell,
 			status,
+			shipped_at,
 			source: 'project-index',
 			scope: `${scopeCell}${estimateCell ? ` (${estimateCell})` : ''}`.trim() || undefined,
 			raw_marker: rows[i],

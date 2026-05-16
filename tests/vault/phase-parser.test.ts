@@ -283,6 +283,38 @@ Six phases. Sized honestly.
 		assert.equal(phases[0].status, 'proposed', 'inline-code "shipped" must not upgrade status');
 	});
 
+	test('naseej-style 4-column table with status column upgrades rows correctly', () => {
+		// Real-world regression from the live naseej project — caught
+		// 2026-05-17 via the project detail page: ADRs were status=shipped
+		// but their roadmap phases all showed proposed because the parser
+		// only read 3 cells. The 4th cell carries the status as
+		// `✅ shipped YYYY-MM-DD`.
+		const roadmap = `
+## Roadmap
+
+| Phase | Scope | Estimate | Status |
+|---|---|---|---|
+| **P0** | Durable gates | 1-2 days | deferred (operator-skipped 2026-05-16) |
+| **P1** | First 3 components published | 3-5 days | ✅ shipped 2026-05-16 |
+| **P1.5** | Marketplace + Zod schemas | 3-5 days | ✅ shipped 2026-05-17 |
+| **P2** | Artefacts SQLite table | 2-3 days | not started |
+`;
+		const { phases } = parsePhases({
+			adrPath: 'projects/naseej/adr-001.md',
+			adrBody: '',
+			adrMeta: makeMeta(),
+			projectIndexBody: roadmap
+		});
+		assert.equal(phases.length, 4);
+		const byOrd = (n: number) => phases.find((p) => p.ordinal === n)!;
+		assert.equal(byOrd(0).status, 'parked', 'deferred → parked');
+		assert.equal(byOrd(1).status, 'shipped');
+		assert.equal(byOrd(1).shipped_at, '2026-05-16', 'shipped_at extracted from status cell');
+		assert.equal(byOrd(1.5).status, 'shipped');
+		assert.equal(byOrd(1.5).shipped_at, '2026-05-17');
+		assert.equal(byOrd(2).status, 'proposed', '"not started" leaves the default');
+	});
+
 	test('roadmap row with explicit (shipped) marker upgrades status', () => {
 		const roadmap = `
 ## Roadmap
