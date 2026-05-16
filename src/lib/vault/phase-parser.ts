@@ -452,6 +452,24 @@ function fallbackFromFrontmatter(adrPath: string, meta: VaultMeta): Phase {
 	};
 }
 
+/** Parse the project-index roadmap in isolation — used by callers that
+ *  want the PROJECT-LEVEL phases without per-ADR merging (the `## Roadmap`
+ *  table describes the whole project, not any one ADR; rendering it under
+ *  each ADR row duplicates the same milestones N times).
+ *
+ *  The `adrPath` passed to the existing private extractor is only used to
+ *  derive the project slug for phase IDs, so we synthesise a sentinel
+ *  path of the shape `projects/<slug>/_root.md`. Phase IDs come out as
+ *  `<slug>#phase-<ordinal>` — same as when called via `parsePhases` for a
+ *  real ADR in the same project, so consumers can dedupe by ID.
+ *
+ *  Returns `[]` if the index body has no `## Roadmap` heading. */
+export function parseProjectRoadmap(slug: string, indexBody: string): Phase[] {
+	if (!slug || !indexBody) return [];
+	const warnings: ParserWarning[] = [];
+	return extractRoadmapPhases(`projects/${slug}/_root.md`, indexBody, warnings);
+}
+
 export function parsePhases(input: ParserInput): ParserOutput {
 	const warnings: ParserWarning[] = [];
 

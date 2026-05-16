@@ -11,7 +11,7 @@ import assert from 'node:assert';
 // does not perform bundler-style .js → .ts source resolution at runtime.
 // svelte-check will warn (allowImportingTsExtensions) — consistent with
 // the project's existing TS warning state in other test files.
-import { parsePhases } from '../../src/lib/vault/phase-parser.ts';
+import { parsePhases, parseProjectRoadmap } from '../../src/lib/vault/phase-parser.ts';
 import type { VaultMeta } from '../../src/lib/vault/types.ts';
 
 function makeMeta(overrides: Partial<VaultMeta> = {}): VaultMeta {
@@ -481,6 +481,49 @@ ADR-046 still under R2 scope (2 phases; cap is 3). Pass 3 only if the wikilink-v
 		// produce a spurious phase.
 		const noFamily = phases.find((p) => p.label === 'SHIPPED');
 		assert.equal(noFamily, undefined, 'bare SHIPPED is not a phase');
+	});
+});
+
+describe('phase-parser — parseProjectRoadmap (project-level entry)', () => {
+	const ROADMAP = `
+## Roadmap
+
+| Phase | Scope | Estimate | Status |
+|---|---|---|---|
+| **P0** | Foundation | 1d | ✅ shipped 2026-05-16 |
+| **P1** | Feature work | 2d | not started |
+`;
+
+	test('returns project-scoped IDs not ADR-scoped', () => {
+		const phases = parseProjectRoadmap('foo', ROADMAP);
+		assert.equal(phases.length, 2);
+		assert.equal(phases[0].id, 'foo#phase-0');
+		assert.equal(phases[1].id, 'foo#phase-1');
+	});
+
+	test('extracts status + shipped_at from the status column', () => {
+		const phases = parseProjectRoadmap('foo', ROADMAP);
+		assert.equal(phases[0].status, 'shipped');
+		assert.equal(phases[0].shipped_at, '2026-05-16');
+		assert.equal(phases[1].status, 'proposed');
+	});
+
+	test('returns [] when index has no Roadmap heading', () => {
+		assert.deepEqual(parseProjectRoadmap('foo', '## Overview\n\nNo roadmap here.'), []);
+	});
+
+	test('returns [] when slug or body is empty', () => {
+		assert.deepEqual(parseProjectRoadmap('', ROADMAP), []);
+		assert.deepEqual(parseProjectRoadmap('foo', ''), []);
+	});
+
+	test('same roadmap parsed twice yields identical IDs (dedup-safe)', () => {
+		const a = parseProjectRoadmap('foo', ROADMAP);
+		const b = parseProjectRoadmap('foo', ROADMAP);
+		assert.deepEqual(
+			a.map((p) => p.id),
+			b.map((p) => p.id)
+		);
 	});
 });
 

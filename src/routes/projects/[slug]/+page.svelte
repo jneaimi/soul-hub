@@ -57,6 +57,9 @@
 		upcomingFalsifiers: { path: string; date: string; daysAway: number }[];
 		hasIndex: boolean;
 		indexPath: string | null;
+		/** PROJECT-LEVEL phases from the index roadmap. Rendered once in
+		 *  its own section, not duplicated under every ADR. */
+		projectPhases?: Phase[];
 		decisions?: DecisionRow[];
 	}
 
@@ -79,15 +82,18 @@
 	// when individual decision rows are collapsed.
 	let expandedDecisions = $state<Set<string>>(new Set());
 	let nextActions = $state<NextActionsResponse | null>(null);
+	let roadmapExpanded = $state(true);
 
 	const slug = $derived($page.params.slug);
 	const decisions = $derived(detail?.decisions ?? []);
 	const proposed = $derived(decisions.filter((d) => d.status === 'proposed'));
 	const others = $derived(decisions.filter((d) => d.status !== 'proposed'));
 
-	// Phase rollup across all decisions for the project-level stat tile.
-	// Dedupes by phase.id so project-index phases shared across ADRs count
-	// once.
+	// Phase rollup across BOTH project-level and ADR-level phases.
+	// Dedupes by phase.id so a merged phase (same logical milestone
+	// described in both the project-index roadmap AND an ADR body) is
+	// counted once. Project-index-only phases (`source: 'project-index'`)
+	// never participate in the blocked-check — that's an ADR-level signal.
 	const phaseRollup = $derived.by(() => {
 		const seen = new Set<string>();
 		let shipped = 0;
@@ -96,17 +102,18 @@
 		const blockedAdrPaths = new Set(
 			(nextActions?.blocked_phases ?? []).map((p) => p.id.split('#')[0])
 		);
-		for (const d of decisions) {
-			if (!d.phases) continue;
-			for (const p of d.phases) {
-				if (seen.has(p.id)) continue;
-				seen.add(p.id);
-				if (p.status === 'shipped') shipped++;
-				else if (p.status === 'proposed' || p.status === 'accepted') {
-					if (blockedAdrPaths.has(p.id.split('#')[0]) && p.source === 'adr-body') blocked++;
-					else open++;
-				}
+		const tally = (p: Phase) => {
+			if (seen.has(p.id)) return;
+			seen.add(p.id);
+			if (p.status === 'shipped') shipped++;
+			else if (p.status === 'proposed' || p.status === 'accepted') {
+				if (blockedAdrPaths.has(p.id.split('#')[0]) && p.source === 'adr-body') blocked++;
+				else open++;
 			}
+		};
+		for (const p of detail?.projectPhases ?? []) tally(p);
+		for (const d of decisions) {
+			for (const p of d.phases ?? []) tally(p);
 		}
 		return { shipped, open, blocked, total: seen.size };
 	});
@@ -419,6 +426,41 @@
 								<div class="pt-3">
 									<AdrGantt decisions={decisions} onSelect={(p) => (drawerPath = p)} />
 								</div>
+							</div>
+						{/if}
+					</section>
+				{/if}
+
+				<!-- Project roadmap (project-phases ADR-001 follow-up). The
+				     project-level phase tree from the `## Roadmap` table in
+				     index.md. Rendered ONCE here so the same milestones aren't
+				     duplicated under every ADR. Per-ADR expansion below shows
+				     only that ADR's own in-body markers. -->
+				{#if detail.projectPhases && detail.projectPhases.length > 0}
+					<section class="mb-6 border border-hub-border rounded-lg bg-hub-card/40 overflow-hidden">
+						<button
+							onclick={() => (roadmapExpanded = !roadmapExpanded)}
+							class="w-full flex items-center gap-2 px-4 py-3 hover:bg-hub-card/60 transition-colors text-left cursor-pointer"
+							aria-expanded={roadmapExpanded}
+						>
+							<svg class="w-4 h-4 text-hub-dim transition-transform" style:transform={roadmapExpanded ? 'rotate(90deg)' : ''} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+								<polyline points="9 18 15 12 9 6"/>
+							</svg>
+							<span class="text-sm font-medium text-hub-text">Project roadmap</span>
+							<span class="text-[11px] text-hub-dim">
+								{detail.projectPhases.filter(p => p.status === 'shipped').length}/{detail.projectPhases.length} shipped
+							</span>
+						</button>
+						{#if roadmapExpanded}
+							<div class="px-4 pb-3 pt-1 border-t border-hub-border space-y-1">
+								{#each detail.projectPhases as p (p.id)}
+									<div class="flex items-center gap-2 text-xs py-0.5" title={p.raw_marker}>
+										<span class="text-[10px] px-1.5 py-0.5 rounded {phaseStatusClass(p.status)} flex-shrink-0 min-w-[60px] text-center">{p.status}</span>
+										<span class="font-medium text-hub-text flex-shrink-0">{p.label}</span>
+										{#if p.scope}<span class="text-hub-dim truncate min-w-0">{p.scope}</span>{/if}
+										{#if p.shipped_at}<span class="text-hub-cta text-[10px] flex-shrink-0">✓ {p.shipped_at}</span>{/if}
+									</div>
+								{/each}
 							</div>
 						{/if}
 					</section>
