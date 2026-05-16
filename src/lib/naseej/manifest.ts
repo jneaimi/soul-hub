@@ -19,6 +19,7 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join, resolve as resolvePath } from 'node:path';
 import { parse as parseYaml } from 'yaml';
+import { z } from 'zod';
 import {
 	type ComponentManifest,
 	parseComponentManifest,
@@ -100,7 +101,15 @@ export async function loadComponentManifest(
 }
 
 /** Tolerant variant — returns `{ ok, data | errors }` instead of throwing.
- *  Use this in the POST validate gate to return structured errors. */
+ *  Use this in the POST validate gate to return structured errors.
+ *
+ *  ADR-005 CP4 tech-debt cleanup: the original signature reached for the
+ *  errors type via a `ReturnType<...> extends { ok: false; errors: infer E }`
+ *  conditional, but the Zod v4 result-type union didn't narrow as expected
+ *  and the inferred type resolved to `never` (svelte-check caught this in
+ *  CP2). Pulling the type directly from `z.core.$ZodIssue[]` — the shape
+ *  `safeParseComponentManifest` actually returns — fixes the narrowing
+ *  while keeping the API identical. */
 export async function loadComponentManifestSafe(
 	componentDir: string,
 	catalogDir: string = DEFAULT_CATALOG_DIR,
@@ -108,7 +117,7 @@ export async function loadComponentManifestSafe(
 	| { ok: true; record: ComponentRecord }
 	| { ok: false; reason: 'missing_block_md'; detail: string }
 	| { ok: false; reason: 'no_frontmatter'; detail: string }
-	| { ok: false; reason: 'schema_invalid'; errors: ReturnType<typeof safeParseComponentManifest> extends { ok: false; errors: infer E } ? E : never }
+	| { ok: false; reason: 'schema_invalid'; errors: z.core.$ZodIssue[] }
 > {
 	const blockPath = join(componentDir, 'BLOCK.md');
 	let raw: string;
