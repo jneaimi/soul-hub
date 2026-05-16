@@ -91,7 +91,18 @@ export const claudePtyDispatcher: BackendDispatcher = {
 
 		const runId = crypto.randomUUID().slice(0, 8);
 		const started = Date.now();
-		const budget = resolveBudget(opts.mode, agent.budget);
+		// ADR-005 — per-call budget override (Naseej recipe step). Shallow merge:
+		// any field set on `opts.budget_override` shadows the agent default;
+		// undefined fields fall through to `agent.budget`, which itself falls
+		// through to `PRODUCTION_DEFAULTS` inside `resolveBudget`.
+		const mergedBudget = opts.budget_override
+			? {
+					max_usd: opts.budget_override.max_usd ?? agent.budget?.max_usd,
+					max_turns: opts.budget_override.max_turns ?? agent.budget?.max_turns,
+					timeout_sec: opts.budget_override.timeout_sec ?? agent.budget?.timeout_sec,
+				}
+			: agent.budget;
+		const budget = resolveBudget(opts.mode, mergedBudget);
 		const stallMs = resolveStallMs(budget.timeout_ms);
 
 		// ADR-031 — goal-mode: when the agent's frontmatter sets a
@@ -101,7 +112,9 @@ export const claudePtyDispatcher: BackendDispatcher = {
 		// after a short wait for the "Goal set:" acknowledgment. The
 		// `prompt_sent` event from spawnSession fires after the FIRST
 		// injection; we use it as the cue to schedule the second.
-		const goalCondition = agent.goal_condition?.trim();
+		// ADR-005 — per-call override wins over the agent default so Naseej
+		// recipe steps can specialise convergence per invocation.
+		const goalCondition = (opts.goal_condition ?? agent.goal_condition)?.trim();
 		const goalActive = !!goalCondition;
 		const taskPayload = composePrompt(opts.task, opts.context);
 		const initialPrompt = goalActive ? `/goal ${goalCondition}` : taskPayload;

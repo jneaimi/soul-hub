@@ -21,6 +21,22 @@ export interface DispatchOptions {
 	 *  it was dispatched from. Bounded to ~600 chars upstream — never the
 	 *  raw 16-turn history. Empty/undefined → behave as before (single-shot). */
 	context?: string;
+	/** ADR-005 — per-call goal-condition override. When set, the dispatcher
+	 *  prefers this over `agent.goal_condition`. Used by the Naseej runner
+	 *  to let recipe steps override an agent's default convergence rule.
+	 *  Today only the `claude-pty` backend acts on goal-conditions; other
+	 *  backends ignore both the agent default and this override. */
+	goal_condition?: string;
+	/** ADR-005 — per-call budget override. Partial — any subset of fields
+	 *  shadows the agent's stored budget; missing fields fall through to
+	 *  the agent default, which itself falls through to PRODUCTION_DEFAULTS
+	 *  in `budget.ts:resolveBudget`. Used by the Naseej runner to let
+	 *  recipe steps tighten/loosen budget on a per-step basis. */
+	budget_override?: {
+		max_usd?: number;
+		max_turns?: number;
+		timeout_sec?: number;
+	};
 }
 
 export type DispatchEvent =

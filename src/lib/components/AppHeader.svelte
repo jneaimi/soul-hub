@@ -8,6 +8,7 @@
 		{ href: '/inbox', label: 'Inbox', matchPrefix: '/inbox' },
 		{ href: '/scheduler', label: 'Scheduler', matchPrefix: '/scheduler' },
 		{ href: '/crm', label: 'CRM', matchPrefix: '/crm' },
+		{ href: '/naseej', label: 'Naseej', matchPrefix: '/naseej' },
 		{ href: '/vault', label: 'Vault', matchPrefix: '/vault' },
 		{ href: '/sessions', label: 'Sessions', matchPrefix: '/sessions' },
 	];

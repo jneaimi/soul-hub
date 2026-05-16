@@ -39,6 +39,17 @@ export interface DispatchAgentOptions {
 	 *  task prompt so dispatched agents see the prior topic + recent agent
 	 *  output gist. Bounded ~600 chars upstream by `buildAgentContextBrief`. */
 	context?: string;
+	/** Naseej ADR-005 — per-call goal-condition override. Forwarded as-is to
+	 *  the backend dispatcher; only `claude-pty` acts on it today. */
+	goal_condition?: string;
+	/** Naseej ADR-005 — per-call budget override. Partial: missing fields fall
+	 *  through to the agent's stored budget, which itself falls through to
+	 *  `PRODUCTION_DEFAULTS`. Forwarded as-is to the backend dispatcher. */
+	budget_override?: {
+		max_usd?: number;
+		max_turns?: number;
+		timeout_sec?: number;
+	};
 }
 
 /** Run an agent. Streams events; the generator's return value is the final
@@ -96,6 +107,8 @@ export async function* dispatchAgent(
 		task,
 		signal: opts.signal,
 		context: opts.context,
+		goal_condition: opts.goal_condition,
+		budget_override: opts.budget_override,
 	});
 
 	persistRun(result, agent, mode, task, startedAt, opts);
