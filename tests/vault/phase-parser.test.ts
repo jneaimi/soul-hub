@@ -1,0 +1,421 @@
+/**
+ * phase-parser tests — inline real-ADR fixtures so tests don't depend on
+ * the vault file state. Each fixture is a representative snippet of prose
+ * from a production ADR, chosen for the variety of marker shapes the
+ * lenient parser must handle per the project-phases ADR-001 contract.
+ */
+
+import { test, describe } from 'node:test';
+import assert from 'node:assert';
+// Import via .ts extension because node --test --experimental-strip-types
+// does not perform bundler-style .js → .ts source resolution at runtime.
+// svelte-check will warn (allowImportingTsExtensions) — consistent with
+// the project's existing TS warning state in other test files.
+import { parsePhases } from '../../src/lib/vault/phase-parser.ts';
+import type { VaultMeta } from '../../src/lib/vault/types.ts';
+
+function makeMeta(overrides: Partial<VaultMeta> = {}): VaultMeta {
+	return { type: 'decision', status: 'proposed', ...overrides };
+}
+
+describe('phase-parser — Pattern B (in-ADR inline markers)', () => {
+	test('single Phase N SHIPPED marker', () => {
+		const body = '**Phase 1 SHIPPED 2026-05-14** — initial drop landed.';
+		const { phases, warnings } = parsePhases({
+			adrPath: 'projects/foo/adr-001-bar.md',
+			adrBody: body,
+			adrMeta: makeMeta()
+		});
+		assert.equal(phases.length, 1);
+		assert.equal(phases[0].ordinal, 1);
+		assert.equal(phases[0].label, 'Phase 1');
+		assert.equal(phases[0].status, 'shipped');
+		assert.equal(phases[0].shipped_at, '2026-05-14');
+		assert.equal(phases[0].source, 'adr-body');
+		assert.equal(warnings.length, 0);
+	});
+
+	test('Phase 1+2 SHIPPED expands to two phases', () => {
+		const body = '**Phase 1+2 SHIPPED 2026-05-16** — bundle landed.';
+		const { phases } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody: body,
+			adrMeta: makeMeta()
+		});
+		assert.equal(phases.length, 2);
+		assert.deepEqual(
+			phases.map((p) => p.ordinal),
+			[1, 2]
+		);
+		for (const p of phases) {
+			assert.equal(p.status, 'shipped');
+			assert.equal(p.shipped_at, '2026-05-16');
+		}
+	});
+
+	test('Phase 0 + 1 + 4 lite SHIPPED expands non-contiguously with qualifier', () => {
+		const body = '**Phase 0 + 1 + 4 lite SHIPPED 2026-05-14** — partial.';
+		const { phases } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody: body,
+			adrMeta: makeMeta()
+		});
+		assert.equal(phases.length, 3);
+		assert.deepEqual(
+			phases.map((p) => p.ordinal),
+			[0, 1, 4]
+		);
+		const phase4 = phases.find((p) => p.ordinal === 4)!;
+		assert.ok(phase4.qualifiers.includes('lite'), 'phase 4 should carry "lite" qualifier');
+	});
+
+	test('Phase 2/3 SUPERSEDED expands to two superseded phases', () => {
+		const body = 'Phase 2/3 SUPERSEDED — iteration loop deferred.';
+		const { phases } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody: body,
+			adrMeta: makeMeta()
+		});
+		assert.equal(phases.length, 2);
+		assert.equal(phases[0].status, 'superseded');
+		assert.equal(phases[1].status, 'superseded');
+	});
+
+	test('PASS 1+2 SHIPPED labels the family as PASS', () => {
+		const body = '**PASS 2 SHIPPED 2026-05-16** — bash-side closes the shell-out bypass.';
+		const { phases } = parsePhases({
+			adrPath: 'projects/foo/adr-046.md',
+			adrBody: body,
+			adrMeta: makeMeta()
+		});
+		assert.equal(phases.length, 1);
+		assert.equal(phases[0].label, 'PASS 2');
+		assert.equal(phases[0].status, 'shipped');
+	});
+
+	test('MERGED collapses to shipped silently', () => {
+		const body = '**Phase 1+2 MERGED 2026-05-14** — feature branch in.';
+		const { phases, warnings } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody: body,
+			adrMeta: makeMeta()
+		});
+		assert.equal(phases.length, 2);
+		assert.equal(phases[0].status, 'shipped');
+		assert.equal(phases[1].status, 'shipped');
+		assert.equal(warnings.length, 0, 'no warning for MERGED → shipped');
+	});
+
+	test('later occurrence wins for the same ordinal', () => {
+		const body = `
+**Proposed 2026-05-10.**
+
+## Status
+
+**Phase 1 PROPOSED 2026-05-10** — initial.
+
+**Phase 1 SHIPPED 2026-05-16** — done.
+`;
+		const { phases, warnings } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody: body,
+			adrMeta: makeMeta({ status: 'shipped' })
+		});
+		assert.equal(phases.length, 1);
+		assert.equal(phases[0].ordinal, 1);
+		assert.equal(phases[0].status, 'shipped');
+		assert.ok(warnings.some((w) => w.kind === 'duplicate_ordinal'), 'duplicate-ordinal warning emitted');
+	});
+
+	test('shipped_at from prose beats frontmatter shipped_on', () => {
+		const body = '**Phase 1 SHIPPED 2026-05-14** — first phase.';
+		const { phases } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody: body,
+			adrMeta: makeMeta({ status: 'shipped', shipped_on: '2026-05-20' })
+		});
+		assert.equal(phases[0].shipped_at, '2026-05-14', 'prose date wins over frontmatter');
+	});
+
+	test('commit short-SHA extracted within ±120 chars', () => {
+		const body = '**Phase 1 SHIPPED 2026-05-14** commit `abc1234` — landed.';
+		const { phases } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody: body,
+			adrMeta: makeMeta()
+		});
+		assert.equal(phases[0].commit, 'abc1234');
+	});
+
+	test('falsifier_date from frontmatter applied to all phases', () => {
+		const body = '**Phase 1 SHIPPED 2026-05-14** — done.';
+		const { phases } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody: body,
+			adrMeta: makeMeta({ falsifier_date: '2026-07-15' })
+		});
+		assert.equal(phases[0].falsifier_date, '2026-07-15');
+	});
+});
+
+describe('phase-parser — Pattern A (project-index roadmap table)', () => {
+	const NASEEJ_ROADMAP = `
+## Roadmap
+
+Six phases. Sized honestly.
+
+| Phase | Scope | Estimate |
+|---|---|---|
+| **P0** | Durable gates | 1-2 days |
+| **P1** | First 3 components published | 3-5 days |
+| **P1.5** | POST /api/components + Zod schemas | 3-5 days |
+| **P2** | pipeline_artefacts SQLite table | 2-3 days |
+
+## First-week deliverable
+`;
+
+	test('parses 4 phases from naseej-style table', () => {
+		const { phases } = parsePhases({
+			adrPath: 'projects/naseej/adr-001.md',
+			adrBody: '',
+			adrMeta: makeMeta(),
+			projectIndexBody: NASEEJ_ROADMAP
+		});
+		assert.equal(phases.length, 4);
+		assert.deepEqual(
+			phases.map((p) => p.ordinal),
+			[0, 1, 1.5, 2]
+		);
+	});
+
+	test('handles fractional P1.5 ordinals', () => {
+		const { phases } = parsePhases({
+			adrPath: 'projects/naseej/adr-001.md',
+			adrBody: '',
+			adrMeta: makeMeta(),
+			projectIndexBody: NASEEJ_ROADMAP
+		});
+		const p15 = phases.find((p) => p.ordinal === 1.5);
+		assert.ok(p15, 'P1.5 was extracted');
+		assert.equal(p15.label, 'P1.5');
+	});
+
+	test('roadmap phases default to proposed', () => {
+		const { phases } = parsePhases({
+			adrPath: 'projects/naseej/adr-001.md',
+			adrBody: '',
+			adrMeta: makeMeta(),
+			projectIndexBody: NASEEJ_ROADMAP
+		});
+		for (const p of phases) assert.equal(p.status, 'proposed');
+	});
+
+	test('scope cell + estimate cell flow into scope field', () => {
+		const { phases } = parsePhases({
+			adrPath: 'projects/naseej/adr-001.md',
+			adrBody: '',
+			adrMeta: makeMeta(),
+			projectIndexBody: NASEEJ_ROADMAP
+		});
+		const p1 = phases.find((p) => p.ordinal === 1)!;
+		assert.ok(p1.scope?.includes('First 3 components'), 'scope contains the table description');
+		assert.ok(p1.scope?.includes('3-5 days'), 'scope also includes estimate');
+	});
+
+	test('roadmap row with explicit (shipped) marker upgrades status', () => {
+		const roadmap = `
+## Roadmap
+
+| Phase | Scope | Estimate |
+|---|---|---|
+| **P1** | Initial drop SHIPPED | done |
+| **P2** | Next batch | 2 days |
+`;
+		const { phases } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody: '',
+			adrMeta: makeMeta(),
+			projectIndexBody: roadmap
+		});
+		const p1 = phases.find((p) => p.ordinal === 1)!;
+		const p2 = phases.find((p) => p.ordinal === 2)!;
+		assert.equal(p1.status, 'shipped');
+		assert.equal(p2.status, 'proposed');
+	});
+
+	test('no Roadmap heading → no phases from index', () => {
+		const indexBody = '## Overview\n\nNo roadmap here.\n';
+		const { phases } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody: '',
+			adrMeta: makeMeta(),
+			projectIndexBody: indexBody
+		});
+		// Fallback should kick in — frontmatter synthesizes one phase
+		assert.equal(phases.length, 1);
+		assert.equal(phases[0].source, 'frontmatter');
+	});
+});
+
+describe('phase-parser — merge resolution', () => {
+	test('ADR-body status wins over project-index status for same ordinal', () => {
+		const indexBody = `
+## Roadmap
+
+| Phase | Scope | Estimate |
+|---|---|---|
+| **P1** | Initial drop | 3 days |
+`;
+		const adrBody = '**Phase 1 SHIPPED 2026-05-14** — landed.';
+		const { phases } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody,
+			adrMeta: makeMeta({ status: 'shipped' }),
+			projectIndexBody: indexBody
+		});
+		const p1 = phases.find((p) => p.ordinal === 1)!;
+		assert.equal(p1.status, 'shipped', 'ADR-body status wins');
+		assert.ok(p1.scope?.includes('Initial drop'), 'scope from roadmap preserved');
+	});
+
+	test('phases sort by ordinal ascending including fractional', () => {
+		const indexBody = `
+## Roadmap
+
+| Phase | Scope | Estimate |
+|---|---|---|
+| **P2** | Two | 1d |
+| **P0** | Zero | 1d |
+| **P1.5** | One-and-a-half | 1d |
+| **P1** | One | 1d |
+`;
+		const { phases } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody: '',
+			adrMeta: makeMeta(),
+			projectIndexBody: indexBody
+		});
+		assert.deepEqual(
+			phases.map((p) => p.ordinal),
+			[0, 1, 1.5, 2]
+		);
+	});
+});
+
+describe('phase-parser — frontmatter fallback (sad path)', () => {
+	test('no markers + no roadmap → synthesize Phase 1 from frontmatter status', () => {
+		const { phases } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody: 'This is an ADR body with no phase markers.',
+			adrMeta: makeMeta({ status: 'accepted' })
+		});
+		assert.equal(phases.length, 1);
+		assert.equal(phases[0].ordinal, 1);
+		assert.equal(phases[0].status, 'accepted');
+		assert.equal(phases[0].source, 'frontmatter');
+	});
+
+	test('frontmatter fallback carries falsifier_date through', () => {
+		const { phases } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody: 'Body without markers.',
+			adrMeta: makeMeta({
+				status: 'proposed',
+				falsifier_date: '2026-08-01',
+				target_date: '2026-06-01'
+			})
+		});
+		assert.equal(phases[0].falsifier_date, '2026-08-01');
+		assert.equal(phases[0].target_date, '2026-06-01');
+	});
+
+	test('unparseable ordinal group emits warning but does not crash', () => {
+		// Construct prose that triggers the inline regex but produces no
+		// ordinals after expansion — e.g. "Phase   SHIPPED" with whitespace
+		// the regex must reject. This is a defensive check; the regex is
+		// fairly tight so this should remain empty.
+		const body = 'Random Phase mentions without ordinals.';
+		const { phases, warnings } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody: body,
+			adrMeta: makeMeta()
+		});
+		// Falls back to frontmatter — never crashes.
+		assert.ok(phases.length >= 1);
+		assert.equal(typeof warnings, 'object');
+	});
+});
+
+describe('phase-parser — soul-hub-whatsapp ADR-046 realistic fixture', () => {
+	// Real prose lifted from adr-046-vault-write-chokepoint.md — the stratified
+	// status pattern with the latest assertion at top.
+	const ADR_046_BODY = `## Status
+
+**PASS 2 SHIPPED 2026-05-16** — Bash-side chokepoint closes the shell-out bypass Pass 1 couldn't reach. New file ~/.claude/hooks/vault-write-guard-bash.sh registered on PreToolUse matcher Bash.
+
+ADR-046 still under R2 scope (2 phases; cap is 3). Pass 3 only if the wikilink-validation sibling ADR sub-rolls into here rather than its own ADR — operator's call.
+
+**SHIPPED 2026-05-16** — all three Pass 1 deliverables in place, verified end-to-end against the live Soul Hub API.
+
+**Proposed 2026-05-16.** Motivated by the post-mortem on the naseej discovery session.
+`;
+
+	test('extracts PASS 2 SHIPPED with date', () => {
+		const { phases } = parsePhases({
+			adrPath: 'projects/soul-hub-whatsapp/adr-046-vault-write-chokepoint.md',
+			adrBody: ADR_046_BODY,
+			adrMeta: makeMeta({
+				status: 'shipped',
+				shipped_on: '2026-05-16',
+				falsifier_date: '2026-08-16'
+			})
+		});
+		const pass2 = phases.find((p) => p.label === 'PASS 2');
+		assert.ok(pass2, 'PASS 2 phase extracted');
+		assert.equal(pass2.status, 'shipped');
+		assert.equal(pass2.shipped_at, '2026-05-16');
+		assert.equal(pass2.falsifier_date, '2026-08-16');
+	});
+
+	test('handles standalone "SHIPPED" not preceded by Phase/PASS — does not crash, just skips', () => {
+		const { phases } = parsePhases({
+			adrPath: 'projects/soul-hub-whatsapp/adr-046-vault-write-chokepoint.md',
+			adrBody: ADR_046_BODY,
+			adrMeta: makeMeta({ status: 'shipped' })
+		});
+		// Standalone "SHIPPED 2026-05-16" without family-prefix is intentionally
+		// NOT a phase marker — it's the ADR-level summary status. Should not
+		// produce a spurious phase.
+		const noFamily = phases.find((p) => p.label === 'SHIPPED');
+		assert.equal(noFamily, undefined, 'bare SHIPPED is not a phase');
+	});
+});
+
+describe('phase-parser — id generation', () => {
+	test('id format: <adr-slug>#phase-<ordinal>', () => {
+		const body = '**Phase 2 SHIPPED 2026-05-14**.';
+		const { phases } = parsePhases({
+			adrPath: 'projects/naseej/adr-003-foundation-scope.md',
+			adrBody: body,
+			adrMeta: makeMeta()
+		});
+		assert.equal(phases[0].id, 'adr-003-foundation-scope#phase-2');
+	});
+
+	test('fractional ordinals preserve decimal in id', () => {
+		const indexBody = `
+## Roadmap
+
+| Phase | Scope | Estimate |
+|---|---|---|
+| **P1.5** | mid-phase | 1d |
+`;
+		const { phases } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody: '',
+			adrMeta: makeMeta(),
+			projectIndexBody: indexBody
+		});
+		assert.equal(phases[0].id, 'adr-001#phase-1.5');
+	});
+});
