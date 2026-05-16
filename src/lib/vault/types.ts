@@ -208,12 +208,27 @@ export interface UpdateNoteRequest {
 export interface WriteResult {
 	success: true;
 	path: string;
+	/** ADR-047 — link-validator warnings (non-fatal). Empty array elided on the
+	 *  wire by the API route when there are no warnings. */
+	warnings?: LinkIssue[];
 }
 
 export interface WriteError {
 	success: false;
 	error: string;
 	field?: string;
+	/** ADR-047 — populated when refusal is link-validation driven. The `error`
+	 *  string carries the first issue's human-readable message; this array
+	 *  carries every error for batch correction by the agent. */
+	linkErrors?: LinkIssue[];
+}
+
+/** ADR-047 — shape of a single wikilink validation issue. Re-exported from
+ *  `link-validator.ts` so API callers don't need to import the validator. */
+export interface LinkIssue {
+	rule: 'auto-memory-wikilink' | 'bare-project-slug' | 'unresolved-target';
+	link: string;
+	suggestion: string;
 }
 
 export interface WriteLogEntry {

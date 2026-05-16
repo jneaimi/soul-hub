@@ -20,7 +20,11 @@ export function parseNote(filePath: string, raw: string): ParsedNote {
 	};
 }
 
-function extractLinks(content: string): VaultLink[] {
+/** Exported so the link validator (ADR-047) can call it on `CreateNoteRequest.content`
+ *  / merged update content without round-tripping through `parseNote`. Same code-block
+ *  + table-escape handling as the indexer-side parse — keeps validator and indexer
+ *  in sync. */
+export function extractLinks(content: string): VaultLink[] {
 	const links: VaultLink[] = [];
 	let match: RegExpExecArray | null;
 	const re = new RegExp(WIKILINK_RE.source, WIKILINK_RE.flags);

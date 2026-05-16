@@ -142,6 +142,21 @@ export class VaultIndexer {
 		return this.notes.get(relPath);
 	}
 
+	/** ADR-047 — expose the resolver via a thin wrapper so the link validator
+	 *  doesn't need to reach into private fields. Same semantics as the indexer's
+	 *  own re-resolution: returns `'external'` for URLs/asset embeds, the resolved
+	 *  vault-relative path on hit, `null` on miss. */
+	resolveLink(raw: string, sourcePath: string): string | null {
+		return this.resolver.resolve(raw, sourcePath);
+	}
+
+	/** ADR-047 — `true` when a note exists at the given vault-relative path.
+	 *  Used by the bare-project-slug detector to test
+	 *  `hasNote('projects/<slug>/index.md')`. */
+	hasNote(relPath: string): boolean {
+		return this.notes.has(relPath);
+	}
+
 	all(): VaultNote[] {
 		return Array.from(this.notes.values());
 	}

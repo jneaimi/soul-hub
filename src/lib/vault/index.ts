@@ -14,6 +14,7 @@ import { VaultGraph } from './graph.js';
 import { VaultWatcher } from './watcher.js';
 import { GovernanceResolver } from './governance.js';
 import { TemplateLoader } from './templates.js';
+import { validateLinks } from './link-validator.js';
 import { VaultCommitter } from './committer.js';
 import { emitReindex } from './events.js';
 
@@ -450,12 +451,37 @@ export class VaultEngine {
 			}
 		}
 
+		// ADR-047 — wikilink validation. Runs before stringify so refusals
+		// don't pay the serialization cost. REFUSE on auto-memory and
+		// bare-project-slug; WARN (auto-tag `has-link-warnings`) on
+		// unresolved targets unless `meta.strict_links === true`.
+		const relPath = join(req.zone, req.filename);
+		const linkResult = validateLinks(req.content, {
+			sourcePath: relPath,
+			strict: req.meta.strict_links === true,
+			hasNote: (p) => this.indexer.hasNote(p),
+			resolver: { resolve: (raw, src) => this.indexer.resolveLink(raw, src ?? relPath) },
+		});
+		if (linkResult.errors.length > 0) {
+			const first = linkResult.errors[0];
+			return {
+				success: false,
+				error: `Wikilink validation failed: ${first.suggestion}`,
+				field: 'content',
+				linkErrors: linkResult.errors,
+			};
+		}
+		if (linkResult.warnings.length > 0) {
+			const tags = Array.isArray(req.meta.tags) ? [...req.meta.tags] : [];
+			if (!tags.includes('has-link-warnings')) tags.push('has-link-warnings');
+			req.meta.tags = tags;
+		}
+
 		const content = matter.stringify(req.content, req.meta);
 		if (Buffer.byteLength(content) > MAX_NOTE_SIZE) {
 			return { success: false, error: `Note exceeds maximum size of ${MAX_NOTE_SIZE} bytes` };
 		}
 
-		const relPath = join(req.zone, req.filename);
 		const absPath = resolve(this.config.rootDir, relPath);
 
 		// Check file doesn't already exist
@@ -630,7 +656,9 @@ export class VaultEngine {
 			context: req.context,
 		});
 
-		return { success: true, path: relPath };
+		return linkResult.warnings.length > 0
+			? { success: true, path: relPath, warnings: linkResult.warnings }
+			: { success: true, path: relPath };
 	}
 
 	async updateNote(path: string, req: UpdateNoteRequest): Promise<WriteResult | WriteError> {
@@ -647,6 +675,34 @@ export class VaultEngine {
 			if (!(field in mergedMeta) || mergedMeta[field] === undefined || mergedMeta[field] === '') {
 				return { success: false, error: `Missing required field: ${field}`, field };
 			}
+		}
+
+		// ADR-047 — same wikilink validation as createNote. Always re-validates
+		// against the post-merge body, even when the caller only sent meta —
+		// frontmatter changes (aliases, strict_links) can shift link semantics.
+		const linkResult = validateLinks(newContent, {
+			sourcePath: path,
+			strict: mergedMeta.strict_links === true,
+			hasNote: (p) => this.indexer.hasNote(p),
+			resolver: { resolve: (raw, src) => this.indexer.resolveLink(raw, src ?? path) },
+		});
+		if (linkResult.errors.length > 0) {
+			const first = linkResult.errors[0];
+			return {
+				success: false,
+				error: `Wikilink validation failed: ${first.suggestion}`,
+				field: 'content',
+				linkErrors: linkResult.errors,
+			};
+		}
+		if (linkResult.warnings.length > 0) {
+			const tags = Array.isArray(mergedMeta.tags) ? [...mergedMeta.tags] : [];
+			if (!tags.includes('has-link-warnings')) tags.push('has-link-warnings');
+			mergedMeta.tags = tags;
+		} else if (Array.isArray(mergedMeta.tags) && mergedMeta.tags.includes('has-link-warnings')) {
+			// Warnings cleared on this update — drop the tag so the hygiene
+			// bucket reflects current state.
+			mergedMeta.tags = mergedMeta.tags.filter((t: string) => t !== 'has-link-warnings');
 		}
 
 		const content = matter.stringify(newContent, mergedMeta);
@@ -698,7 +754,9 @@ export class VaultEngine {
 			context: existing.meta.source_context as string | undefined,
 		});
 
-		return { success: true, path };
+		return linkResult.warnings.length > 0
+			? { success: true, path, warnings: linkResult.warnings }
+			: { success: true, path };
 	}
 
 	/** Append a wikilink for `notePath` to `<zone>/index.md` under an
