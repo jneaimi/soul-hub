@@ -398,6 +398,40 @@ export interface RunRecipeOptions {
 	 *  for CI smokes (no PTY, no terminal, single-shot). Component steps
 	 *  are unaffected — they spawn subprocesses regardless. */
 	mode?: DispatchMode;
+	/** ADR-005 CP3 — opt-in caller-supplied runId. When provided, replaces
+	 *  the auto-generated short-id. Lets the caller register a cancel hook
+	 *  via POST /api/recipes/runs/<id>/cancel before the run completes.
+	 *  When omitted, an 8-char UUID slice is generated and only known
+	 *  after the run finishes (legacy CP1+CP2 behaviour). */
+	runId?: string;
+}
+
+/** ADR-005 CP3 — in-flight run registry. Each in-progress runRecipe call
+ *  registers an AbortController here keyed on its runId; the cancel
+ *  endpoint (POST /api/recipes/runs/[run_id]/cancel) calls cancelRun()
+ *  to fire it. Entries are deleted in the runRecipe finally block.
+ *
+ *  Single in-process Map — there is no recipe runner outside the
+ *  soul-hub process, and crashes drop the registry which is correct
+ *  (a crashed run cannot be cancelled, only restarted). */
+const runRegistry = new Map<string, AbortController>();
+
+/** Fire the AbortController for an in-flight run. Returns true if the
+ *  run existed in the registry (cancel signal sent); false if no such
+ *  run is currently in-flight (already finished, never started, or
+ *  the caller used the wrong runId). */
+export function cancelRun(runId: string): boolean {
+	const controller = runRegistry.get(runId);
+	if (!controller) return false;
+	controller.abort();
+	return true;
+}
+
+/** Inspect the live registry. Used by the cancel endpoint to return
+ *  meaningful 404 vs "active" diagnostics. Returns the runIds currently
+ *  registered (snapshot, not live). */
+export function listActiveRuns(): string[] {
+	return [...runRegistry.keys()];
 }
 
 export async function runRecipe(
@@ -422,7 +456,7 @@ export async function runRecipe(
 		}
 	}
 
-	const runId = randomUUID().slice(0, 8);
+	const runId = opts.runId ?? randomUUID().slice(0, 8);
 	const startedAt = new Date();
 	const inputs = resolveInputs(recipe, operatorInputs);
 	const ctx: Record<string, unknown> = {
@@ -433,20 +467,34 @@ export async function runRecipe(
 		steps: {} as Record<string, { outputs: Record<string, unknown> }>,
 	};
 
+	// ADR-005 CP3 — register an AbortController for this run so the cancel
+	// endpoint can fire it. If the caller already passed opts.signal, chain
+	// it into the same controller so either side can trigger cancellation.
+	const controller = new AbortController();
+	if (opts.signal) {
+		if (opts.signal.aborted) controller.abort();
+		else opts.signal.addEventListener('abort', () => controller.abort(), { once: true });
+	}
+	runRegistry.set(runId, controller);
+
 	const stepsCtx = ctx.steps as Record<string, { outputs: Record<string, unknown> }>;
 	const stepResults: StepResult[] = [];
 	let failedStep: string | undefined;
 
-	for (const step of order) {
-		const stepResult = isAgentStep(step)
-			? await runAgentStep(step, ctx, opts.signal, mode)
-			: await runComponentStep(step, catalog, ctx);
-		stepResults.push(stepResult);
-		stepsCtx[step.id] = { outputs: stepResult.outputs ?? {} };
-		if (stepResult.exit_code !== 0) {
-			failedStep = step.id;
-			break;
+	try {
+		for (const step of order) {
+			const stepResult = isAgentStep(step)
+				? await runAgentStep(step, ctx, controller.signal, mode)
+				: await runComponentStep(step, catalog, ctx);
+			stepResults.push(stepResult);
+			stepsCtx[step.id] = { outputs: stepResult.outputs ?? {} };
+			if (stepResult.exit_code !== 0) {
+				failedStep = step.id;
+				break;
+			}
 		}
+	} finally {
+		runRegistry.delete(runId);
 	}
 
 	const finishedAt = new Date();

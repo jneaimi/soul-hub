@@ -8,11 +8,17 @@ import type { DispatchMode } from '$lib/agents/dispatch/index.js';
  *  Body: {
  *    recipe: string,                          // name or repo-relative .yaml path
  *    inputs?: Record<string, unknown>,
- *    mode?: 'production' | 'test'             // ADR-005 CP2 — dispatch backend
+ *    mode?: 'production' | 'test',            // ADR-005 CP2 — dispatch backend
  *                                             //   for agent steps. Default
  *                                             //   'production' (claude-pty).
  *                                             //   'test' uses claude-cli-flag
  *                                             //   for cheap CI smokes.
+ *    run_id?: string                          // ADR-005 CP3 — caller-supplied
+ *                                             //   runId (must be unique, kebab/
+ *                                             //   uuid/hex). When omitted, an
+ *                                             //   8-char id is generated and
+ *                                             //   only known after the run
+ *                                             //   completes (no cancel window).
  *  }
  *
  *  Response: { run_id, recipe, status, started_at, finished_at, duration_ms, steps, failed_step? }
@@ -20,6 +26,8 @@ import type { DispatchMode } from '$lib/agents/dispatch/index.js';
  *  Status: 200 on success, 422 on failed-run (recipe loaded but a step failed),
  *  400 on bad input, 500 on runner crash.
  */
+const RUN_ID_RE = /^[A-Za-z0-9_-]{4,64}$/;
+
 export const POST: RequestHandler = async ({ request }) => {
 	let body: unknown;
 	try {
@@ -27,7 +35,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	} catch {
 		return json({ error: 'Invalid JSON body' }, { status: 400 });
 	}
-	const { recipe, inputs, mode } = (body as Record<string, unknown>) ?? {};
+	const { recipe, inputs, mode, run_id: runId } = (body as Record<string, unknown>) ?? {};
 	if (typeof recipe !== 'string' || !recipe) {
 		return json({ error: 'recipe (string) is required' }, { status: 400 });
 	}
@@ -36,6 +44,14 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 	if (mode !== undefined && mode !== 'production' && mode !== 'test') {
 		return json({ error: 'mode must be "production" or "test"' }, { status: 400 });
+	}
+	if (runId !== undefined) {
+		if (typeof runId !== 'string' || !RUN_ID_RE.test(runId)) {
+			return json(
+				{ error: `run_id must match ${RUN_ID_RE.source} (4-64 alphanumerics, -, _)` },
+				{ status: 400 },
+			);
+		}
 	}
 
 	let recipePath: string;
@@ -49,7 +65,10 @@ export const POST: RequestHandler = async ({ request }) => {
 		const result = await runRecipe(
 			recipePath,
 			inputs as Record<string, unknown> | undefined,
-			{ mode: mode as DispatchMode | undefined },
+			{
+				mode: mode as DispatchMode | undefined,
+				runId: runId as string | undefined,
+			},
 		);
 		const status = result.status === 'success' ? 200 : 422;
 		return json(result, { status });
