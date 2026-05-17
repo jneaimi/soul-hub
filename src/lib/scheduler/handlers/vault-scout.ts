@@ -56,7 +56,17 @@ import {
 	getDecidedCandidateIds,
 	recordScoutDecision,
 	recordScoutReject,
+	getBlockerSnapshot,
+	upsertBlockerSnapshot,
+	type BlockerSnapshotRow,
 } from '../../channels/whatsapp/heartbeat-state.js';
+import {
+	extractUnblockCandidates,
+	type BlockerSnapshot,
+	type BlockerSnapshotStore,
+	type BlockerResolver,
+	type UnblockCandidate,
+} from './vault-scout-unblock.js';
 import type { TaskFn } from '../task-types.js';
 
 const SYNTH_MODEL = 'gemini-2.5-flash';
@@ -70,7 +80,7 @@ interface ScoutParams {
 	vaultDir?: string;
 }
 
-export type CandidateKind = 'falsifier' | 'review-date' | 'future-mention';
+export type CandidateKind = 'falsifier' | 'review-date' | 'future-mention' | 'unblock';
 
 export interface Candidate {
 	id: string;
@@ -80,6 +90,14 @@ export interface Candidate {
 	suggestedDate: string; // ISO YYYY-MM-DD
 	rawText: string;
 	frontmatter: Record<string, unknown>;
+	/** ADR-009 — only set when kind === 'unblock'. Frozen list of blocker
+	 *  paths that all transitioned to shipped/superseded. Carried through
+	 *  to the synth prompt so the model can name the unblock chain. */
+	blockerPaths?: string[];
+	/** ADR-009 — only set when kind === 'unblock'. Audit trail of the
+	 *  transitions observed THIS run (prev_status → new_status). Used by
+	 *  F2 verification + the renderer's audit footer. */
+	triggerTrail?: Array<{ blockerPath: string; prevStatus: string; newStatus: string }>;
 }
 
 const PROJECT_FOLDER_RE = /^projects\/([^/]+)\//;
@@ -246,7 +264,7 @@ const ScoutOutputSchema = z.object({
 	decisions: z.array(ScoutDecisionItemSchema),
 });
 
-const SCOUT_SYSTEM_PROMPT = `You are Vault-Scout, the proactive milestone-detector for Jasem's Soul Hub second-brain. Each day you receive a list of candidates extracted from the vault — falsifier dates, review dates, future-date mentions in project notes — and decide which deserve a WhatsApp voice-queue surface.
+const SCOUT_SYSTEM_PROMPT = `You are Vault-Scout, the proactive milestone-detector for Jasem's Soul Hub second-brain. Each day you receive a list of candidates extracted from the vault — falsifier dates, review dates, future-date mentions in project notes, AND unblock events (an ADR's blockers just shipped) — and decide which deserve a WhatsApp voice-queue surface.
 
 Your job:
 1. For each candidate, decide: "queue" (worth pinging), "skip" (irrelevant or covered by another producer), or "defer" (re-evaluate next run).
@@ -260,7 +278,8 @@ Rules:
 - Be CONSERVATIVE. Quality over quantity. The user gets max 5 queued items per run.
 - Falsifiers within 7 days of today: high priority. Within 30 days: normal. Past: high (overdue review).
 - Review dates: same scaling.
-- Future-mentions: only queue if the date itself is the actionable signal (e.g. "earliest 2026-05-16" deadline).
+- Future-mentions: only queue if the date itself is the actionable signal (e.g. an "earliest YYYY-MM-DD" deadline).
+- Unblock events: HIGH priority by default — the operator has been blocked on this dependent ADR; surface it the same day. voice_due = today's date. body should name the unblocked ADR + the blocker(s) that shipped + a one-line "next step" suggestion. Skip only if the dependent ADR is itself already in status: shipped or superseded.
 - Skip duplicates of project-hygiene's coverage (anomalies, stale-active) — those producers handle their own flagging.
 - "defer" sparingly — only when you're genuinely uncertain.
 
@@ -296,6 +315,10 @@ async function synthesize(
 				suggested_date: c.suggestedDate,
 				raw_text: c.rawText.slice(0, 300),
 				frontmatter_status: c.frontmatter.status ?? null,
+				// ADR-009 — only present on kind: 'unblock'. Names the
+				// blockers that just transitioned to shipped/superseded.
+				blocker_paths: c.blockerPaths,
+				trigger_trail: c.triggerTrail,
 			})),
 		},
 		null,
@@ -331,6 +354,16 @@ interface RunResult {
 	rejects: number;
 	modelUsed: string | null;
 	durationMs: number;
+	/** ADR-009 F3 — independent measurement of the unblock-watch slice
+	 *  (extractor walk + per-pair snapshot diff). Excludes synth + writer
+	 *  cost. Falsifier reads this field, NOT whole-handler `durationMs`. */
+	unblockWatchMs: number;
+	/** ADR-009 stats — surfaced in output_summary for the operator
+	 *  dashboard + post-deploy audit. */
+	unblockCandidates: number;
+	unblockPairsExamined: number;
+	unblockTransitions: number;
+	unblockUnresolved: number;
 }
 
 function validateDecision(d: SynthDecision, today: string): { ok: boolean; reason?: string } {
@@ -389,6 +422,20 @@ function renderInboxNote(
 		'',
 	];
 
+	// ADR-009 — when this is an unblock candidate, append the audit trail
+	// so the operator (and F2 verification) can read prev_status →
+	// new_status for each blocker that triggered the candidate.
+	if (candidate.kind === 'unblock' && candidate.triggerTrail && candidate.triggerTrail.length > 0) {
+		lines.push('');
+		lines.push('**Unblock audit trail:**');
+		lines.push('');
+		for (const t of candidate.triggerTrail) {
+			const slug = t.blockerPath.replace(/\.md$/, '');
+			lines.push(`- \`${slug}\`: ${t.prevStatus || '∅'} → ${t.newStatus}`);
+		}
+		lines.push('');
+	}
+
 	const filename = `${decision.voice_due}-${slug}.md`;
 	return {
 		content: lines.join('\n'),
@@ -427,6 +474,48 @@ export function vaultScoutFactory(rawParams: unknown): TaskFn {
 			tz,
 		});
 
+		// ADR-009 — unblock-watch slice. Measured separately so F3 can
+		// verify the cost stays under 50ms independent of total handler
+		// duration. The store + resolver adapters are thin shims over
+		// heartbeat-state.ts + the vault engine respectively.
+		const unblockStartMs = Date.now();
+		const decisionNotes = allNotes.filter((n) => n.meta.type === 'decision');
+		const snapshotStore: BlockerSnapshotStore = {
+			get: (dependentPath, blockerPath) => {
+				const row = getBlockerSnapshot(dependentPath, blockerPath);
+				return row ? (row as BlockerSnapshot) : null;
+			},
+			upsert: (row) => upsertBlockerSnapshot(row as BlockerSnapshotRow),
+		};
+		const blockerResolver: BlockerResolver = {
+			resolveLink: (raw, sourcePath) => engine.resolveLink(raw, sourcePath),
+			getNote: (path) => engine.getNote(path),
+		};
+		const unblock = extractUnblockCandidates(
+			decisionNotes,
+			snapshotStore,
+			blockerResolver,
+			now.getTime(),
+		);
+		const unblockWatchMs = Date.now() - unblockStartMs;
+
+		// Bridge unblock candidates into the unified Candidate shape so the
+		// synth + writer pipeline handles them with the existing
+		// already-decided dedup + cap logic.
+		const unblockCandidatesBridged: Candidate[] = unblock.candidates.map((u: UnblockCandidate) => ({
+			id: u.id,
+			kind: 'unblock' as const,
+			sourcePath: u.dependentPath,
+			projectFolder: u.projectFolder,
+			suggestedDate: u.blockerShippedOn,
+			rawText: `unblocked by ${u.triggerTrail.map((t) => t.blockerPath).join(', ')}`,
+			frontmatter: { status: undefined },
+			blockerPaths: u.blockerPaths,
+			triggerTrail: u.triggerTrail,
+		}));
+
+		candidates = [...candidates, ...unblockCandidatesBridged];
+
 		// Skip already-decided candidates.
 		const decidedIds = getDecidedCandidateIds(candidates.map((c) => c.id));
 		const alreadyDecidedCount = candidates.filter((c) => decidedIds.has(c.id)).length;
@@ -446,6 +535,11 @@ export function vaultScoutFactory(rawParams: unknown): TaskFn {
 				rejects: 0,
 				modelUsed: null,
 				durationMs: Date.now() - startMs,
+				unblockWatchMs,
+				unblockCandidates: unblock.candidates.length,
+				unblockPairsExamined: unblock.stats.pairsExamined,
+				unblockTransitions: unblock.stats.transitionsObserved,
+				unblockUnresolved: unblock.stats.unresolvedBlockers,
 			};
 		}
 
@@ -550,6 +644,11 @@ export function vaultScoutFactory(rawParams: unknown): TaskFn {
 			rejects,
 			modelUsed: synth.modelUsed,
 			durationMs: Date.now() - startMs,
+			unblockWatchMs,
+			unblockCandidates: unblock.candidates.length,
+			unblockPairsExamined: unblock.stats.pairsExamined,
+			unblockTransitions: unblock.stats.transitionsObserved,
+			unblockUnresolved: unblock.stats.unresolvedBlockers,
 		};
 	};
 }

@@ -132,6 +132,14 @@ export class VaultEngine {
 		return this.indexer.get(path);
 	}
 
+	/** Thin pass-through to the indexer's wikilink resolver. Reuses the
+	 *  same alias / sibling / cross-project rules the parser uses when
+	 *  computing `VaultNote.links[*].resolved`. Returns the vault-relative
+	 *  target path on hit or `null` on miss. */
+	resolveLink(raw: string, sourcePath: string): string | null {
+		return this.indexer.resolveLink(raw, sourcePath);
+	}
+
 	getNotes(query: SearchQuery): SearchResult[] {
 		return this.searcher.search(query);
 	}

@@ -389,6 +389,30 @@ function migrate(db: Database.Database): void {
 		`);
 		db.pragma('user_version = 15');
 	}
+
+	if (version < 16) {
+		// project-phases ADR-009 S1 — vault-scout unblock-watch snapshot
+		// table. One row per (dependent, blocker) pair. The scout's
+		// per-run extractor diffs the live `meta.status` of each blocker
+		// against the snapshotted status; transitions to shipped/superseded
+		// drive unblock candidate emission. First observation of a pair is
+		// quiet (INSERT only), so first post-deploy run produces zero
+		// alerts even when 30+ blocked_by relationships already exist.
+		// Lives in this file (not vault-scout.ts) for the same single-
+		// migration-owner reason as vault_scout_decisions (v7).
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS vault_scout_blocker_snapshots (
+				dependent_path  TEXT    NOT NULL,
+				blocker_path    TEXT    NOT NULL,
+				blocker_status  TEXT    NOT NULL,
+				recorded_at     INTEGER NOT NULL,
+				PRIMARY KEY (dependent_path, blocker_path)
+			);
+			CREATE INDEX IF NOT EXISTS idx_vault_scout_blocker_snapshots_dep
+				ON vault_scout_blocker_snapshots(dependent_path);
+		`);
+		db.pragma('user_version = 16');
+	}
 }
 
 /** Heartbeat run statuses logged to `proactive_log`. */
@@ -899,4 +923,52 @@ export function recentScoutDecisions(limit = 50): ScoutDecisionRow[] {
 			 ORDER BY decided_at DESC LIMIT ?`,
 		)
 		.all(limit) as ScoutDecisionRow[];
+}
+
+// ── ADR-009 vault-scout unblock-watch snapshots ──────────────────────
+
+export interface BlockerSnapshotRow {
+	dependent_path: string;
+	blocker_path: string;
+	blocker_status: string;
+	recorded_at: number;
+}
+
+export function getBlockerSnapshot(
+	dependentPath: string,
+	blockerPath: string,
+): BlockerSnapshotRow | null {
+	const row = getHeartbeatDb()
+		.prepare(
+			`SELECT dependent_path, blocker_path, blocker_status, recorded_at
+			 FROM vault_scout_blocker_snapshots
+			 WHERE dependent_path = ? AND blocker_path = ?`,
+		)
+		.get(dependentPath, blockerPath) as BlockerSnapshotRow | undefined;
+	return row ?? null;
+}
+
+export function upsertBlockerSnapshot(input: BlockerSnapshotRow): void {
+	getHeartbeatDb()
+		.prepare(
+			`INSERT INTO vault_scout_blocker_snapshots
+				(dependent_path, blocker_path, blocker_status, recorded_at)
+			 VALUES (?, ?, ?, ?)
+			 ON CONFLICT(dependent_path, blocker_path)
+			 DO UPDATE SET blocker_status = excluded.blocker_status,
+			               recorded_at    = excluded.recorded_at`,
+		)
+		.run(input.dependent_path, input.blocker_path, input.blocker_status, input.recorded_at);
+}
+
+export function allBlockerSnapshotsForDependent(
+	dependentPath: string,
+): BlockerSnapshotRow[] {
+	return getHeartbeatDb()
+		.prepare(
+			`SELECT dependent_path, blocker_path, blocker_status, recorded_at
+			 FROM vault_scout_blocker_snapshots
+			 WHERE dependent_path = ?`,
+		)
+		.all(dependentPath) as BlockerSnapshotRow[];
 }
