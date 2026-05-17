@@ -22,6 +22,25 @@ export function fail(msg: string, code = 1): never {
   process.exit(code);
 }
 
+// API write endpoints return HTTP 200 with `{success: false, error: ...}` on
+// validation failure (not 4xx). Surface that as a non-zero exit so bash
+// `&&` chains halt correctly.
+export function exitIfApiFailure(data: unknown): void {
+  if (data && typeof data === 'object' && (data as { success?: boolean }).success === false) {
+    process.exit(1);
+  }
+}
+
+// Local-time YYYY-MM-DD (matches /api/vault/decisions/transition's todayIso()
+// so dates set by the CLI and by the API don't drift across timezones).
+export function todayIso(): string {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 export function ageDays(epoch: number | null | undefined): string {
   if (!epoch) return '—';
   const days = Math.floor((Date.now() - epoch) / 86_400_000);

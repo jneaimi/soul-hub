@@ -1,5 +1,5 @@
-import { apiGet } from '../api.ts';
-import { emit, fail, ageDays, type OutputOpts } from '../output.ts';
+import { apiGet, apiPost } from '../api.ts';
+import { emit, fail, ageDays, todayIso, exitIfApiFailure, type OutputOpts } from '../output.ts';
 
 interface ProjectRow {
   slug: string;
@@ -53,4 +53,53 @@ export async function get(args: Record<string, string | undefined>, opts: Output
     }
     return lines.join('\n');
   });
+}
+
+interface WriteResp { success?: boolean; path?: string; error?: string }
+
+export async function create(args: Record<string, string | undefined>, opts: OutputOpts) {
+  if (!args.slug) fail('project create: --slug is required');
+  const slug = args.slug;
+  const today = todayIso();
+
+  const meta: Record<string, unknown> = {
+    type: 'index',
+    status: 'maintained',
+    created: today,
+    updated: today,
+    project: slug,
+    tags: args.parent ? [`cluster:${args.parent}`, args.parent, slug] : [slug],
+    source_agent: 'soul-cli',
+    source_context: `Project created via soul project create on ${today}`,
+  };
+  if (args.parent) meta.parent_project = `[[${args.parent}|${args.parent}]]`;
+
+  // Merge in --meta-json overrides last so the caller wins.
+  if (args['meta-json']) {
+    try {
+      Object.assign(meta, JSON.parse(args['meta-json']));
+    } catch (err) {
+      fail(`--meta-json: invalid JSON: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  const title = args.title ?? slug;
+  const content = `# ${title}\n\n> Project home for **${slug}**. Created by \`soul project create\` ${today}.\n\n## Documents\n\n(no decisions yet)\n\n## Related\n\n${args.parent ? `- [[../${args.parent}/index|${args.parent}]] — parent project.\n` : ''}`;
+
+  const body = { zone: `projects/${slug}`, filename: 'index.md', meta, content };
+
+  if (args['dry-run']) {
+    emit({ dryRun: true, method: 'POST', path: '/api/vault/notes', body }, opts, (d: any) =>
+      `DRY RUN — POST /api/vault/notes\nBody:\n${JSON.stringify(d.body, null, 2).split('\n').map((l) => '  ' + l).join('\n')}`,
+    );
+    return;
+  }
+
+  const data = await apiPost<WriteResp>('/api/vault/notes', body);
+  emit(data, opts, (d: WriteResp) =>
+    d.success === false
+      ? `✗ ${d.error ?? 'unknown error'}`
+      : `✓ created project ${slug} → ${d.path ?? `projects/${slug}/index.md`}`,
+  );
+  exitIfApiFailure(data);
 }

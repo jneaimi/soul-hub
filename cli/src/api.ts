@@ -17,22 +17,28 @@ export class ApiError extends Error {
   }
 }
 
-export async function apiGet<T = unknown>(path: string, query?: Record<string, string | number | undefined>): Promise<T> {
+async function request<T>(method: string, path: string, init: { query?: Record<string, string | number | undefined>; body?: unknown }): Promise<T> {
   const url = new URL(path, baseUrl() + '/');
-  if (query) {
-    for (const [k, v] of Object.entries(query)) {
+  if (init.query) {
+    for (const [k, v] of Object.entries(init.query)) {
       if (v === undefined || v === '') continue;
       url.searchParams.set(k, String(v));
     }
   }
+  const headers: Record<string, string> = { accept: 'application/json' };
+  let body: string | undefined;
+  if (init.body !== undefined) {
+    headers['content-type'] = 'application/json';
+    body = JSON.stringify(init.body);
+  }
   let res: Response;
   try {
-    res = await fetch(url.toString(), { headers: { accept: 'application/json' } });
+    res = await fetch(url.toString(), { method, headers, body });
   } catch (err) {
     throw new ApiError(
       0,
       err instanceof Error ? err.message : String(err),
-      url.pathname + url.search
+      url.pathname + url.search,
     );
   }
   const text = await res.text();
@@ -42,4 +48,16 @@ export async function apiGet<T = unknown>(path: string, query?: Record<string, s
   } catch {
     throw new ApiError(res.status, `non-JSON response: ${text.slice(0, 200)}`, url.pathname + url.search);
   }
+}
+
+export function apiGet<T = unknown>(path: string, query?: Record<string, string | number | undefined>): Promise<T> {
+  return request<T>('GET', path, { query });
+}
+
+export function apiPost<T = unknown>(path: string, body: unknown): Promise<T> {
+  return request<T>('POST', path, { body });
+}
+
+export function apiPut<T = unknown>(path: string, body: unknown): Promise<T> {
+  return request<T>('PUT', path, { body });
 }
