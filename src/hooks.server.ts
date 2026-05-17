@@ -15,6 +15,7 @@ import { intentMiningFactory } from '$lib/scheduler/handlers/intent-mining.js';
 import { telegramLivenessFactory } from '$lib/scheduler/handlers/telegram-liveness.js';
 import { hygieneButtonEscalatorFactory } from '$lib/scheduler/handlers/hygiene-button-escalator.js';
 import { auditAssumptionRateFactory } from '$lib/scheduler/handlers/audit-assumption-rate.js';
+import { auditNudgeTelegramFactory } from '$lib/scheduler/handlers/audit-nudge-telegram.js';
 import { initVault, getVaultEngine } from '$lib/vault/index.js';
 import { initSystemHealth, getSystemHealth } from '$lib/system/index.js';
 import { listSessions, killSession } from '$lib/pty/manager.js';
@@ -160,6 +161,11 @@ try {
 		'audit-assumption-rate',
 		auditAssumptionRateFactory,
 		'project-phases ADR-008 S2 — offline scan of ~/.claude/projects/*/*.jsonl session transcripts; runs Layer A scorer + extractLinkedProjects; persists to assumption_audits for the /api/audit/assumption-rate endpoint.',
+	);
+	registerTaskHandler(
+		'audit-nudge-telegram',
+		auditNudgeTelegramFactory,
+		'project-phases ADR-008 S4 — Telegram nudge for fresh high-score assumption audits; N-in-T threshold, dedup via nudged_at column.',
 	);
 } catch (err) {
 	console.error('[scheduler] handler registration failed:', err);

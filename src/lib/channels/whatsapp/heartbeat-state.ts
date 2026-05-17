@@ -374,6 +374,21 @@ function migrate(db: Database.Database): void {
 		`);
 		db.pragma('user_version = 14');
 	}
+
+	if (version < 15) {
+		// project-phases ADR-008 S4 — Telegram nudge dedup. Set when an
+		// audit is included in a nudge message so subsequent nudges
+		// don't re-surface the same row. Distinct from dismissed_at
+		// (which is operator-action); a nudged audit can still be
+		// dismissed later.
+		db.exec(`
+			ALTER TABLE assumption_audits ADD COLUMN nudged_at INTEGER;
+			CREATE INDEX IF NOT EXISTS idx_assumption_audits_nudge_candidates
+				ON assumption_audits(score DESC, audited_at DESC)
+				WHERE dismissed_at IS NULL AND nudged_at IS NULL;
+		`);
+		db.pragma('user_version = 15');
+	}
 }
 
 /** Heartbeat run statuses logged to `proactive_log`. */
