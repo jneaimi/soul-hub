@@ -16,6 +16,7 @@ import { telegramLivenessFactory } from '$lib/scheduler/handlers/telegram-livene
 import { hygieneButtonEscalatorFactory } from '$lib/scheduler/handlers/hygiene-button-escalator.js';
 import { auditAssumptionRateFactory } from '$lib/scheduler/handlers/audit-assumption-rate.js';
 import { auditNudgeTelegramFactory } from '$lib/scheduler/handlers/audit-nudge-telegram.js';
+import { adrStatusDriftWeeklyFactory } from '$lib/scheduler/handlers/adr-status-drift-weekly.js';
 import { initVault, getVaultEngine } from '$lib/vault/index.js';
 import { initSystemHealth, getSystemHealth } from '$lib/system/index.js';
 import { listSessions, killSession } from '$lib/pty/manager.js';
@@ -166,6 +167,11 @@ try {
 		'audit-nudge-telegram',
 		auditNudgeTelegramFactory,
 		'project-phases ADR-008 S4 — Telegram nudge for fresh high-score assumption audits; N-in-T threshold, dedup via nudged_at column.',
+	);
+	registerTaskHandler(
+		'adr-status-drift-weekly',
+		adrStatusDriftWeeklyFactory,
+		'Weekly digest of ADRs whose frontmatter status disagrees with body Status section (per soul-hub/decisions/2026-05-18-adr-status-body-frontmatter-consistency).',
 	);
 } catch (err) {
 	console.error('[scheduler] handler registration failed:', err);
