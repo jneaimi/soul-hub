@@ -18,6 +18,8 @@ import {
 	nextOrdinalFromNotes,
 	composeAdrFrontmatter,
 	composeAdrBody,
+	stripFalsifierPrefix,
+	todayInTimezone,
 	type ProposeAdrInput,
 } from '../../src/lib/projects/propose-adr.ts';
 
@@ -252,5 +254,128 @@ describe('composeAdrBody', () => {
 		assert.match(body, /\[\[index\|test-project\]\]/);
 		assert.match(body, /\[\[adr-046-vault-write-chokepoint\]\]/);
 		assert.match(body, /\[\[\.\.\/project-phases\/adr-005-ai-propose-adr-and-propose-slice\|ADR-005\]\]/);
+	});
+});
+
+// ─── ADR-010 S1 — Falsifier prefix strip (Bug 1) ───────────────────────
+
+describe('stripFalsifierPrefix', () => {
+	test('passes clean input through unchanged', () => {
+		assert.equal(
+			stripFalsifierPrefix('At least one real X event occurs.'),
+			'At least one real X event occurs.',
+		);
+	});
+
+	test('strips `F1 — text` (em-dash, the common bug)', () => {
+		assert.equal(
+			stripFalsifierPrefix('F1 — At least one real X event occurs.'),
+			'At least one real X event occurs.',
+		);
+	});
+
+	test('strips `F1: text` (colon)', () => {
+		assert.equal(stripFalsifierPrefix('F1: text'), 'text');
+	});
+
+	test('strips `F1. text` (period)', () => {
+		assert.equal(stripFalsifierPrefix('F1. text'), 'text');
+	});
+
+	test('strips `F1) text` (close-paren)', () => {
+		assert.equal(stripFalsifierPrefix('F1) text'), 'text');
+	});
+
+	test('strips `F1 - text` (regular hyphen)', () => {
+		assert.equal(stripFalsifierPrefix('F1 - text'), 'text');
+	});
+
+	test('strips `**F1** — text` (markdown-emphasised prefix)', () => {
+		assert.equal(stripFalsifierPrefix('**F1** — text'), 'text');
+	});
+
+	test('handles multi-digit ordinals (F10, F42)', () => {
+		assert.equal(stripFalsifierPrefix('F10 — text'), 'text');
+		assert.equal(stripFalsifierPrefix('F42: text'), 'text');
+	});
+
+	test('does NOT strip mid-text mentions of F<N>', () => {
+		// "Requires F1 to close" — F1 is meaningful here, not a prefix
+		assert.equal(
+			stripFalsifierPrefix('Requires F1 to close before this fires.'),
+			'Requires F1 to close before this fires.',
+		);
+	});
+
+	test('does NOT strip F<N> without a separator', () => {
+		// "F1 text" without `—:.-)` would be ambiguous; require a separator
+		assert.equal(stripFalsifierPrefix('F1 text without separator'), 'F1 text without separator');
+	});
+});
+
+describe('composeAdrBody — falsifier-prefix integration (Bug 1 regression)', () => {
+	test('clean falsifier_conditions render with single F<N> prefix', () => {
+		const body = composeAdrBody(
+			fixtureInput({
+				falsifier_conditions: [
+					'At least one real X event occurs',
+					'Zero false-positives in 30 days',
+				],
+			}),
+			{ ordinal: '001', created: '2026-05-17' },
+		);
+		assert.match(body, /^- \*\*F1\*\* At least one real X event occurs$/m);
+		assert.match(body, /^- \*\*F2\*\* Zero false-positives in 30 days$/m);
+		// No double-prefix anywhere
+		assert.doesNotMatch(body, /\*\*F\d+\*\* F\d+/);
+	});
+
+	test('legacy `F1 — text` input gets stripped, no double-prefix in output', () => {
+		const body = composeAdrBody(
+			fixtureInput({
+				falsifier_conditions: [
+					'F1 — legacy-style string with em-dash',
+					'F2: legacy colon-style',
+					'F3) legacy paren-style',
+				],
+			}),
+			{ ordinal: '001', created: '2026-05-17' },
+		);
+		assert.match(body, /^- \*\*F1\*\* legacy-style string with em-dash$/m);
+		assert.match(body, /^- \*\*F2\*\* legacy colon-style$/m);
+		assert.match(body, /^- \*\*F3\*\* legacy paren-style$/m);
+		// Critical: no `**F1** F1` anywhere
+		assert.doesNotMatch(body, /\*\*F\d+\*\* F\d+/);
+	});
+});
+
+// ─── ADR-010 S1 — Timezone-aware date rendering (Bug 2) ────────────────
+
+describe('todayInTimezone', () => {
+	test('renders the Asia/Dubai date by default', () => {
+		// 2026-05-17 20:00 UTC = 2026-05-18 00:00 Dubai (just past midnight)
+		const utc = new Date('2026-05-17T20:00:00Z');
+		assert.equal(todayInTimezone(utc), '2026-05-18');
+	});
+
+	test('uses UTC date for moments still inside the same Dubai day', () => {
+		// 2026-05-17 19:30 UTC = 2026-05-17 23:30 Dubai (still Sunday)
+		const utc = new Date('2026-05-17T19:30:00Z');
+		assert.equal(todayInTimezone(utc), '2026-05-17');
+	});
+
+	test('falls back to a different timezone when passed explicitly', () => {
+		// 2026-05-17 23:00 UTC — UTC says 17th, Dubai says 18th, NYC says 19:00 EDT = 17th
+		const utc = new Date('2026-05-17T23:00:00Z');
+		assert.equal(todayInTimezone(utc, 'UTC'), '2026-05-17');
+		assert.equal(todayInTimezone(utc, 'Asia/Dubai'), '2026-05-18');
+		assert.equal(todayInTimezone(utc, 'America/New_York'), '2026-05-17');
+	});
+
+	test('handles midnight UTC correctly', () => {
+		const utc = new Date('2026-05-18T00:00:00Z');
+		assert.equal(todayInTimezone(utc, 'UTC'), '2026-05-18');
+		// 04:00 Dubai
+		assert.equal(todayInTimezone(utc, 'Asia/Dubai'), '2026-05-18');
 	});
 });

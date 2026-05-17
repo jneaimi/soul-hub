@@ -40,6 +40,10 @@ export const ProposeAdrInputSchema = z
 		/** Source agent label for frontmatter — distinct from opts.actor (which
 		 *  goes to audit log). When omitted, defaults to 'proposeAdr'. */
 		source_agent: z.string().trim().min(1).max(60).optional(),
+		/** ADR-010 S1 — IANA timezone for date rendering (`created` field +
+		 *  Status PROPOSED line + `falsifier_date` base). Defaults to
+		 *  `Asia/Dubai` per operator location. Pass `'UTC'` for legacy behavior. */
+		timezone: z.string().trim().min(1).max(60).optional(),
 	})
 	.strict();
 
@@ -85,6 +89,32 @@ function addDays(iso: string, days: number): string {
 	const d = new Date(`${iso}T00:00:00Z`);
 	d.setUTCDate(d.getUTCDate() + days);
 	return d.toISOString().slice(0, 10);
+}
+
+/** ADR-010 S1 — strip a leading `F<N>` prefix + separator from a falsifier
+ *  string so `composeAdrBody`'s `**F<N>**` prefix doesn't render as the
+ *  visible double-label `**F1** F1 — text`. Covers all 5 separator variants
+ *  (em-dash, colon, hyphen, period, close-paren) and optional surrounding
+ *  markdown asterisks. Anchored at start so mid-text mentions of F<N>
+ *  (e.g. "Requires F1 to close") are NOT stripped. */
+const FALSIFIER_PREFIX_RE = /^\s*\*{0,2}F\d+\*{0,2}\s*[—:\-.)]\s*/;
+
+export function stripFalsifierPrefix(s: string): string {
+	return s.replace(FALSIFIER_PREFIX_RE, '');
+}
+
+/** ADR-010 S1 — render today's date in the given IANA timezone (defaults
+ *  to Asia/Dubai per operator location). Returns YYYY-MM-DD. The `en-CA`
+ *  locale produces the ISO date format directly without us assembling
+ *  parts. UTC-default callers can pass `'UTC'`. */
+export function todayInTimezone(now: Date, timezone: string = 'Asia/Dubai'): string {
+	const fmt = new Intl.DateTimeFormat('en-CA', {
+		timeZone: timezone,
+		year: 'numeric',
+		month: '2-digit',
+		day: '2-digit',
+	});
+	return fmt.format(now);
 }
 
 export interface ComposeOpts {
@@ -137,7 +167,10 @@ export function composeAdrBody(input: ProposeAdrInput, opts: ComposeOpts): strin
 	const deadline = addDays(opts.created, DEFAULT_FALSIFIER_DAYS);
 	lines.push(`Deadline ${deadline} (default 3-month window; operator can adjust on acceptance).`, '');
 	input.falsifier_conditions.forEach((cond, i) => {
-		lines.push(`- **F${i + 1}** ${cond}`);
+		// ADR-010 S1 — strip any leading F<N>+separator the caller mistakenly
+		// included, so the rendered prefix never doubles up.
+		const cleaned = stripFalsifierPrefix(cond);
+		lines.push(`- **F${i + 1}** ${cleaned}`);
 	});
 	lines.push('');
 
@@ -242,7 +275,11 @@ export async function applyProposeAdr(
 	}
 
 	const now = (applyOpts.now ?? (() => new Date()))();
-	const created = now.toISOString().slice(0, 10);
+	// ADR-010 S1 — render `created` in the operator's TZ (default Asia/Dubai)
+	// so an ADR drafted at 23:00 Dubai gets today's Dubai calendar date,
+	// not yesterday's UTC date. addDays() keeps its UTC math — that's
+	// unambiguous for adding 90 days to a YYYY-MM-DD anchor.
+	const created = todayInTimezone(now, input.timezone);
 	const inherited = inheritProjectMeta(engine, input.slug);
 	const adrSlug = deriveAdrSlug(input.working_title);
 
