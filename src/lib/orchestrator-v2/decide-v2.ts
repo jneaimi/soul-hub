@@ -719,6 +719,31 @@ function buildV2Output(
 		return { kind: 'text', text: friendly };
 	}
 
+	// project-phases ADR-003 — projectShipSlice fallback. Same pattern as
+	// vault-save: the model usually composes a "Marked ADR-007 S5 shipped"
+	// reply itself, but if not, give the operator a coherent confirmation.
+	const shipResult = results.find((r) => r.kind === 'project-ship-slice');
+	if (shipResult && shipResult.kind === 'project-ship-slice') {
+		const verb = shipResult.applied ? `marked` : `would mark (dry-run)`;
+		const commitFragment = shipResult.commit ? ` at \`${shipResult.commit}\`` : '';
+		return {
+			kind: 'text',
+			text: `${verb} *${shipResult.sliceId}* as ${shipResult.status} in ${shipResult.project}${commitFragment}.`,
+		};
+	}
+	const shipErr = results.find((r) => r.kind === 'project-ship-slice-error');
+	if (shipErr && shipErr.kind === 'project-ship-slice-error') {
+		const rollbackNote = shipErr.rollbackAttempted
+			? shipErr.rollbackOk
+				? ' (rolled back the ADR write cleanly)'
+				: ' — ADR rollback FAILED, please check the file manually'
+			: '';
+		return {
+			kind: 'text',
+			text: `Couldn't ship *${shipErr.sliceId}* on ${shipErr.adr}: ${shipErr.error}${rollbackNote}`,
+		};
+	}
+
 	return undefined;
 }
 
@@ -784,6 +809,8 @@ function mapToolCallsToDecision(
 			return { action: 'reply', reply: finalText, confidence: 0.9 };
 		case 'scheduleReminder':
 			return { action: 'reply', reply: finalText, confidence: 0.9 };
+		case 'projectShipSlice':
+			return { action: 'reply', reply: finalText, confidence: 0.9 };
 		default:
 			return { action: 'reply', reply: finalText, confidence: 0.7 };
 	}
@@ -822,6 +849,8 @@ function toolErrorFallback(errors: readonly ToolError[]): string {
 			return 'I tried to fetch the TikTok but the link looks off — can you paste the full URL?';
 		case 'vaultSave':
 			return "I tried to save that but the title or content didn't pass — can you say what you want me to save?";
+		case 'projectShipSlice':
+			return "I tried to mark that slice as shipped but the input wasn't quite right — give me the project slug, ADR slug, slice label (S<N> / CP<N> / Phase <N>), and the commit short-SHA.";
 		default:
 			return GENERIC_RETRY;
 	}

@@ -77,6 +77,7 @@ import {
 	type InteractionDirection,
 } from '../../crm/index.js';
 import { getVaultEngine } from '../../vault/index.js';
+import { applyShipSlice, ShipSliceRequestSchema } from '../../projects/ship-slice.js';
 import {
 	getImgCount,
 	incrementImgCount,
@@ -273,6 +274,28 @@ export type ToolResult =
 			kind: 'slow-dispatched';
 			toolName: string;
 			ack: string;
+	  }
+	/** project-phases ADR-003 — atomic ship-slice success. */
+	| {
+			kind: 'project-ship-slice';
+			project: string;
+			adrPath: string;
+			sliceId: string;
+			status: string;
+			date: string;
+			commit?: string;
+			applied: boolean; // false when dry-run
+			statusLineAdded: boolean;
+			shipLogEntryAdded: boolean;
+	  }
+	| {
+			kind: 'project-ship-slice-error';
+			project: string;
+			adr: string;
+			sliceId: string;
+			error: string;
+			rollbackAttempted?: boolean;
+			rollbackOk?: boolean;
 	  };
 
 /** Build the tool dictionary for an Agent. Returns a stable object so the
@@ -809,6 +832,130 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 					skillName,
 					error: result.error,
 					durationMs: result.durationMs,
+				};
+			},
+		}),
+
+		projectShipSlice: tool({
+			description:
+				'Mark a project ADR slice (S<N>, CP<N>, Phase <N>, PASS <N>, Stage <N>) as shipped/accepted/parked/superseded/rejected. ' +
+				'Atomically updates the ADR Status section + the project index Ship log via the ADR-046 chokepoint. Use after a commit closes a slice — pass the project slug, ADR slug (or bare ordinal like "007"), slice label, status, and commit short-SHA. ' +
+				'STRICT ROUTING: only fires when the user explicitly asks to "mark/ship/close/record" a slice or ADR phase. NEVER fires for vague "what shipped" / "what\'s open" queries (those use the read API directly). NEVER fires on commit messages alone — needs the user to ask. ' +
+				'Mode dry_run: true returns the preview without writing; use this to verify the slice label resolves correctly before applying. ' +
+				'PROVENANCE — DO NOT INVENT ARGS: `commit` MUST be a REAL git short-SHA from a prior shell output or commit summary the user pasted; NEVER fabricate. `slice_id` MUST match the operator\'s exact label convention for that ADR — check the ADR\'s Implementation plan table if unsure. The tool returns 422 if the marker is already present (idempotent), 400 if the ADR can\'t be resolved.',
+			inputSchema: z.object({
+				slug: z
+					.string()
+					.min(1)
+					.describe(
+						'Project slug — the folder name under projects/. Examples: "naseej", "project-phases", "soul-hub-whatsapp".',
+					),
+				adr: z
+					.string()
+					.min(1)
+					.describe(
+						'ADR identifier — full slug ("adr-007-peer-brief-naseej-port"), partial slug ("adr-003"), or full vault path. Resolution falls back to a project-index wikilink lookup when the partial form doesn\'t exist on disk.',
+					),
+				slice_id: z
+					.string()
+					.regex(/^(S|CP|Phase|PASS|Pass|Stage)\s*\d+(?:\.\d+)?$/)
+					.describe(
+						'Slice label as it appears in the ADR. Examples: "S1", "S3", "CP4.2", "Phase 1", "Stage 2".',
+					),
+				status: z
+					.enum(['shipped', 'accepted', 'parked', 'superseded', 'rejected'])
+					.describe(
+						'New slice status. Use "shipped" after a commit closes the slice. "accepted" for proposal-acceptance without code. "parked"/"superseded"/"rejected" for terminal non-shipped states.',
+					),
+				commit: z
+					.string()
+					.regex(/^[a-f0-9]{7,40}$/)
+					.optional()
+					.describe(
+						'Git short-SHA (7-40 hex chars). Strongly recommended for "shipped" status — it\'s how operators jump from the ADR to the commit.',
+					),
+				date: z
+					.string()
+					.regex(/^\d{4}-\d{2}-\d{2}$/)
+					.optional()
+					.describe('YYYY-MM-DD. Defaults to today.'),
+				notes: z
+					.string()
+					.min(1)
+					.max(300)
+					.optional()
+					.describe(
+						'One-line ship summary. Appears in both the ADR marker line and the ship log entry.',
+					),
+				dry_run: z
+					.boolean()
+					.optional()
+					.describe(
+						'When true, returns the preview without writing. Use to verify the slice label resolves correctly before applying.',
+					),
+			}),
+			execute: async (args): Promise<ToolResult> => {
+				logToolCall('projectShipSlice', {
+					slug: args.slug,
+					adr: args.adr.slice(0, 40),
+					slice_id: args.slice_id,
+					status: args.status,
+					dry_run: args.dry_run ?? false,
+				});
+				const engine = getVaultEngine();
+				if (!engine) {
+					return {
+						kind: 'project-ship-slice-error',
+						project: args.slug,
+						adr: args.adr,
+						sliceId: args.slice_id,
+						error: 'Vault engine not initialized',
+					};
+				}
+				const parsed = ShipSliceRequestSchema.safeParse({
+					adr: args.adr,
+					slice_id: args.slice_id,
+					status: args.status,
+					commit: args.commit,
+					date: args.date,
+					notes: args.notes,
+				});
+				if (!parsed.success) {
+					return {
+						kind: 'project-ship-slice-error',
+						project: args.slug,
+						adr: args.adr,
+						sliceId: args.slice_id,
+						error: `invalid args: ${parsed.error.issues
+							.map((i) => `${i.path.join('.')}: ${i.message}`)
+							.join('; ')}`,
+					};
+				}
+				const result = await applyShipSlice(engine, args.slug, parsed.data, {
+					dryRun: args.dry_run ?? false,
+				});
+				if (!result.success) {
+					return {
+						kind: 'project-ship-slice-error',
+						project: args.slug,
+						adr: args.adr,
+						sliceId: args.slice_id,
+						error: result.error ?? 'unknown error',
+						rollbackAttempted: result.rollback_attempted,
+						rollbackOk: result.rollback_ok,
+					};
+				}
+				return {
+					kind: 'project-ship-slice',
+					project: args.slug,
+					adrPath: result.preview.adr_path,
+					sliceId: args.slice_id,
+					status: args.status,
+					date: result.preview.resolved_date,
+					commit: args.commit,
+					applied: result.applied,
+					statusLineAdded: result.preview.status_changed,
+					shipLogEntryAdded: result.preview.ship_log_changed,
 				};
 			},
 		}),

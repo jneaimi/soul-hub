@@ -245,6 +245,162 @@ export interface ShipSlicePreview {
 	warnings: string[];
 }
 
+/** Outcome shape from `applyShipSlice` — shared between the HTTP endpoint
+ *  and the orchestrator-v2 tool. */
+export interface ApplyShipSliceResult {
+	success: boolean;
+	applied: boolean;
+	preview: ShipSlicePreview;
+	error?: string;
+	field?: string;
+	status_hint?: number; // HTTP status the endpoint would return
+	rollback_attempted?: boolean;
+	rollback_ok?: boolean;
+}
+
+/** Minimal vault engine surface needed for ship-slice. Decouples this module
+ *  from `getVaultEngine` so the orchestrator tool can pass any object that
+ *  satisfies it (currently the real engine; future tests can pass a mock). */
+export interface ShipSliceVaultEngine {
+	getNote(path: string): Promise<{ content: string } | null> | { content: string } | null;
+	updateNote(path: string, patch: { content?: string }): Promise<{ success?: boolean; error?: string }>;
+}
+
+/** Shared core for both the HTTP endpoint and the orchestrator-v2 tool.
+ *  Validates the request, resolves the ADR path, computes the preview, and
+ *  (unless dryRun) writes both notes atomically with rollback. */
+export async function applyShipSlice(
+	engine: ShipSliceVaultEngine,
+	slug: string,
+	req: ShipSliceRequest,
+	opts: { dryRun?: boolean } = {},
+): Promise<ApplyShipSliceResult> {
+	const indexPath = `projects/${slug}/index.md`;
+	const indexNote = await engine.getNote(indexPath);
+	if (!indexNote) {
+		return {
+			success: false,
+			applied: false,
+			preview: emptyPreviewShape(),
+			error: `project index not found at ${indexPath}`,
+			status_hint: 404,
+		};
+	}
+	const indexBody = indexNote.content;
+
+	// Resolve in two passes: literal shorthand first; if the file doesn't
+	// exist, fall back to a project-index wikilink lookup (handles partial
+	// slugs like `adr-003` that need the descriptive suffix appended).
+	let adrPath = resolveAdrPath(slug, req.adr);
+	let adrNote = adrPath ? await engine.getNote(adrPath) : null;
+	if (!adrNote) {
+		// Strip `adr-` prefix if present, then look up by ordinal.
+		const ordinalHint = req.adr.replace(/^adr-/, '').split('-')[0];
+		const fallbackPath = findAdrPathByOrdinal(indexBody, slug, ordinalHint);
+		if (fallbackPath) {
+			adrPath = fallbackPath;
+			adrNote = await engine.getNote(adrPath);
+		}
+	}
+	if (!adrPath || !adrNote) {
+		return {
+			success: false,
+			applied: false,
+			preview: emptyPreviewShape(),
+			error: `could not resolve adr "${req.adr}" in project "${slug}" — try a full slug like "adr-007-peer-brief-naseej-port"`,
+			field: 'adr',
+			status_hint: 400,
+		};
+	}
+	const adrBody = adrNote.content;
+
+	const preview = buildPreview(adrPath, adrBody, indexPath, indexBody, req);
+
+	if (opts.dryRun) {
+		return { success: true, applied: false, preview };
+	}
+
+	if (!preview.status_changed && !preview.ship_log_changed && preview.warnings.length === 0) {
+		return {
+			success: false,
+			applied: false,
+			preview,
+			error: 'no-op — slice marker already present and ship-log entry already exists',
+			status_hint: 422,
+		};
+	}
+
+	const resolvedDate = preview.resolved_date;
+	const adrUpdate = appendSliceMarkerToStatus(adrBody, req, resolvedDate);
+	const indexUpdate = prependShipLogEntry(indexBody, adrPath, req, resolvedDate);
+
+	let adrWriteOk = false;
+	let indexWriteOk = false;
+	let rollbackAttempted = false;
+	let rollbackOk = false;
+	let failureDetail: string | undefined;
+
+	try {
+		if (adrUpdate.changed) {
+			const res = await engine.updateNote(adrPath, { content: adrUpdate.body });
+			adrWriteOk = res.success ?? true;
+			if (!adrWriteOk) failureDetail = `ADR write refused: ${res.error ?? 'unknown'}`;
+		} else {
+			adrWriteOk = true;
+		}
+	} catch (err) {
+		failureDetail = `ADR write threw: ${(err as Error).message}`;
+	}
+
+	if (adrWriteOk) {
+		try {
+			if (indexUpdate.changed) {
+				const res = await engine.updateNote(indexPath, { content: indexUpdate.body });
+				indexWriteOk = res.success ?? true;
+				if (!indexWriteOk) failureDetail = `index write refused: ${res.error ?? 'unknown'}`;
+			} else {
+				indexWriteOk = true;
+			}
+		} catch (err) {
+			failureDetail = `index write threw: ${(err as Error).message}`;
+		}
+	}
+
+	if (adrWriteOk && !indexWriteOk && adrUpdate.changed) {
+		rollbackAttempted = true;
+		try {
+			const res = await engine.updateNote(adrPath, { content: adrBody });
+			rollbackOk = res.success ?? true;
+		} catch {
+			rollbackOk = false;
+		}
+	}
+
+	const allOk = adrWriteOk && indexWriteOk;
+	return {
+		success: allOk,
+		applied: adrWriteOk || indexWriteOk,
+		preview,
+		error: allOk ? undefined : (failureDetail ?? 'unknown write failure'),
+		status_hint: allOk ? 200 : 500,
+		rollback_attempted: rollbackAttempted,
+		rollback_ok: rollbackOk,
+	};
+}
+
+function emptyPreviewShape(): ShipSlicePreview {
+	return {
+		adr_path: '',
+		index_path: '',
+		new_status_line: '',
+		new_ship_log_entry: '',
+		resolved_date: new Date().toISOString().slice(0, 10),
+		status_changed: false,
+		ship_log_changed: false,
+		warnings: [],
+	};
+}
+
 export function buildPreview(
 	adrPath: string,
 	adrBody: string,

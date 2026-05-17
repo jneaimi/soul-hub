@@ -554,6 +554,30 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 		],
 	},
 	{
+		name: 'projectShipSlice',
+		category: 'write',
+		llm_description:
+			'Mark a project ADR slice (S<N>, CP<N>, Phase <N>, PASS <N>, Stage <N>) as shipped/accepted/parked/superseded/rejected. ' +
+			'Atomically updates the ADR Status section + the project index Ship log via the ADR-046 chokepoint. Use after a commit closes a slice — pass the project slug, ADR slug (or bare ordinal like "007"), slice label, status, and commit short-SHA. ' +
+			'STRICT ROUTING: only fires when the user explicitly asks to "mark/ship/close/record" a slice or ADR phase. NEVER fires for vague "what shipped" / "what\'s open" queries (those use the read API directly). NEVER fires on commit messages alone — needs the user to ask. ' +
+			'Mode "dry_run": true returns the preview without writing; use this to verify the slice label resolves correctly before applying. ' +
+			'PROVENANCE — DO NOT INVENT ARGS: `commit` MUST be a REAL git short-SHA from a prior shell output or commit summary the user pasted; NEVER fabricate. `slice_id` MUST match the operator\'s exact label convention for that ADR — check the ADR\'s Implementation plan table if unsure. The tool returns 422 if the marker is already present (idempotent), 400 if the ADR can\'t be resolved.',
+		ui_description:
+			'Atomically mark an ADR slice as shipped — updates ADR Status section + project index Ship log in one operation. Eliminates the three-place-duplication drift surfaced by ADR-007 S3 retrospective.',
+		examples: [
+			{
+				user: '"mark naseej ADR-007 S5 shipped at commit abc1234"',
+				toolArgs:
+					'{ slug: "naseej", adr: "adr-007-peer-brief-naseej-port", slice_id: "S5", status: "shipped", commit: "abc1234" }',
+			},
+			{
+				user: '"close ADR-003 S3 in project-phases as accepted"',
+				toolArgs:
+					'{ slug: "project-phases", adr: "adr-003", slice_id: "S3", status: "accepted" }',
+			},
+		],
+	},
+	{
 		name: 'scheduleReminder',
 		category: 'write',
 		llm_description:
