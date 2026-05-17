@@ -165,7 +165,7 @@
 			Failed to load assumption audits: {loadError}
 		</div>
 	</div>
-{:else if data && (data.audits.length > 0 || data.counts.high_score + data.counts.medium_score + data.counts.low_score > 0)}
+{:else if data}
 	<div class="mb-6 p-3 rounded-lg border border-hub-info/30 bg-hub-info/5">
 		<div class="flex items-center justify-between gap-3 mb-2 flex-wrap">
 			<div class="text-xs font-medium text-hub-info">
