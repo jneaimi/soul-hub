@@ -25,6 +25,7 @@
 import { z } from 'zod';
 import { parseFalsifiers, type Falsifier } from '../vault/falsifier-parser.js';
 import type { VaultMeta } from '../vault/types.js';
+import { todayInTimezone } from './propose-adr.js';
 
 // ─── Zod schema for the request body ─────────────────────────────────────────
 
@@ -70,6 +71,11 @@ export const ShipSliceRequestSchema = z
 			.trim()
 			.regex(/^F\d+$/, { message: 'closes_falsifier must match `F<N>`' })
 			.optional(),
+		/** ADR-011 — IANA timezone for the auto-derived ship date. Defaults to
+		 *  `Asia/Dubai` (operator wall-clock) so post-20:00-UTC ships don't render
+		 *  the prior UTC-day. `req.date` still wins when supplied. Mirrors the
+		 *  ADR-010 ProposeAdrInputSchema pattern. */
+		timezone: z.string().trim().min(1).max(60).optional(),
 	})
 	.strict();
 
@@ -692,7 +698,8 @@ function emptyPreviewShape(): ShipSlicePreview {
 		index_path: '',
 		new_status_line: '',
 		new_ship_log_entry: '',
-		resolved_date: new Date().toISOString().slice(0, 10),
+		// ADR-011 — Dubai-default ship date, not UTC.
+		resolved_date: todayInTimezone(new Date()),
 		status_changed: false,
 		ship_log_changed: false,
 		warnings: [],
@@ -706,7 +713,10 @@ export function buildPreview(
 	indexBody: string,
 	req: ShipSliceRequest,
 ): ShipSlicePreview {
-	const resolvedDate = req.date ?? new Date().toISOString().slice(0, 10);
+	// ADR-011 — Dubai-default ship date when req.date is absent. Operator
+	// override via req.date still wins; explicit req.timezone can change the
+	// auto-derived default for cross-tz operators.
+	const resolvedDate = req.date ?? todayInTimezone(new Date(), req.timezone);
 
 	const parsed = parseSliceLabel(req.slice_id);
 	const warnings: string[] = [];
