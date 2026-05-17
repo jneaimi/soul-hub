@@ -52,7 +52,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ success: false, error: 'Invalid JSON body' }, { status: 400 });
 	}
 
-	const { zone, filename, meta, content } = body as Record<string, unknown>;
+	const { zone, filename, meta, content, opts } = body as Record<string, unknown>;
 
 	// Validation
 	if (!zone || typeof zone !== 'string') {
@@ -77,13 +77,29 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ success: false, error: 'content is required and must be a string' }, { status: 400 });
 	}
 
+	// ADR-005 S0 — optional per-call audit attribution. Shape mirrors
+	// UpdateNoteOpts (ADR-003 S4). Server-side tools like proposeAdr
+	// pass `{actor: 'proposeAdr', actorContext: '...'}` so the audit log
+	// + git commit show the TOOL rather than the note's declared author.
+	// Unknown fields ignored; non-string fields filtered.
+	let createOpts: { actor?: string; actorContext?: string } | undefined;
+	if (opts && typeof opts === 'object' && !Array.isArray(opts)) {
+		const o = opts as Record<string, unknown>;
+		const actor = typeof o.actor === 'string' ? o.actor : undefined;
+		const actorContext = typeof o.actorContext === 'string' ? o.actorContext : undefined;
+		if (actor || actorContext) createOpts = { actor, actorContext };
+	}
+
 	try {
-		const result = await engine.createNote({
-			zone: zone as string,
-			filename: filename as string,
-			meta: meta as Record<string, unknown>,
-			content: content as string,
-		});
+		const result = await engine.createNote(
+			{
+				zone: zone as string,
+				filename: filename as string,
+				meta: meta as Record<string, unknown>,
+				content: content as string,
+			},
+			createOpts,
+		);
 		return json(result, { status: 201 });
 	} catch (err) {
 		return json({ success: false, error: (err as Error).message }, { status: 400 });

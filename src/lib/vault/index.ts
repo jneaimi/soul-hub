@@ -4,7 +4,7 @@ import matter from 'gray-matter';
 import type {
 	VaultNote, VaultConfig, SearchQuery, SearchResult,
 	GraphData, VaultStats, VaultHealth, VaultZone, VaultTemplate,
-	CreateNoteRequest, UpdateNoteRequest, UpdateNoteOpts, WriteAssetRequest, WriteResult, WriteError,
+	CreateNoteRequest, CreateNoteOpts, UpdateNoteRequest, UpdateNoteOpts, WriteAssetRequest, WriteResult, WriteError,
 	WriteLogEntry, LinkIssue, StubInfo, VaultMeta
 } from './types.js';
 import { GLOBAL_REQUIRED_FIELDS, MAX_NOTE_SIZE, MAX_ASSET_SIZE } from './types.js';
@@ -400,13 +400,27 @@ export class VaultEngine {
 
 	// ── Write Operations ──
 
-	async createNote(req: CreateNoteRequest): Promise<WriteResult | WriteError> {
+	async createNote(
+		req: CreateNoteRequest,
+		opts?: CreateNoteOpts,
+	): Promise<WriteResult | WriteError> {
 		// Validate global required fields
 		for (const field of GLOBAL_REQUIRED_FIELDS) {
 			if (!(field in req.meta) || req.meta[field] === undefined || req.meta[field] === '') {
 				return { success: false, error: `Missing required field: ${field}`, field };
 			}
 		}
+
+		// ADR-005 S0 — prefer the per-call actor over the new note's
+		// `meta.source_agent` when stamping audit log + git commit, so
+		// server-side tools (proposeAdr, proposeSlice, suggestAdrEdit,
+		// recipe steps) leave a traceable footprint distinct from the
+		// note's declared author. Mirror of the updateNote pattern from
+		// ADR-003 S4. When omitted, falls back to meta.source_agent —
+		// existing callers stay correct without changes.
+		const auditAgent = opts?.actor ?? (req.meta.source_agent as string | undefined);
+		const auditContext =
+			opts?.actorContext ?? (req.meta.source_context as string | undefined);
 
 		// Validate against zone governance
 		const zone = this.governance.resolve(req.zone);
@@ -441,15 +455,19 @@ export class VaultEngine {
 			req.meta.tags = [...(req.meta.tags ?? []), 'auto-generated'];
 		}
 
-		// Rate limit agent writes
+		// Rate limit agent writes. Gate keyed on meta.source_agent (the
+		// underlying author identity — rate limits should apply to the
+		// declared agent regardless of which TOOL triggered the call),
+		// but audit-log entry uses auditAgent so the trace shows the
+		// actor when one is supplied.
 		if (req.meta.source_agent) {
 			const rateCheck = this.checkRateLimit(req.meta.source_agent);
 			if (!rateCheck.allowed) {
 				this.logWrite({
 					action: 'create',
 					path: join(req.zone, req.filename),
-					agent: req.meta.source_agent,
-					context: req.meta.source_context as string | undefined,
+					agent: auditAgent,
+					context: auditContext,
 					zone: req.zone.split('/')[0],
 					type: req.meta.type as string | undefined,
 					success: false,
@@ -459,7 +477,9 @@ export class VaultEngine {
 			}
 		}
 
-		// Content dedup check (agent writes only)
+		// Content dedup check (agent writes only). Same gate semantics as
+		// rate-limit — keyed on source_agent, but the audit-log entry
+		// uses auditAgent for actor traceability.
 		if (req.meta.source_agent) {
 			const titleFromContent = req.content.split('\n').find(l => l.startsWith('# '))?.replace('# ', '') || req.filename.replace('.md', '');
 			const dupCheck = this.checkDuplicate(req.zone, req.content, titleFromContent);
@@ -467,8 +487,8 @@ export class VaultEngine {
 				this.logWrite({
 					action: 'create',
 					path: join(req.zone, req.filename),
-					agent: req.meta.source_agent,
-					context: req.meta.source_context as string | undefined,
+					agent: auditAgent,
+					context: auditContext,
 					zone: req.zone.split('/')[0],
 					type: req.meta.type as string | undefined,
 					success: false,
@@ -555,8 +575,8 @@ export class VaultEngine {
 			this.logWrite({
 				action: 'create',
 				path: relPath,
-				agent: req.meta.source_agent as string | undefined,
-				context: req.meta.source_context as string | undefined,
+				agent: auditAgent,
+				context: auditContext,
 				zone: req.zone.split('/')[0],
 				type: req.meta.type as string | undefined,
 				success: false,
@@ -572,8 +592,8 @@ export class VaultEngine {
 		this.logWrite({
 			action: 'create',
 			path: relPath,
-			agent: req.meta.source_agent as string | undefined,
-			context: req.meta.source_context as string | undefined,
+			agent: auditAgent,
+			context: auditContext,
 			zone: req.zone.split('/')[0],
 			type: req.meta.type as string | undefined,
 			success: true,
@@ -584,8 +604,8 @@ export class VaultEngine {
 			path: relPath,
 			zone: req.zone.split('/')[0],
 			type: req.meta.type as string | undefined,
-			agent: req.meta.source_agent as string | undefined,
-			context: req.meta.source_context as string | undefined,
+			agent: auditAgent,
+			context: auditContext,
 		});
 
 		const result: WriteResult = { success: true, path: relPath };

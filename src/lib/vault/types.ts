@@ -220,6 +220,22 @@ export interface UpdateNoteOpts {
 	actorContext?: string;
 }
 
+/** ADR-005 S0 — per-call provenance for `createNote`. Mirror of
+ *  `UpdateNoteOpts`. Lets server-side callers (orchestrator tools like
+ *  proposeAdr, recipe steps, propose-slice) stamp the audit log + git
+ *  commit with WHO triggered this CREATE, distinct from the new note's
+ *  frontmatter `source_agent` (which records the author of the note,
+ *  not the tool that triggered the write).
+ *
+ *  When omitted, audit-log + commit attribution fall back to
+ *  `req.meta.source_agent` / `source_context` (pre-S0 behaviour). */
+export interface CreateNoteOpts {
+	/** Actor performing this specific create — e.g. `"proposeAdr"`. */
+	actor?: string;
+	/** Free-form one-line context, e.g. `"slug=naseej tier=2 working_title='X'"`. */
+	actorContext?: string;
+}
+
 export interface WriteResult {
 	success: true;
 	path: string;
