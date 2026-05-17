@@ -263,7 +263,13 @@ export interface ApplyShipSliceResult {
  *  satisfies it (currently the real engine; future tests can pass a mock). */
 export interface ShipSliceVaultEngine {
 	getNote(path: string): Promise<{ content: string } | null> | { content: string } | null;
-	updateNote(path: string, patch: { content?: string }): Promise<{ success?: boolean; error?: string }>;
+	/** ADR-003 S4 — `opts.actor` lets ship-slice stamp the audit log + commit
+	 *  with `projectShipSlice` instead of the note's original `source_agent`. */
+	updateNote(
+		path: string,
+		patch: { content?: string },
+		opts?: { actor?: string; actorContext?: string },
+	): Promise<{ success?: boolean; error?: string }>;
 }
 
 /** Shared core for both the HTTP endpoint and the orchestrator-v2 tool.
@@ -334,6 +340,19 @@ export async function applyShipSlice(
 	const adrUpdate = appendSliceMarkerToStatus(adrBody, req, resolvedDate);
 	const indexUpdate = prependShipLogEntry(indexBody, adrPath, req, resolvedDate);
 
+	// ADR-003 S4 — stamp every audit-log + commit entry from this transaction
+	// with `projectShipSlice` so the orchestrator's footprint is distinct from
+	// the note's original `source_agent` (the human/agent who authored it).
+	const SHIP_ACTOR = 'projectShipSlice';
+	const shipContext = `slug=${slug} adr=${req.adr} slice=${req.slice_id} status=${req.status}${
+		req.commit ? ` commit=${req.commit}` : ''
+	}`;
+	const writeOpts = { actor: SHIP_ACTOR, actorContext: shipContext };
+	const rollbackOpts = {
+		actor: SHIP_ACTOR,
+		actorContext: `${shipContext} rollback=adr-write`,
+	};
+
 	let adrWriteOk = false;
 	let indexWriteOk = false;
 	let rollbackAttempted = false;
@@ -342,7 +361,7 @@ export async function applyShipSlice(
 
 	try {
 		if (adrUpdate.changed) {
-			const res = await engine.updateNote(adrPath, { content: adrUpdate.body });
+			const res = await engine.updateNote(adrPath, { content: adrUpdate.body }, writeOpts);
 			adrWriteOk = res.success ?? true;
 			if (!adrWriteOk) failureDetail = `ADR write refused: ${res.error ?? 'unknown'}`;
 		} else {
@@ -355,7 +374,7 @@ export async function applyShipSlice(
 	if (adrWriteOk) {
 		try {
 			if (indexUpdate.changed) {
-				const res = await engine.updateNote(indexPath, { content: indexUpdate.body });
+				const res = await engine.updateNote(indexPath, { content: indexUpdate.body }, writeOpts);
 				indexWriteOk = res.success ?? true;
 				if (!indexWriteOk) failureDetail = `index write refused: ${res.error ?? 'unknown'}`;
 			} else {
@@ -369,7 +388,7 @@ export async function applyShipSlice(
 	if (adrWriteOk && !indexWriteOk && adrUpdate.changed) {
 		rollbackAttempted = true;
 		try {
-			const res = await engine.updateNote(adrPath, { content: adrBody });
+			const res = await engine.updateNote(adrPath, { content: adrBody }, rollbackOpts);
 			rollbackOk = res.success ?? true;
 		} catch {
 			rollbackOk = false;

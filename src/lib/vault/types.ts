@@ -205,6 +205,21 @@ export interface UpdateNoteRequest {
 	content?: string;
 }
 
+/** ADR-003 S4 — per-call provenance for `updateNote`. Lets server-side
+ *  callers (orchestrator tools, recipe steps, internal mutators) stamp the
+ *  audit log + git commit with WHO triggered this update, distinct from
+ *  the note's frontmatter `source_agent` (which records the author of the
+ *  note, not the last toucher).
+ *
+ *  When omitted, audit-log + commit attribution fall back to
+ *  `existing.meta.source_agent` / `source_context` (pre-S4 behaviour). */
+export interface UpdateNoteOpts {
+	/** Actor performing this specific update — e.g. `"projectShipSlice"`. */
+	actor?: string;
+	/** Free-form one-line context, e.g. `"adr=adr-003 slice=S4 status=shipped"`. */
+	actorContext?: string;
+}
+
 export interface WriteResult {
 	success: true;
 	path: string;

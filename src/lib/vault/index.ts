@@ -4,7 +4,7 @@ import matter from 'gray-matter';
 import type {
 	VaultNote, VaultConfig, SearchQuery, SearchResult,
 	GraphData, VaultStats, VaultHealth, VaultZone, VaultTemplate,
-	CreateNoteRequest, UpdateNoteRequest, WriteAssetRequest, WriteResult, WriteError,
+	CreateNoteRequest, UpdateNoteRequest, UpdateNoteOpts, WriteAssetRequest, WriteResult, WriteError,
 	WriteLogEntry, LinkIssue, StubInfo, VaultMeta
 } from './types.js';
 import { GLOBAL_REQUIRED_FIELDS, MAX_NOTE_SIZE, MAX_ASSET_SIZE } from './types.js';
@@ -714,11 +714,23 @@ export class VaultEngine {
 			: { success: true, path: relPath };
 	}
 
-	async updateNote(path: string, req: UpdateNoteRequest): Promise<WriteResult | WriteError> {
+	async updateNote(
+		path: string,
+		req: UpdateNoteRequest,
+		opts?: UpdateNoteOpts,
+	): Promise<WriteResult | WriteError> {
 		const existing = this.indexer.get(path);
 		if (!existing) {
 			return { success: false, error: `Note not found: ${path}` };
 		}
+
+		// ADR-003 S4 — prefer the per-call actor over the note's original
+		// `source_agent` when stamping audit log + git commit, so server-side
+		// tools (projectShipSlice, recipe steps) leave a traceable footprint
+		// distinct from the note's author.
+		const auditAgent = opts?.actor ?? (existing.meta.source_agent as string | undefined);
+		const auditContext =
+			opts?.actorContext ?? (existing.meta.source_context as string | undefined);
 
 		const mergedMeta = { ...existing.meta, ...(req.meta ?? {}) };
 		const newContent = req.content ?? existing.content;
@@ -797,8 +809,8 @@ export class VaultEngine {
 			this.logWrite({
 				action: 'update',
 				path,
-				agent: existing.meta.source_agent as string | undefined,
-				context: existing.meta.source_context as string | undefined,
+				agent: auditAgent,
+				context: auditContext,
 				zone: path.split('/')[0],
 				type: existing.meta.type as string | undefined,
 				success: false,
@@ -814,8 +826,8 @@ export class VaultEngine {
 		this.logWrite({
 			action: 'update',
 			path,
-			agent: existing.meta.source_agent as string | undefined,
-			context: existing.meta.source_context as string | undefined,
+			agent: auditAgent,
+			context: auditContext,
 			zone: path.split('/')[0],
 			type: existing.meta.type as string | undefined,
 			success: true,
@@ -826,8 +838,8 @@ export class VaultEngine {
 			path,
 			zone: path.split('/')[0],
 			type: existing.meta.type as string | undefined,
-			agent: existing.meta.source_agent as string | undefined,
-			context: existing.meta.source_context as string | undefined,
+			agent: auditAgent,
+			context: auditContext,
 		});
 
 		const updateResult: WriteResult = { success: true, path };
