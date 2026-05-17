@@ -21,9 +21,10 @@
  * exact same Zod schema as the runner. Recipe shape validation comes from
  * `./schemas/recipe.ts`.
  */
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { resolve as resolvePath, join } from 'node:path';
+import { resolve as resolvePath, join, basename, dirname } from 'node:path';
+import { homedir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { parse as parseYaml } from 'yaml';
@@ -142,19 +143,72 @@ function lookup(expr: string, ctx: Record<string, unknown>): unknown {
 	return cur;
 }
 
-/** Walk an object/array/string and replace `{{path.to.thing}}` placeholders.
+/** ADR-006 D3 — exhaustive filter set. Unknown filter throws; no extensibility
+ *  surface today. Filters compose left-to-right via the pipe operator. */
+const FILTERS: Record<string, (val: unknown, arg?: string) => unknown> = {
+	basename: (v) => basename(String(v ?? '')),
+	dirname: (v) => dirname(String(v ?? '')),
+	human_bytes: (v) => {
+		const n = typeof v === 'number' ? v : Number.parseInt(String(v), 10);
+		if (!Number.isFinite(n)) return String(v ?? '');
+		if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1)}G`;
+		if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)}M`;
+		if (n >= 1024) return `${(n / 1024).toFixed(0)}K`;
+		return `${n}B`;
+	},
+	date_fmt: (v, arg) => {
+		const s = String(v ?? '');
+		if (!arg) return s;
+		const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+		if (!m) return s;
+		const [, year, month, day] = m;
+		return arg
+			.replace(/YYYY/g, year)
+			.replace(/MM/g, month)
+			.replace(/DD/g, day);
+	},
+};
+
+/** Apply a single filter expression like `"basename"` or `"date_fmt:DD/MM/YYYY"`.
+ *  Throws on unknown filter — typos shouldn't silently no-op. */
+function applyFilter(value: unknown, filterExpr: string): unknown {
+	const colonIdx = filterExpr.indexOf(':');
+	const name = (colonIdx >= 0 ? filterExpr.slice(0, colonIdx) : filterExpr).trim();
+	const arg = colonIdx >= 0 ? filterExpr.slice(colonIdx + 1).trim() : undefined;
+	const fn = FILTERS[name];
+	if (!fn) {
+		throw new Error(
+			`unknown templating filter: "${name}". Known filters: ${Object.keys(FILTERS).join(', ')}`,
+		);
+	}
+	return fn(value, arg);
+}
+
+/** Evaluate a `{{ expr | filter1 | filter2:arg }}` placeholder body against ctx. */
+function evaluateExpr(raw: string, ctx: Record<string, unknown>): unknown {
+	const parts = raw.split('|').map((p) => p.trim()).filter((p) => p.length > 0);
+	if (parts.length === 0) return undefined;
+	let cur: unknown = lookup(parts[0], ctx);
+	for (let i = 1; i < parts.length; i++) cur = applyFilter(cur, parts[i]);
+	return cur;
+}
+
+/** Walk an object/array/string and replace `{{path.to.thing | filter}}` placeholders.
  *  When a string IS a single placeholder (e.g. `"{{inputs.min_score}}"`), the
  *  underlying value's native type is preserved (int stays int, bool stays bool).
- *  Mixed strings (`"hello {{name}}"`) are always concatenated as strings. */
+ *  Mixed strings (`"hello {{name}}"`) are always concatenated as strings.
+ *
+ *  ADR-006 D3 — filter pipe syntax: `{{ x | basename }}` and
+ *  `{{ x | date_fmt:DD/MM/YYYY }}` are supported. Unknown filters throw. */
 function interpolate(value: unknown, ctx: Record<string, unknown>): unknown {
 	if (typeof value === 'string') {
 		const wholeMatch = value.match(/^\{\{\s*([^}]+?)\s*\}\}$/);
 		if (wholeMatch) {
-			const v = lookup(wholeMatch[1], ctx);
+			const v = evaluateExpr(wholeMatch[1], ctx);
 			return v === undefined ? '' : v;
 		}
 		return value.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_full, expr) => {
-			const v = lookup(String(expr), ctx);
+			const v = evaluateExpr(String(expr), ctx);
 			if (v === null || v === undefined) return '';
 			return typeof v === 'object' ? JSON.stringify(v) : String(v);
 		});
@@ -224,8 +278,8 @@ function resolveInputs(
 ): Record<string, unknown> {
 	const out: Record<string, unknown> = {};
 	for (const def of recipe.inputs ?? []) {
+		const partialCtx = { ...ctxBase, inputs: out };
 		if (isFileInput(def)) {
-			const partialCtx = { ...ctxBase, inputs: out };
 			const resolvedPath = String(interpolate(def.path, partialCtx));
 			if (def.must_exist && !existsSync(resolvedPath)) {
 				throw new Error(
@@ -236,7 +290,11 @@ function resolveInputs(
 		} else if (operator && def.name in operator) {
 			out[def.name] = operator[def.name];
 		} else if ('default' in def) {
-			out[def.name] = def.default;
+			// ADR-006 S2 — defaults may contain templates (e.g. `"{{HOME}}/Downloads/..."`).
+			// Interpolated against ctxBase + inputs resolved so far. v1 recipes used
+			// literal defaults; that path still works (interpolate is a no-op on
+			// strings without `{{ }}` markers).
+			out[def.name] = interpolate(def.default, partialCtx);
 		} else if (def.required) {
 			throw new Error(`required input missing: ${def.name}`);
 		}
@@ -479,14 +537,19 @@ export async function runRecipe(
 	const runId = opts.runId ?? randomUUID().slice(0, 8);
 	const startedAt = new Date();
 	// ADR-006 D2 — ctxBase carries context globals available DURING input
-	// resolution (so a `file` input's `path:` template can reference `{{date}}`).
-	// S2 will add `HOME` + `work_dir` to this base.
+	// resolution (so a `file` input's `path:` template can reference `{{date}}`,
+	// `{{HOME}}`, `{{work_dir}}`). work_dir is materialised below before any
+	// step runs; cleanup is deferred to a separate retention job (out of scope).
+	const workDir = join(homedir(), '.soul-hub', 'data', 'naseej', 'runs', runId);
 	const ctxBase = {
 		run_id: runId,
 		date: startedAt.toISOString().slice(0, 10),
 		project: recipe.project ?? 'naseej',
+		HOME: homedir(),
+		work_dir: workDir,
 	};
 	const inputs = resolveInputs(recipe, operatorInputs, ctxBase);
+	await mkdir(workDir, { recursive: true });
 	const ctx: Record<string, unknown> = {
 		...ctxBase,
 		inputs,
