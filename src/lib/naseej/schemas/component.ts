@@ -80,6 +80,12 @@ export const ComponentManifestSchema = z
 		description: z.string().optional(),
 		author: z.string().optional(),
 		project: z.string().optional(),
+		/** ADR-006 D4 — two-tier catalog model. Tier 1: capability (generic
+		 *  protocol-shaped, configured per use-case, e.g. `shell-exec`). Tier 2:
+		 *  domain adapter (typed wrapper over an external system, e.g.
+		 *  `katib-build`, `vault-write`). Defaults to 2 so existing components
+		 *  pre-ADR-006 keep parsing without migration. */
+		tier: z.union([z.literal(1), z.literal(2)]).default(2),
 		inputs: z.array(InputField).default([]),
 		outputs: z.array(OutputField).default([]),
 		invocation: Invocation.optional(),

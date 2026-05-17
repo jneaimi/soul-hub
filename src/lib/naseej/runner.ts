@@ -22,6 +22,7 @@
  * `./schemas/recipe.ts`.
  */
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { resolve as resolvePath, join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -30,6 +31,7 @@ import { buildCatalogIndex, type ComponentRecord } from './manifest.js';
 import {
 	isAgentStep,
 	isComponentStep,
+	isFileInput,
 	parseRecipe,
 	type AgentStep,
 	type ComponentStep,
@@ -206,14 +208,32 @@ function parseOutputs(stdout: string): Record<string, unknown> | undefined {
 	}
 }
 
-/** Resolve recipe inputs against operator-supplied values + defaults. */
+/** Resolve recipe inputs against operator-supplied values + defaults.
+ *
+ *  ADR-006 D1 — typed inputs. `file` inputs interpolate their `path:` template
+ *  against the partial ctx (`ctxBase` + inputs resolved so far) and optionally
+ *  fail fast if `must_exist: true` and the file is missing. Non-file inputs use
+ *  the existing operator-or-default-or-required pipeline.
+ *
+ *  Declaration order matters — a `file` input's `path:` may reference earlier
+ *  inputs (e.g. `{{inputs.date}}`). */
 function resolveInputs(
 	recipe: Recipe,
 	operator: Record<string, unknown> | undefined,
+	ctxBase: Record<string, unknown>,
 ): Record<string, unknown> {
 	const out: Record<string, unknown> = {};
 	for (const def of recipe.inputs ?? []) {
-		if (operator && def.name in operator) {
+		if (isFileInput(def)) {
+			const partialCtx = { ...ctxBase, inputs: out };
+			const resolvedPath = String(interpolate(def.path, partialCtx));
+			if (def.must_exist && !existsSync(resolvedPath)) {
+				throw new Error(
+					`input "${def.name}" file does not exist: ${resolvedPath}`,
+				);
+			}
+			out[def.name] = resolvedPath;
+		} else if (operator && def.name in operator) {
 			out[def.name] = operator[def.name];
 		} else if ('default' in def) {
 			out[def.name] = def.default;
@@ -458,12 +478,18 @@ export async function runRecipe(
 
 	const runId = opts.runId ?? randomUUID().slice(0, 8);
 	const startedAt = new Date();
-	const inputs = resolveInputs(recipe, operatorInputs);
-	const ctx: Record<string, unknown> = {
-		inputs,
+	// ADR-006 D2 — ctxBase carries context globals available DURING input
+	// resolution (so a `file` input's `path:` template can reference `{{date}}`).
+	// S2 will add `HOME` + `work_dir` to this base.
+	const ctxBase = {
 		run_id: runId,
 		date: startedAt.toISOString().slice(0, 10),
 		project: recipe.project ?? 'naseej',
+	};
+	const inputs = resolveInputs(recipe, operatorInputs, ctxBase);
+	const ctx: Record<string, unknown> = {
+		...ctxBase,
+		inputs,
 		steps: {} as Record<string, { outputs: Record<string, unknown> }>,
 	};
 

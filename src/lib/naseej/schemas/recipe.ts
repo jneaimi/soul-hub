@@ -32,17 +32,80 @@ const ComponentRef = z
 		'must be `name` or `name@version` where version is semver',
 	);
 
-/** Recipe-level input declaration. */
-const RecipeInput = z
-	.object({
-		name: z.string().min(1, 'input name required'),
-		type: z.string().min(1, 'input type required'),
-		required: z.boolean().optional(),
-		default: z.unknown().optional(),
-		description: z.string().optional(),
-	})
-	.strict();
+/** Recipe-level input declaration (ADR-006 D1).
+ *
+ * Typed discriminated union over five known types: `string | integer | boolean
+ * | file | date`. A free-form fallback (`RecipeInputAny`) accepts arbitrary
+ * `type:` labels for forward-compat, with one constraint — it refuses the five
+ * known type names so authors cannot silently downgrade a `file` input that
+ * forgot its `path:` field. Order matters in the union: typed schemas tried
+ * first, fallback last. */
+const KNOWN_TYPED_INPUTS = ['string', 'integer', 'boolean', 'file', 'date'] as const;
+
+const RecipeInputBase = z.object({
+	name: z.string().min(1, 'input name required'),
+	required: z.boolean().optional(),
+	default: z.unknown().optional(),
+	description: z.string().optional(),
+});
+
+const RecipeInputString = RecipeInputBase.extend({
+	type: z.literal('string'),
+}).strict();
+
+const RecipeInputInteger = RecipeInputBase.extend({
+	type: z.literal('integer'),
+}).strict();
+
+const RecipeInputBoolean = RecipeInputBase.extend({
+	type: z.literal('boolean'),
+}).strict();
+
+/** File input — `path:` is a template resolved at recipe-start against the
+ *  inputs ctx; `must_exist: true` triggers a stat check before any step runs. */
+const RecipeInputFile = RecipeInputBase.extend({
+	type: z.literal('file'),
+	path: z.string().min(1, 'file input requires `path:` template'),
+	must_exist: z.boolean().optional(),
+}).strict();
+
+/** Date input — currently a string with format hint; format-level validation
+ *  is deferred. The runner trusts the operator/default value verbatim. */
+const RecipeInputDate = RecipeInputBase.extend({
+	type: z.literal('date'),
+	format: z.string().optional(),
+}).strict();
+
+/** Fallback for unknown type labels. Refuses the five known names so an
+ *  invalid `type: file` (missing `path:`) cannot quietly match the fallback. */
+const RecipeInputAny = RecipeInputBase.extend({
+	type: z.string().min(1, 'input type required').refine(
+		(t) => !KNOWN_TYPED_INPUTS.includes(t as (typeof KNOWN_TYPED_INPUTS)[number]),
+		{ message: 'type matches a known typed input — provide all required fields' },
+	),
+}).strict();
+
+const RecipeInput = z.union([
+	RecipeInputString,
+	RecipeInputInteger,
+	RecipeInputBoolean,
+	RecipeInputFile,
+	RecipeInputDate,
+	RecipeInputAny,
+]);
 export type RecipeInput = z.infer<typeof RecipeInput>;
+export type RecipeInputTyped =
+	| z.infer<typeof RecipeInputString>
+	| z.infer<typeof RecipeInputInteger>
+	| z.infer<typeof RecipeInputBoolean>
+	| z.infer<typeof RecipeInputFile>
+	| z.infer<typeof RecipeInputDate>;
+
+/** Type guard for file inputs — used by the runner to drive `must_exist`
+ *  + `path:` interpolation. */
+export function isFileInput(def: RecipeInput): def is z.infer<typeof RecipeInputFile> {
+	return (def as { type?: unknown }).type === 'file';
+}
 
 /** Component-flavored step — invokes a subprocess from catalog/components/. */
 const ComponentStepSchema = z
