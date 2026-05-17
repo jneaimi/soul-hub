@@ -81,6 +81,10 @@ import { applyShipSlice, ShipSliceRequestSchema } from '../../projects/ship-slic
 import { applyProposeAdr } from '../../projects/propose-adr.js';
 import { applyProposeSlice } from '../../projects/propose-slice.js';
 import {
+	applyProposeAdrEdit,
+	PROPOSAL_SECTIONS,
+} from '../../projects/suggest-adr-edit.js';
+import {
 	getImgCount,
 	incrementImgCount,
 	getYoutubeCount,
@@ -328,6 +332,22 @@ export type ToolResult =
 	  }
 	| {
 			kind: 'propose-slice-error';
+			project: string;
+			adr: string;
+			error: string;
+			statusHint?: number;
+	  }
+	/** project-phases ADR-005 S3 — suggestAdrEdit success. */
+	| {
+			kind: 'suggest-adr-edit';
+			project: string;
+			path: string;
+			filename: string;
+			targetAdr: string;
+			section: string;
+	  }
+	| {
+			kind: 'suggest-adr-edit-error';
 			project: string;
 			adr: string;
 			error: string;
@@ -1167,6 +1187,90 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 					sliceId: result.slice_id,
 					newRow: result.new_row,
 					...(result.already_present && { alreadyPresent: true }),
+				};
+			},
+		}),
+
+		suggestAdrEdit: tool({
+			description:
+				'Suggest a structured edit to an EXISTING ADR\'s prose. Writes a NEW proposal note under `projects/<slug>/proposals/YYYY-MM-DD-NN-<short-slug>.md` (NEVER mutates the target ADR). Frontmatter records `target_adr`, `proposed_section`, `status: open`. Operator reviews via the project page proposals panel and decides to apply, edit, or reject. ' +
+				'STRICT ROUTING: only fires when the user explicitly asks to "suggest / propose / draft an edit" to a specific ADR section. NEVER fires on vague "we could rewrite X". NEVER mutates the target ADR — that\'s the operator\'s job after review. NEVER creates a new ADR (that\'s `proposeAdr`). NEVER adds a slice row (that\'s `proposeSlice`). ' +
+				'PROVENANCE — DO NOT INVENT ARGS: `proposed_text` MUST be derived from the user\'s own articulation in the conversation, not fabricated. `rationale` must explain WHY this edit is needed, not just restate the proposed text. If the user has not described both, ASK before calling. ' +
+				'The proposal is just a note — the operator still has to apply it manually. Returns 404 if the project is missing, 400 if the ADR cannot be resolved.',
+			inputSchema: z.object({
+				slug: z
+					.string()
+					.min(1)
+					.regex(/^[a-z0-9][a-z0-9-]+$/)
+					.describe(
+						'Project slug — the kebab-case folder name under projects/.',
+					),
+				adr: z
+					.string()
+					.min(1)
+					.describe(
+						'ADR identifier — bare ordinal ("007"), bare slug ("adr-007-foo"), or full path. Same resolution as projectShipSlice.',
+					),
+				section: z
+					.enum(PROPOSAL_SECTIONS)
+					.describe(
+						'Target section in the ADR — one of Status, Context, Decision, Falsifiers, Implementation plan, Related.',
+					),
+				title: z
+					.string()
+					.min(3)
+					.max(120)
+					.describe(
+						'Short title for the proposal — kebab-slugified into the filename (e.g. "F6 proposal-zone hygiene" -> 2026-05-17-01-f6-proposal-zone-hygiene.md).',
+					),
+				rationale: z
+					.string()
+					.min(20)
+					.max(2000)
+					.describe(
+						'Why this edit is needed. 1-3 sentences. NOT a restatement of proposed_text — explain the gap or risk.',
+					),
+				proposed_text: z
+					.string()
+					.min(20)
+					.max(8000)
+					.describe(
+						'The markdown chunk the operator can paste into the target section. Should be self-contained (e.g. a full bullet, paragraph, or table row).',
+					),
+			}),
+			execute: async (args): Promise<ToolResult> => {
+				logToolCall('suggestAdrEdit', {
+					slug: args.slug,
+					adr: args.adr,
+					section: args.section,
+					title: args.title.slice(0, 60),
+				});
+				const engine = getVaultEngine();
+				if (!engine) {
+					return {
+						kind: 'suggest-adr-edit-error',
+						project: args.slug,
+						adr: args.adr,
+						error: 'Vault engine not initialized',
+					};
+				}
+				const result = await applyProposeAdrEdit(engine, args);
+				if (!result.success) {
+					return {
+						kind: 'suggest-adr-edit-error',
+						project: args.slug,
+						adr: args.adr,
+						error: result.error,
+						statusHint: result.status_hint,
+					};
+				}
+				return {
+					kind: 'suggest-adr-edit',
+					project: args.slug,
+					path: result.path,
+					filename: result.filename,
+					targetAdr: result.target_adr,
+					section: result.section,
 				};
 			},
 		}),

@@ -596,6 +596,24 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 		],
 	},
 	{
+		name: 'suggestAdrEdit',
+		category: 'write',
+		llm_description:
+			'Suggest a structured edit to an EXISTING ADR\'s prose. Writes a NEW proposal note under `projects/<slug>/proposals/YYYY-MM-DD-NN-<short-slug>.md` (NEVER mutates the target ADR). Frontmatter records `target_adr`, `proposed_section`, `status: open`. Operator reviews via the project page proposals panel and decides to apply, edit, or reject. ' +
+			'STRICT ROUTING: only fires when the user explicitly asks to "suggest / propose / draft an edit" to a specific ADR section. NEVER fires on vague "we could rewrite X". NEVER mutates the target ADR — that\'s the operator\'s job after review. NEVER creates a new ADR (that\'s `proposeAdr`). NEVER adds a slice row (that\'s `proposeSlice`). ' +
+			'PROVENANCE — DO NOT INVENT ARGS: `proposed_text` MUST be derived from the user\'s own articulation in the conversation, not fabricated. `rationale` must explain WHY this edit is needed, not just restate the proposed text. If the user has not described both, ASK before calling. ' +
+			'The proposal is just a note — the operator still has to apply it manually. Returns 404 if the project is missing, 400 if the ADR cannot be resolved.',
+		ui_description:
+			'Draft a structured edit suggestion for an existing ADR section — proposal is persisted as a separate note (operator applies manually). Never mutates the target ADR.',
+		examples: [
+			{
+				user: '"propose adding F6 to project-phases ADR-005 covering proposal-zone hygiene"',
+				toolArgs:
+					'{ slug: "project-phases", adr: "adr-005", section: "Falsifiers", title: "F6 proposal-zone hygiene", rationale: "30-day staleness check on the proposals folder ...", proposed_text: "- **F6** ..." }',
+			},
+		],
+	},
+	{
 		name: 'proposeSlice',
 		category: 'write',
 		llm_description:

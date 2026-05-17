@@ -5,6 +5,7 @@
 	import AdrDrawer from '$lib/components/projects/AdrDrawer.svelte';
 	import AdrGantt from '$lib/components/projects/AdrGantt.svelte';
 	import AssumptionAuditPanel from '$lib/components/projects/AssumptionAuditPanel.svelte';
+	import ProposalsPanel from '$lib/components/projects/ProposalsPanel.svelte';
 
 	type PhaseStatus = 'proposed' | 'accepted' | 'shipped' | 'parked' | 'superseded' | 'rejected' | 'unknown';
 
@@ -516,6 +517,9 @@
 
 				<!-- Assumption-rate audits (project-phases ADR-008 S4) — silent on empty corpus -->
 				<AssumptionAuditPanel {slug} />
+
+				<!-- AI proposals (project-phases ADR-005 S3) — silent on empty corpus -->
+				<ProposalsPanel {slug} />
 
 				<!-- Awaiting decision (proposed) -->
 				{#if proposed.length > 0}
