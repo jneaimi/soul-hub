@@ -16,6 +16,7 @@ import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { getVaultEngine } from '$lib/vault/index.js';
 import { applyProposeSlice } from '$lib/projects/propose-slice.js';
+import { checkProposeRate } from '$lib/projects/propose-rate-limit.js';
 
 export const POST: RequestHandler = async ({ params, request }) => {
 	const slug = params.slug;
@@ -36,6 +37,24 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		raw && typeof raw === 'object' && !Array.isArray(raw)
 			? { ...(raw as Record<string, unknown>), slug }
 			: { slug };
+
+	// ADR-005 S4 — per-actor tool-level rate limit.
+	const actor =
+		typeof (input as Record<string, unknown>).source_agent === 'string'
+			? ((input as Record<string, unknown>).source_agent as string)
+			: 'proposeSlice';
+	const rate = checkProposeRate(actor);
+	if (!rate.allowed) {
+		return json(
+			{
+				success: false,
+				error: `Rate limit exceeded for "${actor}" — max ${rate.ceiling} proposals/hour. Resets at ${rate.resetAt}.`,
+				status_hint: 429,
+				rate_limit: rate,
+			},
+			{ status: 429 },
+		);
+	}
 
 	const result = await applyProposeSlice(engine, input);
 	const status = result.success ? 200 : (result.status_hint ?? 400);

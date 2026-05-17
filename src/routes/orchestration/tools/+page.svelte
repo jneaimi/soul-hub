@@ -46,10 +46,30 @@
 		argPreview: string;
 	}
 
+	/** ADR-005 S4 — propose/closure audit entry shape from /api/vault/writes. */
+	interface VaultWriteEntry {
+		action: 'create' | 'update' | 'delete';
+		path: string;
+		agent: string;
+		context?: string;
+		zone?: string;
+		type?: string;
+		success: boolean;
+		timestamp: string;
+	}
+
+	const PROPOSE_ACTORS = new Set([
+		'proposeAdr',
+		'proposeSlice',
+		'suggestAdrEdit',
+		'projectShipSlice',
+	]);
+
 	type FilterMode = 'all' | Category;
 
 	let tools = $state<ToolListing[]>([]);
 	let recent = $state<RecentCall[]>([]);
+	let proposeWrites = $state<VaultWriteEntry[]>([]);
 	let loading = $state(true);
 	let loadError = $state<string | null>(null);
 	let filter = $state<FilterMode>('all');
@@ -97,6 +117,46 @@
 		} finally {
 			loading = false;
 		}
+		// ADR-005 S4 — pull the 4 propose-* / closure actors from the vault
+		// audit log. In-memory ring buffer, resets on PM2 reload. Fail-soft
+		// so a vault-writes outage doesn't break the tools page.
+		try {
+			const wres = await fetch('/api/vault/writes?limit=200');
+			if (wres.ok) {
+				const wdata = await wres.json();
+				const entries: VaultWriteEntry[] = wdata.entries ?? [];
+				proposeWrites = entries
+					.filter((e) => PROPOSE_ACTORS.has(e.agent))
+					.slice(0, 30);
+			}
+		} catch {
+			// best-effort
+		}
+	}
+
+	const PROPOSE_ACTOR_DOT: Record<string, string> = {
+		proposeAdr: 'bg-emerald-500',
+		proposeSlice: 'bg-emerald-400',
+		suggestAdrEdit: 'bg-amber-400',
+		projectShipSlice: 'bg-sky-500',
+	};
+	const PROPOSE_ACTOR_LABEL: Record<string, string> = {
+		proposeAdr: 'propose ADR',
+		proposeSlice: 'propose slice',
+		suggestAdrEdit: 'suggest edit',
+		projectShipSlice: 'ship slice',
+	};
+
+	function fmtRelativeIso(ts: string): string {
+		const at = Date.parse(ts);
+		if (Number.isNaN(at)) return '—';
+		return fmtRelative(at);
+	}
+
+	function vaultLinkFromPath(path: string): string {
+		// Drop trailing .md and prefix with /vault/ so the operator can jump
+		// straight into the resulting note. Same convention as ProposalsPanel.
+		return `/vault/${path.replace(/\.md$/, '')}`;
 	}
 
 	function toggleExpand(name: string) {
@@ -437,6 +497,59 @@
 								<code class="text-hub-text font-mono">{c.name}</code>
 								<span class="text-hub-muted flex-shrink-0">{fmtRelative(c.at)}</span>
 								<code class="flex-1 text-[11px] text-hub-muted font-mono truncate">{c.argPreview}</code>
+							</div>
+						{/each}
+					</div>
+				</section>
+			{/if}
+
+			<!-- ADR-005 S4 — Recent AI proposals + closures (audit-attribution distinguisher) -->
+			{#if proposeWrites.length > 0}
+				<section class="mt-6">
+					<h2 class="text-sm font-semibold text-hub-text mb-2">Recent AI proposals + closures</h2>
+					<p class="text-[11px] text-hub-muted mb-2">
+						The four AI-write actors from project-phases ADR-005 — colour-coded so proposals (propose ADR / propose slice / suggest edit) are visually distinct from closures (ship slice). Last 30 events; sourced from `/api/vault/writes`.
+					</p>
+					<div class="mb-2 flex flex-wrap gap-3 text-[11px] text-hub-muted">
+						{#each Object.keys(PROPOSE_ACTOR_LABEL) as actor}
+							<span class="inline-flex items-center gap-1">
+								<span class="w-2 h-2 rounded-full {PROPOSE_ACTOR_DOT[actor]}"></span>
+								<code class="font-mono">{actor}</code>
+								<span>— {PROPOSE_ACTOR_LABEL[actor]}</span>
+							</span>
+						{/each}
+					</div>
+					<div class="rounded-lg border border-hub-border bg-hub-card overflow-hidden divide-y divide-hub-border">
+						{#each proposeWrites as w}
+							<div class="px-3 py-2 text-xs flex items-start gap-2">
+								<span
+									class="mt-1 w-2 h-2 rounded-full {PROPOSE_ACTOR_DOT[w.agent] ??
+										'bg-slate-500'} flex-shrink-0"
+									title={w.agent}
+								></span>
+								<div class="flex-1 min-w-0">
+									<div class="flex items-center gap-2 flex-wrap">
+										<code class="text-hub-text font-mono">{w.agent}</code>
+										<span class="text-hub-muted">{fmtRelativeIso(w.timestamp)}</span>
+										<span class="text-hub-muted">·</span>
+										<a
+											href={vaultLinkFromPath(w.path)}
+											class="text-hub-info hover:text-hub-text transition-colors truncate"
+										>
+											{w.path}
+										</a>
+										{#if !w.success}
+											<span class="rounded bg-hub-error/15 px-1.5 py-0.5 text-[10px] text-hub-error">
+												refused
+											</span>
+										{/if}
+									</div>
+									{#if w.context}
+										<div class="text-[11px] text-hub-muted font-mono mt-0.5 truncate">
+											{w.context}
+										</div>
+									{/if}
+								</div>
 							</div>
 						{/each}
 					</div>

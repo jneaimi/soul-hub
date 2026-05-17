@@ -84,6 +84,7 @@ import {
 	applyProposeAdrEdit,
 	PROPOSAL_SECTIONS,
 } from '../../projects/suggest-adr-edit.js';
+import { checkProposeRate } from '../../projects/propose-rate-limit.js';
 import {
 	getImgCount,
 	incrementImgCount,
@@ -1077,6 +1078,17 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 					working_title: args.working_title.slice(0, 60),
 					tier: args.tier,
 				});
+				// ADR-005 S4 — per-actor tool-level rate limit (5/hr).
+				const rate = checkProposeRate('proposeAdr');
+				if (!rate.allowed) {
+					return {
+						kind: 'propose-adr-error',
+						project: args.slug,
+						workingTitle: args.working_title,
+						error: `Rate limit exceeded for proposeAdr — max ${rate.ceiling} proposals/hour. Resets at ${rate.resetAt}.`,
+						statusHint: 429,
+					};
+				}
 				const engine = getVaultEngine();
 				if (!engine) {
 					return {
@@ -1161,6 +1173,17 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 					adr: args.adr,
 					slice_id: args.slice_id ?? '(auto)',
 				});
+				// ADR-005 S4 — per-actor tool-level rate limit (5/hr).
+				const rate = checkProposeRate('proposeSlice');
+				if (!rate.allowed) {
+					return {
+						kind: 'propose-slice-error',
+						project: args.slug,
+						adr: args.adr,
+						error: `Rate limit exceeded for proposeSlice — max ${rate.ceiling} proposals/hour. Resets at ${rate.resetAt}.`,
+						statusHint: 429,
+					};
+				}
 				const engine = getVaultEngine();
 				if (!engine) {
 					return {
@@ -1245,6 +1268,17 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 					section: args.section,
 					title: args.title.slice(0, 60),
 				});
+				// ADR-005 S4 — per-actor tool-level rate limit (5/hr).
+				const rate = checkProposeRate('suggestAdrEdit');
+				if (!rate.allowed) {
+					return {
+						kind: 'suggest-adr-edit-error',
+						project: args.slug,
+						adr: args.adr,
+						error: `Rate limit exceeded for suggestAdrEdit — max ${rate.ceiling} proposals/hour. Resets at ${rate.resetAt}.`,
+						statusHint: 429,
+					};
+				}
 				const engine = getVaultEngine();
 				if (!engine) {
 					return {
