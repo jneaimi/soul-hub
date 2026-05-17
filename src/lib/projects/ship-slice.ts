@@ -182,10 +182,26 @@ function extractSection(body: string, heading: string): string | null {
 
 // ─── Mutation 2: project index ship log prepend ──────────────────────────────
 
+/** Pure formatter for a ship-log entry line. Shared by `prependShipLogEntry`
+ *  (the mutation) and `buildPreview` (the dry-run shape) so both surfaces
+ *  show the same string. */
+export function formatShipLogEntry(
+	adrPath: string,
+	req: ShipSliceRequest,
+	resolvedDate: string,
+): string {
+	const verb = STATUS_VERB[req.status];
+	const ordinal = adrPath.match(/adr-(\d+)/)?.[1] ?? '???';
+	const headline = `ADR-${ordinal} ${req.slice_id} ${verb.toLowerCase()}`;
+	const commitFragment = req.commit ? ` commit \`${req.commit}\`` : '';
+	const notesFragment = req.notes ? ` — ${req.notes}` : '';
+	return `- **${resolvedDate}** — **${headline}**${commitFragment}${notesFragment}`;
+}
+
 /** Prepend a new entry to the project index's `## Ship log` section.
  *  Format (matches existing operator convention across the cluster):
  *
- *      - **YYYY-MM-DD** — **<short summary>** (commit `<sha>`). <notes prose>.
+ *      - **YYYY-MM-DD** — **<short summary>** commit `<sha>` — <notes prose>
  *
  *  Idempotent: if the same commit + slice already has an entry, no change.
  *  Returns the unchanged body when the section is missing — the caller logs
@@ -197,14 +213,10 @@ export function prependShipLogEntry(
 	req: ShipSliceRequest,
 	resolvedDate: string,
 ): { body: string; changed: boolean } {
-	const verb = STATUS_VERB[req.status];
-	const headline = `ADR-${adrSlug.match(/adr-(\d+)/)?.[1] ?? '???'} ${req.slice_id} ${verb.toLowerCase()}`;
-	const commitFragment = req.commit ? ` commit \`${req.commit}\`` : '';
-	const notesFragment = req.notes ? `. ${req.notes}` : '';
-	const newEntry = `- **${resolvedDate}** — **${headline}**${commitFragment}${notesFragment}\n`;
+	const newEntry = formatShipLogEntry(adrSlug, req, resolvedDate);
 
 	// Idempotency: skip if an identical entry already exists.
-	if (indexBody.includes(newEntry.trim())) {
+	if (indexBody.includes(newEntry)) {
 		return { body: indexBody, changed: false };
 	}
 
@@ -215,7 +227,7 @@ export function prependShipLogEntry(
 	}
 	const insertAt = m.index + m[0].length;
 	return {
-		body: indexBody.slice(0, insertAt) + newEntry + indexBody.slice(insertAt),
+		body: indexBody.slice(0, insertAt) + newEntry + '\n\n' + indexBody.slice(insertAt),
 		changed: true,
 	};
 }
@@ -262,7 +274,7 @@ export function buildPreview(
 		adr_path: adrPath,
 		index_path: indexPath,
 		new_status_line: `**${req.slice_id} ${verb} ${resolvedDate}**${commitFragment}${notesFragment}`,
-		new_ship_log_entry: `- **${resolvedDate}** — **ADR-${adrPath.match(/adr-(\d+)/)?.[1] ?? '???'} ${req.slice_id} ${verb.toLowerCase()}**${commitFragment}${notesFragment ? '.' + notesFragment : ''}`,
+		new_ship_log_entry: formatShipLogEntry(adrPath, req, resolvedDate),
 		resolved_date: resolvedDate,
 		status_changed: statusUpdate.changed,
 		ship_log_changed: shipLogUpdate.changed,
