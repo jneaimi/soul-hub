@@ -1,4 +1,4 @@
-/** GET /api/vault/projects/:slug/next-actions
+/** GET /api/vault/projects/:slug/next-actions[?shipped_limit=N]
  *
  *  Derived view over the project's phase data — the AI-facing surface for
  *  "what's open" / "what should we do next". Returns:
@@ -7,7 +7,11 @@
  *     falsifier_date ascending (nulls last). Blocked phases (via ADR-level
  *     `blocked_by` deps that aren't yet shipped) are split out.
  *   - blocked_phases: same status filter, but ADR has unmet `blocked_by`.
- *   - recent_shipped: last 5 shipped phases by shipped_at desc.
+ *   - recent_shipped: last N shipped phases by shipped_at desc, then by
+ *     phase.id desc as a deterministic tie-break (newer ADRs win when many
+ *     slices ship on the same day). N defaults to 10 — covers the operator-
+ *     observed case of one project shipping 4+ ADR slices same-day. Override
+ *     via `?shipped_limit=N` (1-50). Per project-phases ADR-002 S3.
  *   - next: open_phases[0] — the single "do this next" hint.
  *
  *  Per project-phases ADR-001 P2. Pure read transform over engine.getNotes()
@@ -46,9 +50,24 @@ function blockedByToSlug(raw: string): string | null {
 	return last.replace(/\.md$/i, '') || null;
 }
 
-export const GET: RequestHandler = async ({ params }) => {
+/** ADR-002 S3 — parse and clamp the optional `?shipped_limit=N` query param.
+ *  Bounded [1, 50]; falls back to default (10) on missing / non-numeric /
+ *  out-of-range input. */
+const DEFAULT_SHIPPED_LIMIT = 10;
+const MAX_SHIPPED_LIMIT = 50;
+
+function parseShippedLimit(raw: string | null): number {
+	if (!raw) return DEFAULT_SHIPPED_LIMIT;
+	const n = Number.parseInt(raw, 10);
+	if (!Number.isFinite(n) || n < 1) return DEFAULT_SHIPPED_LIMIT;
+	return Math.min(n, MAX_SHIPPED_LIMIT);
+}
+
+export const GET: RequestHandler = async ({ params, url }) => {
 	const slug = params.slug;
 	if (!slug) return json({ error: 'slug required' }, { status: 400 });
+
+	const shippedLimit = parseShippedLimit(url.searchParams.get('shipped_limit'));
 
 	const engine = getVaultEngine();
 	if (!engine) return json({ error: 'Vault not initialized' }, { status: 503 });
@@ -181,8 +200,18 @@ export const GET: RequestHandler = async ({ params }) => {
 		shippedSeenIds.add(phase.id);
 		recentShipped.push(phase);
 	}
-	recentShipped.sort((a, b) => (b.shipped_at ?? '').localeCompare(a.shipped_at ?? ''));
-	recentShipped.splice(5); // keep last 5
+	// ADR-002 S3 — sort by shipped_at desc, then phase.id desc as the tie-break.
+	// Without a tie-break, projects shipping multiple slices on the same day
+	// (e.g. naseej 2026-05-17: 4 ADR-006 slices + 3 ADR-007 slices + 1 ADR-003)
+	// have an arbitrary order, so a small `recent_shipped` cap deterministically
+	// hid some ADRs' slices. phase.id desc puts newer ADRs (lexicographically
+	// higher slug → higher number) first when shipped_at ties.
+	recentShipped.sort((a, b) => {
+		const dateCmp = (b.shipped_at ?? '').localeCompare(a.shipped_at ?? '');
+		if (dateCmp !== 0) return dateCmp;
+		return b.id.localeCompare(a.id);
+	});
+	recentShipped.splice(shippedLimit);
 
 	const response: NextActionsResponse = {
 		project: slug,
