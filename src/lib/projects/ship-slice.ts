@@ -5,18 +5,26 @@
  * + reads/writes via the vault engine (which itself routes through the
  * ADR-046 chokepoint).
  *
- * Three mutation surfaces are wired in v1:
+ * Mutation surfaces wired (cumulative across ADR-003 + ADR-004):
  *
- *   1. Status header running tally  — `**S1+S2 SHIPPED YYYY-MM-DD**` line
- *   2. Project index ship log prepend — first entry under `## Ship log`
+ *   1. ADR Status section — slice marker line (ADR-003 S2)
+ *   2. Project index ship log — prepended entry (ADR-003 S2)
+ *   3. ADR Falsifier scorecard — `✅ F<N> — closed` line when
+ *      `closes_falsifier` is set (ADR-004 S3)
  *
- * Deferred to a future ADR-003 polish slice:
+ * All three writes flow through `engine.updateNote(..., {actor, actorContext})`
+ * so the audit log shows `projectShipSlice` instead of the ADR's original
+ * author. Atomicity: if mutation 1+3 (combined into ONE ADR write) succeed
+ * but mutation 2 (index write) fails, the ADR is rolled back to its original
+ * body — ship log entry must not exist without the corresponding ADR markers.
  *
+ * Deferred:
  *   - Checkpoints table row mutation (regex-anchored on label cell)
- *   - Falsifier scorecard flip (handled cleanly by ADR-004)
  */
 
 import { z } from 'zod';
+import { parseFalsifiers, type Falsifier } from '../vault/falsifier-parser.js';
+import type { VaultMeta } from '../vault/types.js';
 
 // ─── Zod schema for the request body ─────────────────────────────────────────
 
@@ -232,6 +240,156 @@ export function prependShipLogEntry(
 	};
 }
 
+// ─── Mutation 3: ADR Falsifier scorecard closure (ADR-004 S3) ────────────────
+
+/** Append a `✅ F<N> — closed YYYY-MM-DD (commit ..., slice ... shipped)` line
+ *  to the latest `**Falsifier scorecard after S<N>**:` block in the ADR Status
+ *  section. Creates a new scorecard block if none exists.
+ *
+ *  Idempotent: bails if a closure marker for the same F<N> already exists
+ *  in the body.
+ *
+ *  Returns the unchanged body when no `## Status` section exists (the caller
+ *  reports a structured error to the operator). */
+export function appendFalsifierClosure(
+	body: string,
+	falsifierId: string,
+	resolvedDate: string,
+	commit: string | undefined,
+	sliceId: string,
+): { body: string; changed: boolean; newLine: string } {
+	const commitFragment = commit ? `commit \`${commit}\`, ` : '';
+	const newLine = `- ✅ ${falsifierId} — closed ${resolvedDate} (${commitFragment}slice ${sliceId} shipped)`;
+
+	// Idempotency: bail if a closure marker for this falsifier already exists.
+	const existingClosureRe = new RegExp(
+		`^[ \\t]*(?:- )?(?:[✅⏳❌])\\s+${falsifierId}\\s+—\\s+(closed|pending|open|superseded|rejected)\\b`,
+		'm',
+	);
+	if (existingClosureRe.test(body)) {
+		// Check: is it ALREADY a `closed` marker for the same id+date+commit?
+		const exactRe = new RegExp(
+			`^- ✅ ${falsifierId} — closed ${resolvedDate} `,
+			'm',
+		);
+		if (exactRe.test(body)) {
+			return { body, changed: false, newLine };
+		}
+		// Different status (e.g. `⏳ F1 — pending`). Replace that line in place
+		// so the parser's latest-wins yields the new closed state.
+		return {
+			body: body.replace(existingClosureRe, newLine),
+			changed: true,
+			newLine,
+		};
+	}
+
+	// No existing closure — append to the latest `**Falsifier scorecard after ...**:`
+	// block in the Status section, or create one.
+	const statusSection = extractSection(body, '## Status');
+	if (!statusSection) {
+		// No `## Status` — append a fresh scorecard at the very top.
+		const block = `## Status\n\n**Falsifier scorecard after ${sliceId}**:\n\n${newLine}\n\n`;
+		return { body: block + body, changed: true, newLine };
+	}
+
+	// Find the LAST scorecard block (`**Falsifier scorecard after ...**:`) in
+	// the Status section. If found, append the closure line to its bullet list.
+	// If not found, append a new scorecard block at the end of the Status section.
+	const statusStart = body.indexOf('## Status');
+	const statusBody = body.slice(statusStart);
+	const scorecardRe = /\*\*Falsifier scorecard after [^*]+\*\*:\s*\n+/g;
+	let lastScorecard: RegExpExecArray | null = null;
+	let m: RegExpExecArray | null;
+	while ((m = scorecardRe.exec(statusBody)) !== null) {
+		lastScorecard = m;
+	}
+
+	if (lastScorecard) {
+		// Insert AFTER the existing bullets — find the end of this scorecard's
+		// bullet list (either next blank line or next `**` paragraph).
+		const blockStart = statusStart + lastScorecard.index + lastScorecard[0].length;
+		const after = body.slice(blockStart);
+		// End of bullets: first blank line OR first non-bullet, non-blank line.
+		const endMatch = /\n(?:\s*\n|[^-\s])/m.exec(after);
+		const insertAt = endMatch ? blockStart + endMatch.index : blockStart + after.length;
+		return {
+			body: body.slice(0, insertAt) + '\n' + newLine + body.slice(insertAt),
+			changed: true,
+			newLine,
+		};
+	}
+
+	// No existing scorecard — append a new one at the end of the Status section.
+	const statusEnd = (() => {
+		const nextHeadingRe = /\n## /m;
+		const m2 = nextHeadingRe.exec(statusBody.slice(1));
+		return m2 ? statusStart + 1 + m2.index : body.length;
+	})();
+	const block = `\n**Falsifier scorecard after ${sliceId}**:\n\n${newLine}\n`;
+	return {
+		body: body.slice(0, statusEnd) + block + body.slice(statusEnd),
+		changed: true,
+		newLine,
+	};
+}
+
+/** ADR-004 S3 — validate that the target ADR can accept a `closes_falsifier`
+ *  mutation. Refuses Shape C/D/E/F (only Shape A mutates atomically),
+ *  refuses non-existent F<N>, refuses already-closed F<N>. Returns the parsed
+ *  Falsifier so the caller can echo the post-close state back to the user. */
+export function validateClosesFalsifier(
+	adrPath: string,
+	adrBody: string,
+	adrMeta: VaultMeta,
+	falsifierId: string,
+):
+	| { ok: true; falsifier: Falsifier }
+	| { ok: false; error: string; status_hint: number } {
+	const { falsifiers } = parseFalsifiers({
+		sourcePath: adrPath,
+		body: adrBody,
+		meta: adrMeta,
+		sourceKind: 'adr-body',
+	});
+	const target = falsifiers.find((f) => f.id === falsifierId);
+	if (!target) {
+		return {
+			ok: false,
+			error: `closes_falsifier "${falsifierId}" not found in ${adrPath}'s Falsifier section — check spelling or add the F<N> definition first`,
+			status_hint: 422,
+		};
+	}
+	if (target.shape !== 'A') {
+		const migrationHint: Record<string, string> = {
+			C: 'prose-style falsifier (legacy)',
+			D: 'numbered-inline falsifiers',
+			E: 'named-bold-prose falsifiers',
+			F: 'unstructured prose with no IDs',
+		};
+		return {
+			ok: false,
+			error: `closes_falsifier requires Shape A (\`**F<N>**\` list-items) but ${adrPath} uses Shape ${target.shape} (${migrationHint[target.shape] ?? 'unsupported'}) — migrate the Falsifier section to \`**F<N>**\` list-items before using closes_falsifier`,
+			status_hint: 422,
+		};
+	}
+	if (target.status === 'closed') {
+		return {
+			ok: false,
+			error: `closes_falsifier ${falsifierId} is already closed (${target.closed_at ?? 'unknown date'}) — pass a different F<N> or omit closes_falsifier`,
+			status_hint: 422,
+		};
+	}
+	if (target.status === 'superseded' || target.status === 'rejected') {
+		return {
+			ok: false,
+			error: `closes_falsifier ${falsifierId} is ${target.status} — can't close it; pass a different F<N> or omit closes_falsifier`,
+			status_hint: 422,
+		};
+	}
+	return { ok: true, falsifier: target };
+}
+
 // ─── Compose: dry-run preview shape ──────────────────────────────────────────
 
 export interface ShipSlicePreview {
@@ -243,6 +401,13 @@ export interface ShipSlicePreview {
 	status_changed: boolean;
 	ship_log_changed: boolean;
 	warnings: string[];
+	/** ADR-004 S3 — set when the request carried `closes_falsifier` and the
+	 *  validator approved it (Shape A, F<N> exists + open). */
+	falsifier_closure?: {
+		falsifier_id: string;
+		new_line: string;
+		changed: boolean;
+	};
 }
 
 /** Outcome shape from `applyShipSlice` — shared between the HTTP endpoint
@@ -262,7 +427,14 @@ export interface ApplyShipSliceResult {
  *  from `getVaultEngine` so the orchestrator tool can pass any object that
  *  satisfies it (currently the real engine; future tests can pass a mock). */
 export interface ShipSliceVaultEngine {
-	getNote(path: string): Promise<{ content: string } | null> | { content: string } | null;
+	/** ADR-004 S3 — `meta` is needed to derive falsifier status fallbacks for
+	 *  Shape C/F ADRs (e.g. `status: shipped` → criteria treated as closed). */
+	getNote(
+		path: string,
+	):
+		| Promise<{ content: string; meta?: VaultMeta } | null>
+		| { content: string; meta?: VaultMeta }
+		| null;
 	/** ADR-003 S4 — `opts.actor` lets ship-slice stamp the audit log + commit
 	 *  with `projectShipSlice` instead of the note's original `source_agent`. */
 	updateNote(
@@ -319,6 +491,24 @@ export async function applyShipSlice(
 		};
 	}
 	const adrBody = adrNote.content;
+	const adrMeta = (adrNote as { meta?: VaultMeta }).meta ?? ({ type: 'decision' } as VaultMeta);
+
+	// ADR-004 S3 — if closes_falsifier is set, validate BEFORE buildPreview so
+	// the dry-run surface also reflects the refusal. Validation refuses for
+	// non-Shape-A targets + non-existent + already-closed F<N>.
+	if (req.closes_falsifier) {
+		const v = validateClosesFalsifier(adrPath, adrBody, adrMeta, req.closes_falsifier);
+		if (!v.ok) {
+			return {
+				success: false,
+				applied: false,
+				preview: emptyPreviewShape(),
+				error: v.error,
+				field: 'closes_falsifier',
+				status_hint: v.status_hint,
+			};
+		}
+	}
 
 	const preview = buildPreview(adrPath, adrBody, indexPath, indexBody, req);
 
@@ -326,7 +516,12 @@ export async function applyShipSlice(
 		return { success: true, applied: false, preview };
 	}
 
-	if (!preview.status_changed && !preview.ship_log_changed && preview.warnings.length === 0) {
+	if (
+		!preview.status_changed &&
+		!preview.ship_log_changed &&
+		preview.warnings.length === 0 &&
+		!preview.falsifier_closure?.changed
+	) {
 		return {
 			success: false,
 			applied: false,
@@ -337,7 +532,24 @@ export async function applyShipSlice(
 	}
 
 	const resolvedDate = preview.resolved_date;
-	const adrUpdate = appendSliceMarkerToStatus(adrBody, req, resolvedDate);
+	// Compose ADR mutations in sequence so both Status marker + falsifier
+	// closure land in a SINGLE updateNote call. Avoids the race-against-itself
+	// failure mode of writing the same file twice.
+	const statusMutation = appendSliceMarkerToStatus(adrBody, req, resolvedDate);
+	let adrIntermediateBody = statusMutation.body;
+	let adrChanged = statusMutation.changed;
+	if (req.closes_falsifier) {
+		const closure = appendFalsifierClosure(
+			adrIntermediateBody,
+			req.closes_falsifier,
+			resolvedDate,
+			req.commit,
+			req.slice_id,
+		);
+		adrIntermediateBody = closure.body;
+		adrChanged = adrChanged || closure.changed;
+	}
+	const adrUpdate = { body: adrIntermediateBody, changed: adrChanged };
 	const indexUpdate = prependShipLogEntry(indexBody, adrPath, req, resolvedDate);
 
 	// ADR-003 S4 — stamp every audit-log + commit entry from this transaction
@@ -441,6 +653,25 @@ export function buildPreview(
 		warnings.push('project index has no `## Ship log` section — entry not prepended');
 	}
 
+	// ADR-004 S3 — when closes_falsifier is set on the request, show the
+	// closure marker line in the dry-run preview. Validator runs upstream in
+	// applyShipSlice; here we just compute the would-be mutation.
+	let falsifier_closure: ShipSlicePreview['falsifier_closure'];
+	if (req.closes_falsifier) {
+		const c = appendFalsifierClosure(
+			statusUpdate.body,
+			req.closes_falsifier,
+			resolvedDate,
+			req.commit,
+			req.slice_id,
+		);
+		falsifier_closure = {
+			falsifier_id: req.closes_falsifier,
+			new_line: c.newLine,
+			changed: c.changed,
+		};
+	}
+
 	const verb = STATUS_VERB[req.status];
 	const commitFragment = req.commit ? ` commit \`${req.commit}\`` : '';
 	const notesFragment = req.notes ? ` — ${req.notes}` : '';
@@ -454,5 +685,6 @@ export function buildPreview(
 		status_changed: statusUpdate.changed,
 		ship_log_changed: shipLogUpdate.changed,
 		warnings,
+		falsifier_closure,
 	};
 }
