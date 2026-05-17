@@ -14,6 +14,7 @@ import { inboxAnomalyTelegramFactory } from '$lib/scheduler/handlers/inbox-anoma
 import { intentMiningFactory } from '$lib/scheduler/handlers/intent-mining.js';
 import { telegramLivenessFactory } from '$lib/scheduler/handlers/telegram-liveness.js';
 import { hygieneButtonEscalatorFactory } from '$lib/scheduler/handlers/hygiene-button-escalator.js';
+import { auditAssumptionRateFactory } from '$lib/scheduler/handlers/audit-assumption-rate.js';
 import { initVault, getVaultEngine } from '$lib/vault/index.js';
 import { initSystemHealth, getSystemHealth } from '$lib/system/index.js';
 import { listSessions, killSession } from '$lib/pty/manager.js';
@@ -154,6 +155,11 @@ try {
 		'hygiene-button-escalator',
 		hygieneButtonEscalatorFactory,
 		'Weekly inline-button escalator (ADR-042 pass 2) — runs 1 min after project-hygiene script; reads the fresh digest and sends one Telegram inline-keyboard message per archive_zone_mismatch row.',
+	);
+	registerTaskHandler(
+		'audit-assumption-rate',
+		auditAssumptionRateFactory,
+		'project-phases ADR-008 S2 — offline scan of ~/.claude/projects/*/*.jsonl session transcripts; runs Layer A scorer + extractLinkedProjects; persists to assumption_audits for the /api/audit/assumption-rate endpoint.',
 	);
 } catch (err) {
 	console.error('[scheduler] handler registration failed:', err);
