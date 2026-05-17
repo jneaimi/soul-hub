@@ -338,6 +338,42 @@ function migrate(db: Database.Database): void {
 		`);
 		db.pragma('user_version = 12');
 	}
+
+	if (version < 13) {
+		// project-phases ADR-008 post-S2 hardening — separate audit
+		// performance time from transcript mtime. v12 conflated them,
+		// which made the dashboard's default `?since=30d` filter behave
+		// surprisingly: it filtered by SESSION recency, not AUDIT
+		// recency. The scanner watermark still wants the file mtime, but
+		// the operator dashboard wants the audit time.
+		//
+		// Backfill: existing rows have `audited_at == file.mtime` (the
+		// old conflated semantic), so transcript_mtime = audited_at is
+		// the correct historical value. Going forward, saveAudit writes
+		// audited_at=Date.now() and transcript_mtime=file.mtime; the
+		// watermark query reads MAX(transcript_mtime) per path.
+		db.exec(`
+			ALTER TABLE assumption_audits ADD COLUMN transcript_mtime INTEGER NOT NULL DEFAULT 0;
+			UPDATE assumption_audits SET transcript_mtime = audited_at WHERE transcript_mtime = 0;
+			CREATE INDEX IF NOT EXISTS idx_assumption_audits_transcript_mtime
+				ON assumption_audits(transcript_path, transcript_mtime DESC);
+		`);
+		db.pragma('user_version = 13');
+	}
+
+	if (version < 14) {
+		// project-phases ADR-008 S3 — Layer B Haiku 4.5 LLM grader.
+		// `llm_claims` stores the LLM's classification list as JSON
+		// (each entry: {text, classification: 'verified'|'inferred'|'assumed'}).
+		// `llm_cost_usd` is the per-audit measured cost — used by F2
+		// (cost stays under $0.05/audit).
+		db.exec(`
+			ALTER TABLE assumption_audits ADD COLUMN llm_claims TEXT;
+			ALTER TABLE assumption_audits ADD COLUMN llm_cost_usd REAL;
+			ALTER TABLE assumption_audits ADD COLUMN llm_model TEXT;
+		`);
+		db.pragma('user_version = 14');
+	}
 }
 
 /** Heartbeat run statuses logged to `proactive_log`. */
