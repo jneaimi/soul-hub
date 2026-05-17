@@ -596,6 +596,29 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 		],
 	},
 	{
+		name: 'proposeSlice',
+		category: 'write',
+		llm_description:
+			'Add a NEW slice row to an EXISTING ADR\'s `## Implementation plan` table. Writes the row via the ADR-046 chokepoint with `actor: proposeSlice` (distinct from `proposeAdr` creations and `projectShipSlice` closures in the audit log). ' +
+			'STRICT ROUTING: only fires when the user explicitly asks to "add / propose a slice / phase / stage" to a specific ADR. NEVER fires on vague "we should plan more work on X". NEVER mutates the ADR\'s Status section, Decision section, frontmatter status, or any closure markers — that is `projectShipSlice`\'s job. NEVER creates a new ADR — that is `proposeAdr`\'s job. ' +
+			'PROVENANCE — DO NOT INVENT ARGS: `scope` and `estimate` MUST be derived from the user\'s own articulation in the conversation, not fabricated. If the user has not described scope or estimate, ASK before calling. ' +
+			'If `slice_id` is omitted the tool computes the next-available ordinal in the table\'s dominant family (defaults to `S<N>`). Pass `family` to force a specific family (e.g. `Phase` for naseej-style projects). The tool returns 404 if the project is missing, 400 if the ADR cannot be resolved, 422 if the ADR has no `## Implementation plan` table. Idempotent: if the slice_id is already in the table, returns `already_present: true` without writing.',
+		ui_description:
+			'Add a slice / phase / stage row to an existing ADR\'s Implementation plan table — does NOT close the slice, does NOT touch the Status section. Pair with `projectShipSlice` later to close it.',
+		examples: [
+			{
+				user: '"add slice S5 to project-phases ADR-005 — extend proposeSlice with a dry-run mode, ~1-2 hours"',
+				toolArgs:
+					'{ slug: "project-phases", adr: "adr-005", slice_id: "S5", scope: "Extend proposeSlice with a dry-run mode that returns the preview row without writing", estimate: "1-2 hours" }',
+			},
+			{
+				user: '"propose the next slice on naseej ADR-007 covering the falsifier dashboard"',
+				toolArgs:
+					'{ slug: "naseej", adr: "adr-007", scope: "Falsifier dashboard surface on /projects/naseej — count open vs closed by ADR", estimate: "2-3 hours" }',
+			},
+		],
+	},
+	{
 		name: 'scheduleReminder',
 		category: 'write',
 		llm_description:

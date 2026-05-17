@@ -79,6 +79,7 @@ import {
 import { getVaultEngine } from '../../vault/index.js';
 import { applyShipSlice, ShipSliceRequestSchema } from '../../projects/ship-slice.js';
 import { applyProposeAdr } from '../../projects/propose-adr.js';
+import { applyProposeSlice } from '../../projects/propose-slice.js';
 import {
 	getImgCount,
 	incrementImgCount,
@@ -313,6 +314,22 @@ export type ToolResult =
 			kind: 'propose-adr-error';
 			project: string;
 			workingTitle?: string;
+			error: string;
+			statusHint?: number;
+	  }
+	/** project-phases ADR-005 S2 — proposeSlice success. */
+	| {
+			kind: 'propose-slice';
+			project: string;
+			adrPath: string;
+			sliceId: string;
+			newRow: string;
+			alreadyPresent?: boolean;
+	  }
+	| {
+			kind: 'propose-slice-error';
+			project: string;
+			adr: string;
 			error: string;
 			statusHint?: number;
 	  };
@@ -1068,6 +1085,88 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 					title: result.preview.title,
 					falsifierDate: result.preview.falsifier_date,
 					...(result.retried_after_collision && { retriedAfterCollision: true }),
+				};
+			},
+		}),
+
+		proposeSlice: tool({
+			description:
+				'Add a NEW slice row to an EXISTING ADR\'s `## Implementation plan` table. Writes via the ADR-046 chokepoint with `actor: proposeSlice` (distinct from `proposeAdr` and `projectShipSlice` in the audit log). ' +
+				'STRICT ROUTING: only fires when the user explicitly asks to "add / propose a slice / phase / stage" to a specific ADR. NEVER fires on vague "we should plan more work on X". NEVER touches the ADR\'s Status section, Decision section, frontmatter status, or closure markers — that is `projectShipSlice`. NEVER creates a new ADR — that is `proposeAdr`. ' +
+				'PROVENANCE — DO NOT INVENT ARGS: `scope` and `estimate` MUST be derived from the user\'s own articulation in the conversation, not fabricated. If the user has not described scope or estimate, ASK before calling. ' +
+				'If `slice_id` is omitted the tool computes the next-available ordinal in the table\'s dominant family (defaults to `S<N>`). Pass `family` to force a specific family (e.g. `Phase` for naseej-style projects). Returns 404 if the project is missing, 400 if the ADR cannot be resolved, 422 if the ADR has no `## Implementation plan` table. Idempotent: if the slice_id is already in the table, returns `alreadyPresent: true` without writing.',
+			inputSchema: z.object({
+				slug: z
+					.string()
+					.min(1)
+					.regex(/^[a-z0-9][a-z0-9-]+$/)
+					.describe(
+						'Project slug — the kebab-case folder name under projects/. Examples: "naseej", "project-phases".',
+					),
+				adr: z
+					.string()
+					.min(1)
+					.describe(
+						'ADR identifier — bare ordinal ("007"), bare slug ("adr-007-foo"), or full path ("projects/X/adr-007-foo.md"). Same resolution as projectShipSlice.',
+					),
+				slice_id: z
+					.string()
+					.regex(/^(S|CP|Phase|PASS|Pass|Stage)\s*\d+(?:\.\d+)?$/)
+					.optional()
+					.describe(
+						'Optional explicit slice label like `S5`, `CP4.2`, `Phase 3`. If omitted, the tool picks the next-available ordinal in the table\'s dominant family.',
+					),
+				family: z
+					.enum(['S', 'CP', 'Phase', 'PASS', 'Pass', 'Stage'])
+					.optional()
+					.describe(
+						'Force a specific slice family when `slice_id` is omitted. Defaults to the table\'s dominant family (or `S` for empty tables).',
+					),
+				scope: z
+					.string()
+					.min(5)
+					.max(800)
+					.describe(
+						'Scope cell — 1-3 sentences describing what the slice covers. Single-line, no newlines (markdown tables drop them).',
+					),
+				estimate: z
+					.string()
+					.min(1)
+					.max(60)
+					.describe('Estimate cell, e.g. "2-3 hours" or "30-45 min". Single-line.'),
+			}),
+			execute: async (args): Promise<ToolResult> => {
+				logToolCall('proposeSlice', {
+					slug: args.slug,
+					adr: args.adr,
+					slice_id: args.slice_id ?? '(auto)',
+				});
+				const engine = getVaultEngine();
+				if (!engine) {
+					return {
+						kind: 'propose-slice-error',
+						project: args.slug,
+						adr: args.adr,
+						error: 'Vault engine not initialized',
+					};
+				}
+				const result = await applyProposeSlice(engine, args);
+				if (!result.success) {
+					return {
+						kind: 'propose-slice-error',
+						project: args.slug,
+						adr: args.adr,
+						error: result.error,
+						statusHint: result.status_hint,
+					};
+				}
+				return {
+					kind: 'propose-slice',
+					project: args.slug,
+					adrPath: result.path,
+					sliceId: result.slice_id,
+					newRow: result.new_row,
+					...(result.already_present && { alreadyPresent: true }),
 				};
 			},
 		}),
