@@ -122,6 +122,16 @@ export const GET: RequestHandler = async ({ params, url }) => {
 		: [];
 
 	const adrBodyPhases: Array<{ phase: Phase; adrPath: string }> = [];
+	// ADR-002 S4 — rank ADRs by `accepted_on ASC, slug ASC` so the rank-0 ADR
+	// is the "primary" for project-index scope folding. Mirror of the rollup
+	// endpoint's rule.
+	const rankedDecisions = [...decisionNotes].sort((a, b) => {
+		const ao = (a.meta.accepted_on as string | undefined) ?? '9999-12-31';
+		const bo = (b.meta.accepted_on as string | undefined) ?? '9999-12-31';
+		if (ao !== bo) return ao.localeCompare(bo);
+		return a.slug.localeCompare(b.slug);
+	});
+	const primaryAdrPath = rankedDecisions[0]?.path;
 	for (const dn of decisionNotes) {
 		try {
 			const { phases } = parsePhases({
@@ -129,6 +139,7 @@ export const GET: RequestHandler = async ({ params, url }) => {
 				adrBody: dn.body,
 				adrMeta: dn.meta,
 				projectIndexBody: projectIndexContent,
+				isPrimaryAdr: dn.path === primaryAdrPath,
 			});
 			for (const phase of phases) {
 				if (phase.source === 'adr-body') adrBodyPhases.push({ phase, adrPath: dn.path });

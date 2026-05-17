@@ -66,6 +66,15 @@ export interface ParserInput {
 	adrBody: string;
 	adrMeta: VaultMeta;
 	projectIndexBody?: string;
+	/** ADR-002 S4 — cross-ADR scope-fold isolation. When `false`, the parser
+	 *  WILL NOT fold the project-index roadmap row's `scope` into this ADR's
+	 *  body slices, even when ordinals match. Callers iterating over multiple
+	 *  ADRs in one project should pass `true` for the rank-0 ADR (sorted by
+	 *  `accepted_on ASC, slug ASC`) and `false` for the rest, so a shared
+	 *  ordinal like `Phase 3` / `S3` doesn't render the rank-0 ADR's scope
+	 *  on every other ADR's row. Defaults to `true` to preserve behaviour for
+	 *  single-ADR callers and tests. */
+	isPrimaryAdr?: boolean;
 }
 
 export interface ParserOutput {
@@ -372,7 +381,8 @@ function extractRoadmapPhases(
 function mergePhases(
 	adrBody: Phase[],
 	projectIndex: Phase[],
-	warnings: ParserWarning[]
+	warnings: ParserWarning[],
+	isPrimaryAdr: boolean
 ): Phase[] {
 	const byKey = new Map<string, Phase>();
 
@@ -384,8 +394,13 @@ function mergePhases(
 
 	// ADR-body second; later occurrences overwrite earlier for the same ordinal.
 	// A project-index row for the SAME ordinal is treated as the same logical
-	// phase and gets folded into the ADR-body entry (its label/scope preserved,
-	// status overridden by the more recent ADR-body assertion).
+	// phase and gets folded into the ADR-body entry — but ONLY for the primary
+	// ADR (ADR-002 S4 / D7). When `isPrimaryAdr === false`, the roadmap row's
+	// scope is NOT folded across the ordinal boundary — it would mis-attribute
+	// the rank-0 ADR's prose onto a sibling ADR that happens to share the
+	// ordinal label (`Phase 3` vs `S3`). The roadmap row is still consumed
+	// (removed from the map) so we don't double-report it as a separate phase,
+	// matching the pre-S4 dedup contract.
 	for (const p of adrBody) {
 		const exactKey = `${p.ordinal}|${p.label}`;
 		const existingExact = byKey.get(exactKey);
@@ -401,6 +416,8 @@ function mergePhases(
 			}
 		}
 
+		const foldedScope = isPrimaryAdr ? roadmapEntry?.scope : undefined;
+
 		if (existingExact) {
 			if (existingExact.status !== p.status) {
 				warnings.push({
@@ -412,11 +429,11 @@ function mergePhases(
 			byKey.set(exactKey, {
 				...existingExact,
 				...p,
-				scope: p.scope ?? existingExact.scope ?? roadmapEntry?.scope
+				scope: p.scope ?? existingExact.scope ?? foldedScope
 			});
 		} else if (roadmapEntry) {
-			// Fold the roadmap row's scope into the ADR-body phase.
-			byKey.set(exactKey, { ...p, scope: p.scope ?? roadmapEntry.scope });
+			// Fold the roadmap row's scope into the ADR-body phase — primary only.
+			byKey.set(exactKey, { ...p, scope: p.scope ?? foldedScope });
 		} else {
 			byKey.set(exactKey, p);
 		}
@@ -517,7 +534,11 @@ export function parsePhases(input: ParserInput): ParserOutput {
 		? extractRoadmapPhases(input.adrPath, input.projectIndexBody, warnings)
 		: [];
 
-	let phases = mergePhases(fromAdr, fromIndex, warnings);
+	// Default `isPrimaryAdr` to true so single-ADR callers + tests keep the
+	// pre-ADR-002-S4 fold behaviour. Multi-ADR endpoints (rollup + next-actions)
+	// thread the explicit rank in.
+	const isPrimaryAdr = input.isPrimaryAdr ?? true;
+	let phases = mergePhases(fromAdr, fromIndex, warnings, isPrimaryAdr);
 
 	if (phases.length === 0) {
 		phases = [fallbackFromFrontmatter(input.adrPath, input.adrMeta)];

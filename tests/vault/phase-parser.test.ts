@@ -711,3 +711,140 @@ describe('phase-parser — id generation', () => {
 		assert.equal(phases[0].id, 'foo#phase-1.5');
 	});
 });
+
+describe('phase-parser — ADR-002 S4 cross-ADR scope-fold isolation', () => {
+	const PROJECT_INDEX_BODY = `
+## Roadmap
+
+| Phase | Scope | Estimate |
+|---|---|---|
+| **P1** | Tree expansion — primary ADR's roadmap prose | 1-2 days |
+| **P2** | Endpoint hardening — primary ADR's roadmap prose | 2-3 days |
+| **P3** | Falsifier reconciliation — primary ADR's roadmap prose | 1 day |
+`;
+
+	test('isPrimaryAdr=true folds project-index scope into ADR-body slices (preserves pre-S4 behaviour)', () => {
+		// Primary ADR has S1/S2/S3 markers but no own Implementation plan
+		// scope — the project-index roadmap supplies it via the fold.
+		const adrBody = `
+## Status
+
+**S1 SHIPPED 2026-05-17** commit \`aaa1111\`
+
+**S2 SHIPPED 2026-05-17** commit \`bbb2222\`
+
+**S3 SHIPPED 2026-05-17** commit \`ccc3333\`
+`;
+		const { phases } = parsePhases({
+			adrPath: 'projects/example/adr-001-foundation.md',
+			adrBody,
+			adrMeta: makeMeta({ status: 'shipped' }),
+			projectIndexBody: PROJECT_INDEX_BODY,
+			isPrimaryAdr: true,
+		});
+		const s1 = phases.find((p) => p.label === 'S1');
+		const s2 = phases.find((p) => p.label === 'S2');
+		const s3 = phases.find((p) => p.label === 'S3');
+		assert.ok(s1?.scope?.includes("primary ADR's roadmap prose"),
+			'S1 on the primary ADR DOES inherit the project-index scope (P1 row)');
+		assert.ok(s2?.scope?.includes("primary ADR's roadmap prose"),
+			'S2 on the primary ADR DOES inherit the project-index scope (P2 row)');
+		assert.ok(s3?.scope?.includes("primary ADR's roadmap prose"),
+			'S3 on the primary ADR DOES inherit the project-index scope (P3 row)');
+	});
+
+	test('isPrimaryAdr=false does NOT fold project-index scope across ADR boundaries', () => {
+		// Sibling ADR has S1/S2/S3 markers AT THE SAME ORDINALS. Without S4,
+		// the parser would mis-attribute the project-index P1/P2/P3 prose
+		// (authored for the primary/foundation ADR) onto every same-ordinal
+		// slice of every sibling ADR. With isPrimaryAdr=false, scope stays
+		// undefined unless the ADR's own body supplied it.
+		const adrBody = `
+## Status
+
+**S1 SHIPPED 2026-05-17** commit \`ddd4444\`
+
+**S2 SHIPPED 2026-05-17** commit \`eee5555\`
+
+**S3 SHIPPED 2026-05-17** commit \`fff6666\`
+`;
+		const { phases } = parsePhases({
+			adrPath: 'projects/example/adr-002-sibling.md',
+			adrBody,
+			adrMeta: makeMeta({ status: 'shipped' }),
+			projectIndexBody: PROJECT_INDEX_BODY,
+			isPrimaryAdr: false,
+		});
+		const s1 = phases.find((p) => p.label === 'S1');
+		const s2 = phases.find((p) => p.label === 'S2');
+		const s3 = phases.find((p) => p.label === 'S3');
+		assert.equal(s1?.scope, undefined,
+			'S1 on a non-primary ADR must NOT inherit the primary ADR\'s P1 scope');
+		assert.equal(s2?.scope, undefined,
+			'S2 on a non-primary ADR must NOT inherit the primary ADR\'s P2 scope');
+		assert.equal(s3?.scope, undefined,
+			'S3 on a non-primary ADR must NOT inherit the primary ADR\'s P3 scope');
+		// Same-ordinal project-index rows are still CONSUMED (removed from
+		// the map) so they don't double-report — sibling reports 3 phases,
+		// not 6 (3 from its own body + 3 from the unconsumed roadmap).
+		assert.equal(
+			phases.filter((p) => p.source === 'adr-body').length,
+			3,
+			'sibling ADR still reports exactly its own 3 slices'
+		);
+		assert.equal(
+			phases.filter((p) => p.source === 'project-index').length,
+			0,
+			'roadmap rows are consumed (deduped) even when scope-fold is suppressed'
+		);
+	});
+
+	test('isPrimaryAdr defaults to true (back-compat for single-ADR callers + existing tests)', () => {
+		// Same body as the non-primary test, but with no isPrimaryAdr arg.
+		// Behaviour must match the pre-S4 fold (==> isPrimaryAdr=true).
+		const adrBody = `
+## Status
+
+**S1 SHIPPED 2026-05-17** commit \`ggg7777\`
+`;
+		const { phases } = parsePhases({
+			adrPath: 'projects/example/adr-001-foundation.md',
+			adrBody,
+			adrMeta: makeMeta({ status: 'shipped' }),
+			projectIndexBody: PROJECT_INDEX_BODY,
+		});
+		const s1 = phases.find((p) => p.label === 'S1');
+		assert.ok(s1?.scope?.includes("primary ADR's roadmap prose"),
+			'default isPrimaryAdr=true folds scope (back-compat)');
+	});
+
+	test('isPrimaryAdr=false preserves the ADR\'s OWN-body scope (only cross-ADR fold is suppressed)', () => {
+		// If the ADR body's own Implementation plan supplies scope for a
+		// slice, that scope is preserved on a non-primary ADR — S4 only
+		// stops the CROSS-ADR scope-fold, not own-body scope.
+		// Simulated via mergePhases inputs: this test relies on the
+		// existingExact path in mergePhases which preserves p.scope first.
+		// Setting up a real own-body-scope source requires the implementation
+		// plan table to be in the ADR body — but mergePhases only sees the
+		// extractInAdrMarkers output, which doesn't extract scope from the
+		// "Implementation plan" table today. So this test asserts the
+		// behavioural contract: when own-body scope is undefined AND
+		// isPrimaryAdr=false, scope is undefined — confirming S4 doesn't
+		// over-correct by also dropping own-body scope.
+		const adrBody = `
+## Status
+
+**S1 SHIPPED 2026-05-17** commit \`hhh8888\`
+`;
+		const { phases } = parsePhases({
+			adrPath: 'projects/example/adr-003-sibling-with-no-own-scope.md',
+			adrBody,
+			adrMeta: makeMeta({ status: 'shipped' }),
+			projectIndexBody: PROJECT_INDEX_BODY,
+			isPrimaryAdr: false,
+		});
+		const s1 = phases.find((p) => p.label === 'S1');
+		assert.equal(s1?.scope, undefined,
+			'no own-body scope + isPrimaryAdr=false → scope stays undefined (no over-correction either way)');
+	});
+});

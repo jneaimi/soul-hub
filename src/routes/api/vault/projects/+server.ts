@@ -261,6 +261,17 @@ export const GET: RequestHandler = async ({ url }) => {
 		// Wrap each call in try/catch so a parser failure on one ADR cannot
 		// break the list view (per ADR-001 contract: "never break the list").
 		if (includeDecisions && phaseTargets.length > 0) {
+			// ADR-002 S4 — rank ADRs by `accepted_on ASC, slug ASC` so the
+			// rank-0 ADR is the "primary" for project-index scope folding.
+			// Without this, every ADR sharing an ordinal with the project
+			// roadmap renders the rank-0 ADR's prose on its own row.
+			const rankedTargets = [...phaseTargets].sort((a, b) => {
+				const ao = a.row.acceptedOn ?? '9999-12-31';
+				const bo = b.row.acceptedOn ?? '9999-12-31';
+				if (ao !== bo) return ao.localeCompare(bo);
+				return a.row.path.localeCompare(b.row.path);
+			});
+			const primaryAdrPath = rankedTargets[0]?.row.path;
 			for (const target of phaseTargets) {
 				try {
 					const { phases } = parsePhases({
@@ -268,6 +279,7 @@ export const GET: RequestHandler = async ({ url }) => {
 						adrBody: target.body,
 						adrMeta: target.meta,
 						projectIndexBody: projectIndexContent,
+						isPrimaryAdr: target.row.path === primaryAdrPath,
 					});
 					target.row.phases = phases.filter((p) => p.source !== 'project-index');
 				} catch {
