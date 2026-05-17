@@ -42,11 +42,23 @@ outputs:
   - name: hard_violations
     type: array
     description: Array of `{ kind, phrase, context }` for every HARD violation found. Empty when text is clean.
+  - name: soft_violation_count
+    type: integer
+    description: Count of soft (non-blocking) violations detected. Lower the dimension score but do not block.
+  - name: by_kind
+    type: object
+    description: 'Histogram `{ <violation_kind>: count }` aggregating both hard + soft violations. Empty when clean.'
+  - name: min_score
+    type: integer
+    description: Echo of the input min_score (or default 35) — convenient for recipe authors who want to log the gate threshold without re-templating the input.
+  - name: rubric
+    type: string
+    description: Echo of the input rubric (or default `default`) — same convenience as min_score.
 
 invocation:
   protocol: stdin-json
   request: '{ text, rubric?, min_score?, block_on_fail? }'
-  response: '{ score, passed, per_dimension, hard_violations, soft_violation_count, by_kind }'
+  response: '{ score, passed, per_dimension, hard_violations, soft_violation_count, by_kind, min_score, rubric }'
   exit_codes:
     0: pass (or block_on_fail=false)
     6: fail (score below min_score OR hard violations present, only when block_on_fail=true)

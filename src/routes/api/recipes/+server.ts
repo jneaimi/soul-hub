@@ -35,6 +35,7 @@ import {
 	safeParseRecipe,
 	type Recipe,
 } from '$lib/naseej/schemas/recipe.js';
+import { validateTemplating } from '$lib/naseej/templating-validator.js';
 import { getAgent } from '$lib/agents/store.js';
 
 const RECIPES_DIR = resolvePath(process.cwd(), 'catalog/recipes');
@@ -78,6 +79,17 @@ type CheckResult =
 			status: 'passed' | 'failed';
 			project: string;
 			vault_path: string;
+	  }
+	| {
+			name: 'templating_resolves';
+			status: 'passed' | 'failed';
+			issues?: Array<{
+				field_path: string;
+				raw_expr: string;
+				kind: string;
+				detail: string;
+				suggestion?: string;
+			}>;
 	  };
 
 interface PublishResult {
@@ -288,6 +300,26 @@ export const POST: RequestHandler = async ({ request }) => {
 		status: projectOk ? 'passed' : 'failed',
 		project: recipe.project,
 		vault_path: `projects/${recipe.project}/index.md`,
+	});
+
+	// Check 6: templating_resolves (ADR-006 D8)
+	// Walk every templated field; refuse the recipe if any `{{ ref }}` can't
+	// be satisfied by globals + recipe inputs + earlier-step outputs.
+	const templatingIssues = validateTemplating(recipe, catalog);
+	checks.push({
+		name: 'templating_resolves',
+		status: templatingIssues.length === 0 ? 'passed' : 'failed',
+		...(templatingIssues.length > 0
+			? {
+					issues: templatingIssues.map((i) => ({
+						field_path: i.fieldPath.join('.'),
+						raw_expr: i.rawExpr,
+						kind: i.kind,
+						detail: i.detail,
+						...(i.suggestion ? { suggestion: i.suggestion } : {}),
+					})),
+			  }
+			: {}),
 	});
 
 	const failed = checks.some((c) => c.status === 'failed');

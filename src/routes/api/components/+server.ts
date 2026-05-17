@@ -54,6 +54,12 @@ type CheckResult =
 			status: 'passed' | 'failed' | 'skipped';
 			detail?: string;
 			test_files?: TestFileResult[];
+	  }
+	| {
+			name: 'naming_convention';
+			status: 'passed' | 'warning';
+			detail?: string;
+			conflicts?: string[];
 	  };
 
 interface PublishResult {
@@ -254,6 +260,37 @@ export const POST: RequestHandler = async ({ request }) => {
 			test_files: testResults,
 		});
 	}
+
+	// Check 4: naming_convention (ADR-006 D5)
+	// Soft warning if the component name collides with an active recipe slug.
+	// Component names should describe verbs (shell-exec, http-post) or systems
+	// (katib-build, vault-write) — workflow-bound names belong in recipes.
+	// Hard refuse comes in a follow-up ADR if drift appears.
+	const RECIPES_DIR = resolvePath(process.cwd(), 'catalog/recipes');
+	let recipeSlugs: string[] = [];
+	try {
+		const entries = await readdir(RECIPES_DIR);
+		recipeSlugs = (
+			await Promise.all(
+				entries.map(async (dir) =>
+					(await fileExists(join(RECIPES_DIR, dir, 'recipe.yaml'))) ? dir : null,
+				),
+			)
+		).filter((s): s is string => s !== null);
+	} catch {
+		// Catalog dir missing — no conflicts possible.
+	}
+	const conflict = recipeSlugs.includes(record.manifest.name);
+	checks.push({
+		name: 'naming_convention',
+		status: conflict ? 'warning' : 'passed',
+		...(conflict
+			? {
+					detail: `component name "${record.manifest.name}" matches an active recipe slug. Per ADR-006 D5, components describe verbs or systems, not workflows. Soft warning — publish still succeeds.`,
+					conflicts: [record.manifest.name],
+			  }
+			: {}),
+	});
 
 	const failed = checks.some((c) => c.status === 'failed');
 	const result: PublishResult = {

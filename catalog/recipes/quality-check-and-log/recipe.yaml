@@ -41,7 +41,7 @@ steps:
 
         Score **{{steps.score.outputs.score}}/50** (passed against min_score={{inputs.min_score}}: {{steps.score.outputs.passed}})
 
-        **HARD violations**: {{steps.score.outputs.hard_violation_count}}
+        **HARD violations**: {{steps.score.outputs.hard_violations.length}}
         **Soft violations**: {{steps.score.outputs.soft_violation_count}}
 
         ## Per-dimension
