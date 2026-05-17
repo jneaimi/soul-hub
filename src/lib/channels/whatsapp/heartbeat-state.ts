@@ -305,6 +305,39 @@ function migrate(db: Database.Database): void {
 		`);
 		db.pragma('user_version = 11');
 	}
+
+	if (version < 12) {
+		// project-phases ADR-008 S1 — assumption-rate audit. One row per
+		// scored transcript; `linked_projects` stored as JSON-array TEXT
+		// (mirrors intent_log's `tags`/`context_keys` convention from
+		// ADR-023). Project-filtered queries JSON-decode in app layer.
+		// Layer A signals + sample_claims also JSON-encoded TEXT; Layer B
+		// LLM fields nullable (added pre-S3). `dismissed_*` columns let
+		// operator mark false positives (F4 tracking).
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS assumption_audits (
+				id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+				session_id           TEXT    NOT NULL,
+				transcript_path      TEXT    NOT NULL,
+				audited_at           INTEGER NOT NULL,
+				score                INTEGER NOT NULL,
+				deterministic_score  INTEGER NOT NULL,
+				llm_score            INTEGER,
+				signals              TEXT    NOT NULL,
+				sample_claims        TEXT    NOT NULL,
+				linked_projects      TEXT    NOT NULL DEFAULT '[]',
+				dismissed_at         INTEGER,
+				dismissed_reason     TEXT
+			);
+			CREATE INDEX IF NOT EXISTS idx_assumption_audits_audited_at
+				ON assumption_audits(audited_at DESC);
+			CREATE INDEX IF NOT EXISTS idx_assumption_audits_session
+				ON assumption_audits(session_id);
+			CREATE INDEX IF NOT EXISTS idx_assumption_audits_score
+				ON assumption_audits(score DESC);
+		`);
+		db.pragma('user_version = 12');
+	}
 }
 
 /** Heartbeat run statuses logged to `proactive_log`. */
