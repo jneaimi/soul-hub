@@ -78,6 +78,7 @@ import {
 } from '../../crm/index.js';
 import { getVaultEngine } from '../../vault/index.js';
 import { applyShipSlice, ShipSliceRequestSchema } from '../../projects/ship-slice.js';
+import { applyProposeAdr } from '../../projects/propose-adr.js';
 import {
 	getImgCount,
 	incrementImgCount,
@@ -296,6 +297,24 @@ export type ToolResult =
 			error: string;
 			rollbackAttempted?: boolean;
 			rollbackOk?: boolean;
+	  }
+	/** project-phases ADR-005 S1 — proposeAdr success. */
+	| {
+			kind: 'propose-adr';
+			project: string;
+			path: string;
+			ordinal: string;
+			adrSlug: string;
+			title: string;
+			falsifierDate: string;
+			retriedAfterCollision?: boolean;
+	  }
+	| {
+			kind: 'propose-adr-error';
+			project: string;
+			workingTitle?: string;
+			error: string;
+			statusHint?: number;
 	  };
 
 /** Build the tool dictionary for an Agent. Returns a stable object so the
@@ -689,7 +708,7 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 				// to fetch them on the next turn (anaphora misinterpretation —
 				// "what about those notes" → fetch the links it just emitted).
 				// Surface an ERROR-prefixed reply (mirrors the tool-provenance
-				// hardening from 2026-05-12) so the model retries with vaultSearch
+				// hardening from mid-May 2026) so the model retries with vaultSearch
 				// instead of relaying a confusing "private host blocked" message
 				// for what's really a vault query.
 				let host: string;
@@ -956,6 +975,99 @@ function buildOrchestratorToolsImpl(deps: ToolDeps) {
 					applied: result.applied,
 					statusLineAdded: result.preview.status_changed,
 					shipLogEntryAdded: result.preview.ship_log_changed,
+				};
+			},
+		}),
+
+		proposeAdr: tool({
+			description:
+				'Draft a NEW ADR (architecture decision record) note in a project, with status `proposed`. Picks the next-available `adr-NNN-<slug>` ordinal and writes via the ADR-046 chokepoint with `actor: proposeAdr` (audit log shows this distinct from `projectShipSlice` closures). ' +
+				'STRICT ROUTING: only fires when the user explicitly asks to "draft / propose / write a new ADR" for a specific project. NEVER fires for vague "we should write something about X" — needs a concrete project slug + working title. NEVER mutates an existing ADR (that\'s the operator\'s job via the AdrDrawer). ' +
+				'PROVENANCE — DO NOT INVENT ARGS: pull `problem_statement` and `falsifier_conditions` from the user\'s own words in the conversation, never fabricate. If the user hasn\'t articulated a problem statement or at least one falsifier, ASK before calling. ' +
+				'The new ADR lands as `status: proposed`; the operator confirms via the existing AdrDrawer Accept button (no new acceptance UI). The tool returns 404 if `projects/<slug>/index.md` is missing, 409 on two consecutive ordinal collisions (rare race with manual hand-creation).',
+			inputSchema: z.object({
+				slug: z
+					.string()
+					.min(1)
+					.regex(/^[a-z0-9][a-z0-9-]+$/)
+					.describe(
+						'Project slug — the kebab-case folder name under projects/. Examples: "naseej", "project-phases", "soul-hub-whatsapp".',
+					),
+				working_title: z
+					.string()
+					.min(3)
+					.max(120)
+					.describe(
+						'Human-readable ADR title — kebab-slugified for the filename (e.g. "AI propose-ADR + propose-slice asymmetry" -> adr-NNN-ai-propose-adr-and-propose-slice.md).',
+					),
+				tier: z
+					.enum(['Tier 1', 'Tier 2', 'Tier 3'])
+					.describe(
+						'ADR size class per project-phases retro convention: Tier 1 (small extension, ~1-2h), Tier 2 (medium feature, ~1 day), Tier 3 (major feature, ~1.5+ days). Pick based on the decision_sketch scope.',
+					),
+				problem_statement: z
+					.string()
+					.min(20)
+					.max(2000)
+					.describe(
+						'One-paragraph Context section body. Pull from the user\'s own articulation of the problem — never fabricate.',
+					),
+				decision_sketch: z
+					.array(z.string().min(5).max(500))
+					.min(3)
+					.max(8)
+					.describe(
+						'3-5 bullets sketching the decision approach. Each bullet becomes a list item in the "Decision (sketch)" section.',
+					),
+				falsifier_conditions: z
+					.array(z.string().min(10).max(500))
+					.min(1)
+					.max(10)
+					.describe(
+						'≥1 falsifier conditions — each becomes F1/F2/... in the Falsifiers section, with a default 3-month deadline.',
+					),
+				parent_adrs: z
+					.array(z.string().regex(/^\[\[[^\]\n]+\]\]$/))
+					.max(10)
+					.optional()
+					.describe(
+						'Optional wikilink array — auto-attached as `relates_to` in frontmatter + listed under Related. Operator can promote to `blocked_by` via the AdrDrawer after acceptance.',
+					),
+			}),
+			execute: async (args): Promise<ToolResult> => {
+				logToolCall('proposeAdr', {
+					slug: args.slug,
+					working_title: args.working_title.slice(0, 60),
+					tier: args.tier,
+				});
+				const engine = getVaultEngine();
+				if (!engine) {
+					return {
+						kind: 'propose-adr-error',
+						project: args.slug,
+						workingTitle: args.working_title,
+						error: 'Vault engine not initialized',
+					};
+				}
+				const result = await applyProposeAdr(engine, args);
+				if (!result.success) {
+					return {
+						kind: 'propose-adr-error',
+						project: args.slug,
+						workingTitle: args.working_title,
+						error: result.error,
+						statusHint: result.status_hint,
+					};
+				}
+				return {
+					kind: 'propose-adr',
+					project: args.slug,
+					path: result.path,
+					ordinal: result.ordinal,
+					adrSlug: result.adr_slug,
+					title: result.preview.title,
+					falsifierDate: result.preview.falsifier_date,
+					...(result.retried_after_collision && { retriedAfterCollision: true }),
 				};
 			},
 		}),

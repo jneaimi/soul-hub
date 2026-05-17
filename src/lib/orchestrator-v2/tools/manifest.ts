@@ -578,6 +578,24 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
 		],
 	},
 	{
+		name: 'proposeAdr',
+		category: 'write',
+		llm_description:
+			'Draft a NEW ADR (architecture decision record) note in a project, with status `proposed`. Picks the next-available `adr-NNN-<slug>` ordinal and writes via the ADR-046 chokepoint with `actor: proposeAdr` (audit log shows this distinct from `projectShipSlice` closures). ' +
+			'STRICT ROUTING: only fires when the user explicitly asks to "draft / propose / write a new ADR" for a specific project. NEVER fires for vague "we should write something about X" — needs a concrete project slug + working title. NEVER mutates an existing ADR (that\'s the operator\'s job via the AdrDrawer). ' +
+			'PROVENANCE — DO NOT INVENT ARGS: pull `problem_statement` and `falsifier_conditions` from the user\'s own words in the conversation, never fabricate. If the user hasn\'t articulated a problem statement or at least one falsifier, ASK before calling. ' +
+			'The new ADR lands as `status: proposed`; the operator confirms via the existing AdrDrawer Accept button (no new acceptance UI). The tool returns 404 if `projects/<slug>/index.md` is missing, 409 on two consecutive ordinal collisions (rare race with manual hand-creation).',
+		ui_description:
+			'Draft a new project ADR with `status: proposed` — operator accepts via existing AdrDrawer Accept button. Replaces "operator types every ADR by hand" with a structured propose-then-accept flow.',
+		examples: [
+			{
+				user: '"draft an ADR for naseej about caching the rendered peer-brief PDFs"',
+				toolArgs:
+					'{ slug: "naseej", working_title: "Cache rendered peer-brief PDFs", tier: "Tier 1", problem_statement: "...", decision_sketch: ["...", "..."], falsifier_conditions: ["..."] }',
+			},
+		],
+	},
+	{
 		name: 'scheduleReminder',
 		category: 'write',
 		llm_description:
