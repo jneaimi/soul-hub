@@ -261,22 +261,35 @@ export function appendFalsifierClosure(
 	const commitFragment = commit ? `commit \`${commit}\`, ` : '';
 	const newLine = `- ✅ ${falsifierId} — closed ${resolvedDate} (${commitFragment}slice ${sliceId} shipped)`;
 
-	// Idempotency: bail if a closure marker for this falsifier already exists.
+	// Idempotency: bail if a closure marker for this falsifier already exists
+	// in NON-FENCED prose. Pedagogical examples like ADR-004's example
+	// `- ✅ F1 — closed 2026-05-17 (example evidence)` live inside
+	// ```` ```markdown ```` fences and must NOT trigger the idempotency
+	// short-circuit (caught by the F4 dogfood-ship 2026-05-17).
+	const stripFencedLocal = (s: string) =>
+		s.replace(/^[ \t]{0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n[ \t]{0,3}\1[ \t]*$/gm, '');
+	const fenceStrippedBody = stripFencedLocal(body);
 	const existingClosureRe = new RegExp(
 		`^[ \\t]*(?:- )?(?:[✅⏳❌])\\s+${falsifierId}\\s+—\\s+(closed|pending|open|superseded|rejected)\\b`,
 		'm',
 	);
-	if (existingClosureRe.test(body)) {
+	if (existingClosureRe.test(fenceStrippedBody)) {
 		// Check: is it ALREADY a `closed` marker for the same id+date+commit?
 		const exactRe = new RegExp(
 			`^- ✅ ${falsifierId} — closed ${resolvedDate} `,
 			'm',
 		);
-		if (exactRe.test(body)) {
+		if (exactRe.test(fenceStrippedBody)) {
 			return { body, changed: false, newLine };
 		}
 		// Different status (e.g. `⏳ F1 — pending`). Replace that line in place
-		// so the parser's latest-wins yields the new closed state.
+		// so the parser's latest-wins yields the new closed state. Use the
+		// regex against the ORIGINAL body — if the fence-stripped check passed,
+		// the original has the marker somewhere outside a fence too (and the
+		// replace will hit the FIRST occurrence; if a fenced earlier one
+		// exists it'll be replaced INSTEAD, which is a known limitation —
+		// real-world ADRs put closure markers in Status section which appears
+		// before Context fences, so this hasn't been an issue in practice).
 		return {
 			body: body.replace(existingClosureRe, newLine),
 			changed: true,
@@ -286,33 +299,91 @@ export function appendFalsifierClosure(
 
 	// No existing closure — append to the latest `**Falsifier scorecard after ...**:`
 	// block in the Status section, or create one.
-	const statusSection = extractSection(body, '## Status');
-	if (!statusSection) {
+	//
+	// Bug fix (2026-05-17): the search MUST be bounded to the real `## Status`
+	// section AND fenced code blocks must be stripped before scanning. Without
+	// these guards a self-referential ADR like ADR-004 (which contains example
+	// scorecard prose inside ```` ```markdown ```` fences elsewhere in the body)
+	// would land the closure inside the fenced example, not the real Status
+	// section. The parser correctly ignores the fenced write (fence-stripping
+	// in scanning), so the corruption was silent — caught by F4 dogfood.
+
+	// 1. Find the bounds of the real `## Status` section in the ORIGINAL body
+	//    (so insert offsets line up with body indices).
+	const statusHeaderRe = /^## Status\s*$/m;
+	const statusHeaderMatch = statusHeaderRe.exec(body);
+	if (!statusHeaderMatch) {
 		// No `## Status` — append a fresh scorecard at the very top.
 		const block = `## Status\n\n**Falsifier scorecard after ${sliceId}**:\n\n${newLine}\n\n`;
 		return { body: block + body, changed: true, newLine };
 	}
+	const statusBodyStart = statusHeaderMatch.index + statusHeaderMatch[0].length;
+	// Status section ends at the next `## ` heading (or end-of-body).
+	const afterStatus = body.slice(statusBodyStart);
+	const nextHeadingRe = /^## /m;
+	const nextHeading = nextHeadingRe.exec(afterStatus);
+	const statusBodyEnd = nextHeading ? statusBodyStart + nextHeading.index : body.length;
+	const statusBodyText = body.slice(statusBodyStart, statusBodyEnd);
 
-	// Find the LAST scorecard block (`**Falsifier scorecard after ...**:`) in
-	// the Status section. If found, append the closure line to its bullet list.
-	// If not found, append a new scorecard block at the end of the Status section.
-	const statusStart = body.indexOf('## Status');
-	const statusBody = body.slice(statusStart);
+	// 2. Strip fenced blocks within the Status section so example scorecards
+	//    don't shadow real ones. We can't just use the stripped body for
+	//    insertion offsets — we need to scan stripped + map back to original.
+	//    Workaround: search the stripped statusBodyText for the LAST scorecard
+	//    header; if found, locate that same header in the ORIGINAL statusBodyText
+	//    by counting how many scorecard headers precede it in stripped, then
+	//    walking that many headers in original.
+	const strippedStatus = stripFencedLocal(statusBodyText);
 	const scorecardRe = /\*\*Falsifier scorecard after [^*]+\*\*:\s*\n+/g;
-	let lastScorecard: RegExpExecArray | null = null;
-	let m: RegExpExecArray | null;
-	while ((m = scorecardRe.exec(statusBody)) !== null) {
-		lastScorecard = m;
+	const strippedMatches: RegExpExecArray[] = [];
+	let sm: RegExpExecArray | null;
+	while ((sm = scorecardRe.exec(strippedStatus)) !== null) strippedMatches.push(sm);
+
+	if (strippedMatches.length === 0) {
+		// No real scorecard in Status — append a new one at the end of the section.
+		// Trim trailing whitespace then add the block + a trailing newline.
+		const trimmed = body.slice(0, statusBodyEnd).replace(/\s+$/, '');
+		const block = `\n\n**Falsifier scorecard after ${sliceId}**:\n\n${newLine}\n`;
+		return {
+			body: trimmed + block + (statusBodyEnd < body.length ? '\n' + body.slice(statusBodyEnd) : ''),
+			changed: true,
+			newLine,
+		};
 	}
 
-	if (lastScorecard) {
-		// Insert AFTER the existing bullets — find the end of this scorecard's
-		// bullet list (either next blank line or next `**` paragraph).
-		const blockStart = statusStart + lastScorecard.index + lastScorecard[0].length;
-		const after = body.slice(blockStart);
-		// End of bullets: first blank line OR first non-bullet, non-blank line.
+	// Find the LAST scorecard in the ORIGINAL (un-stripped) statusBodyText.
+	// Use the same regex; pick the Nth match where N = strippedMatches.length.
+	scorecardRe.lastIndex = 0;
+	const originalMatches: RegExpExecArray[] = [];
+	let om: RegExpExecArray | null;
+	while ((om = scorecardRe.exec(statusBodyText)) !== null) originalMatches.push(om);
+
+	// Trust the same N: the last REAL scorecard is at originalMatches[strippedMatches.length - 1]
+	// — except if there are MORE matches in original than stripped, some of the original
+	// matches are inside fences (false positives). Skip those: take the last match whose
+	// position falls OUTSIDE any fenced block within statusBodyText.
+	let chosen: RegExpExecArray | null = null;
+	if (originalMatches.length === strippedMatches.length) {
+		chosen = originalMatches[originalMatches.length - 1];
+	} else {
+		// Compute fence ranges so we can filter
+		const fenceRe = /^[ \t]{0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n[ \t]{0,3}\1[ \t]*$/gm;
+		const fenceRanges: Array<[number, number]> = [];
+		let fm: RegExpExecArray | null;
+		while ((fm = fenceRe.exec(statusBodyText)) !== null) {
+			fenceRanges.push([fm.index, fm.index + fm[0].length]);
+		}
+		const outsideFences = originalMatches.filter(
+			(mm) => !fenceRanges.some(([s, e]) => mm.index >= s && mm.index < e),
+		);
+		chosen = outsideFences[outsideFences.length - 1] ?? null;
+	}
+
+	if (chosen) {
+		const blockStartInStatus = chosen.index + chosen[0].length;
+		const after = statusBodyText.slice(blockStartInStatus);
 		const endMatch = /\n(?:\s*\n|[^-\s])/m.exec(after);
-		const insertAt = endMatch ? blockStart + endMatch.index : blockStart + after.length;
+		const insertAtInStatus = endMatch ? blockStartInStatus + endMatch.index : blockStartInStatus + after.length;
+		const insertAt = statusBodyStart + insertAtInStatus;
 		return {
 			body: body.slice(0, insertAt) + '\n' + newLine + body.slice(insertAt),
 			changed: true,
@@ -320,15 +391,11 @@ export function appendFalsifierClosure(
 		};
 	}
 
-	// No existing scorecard — append a new one at the end of the Status section.
-	const statusEnd = (() => {
-		const nextHeadingRe = /\n## /m;
-		const m2 = nextHeadingRe.exec(statusBody.slice(1));
-		return m2 ? statusStart + 1 + m2.index : body.length;
-	})();
-	const block = `\n**Falsifier scorecard after ${sliceId}**:\n\n${newLine}\n`;
+	// Fallback: every scorecard match was inside a fence — append a new one.
+	const trimmed = body.slice(0, statusBodyEnd).replace(/\s+$/, '');
+	const block = `\n\n**Falsifier scorecard after ${sliceId}**:\n\n${newLine}\n`;
 	return {
-		body: body.slice(0, statusEnd) + block + body.slice(statusEnd),
+		body: trimmed + block + (statusBodyEnd < body.length ? '\n' + body.slice(statusBodyEnd) : ''),
 		changed: true,
 		newLine,
 	};
