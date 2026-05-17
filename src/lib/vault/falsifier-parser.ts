@@ -88,20 +88,41 @@ export interface FalsifierParserOutput {
 
 // ── Section detection ─────────────────────────────────────────────────────
 
-const SECTION_HEADING_RE = /^(#{2,3})\s+Falsifier[s]?(?:\s|\W|$)/m;
+const SECTION_HEADING_H2_RE = /^(##)\s+Falsifier[s]?(?:\s|\W|$)/m;
+const SECTION_HEADING_H3_RE = /^(###)\s+Falsifier[s]?(?:\s|\W|$)/m;
 
 /** Find the body of the falsifier section: heading + optional inline label
  *  ("(kill criteria)", "(when to revert)", etc.) → up to next same-or-higher
- *  heading. Returns null if the body has no falsifier section. */
+ *  heading. Returns null if the body has no falsifier section.
+ *
+ *  Section extraction runs against a fenced-blocks-stripped copy so that
+ *  pedagogical examples like ADR-004's own Shape A code block (which contains
+ *  a literal `## Falsifiers` heading INSIDE ```` ```markdown ```` fences)
+ *  don't shadow the real section. Without this, a self-referential ADR
+ *  about falsifier parsing parses its own example block instead of its
+ *  actual falsifier section.
+ *
+ *  H2 is preferred over H3 — naseej ADR-003 has both `## Falsifier` (the real
+ *  one) and a nested `### Falsifier scorecard at ship` (sub-section with a
+ *  status table). Without H2-preference the parser would grab the H3 table
+ *  and miss the actual bullet list. Falls back to H3 only when no H2 exists,
+ *  which covers the rare "ADR uses H3-only for Falsifier" case (a few legacy
+ *  notes). */
 function extractFalsifierSection(body: string): string | null {
-	const match = SECTION_HEADING_RE.exec(body);
+	const fenceStripped = stripFencedBlocksOnly(body);
+
+	let match = SECTION_HEADING_H2_RE.exec(fenceStripped);
+	let headingLevel = 2;
+	if (!match) {
+		match = SECTION_HEADING_H3_RE.exec(fenceStripped);
+		headingLevel = 3;
+	}
 	if (!match) return null;
 
 	const start = match.index + match[0].length;
-	const headingLevel = match[1].length; // 2 or 3
 
-	// Find next same-or-higher heading
-	const remainder = body.slice(start);
+	// Find next same-or-higher heading (h1/h2 for h2 section; h1/h2/h3 for h3)
+	const remainder = fenceStripped.slice(start);
 	const nextHeadingRe = new RegExp(`^#{1,${headingLevel}}\\s+`, 'm');
 	const next = nextHeadingRe.exec(remainder);
 	const end = next ? next.index : remainder.length;
@@ -252,9 +273,14 @@ function parseShapeC(sectionBody: string): Array<{ id: string; ordinal: number; 
 
 /** Matches ✅/⏳/❌ F<N> — <verb> [<date>] [(evidence)].
  *  Verb is one of `closed`, `pending`, `open`, `superseded`, `rejected`.
- *  Date and evidence are optional. */
+ *  Date and evidence are optional.
+ *
+ *  Line-anchored at start (optional `- ` bullet prefix + optional indent) so
+ *  pedagogical examples written INSIDE inline-backtick spans mid-prose like
+ *  `` `✅ F1 — closed YYYY-MM-DD` `` are NOT extracted. Without this anchor
+ *  ADR-004's own description of the closure shape leaks into its parsed state. */
 const CLOSURE_MARKER_RE =
-	/([✅⏳❌])\s+F(\d+)\s+—\s+(closed|pending|open|superseded|rejected)(?:\s+(\d{4}-\d{2}-\d{2}))?(?:\s+\(([^)]+)\))?/gu;
+	/^[ \t]*(?:- )?([✅⏳❌])\s+F(\d+)\s+—\s+(closed|pending|open|superseded|rejected)(?:\s+(\d{4}-\d{2}-\d{2}))?(?:\s+\(([^)]+)\))?/gmu;
 
 const STATUS_FROM_VERB: Record<string, FalsifierStatus> = {
 	closed: 'closed',
