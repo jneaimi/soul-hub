@@ -349,6 +349,16 @@ else
   warn "chokepoint installer reported issues — run: bash scripts/install-chokepoint.sh"
 fi
 
+# ── 8c. Soul Hub CLI (ADR-001, soul-hub-cli) ────────────────────
+# Thin agent-facing bash CLI on top of the API. Symlinked into
+# ~/.local/bin/soul. Soft-fail like the chokepoint above.
+step "Installing Soul Hub CLI (soul)"
+if bash "$REPO_ROOT/install/cli/install.sh" --quiet --symlink; then
+  ok "soul CLI installed → ~/.local/bin/soul (try: soul --help)"
+else
+  warn "soul CLI installer reported issues — run: bash install/cli/install.sh"
+fi
+
 # ── 9. Optional: TikTok transcription deps (ADR-024) ────────────
 step "Optional: TikTok transcription deps"
 if command -v yt-dlp >/dev/null 2>&1 \

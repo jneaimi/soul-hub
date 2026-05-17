@@ -359,6 +359,38 @@ try {
   }
 }
 
+// ── 14b. Soul Hub CLI (ADR-001, soul-hub-cli) ─────────────────
+// Phase 1 read CLI. Symlinked into ~/.local/bin/soul by
+// install/cli/install.sh; the canonical source lives in cli/soul.
+{
+  const REPO_ROOT_CLI = resolve(new URL('..', import.meta.url).pathname);
+  const cliSrc = join(REPO_ROOT_CLI, 'cli', 'soul');
+  const cliBin = join(homedir(), '.local', 'bin', 'soul');
+
+  if (!existsSync(cliSrc)) {
+    add('soul-cli/source', 'fail', `missing canonical: ${cliSrc}`);
+  } else {
+    add('soul-cli/source', 'ok', 'cli/soul present');
+  }
+
+  if (!existsSync(cliBin)) {
+    add('soul-cli/installed', 'fail', 'not installed — run: bash install/cli/install.sh');
+  } else {
+    try {
+      accessSync(cliBin, constants.X_OK);
+      // Try to invoke --version cheaply
+      try {
+        const ver = execSync(`"${cliBin}" --version`, { encoding: 'utf8', timeout: 5000 }).trim();
+        add('soul-cli/installed', 'ok', ver);
+      } catch (e) {
+        add('soul-cli/installed', 'warn', `installed but --version failed: ${(e && e.message) || e}`);
+      }
+    } catch {
+      add('soul-cli/installed', 'fail', `${cliBin} not executable`);
+    }
+  }
+}
+
 // ── 15. Platform sanity ────────────────────────────────────────
 if (platform() === 'win32') {
   add('platform', 'fail', 'native Windows is unsupported. Use WSL2 (Ubuntu). See INSTALL.md.');
