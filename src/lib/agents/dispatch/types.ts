@@ -10,7 +10,21 @@
 
 import type { AgentSummary } from '../types.js';
 
-export type DispatchMode = 'production' | 'test';
+/**
+ * Dispatch modes — pick the (backend, budget-cap-policy) pair:
+ *
+ *  - `production`   PTY backend with /goal loop, no budget caps (agent / step
+ *                   budget honoured as-is). Default for chat-dispatched runs.
+ *  - `test`         cli-flag backend (-p) with hard caps from `TEST_CAPS` in
+ *                   budget.ts ($0.10 / 5 turns / 60s) — for cheap CI smokes.
+ *  - `oneshot`      cli-flag backend (-p), no budget caps. For agents that
+ *                   are structurally single-pass (no iteration loop) and need
+ *                   production-scale budgets — e.g. peer-brief-synth which
+ *                   reads inputs, synthesises once, writes a 38KB recipe,
+ *                   emits a marker, exits. PTY + /goal added latency + fuzzy
+ *                   goal-evaluation failure modes for no benefit. ADR-007 S3.
+ */
+export type DispatchMode = 'production' | 'test' | 'oneshot';
 
 export interface DispatchOptions {
 	mode: DispatchMode;

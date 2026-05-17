@@ -74,7 +74,8 @@
 	<title>Naseej — Soul Hub</title>
 </svelte:head>
 
-<main class="max-w-6xl mx-auto w-full px-4 sm:px-6 py-6">
+<main class="h-full overflow-y-auto">
+	<div class="max-w-6xl mx-auto w-full px-4 sm:px-6 py-6">
 	<header class="mb-6 flex items-start justify-between gap-4 flex-wrap">
 		<div>
 			<h1 class="text-2xl font-semibold tracking-tight text-hub-text">Naseej</h1>
@@ -185,4 +186,5 @@
 			{/each}
 		</ul>
 	{/if}
+	</div>
 </main>

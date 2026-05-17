@@ -340,7 +340,18 @@ async function runComponentStep(
 		outputs,
 	};
 	if (proc.exit_code !== 0) {
-		result.error = outputs?.error ? String(outputs.error) : proc.stderr.trim().slice(0, 500);
+		// Tier-1 components like shell-exec emit their failure detail in
+		// `outputs.stderr` (the subprocess stderr), not `outputs.error` —
+		// fall through to that before defaulting to the component's own
+		// stderr or a synthetic message. Without this, shell-exec failures
+		// surfaced as empty-string errors at the recipe layer (seen in the
+		// ADR-007 S3 peer-brief test 3 triage on 2026-05-17).
+		const detail = outputs?.error
+			? String(outputs.error)
+			: outputs?.stderr
+			? String(outputs.stderr)
+			: proc.stderr.trim() || `component exited with code ${proc.exit_code}`;
+		result.error = detail.trim().slice(0, 500);
 	}
 	return result;
 }

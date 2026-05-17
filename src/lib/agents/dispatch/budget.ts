@@ -54,5 +54,8 @@ export function resolveBudget(mode: DispatchMode, agentBudget?: AgentBudgetLike)
 		};
 	}
 
+	// `production` and `oneshot` both honour the configured budget as-is —
+	// the only difference between them is the backend (PTY vs cli-flag),
+	// resolved one level up in dispatch/index.ts.
 	return configured;
 }

@@ -84,7 +84,12 @@ export const claudePtyDispatcher: BackendDispatcher = {
 		// Chat-to-test runs route through headless `claude -p` so the user sees
 		// the agent's actual reply, not the full TUI. Same Max auth, same agent
 		// definition file, same backend identity in the result envelope.
-		if (opts.mode === 'test') {
+		//
+		// `oneshot` is the production sibling of `test`: same cli-flag backend
+		// (no PTY, no /goal loop), but budget caps are NOT applied (resolved in
+		// budget.ts). For agents that are structurally single-pass and need
+		// real production budgets — see DispatchMode docstring in types.ts.
+		if (opts.mode === 'test' || opts.mode === 'oneshot') {
 			const result = yield* claudeCliFlagDispatcher.dispatch(agent, opts);
 			return { ...result, backend: 'claude-pty' };
 		}

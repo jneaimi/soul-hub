@@ -37,7 +37,19 @@ export const claudeCliFlagDispatcher: BackendDispatcher = {
 	): AsyncGenerator<DispatchEvent, DispatchResult, void> {
 		const runId = crypto.randomUUID().slice(0, 8);
 		const started = Date.now();
-		const budget = resolveBudget(opts.mode, agent.budget);
+		// ADR-005 parity fix (2026-05-17): honour opts.budget_override the
+		// same way claude-pty does. Previously this backend used agent.budget
+		// only — recipe-level budget overrides were silently dropped, which
+		// surfaced as a 60s cap on peer-brief-synth oneshot dispatches during
+		// ADR-007 S3 testing.
+		const mergedBudget = opts.budget_override
+			? {
+					max_usd: opts.budget_override.max_usd ?? agent.budget?.max_usd,
+					max_turns: opts.budget_override.max_turns ?? agent.budget?.max_turns,
+					timeout_sec: opts.budget_override.timeout_sec ?? agent.budget?.timeout_sec,
+				}
+			: agent.budget;
+		const budget = resolveBudget(opts.mode, mergedBudget);
 
 		const claudeBinary = config.resolved.claudeBinary;
 		if (!existsSync(claudeBinary)) {

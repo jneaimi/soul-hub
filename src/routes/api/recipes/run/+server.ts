@@ -8,11 +8,18 @@ import type { DispatchMode } from '$lib/agents/dispatch/index.js';
  *  Body: {
  *    recipe: string,                          // name or repo-relative .yaml path
  *    inputs?: Record<string, unknown>,
- *    mode?: 'production' | 'test',            // ADR-005 CP2 — dispatch backend
- *                                             //   for agent steps. Default
- *                                             //   'production' (claude-pty).
+ *    mode?: 'production' | 'test' | 'oneshot', // ADR-005 CP2 + ADR-007 S3 —
+ *                                             //   dispatch mode for agent
+ *                                             //   steps. Default 'production'
+ *                                             //   (claude-pty + /goal).
  *                                             //   'test' uses claude-cli-flag
- *                                             //   for cheap CI smokes.
+ *                                             //   with hard budget caps for
+ *                                             //   cheap CI smokes.
+ *                                             //   'oneshot' uses claude-cli-
+ *                                             //   flag with NO caps — for
+ *                                             //   structurally single-pass
+ *                                             //   agents in production
+ *                                             //   (peer-brief-synth).
  *    run_id?: string                          // ADR-005 CP3 — caller-supplied
  *                                             //   runId (must be unique, kebab/
  *                                             //   uuid/hex). When omitted, an
@@ -42,8 +49,11 @@ export const POST: RequestHandler = async ({ request }) => {
 	if (inputs !== undefined && (typeof inputs !== 'object' || inputs === null || Array.isArray(inputs))) {
 		return json({ error: 'inputs must be an object' }, { status: 400 });
 	}
-	if (mode !== undefined && mode !== 'production' && mode !== 'test') {
-		return json({ error: 'mode must be "production" or "test"' }, { status: 400 });
+	if (mode !== undefined && mode !== 'production' && mode !== 'test' && mode !== 'oneshot') {
+		return json(
+			{ error: 'mode must be "production", "test", or "oneshot"' },
+			{ status: 400 },
+		);
 	}
 	if (runId !== undefined) {
 		if (typeof runId !== 'string' || !RUN_ID_RE.test(runId)) {
