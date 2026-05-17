@@ -197,6 +197,128 @@ PASS 2 ACCEPTED 2026-01-02
 	});
 });
 
+describe('phase-parser — ADR-002 slice markers (S<N>, CP<N>)', () => {
+	test('single **S1 SHIPPED** marker emits one shipped slice', () => {
+		const body = '**S1 SHIPPED 2026-05-17** — `katib-build@1.0.0` Tier-2 component, commit `a64ceb7`.';
+		const { phases, warnings } = parsePhases({
+			adrPath: 'projects/naseej/adr-007-peer-brief-naseej-port.md',
+			adrBody: body,
+			adrMeta: makeMeta()
+		});
+		assert.equal(phases.length, 1, 'expected exactly one phase');
+		assert.equal(phases[0].ordinal, 1);
+		assert.equal(phases[0].label, 'S1');
+		assert.equal(phases[0].status, 'shipped');
+		assert.equal(phases[0].shipped_at, '2026-05-17');
+		assert.equal(phases[0].commit, 'a64ceb7');
+		assert.equal(phases[0].source, 'adr-body');
+		assert.equal(warnings.length, 0);
+	});
+
+	test('**S1+S2+S3 SHIPPED** expands to three shipped slices', () => {
+		const body = '**S1+S2+S3 SHIPPED 2026-05-17** — bundle landed.';
+		const { phases } = parsePhases({
+			adrPath: 'projects/naseej/adr-007.md',
+			adrBody: body,
+			adrMeta: makeMeta()
+		});
+		assert.equal(phases.length, 3);
+		assert.deepEqual(
+			phases.map((p) => p.ordinal),
+			[1, 2, 3]
+		);
+		for (const p of phases) {
+			assert.equal(p.status, 'shipped');
+			assert.equal(p.shipped_at, '2026-05-17');
+			assert.match(p.label, /^S\d+$/);
+		}
+	});
+
+	test('**CP4.1 SHIPPED** keeps decimal ordinal and CP family in label', () => {
+		const body = '**CP4.1 SHIPPED 2026-05-17** — engine slice complete.';
+		const { phases } = parsePhases({
+			adrPath: 'projects/naseej/adr-005.md',
+			adrBody: body,
+			adrMeta: makeMeta()
+		});
+		assert.equal(phases.length, 1);
+		assert.equal(phases[0].ordinal, 4.1);
+		assert.equal(phases[0].label, 'CP4.1');
+		assert.equal(phases[0].status, 'shipped');
+	});
+
+	test('prose mention "in the S3 layer" without status verb does NOT match', () => {
+		const body = 'The implementation lives in the S3 layer of the architecture. See Section S3 below for details.';
+		const { phases, warnings } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody: body,
+			adrMeta: makeMeta()
+		});
+		// `phases` may still include a frontmatter-fallback synthetic phase; the
+		// invariant we care about is that NO adr-body slice marker leaked.
+		const adrBodyPhases = phases.filter((p) => p.source === 'adr-body');
+		assert.equal(adrBodyPhases.length, 0, 'prose mentions of S<N> without status verb must not parse');
+		assert.equal(warnings.length, 0);
+	});
+
+	test('later S<N> occurrence overrides earlier (consistent with Pattern B v1 rule)', () => {
+		const body = `
+**S3 PROPOSED 2026-05-16** — initial draft.
+
+… much later in the doc …
+
+**S3 SHIPPED 2026-05-17** — landed at commit \`abc1234\`.
+`;
+		const { phases } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody: body,
+			adrMeta: makeMeta()
+		});
+		// Parser dedupes same-ordinal-same-source down to the winning state
+		// per the existing Pattern B "later wins" rule (line 109 test in this
+		// file). We expect ONE adr-body phase with status=shipped.
+		const adrBodyPhases = phases.filter((p) => p.source === 'adr-body');
+		assert.equal(adrBodyPhases.length, 1, 'dedupes same-ordinal slice markers to the winning state');
+		assert.equal(adrBodyPhases[0].ordinal, 3);
+		assert.equal(adrBodyPhases[0].label, 'S3');
+		assert.equal(adrBodyPhases[0].status, 'shipped');
+		assert.equal(adrBodyPhases[0].shipped_at, '2026-05-17');
+		assert.equal(adrBodyPhases[0].commit, 'abc1234');
+	});
+
+	test('inline-code `S3 SHIPPED` is ignored (pedagogical example)', () => {
+		const body = 'Operators should write the marker as `**S3 SHIPPED 2026-05-17**` in the ADR body.';
+		const { phases } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody: body,
+			adrMeta: makeMeta()
+		});
+		const adrBodyPhases = phases.filter((p) => p.source === 'adr-body');
+		assert.equal(adrBodyPhases.length, 0, 'inline-code markers must not leak as real phases');
+	});
+
+	test('mixed Phase + S<N> markers in same body parse independently', () => {
+		const body = `
+**Phase 1 SHIPPED 2026-05-17** — original style.
+**S2 SHIPPED 2026-05-17** — new slice style.
+`;
+		const { phases } = parsePhases({
+			adrPath: 'projects/foo/adr-001.md',
+			adrBody: body,
+			adrMeta: makeMeta()
+		});
+		assert.equal(phases.length, 2);
+		const phase1 = phases.find((p) => p.label === 'Phase 1');
+		const s2 = phases.find((p) => p.label === 'S2');
+		assert.ok(phase1, 'classic Phase marker still parses');
+		assert.ok(s2, 'new S<N> marker also parses');
+		assert.equal(phase1!.status, 'shipped');
+		assert.equal(s2!.status, 'shipped');
+		assert.equal(phase1!.ordinal, 1);
+		assert.equal(s2!.ordinal, 2);
+	});
+});
+
 describe('phase-parser — Pattern A (project-index roadmap table)', () => {
 	const NASEEJ_ROADMAP = `
 ## Roadmap

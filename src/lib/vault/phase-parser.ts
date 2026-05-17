@@ -80,6 +80,22 @@ export interface ParserOutput {
 const INLINE_MARKER_RE =
 	/\b(Phase|PASS|Pass|Stage)\s+([\d+\s/.\-]+?(?:\s+lite)?)\s+(SHIPPED|ACCEPTED|PROPOSED|PARKED|SUPERSEDED|REJECTED|MERGED)\b/g;
 
+/** ADR-002 — slice-marker regex. Naseej-style `S<N>` and soul-hub-whatsapp-style
+ *  `CP<N>` shorthand for "slice within an ADR". Treated as Stage aliases by the
+ *  rest of the parser, but the label preserves the operator's prefix (`S3` stays
+ *  `S3`, `CP4.1` stays `CP4.1`) so the UI matches what the ADR author wrote.
+ *
+ *  Chained markers like `S1+S2+S3` are captured as one match — the ordinal group
+ *  swallows `+S<N>` continuations so `expandOrdinals` (with its later `S`/`CP`
+ *  letter strip) yields `[1, 2, 3]`. Mirrors the `Phase 1+2+3` continuation pattern.
+ *
+ *  Guard: requires a leading sentinel char (`^`, whitespace, `*`, `_`, `(`) so
+ *  prose like "in the S3 layer" or "see Section S3" can't match. The trailing
+ *  status verb is the second guard — only word-shaped slice IDs immediately
+ *  followed by a canonical status verb count as markers. */
+const SLICE_MARKER_RE =
+	/(?:^|[\s*_(])(S|CP)(\d+(?:\.\d+)?(?:[+/\s]+(?:S|CP)?\d+(?:\.\d+)?)*)\s+(SHIPPED|ACCEPTED|PROPOSED|PARKED|SUPERSEDED|REJECTED|MERGED|DEFERRED)\b/g;
+
 /** Status verbs → canonical 6-status vocabulary. `MERGED` collapses to
  *  `shipped`; `DEFERRED` collapses to `parked` (operator convention in
  *  naseej and project-phases roadmap tables — "deferred until a workflow
@@ -104,7 +120,17 @@ const STATUS_VERB_RE =
  *  Handles `1`, `1+2`, `0 + 1 + 4`, `2/3`, `1.5`. Returns `[]` on
  *  unparseable input — the caller should warn. */
 function expandOrdinals(group: string): number[] {
-	const cleaned = group.replace(/\blite\b/gi, '').trim();
+	// ADR-002 — `S<N>` / `CP<N>` chained markers like `S1+S2+S3` pass through
+	// here with their family-letter prefix still attached (`1+S2+S3` or
+	// `1+CP4.1+CP5`). Strip `S` and `CP` from the ordinal group so the existing
+	// splitter sees just `1+2+3`. Strip is regex-anchored on the prefix shape
+	// `(?:^|[+\s/])` so prose-injected letters elsewhere (impossible at this
+	// callsite since the regex captured this group, but safe in depth) don't
+	// surprise the parser.
+	const cleaned = group
+		.replace(/\blite\b/gi, '')
+		.replace(/(?<=^|[+\s/])(CP|S)(?=\d)/g, '')
+		.trim();
 	if (!cleaned) return [];
 	const parts = cleaned.split(/[+\s/]+/).filter(Boolean);
 	const ordinals: number[] = [];
@@ -176,58 +202,71 @@ function extractInAdrMarkers(adrPath: string, body: string, warnings: ParserWarn
 	const slug = adrSlugFromPath(adrPath);
 	const phases: Phase[] = [];
 	const scanBody = stripCodeForMarkerScan(body);
-	const re = new RegExp(INLINE_MARKER_RE.source, INLINE_MARKER_RE.flags);
-	let match: RegExpExecArray | null;
-	let bodyCursor = 0;
 
-	while ((match = re.exec(scanBody)) !== null) {
-		const family = match[1];
-		const ordinalGroup = match[2].trim();
-		const verb = match[3];
-		const ordinals = expandOrdinals(ordinalGroup);
+	// Two regex passes per ADR-002: classic `Phase|PASS|Stage` markers (Pattern
+	// B v1) and slice-shorthand `S<N>`/`CP<N>` markers (ADR-002 D1). Both emit
+	// phases with `source: 'adr-body'` so downstream consumers (rollup, dedup,
+	// UI) don't care which pattern fired. Family is captured per-pass.
+	for (const cfg of [
+		{ re: INLINE_MARKER_RE, hasSpaceBeforeOrdinal: true },
+		{ re: SLICE_MARKER_RE, hasSpaceBeforeOrdinal: false }
+	]) {
+		const re = new RegExp(cfg.re.source, cfg.re.flags);
+		let match: RegExpExecArray | null;
+		let bodyCursor = 0;
 
-		if (ordinals.length === 0) {
-			warnings.push({
-				kind: 'unparseable_marker',
-				detail: `Cannot expand ordinal group "${ordinalGroup}"`,
-				raw: match[0]
-			});
-			continue;
-		}
+		while ((match = re.exec(scanBody)) !== null) {
+			const family = match[1];
+			const ordinalGroup = match[2].trim();
+			const verb = match[3];
+			const ordinals = expandOrdinals(ordinalGroup);
 
-		const qualifiers: string[] = [];
-		if (/\blite\b/i.test(ordinalGroup)) qualifiers.push('lite');
+			if (ordinals.length === 0) {
+				warnings.push({
+					kind: 'unparseable_marker',
+					detail: `Cannot expand ordinal group "${ordinalGroup}"`,
+					raw: match[0]
+				});
+				continue;
+			}
 
-		const status = normalizeStatus(verb);
+			const qualifiers: string[] = [];
+			if (/\blite\b/i.test(ordinalGroup)) qualifiers.push('lite');
 
-		// Locate this marker's position in the ORIGINAL body (not the
-		// code-stripped scan body) so commit-SHA extraction sees backticked
-		// short-SHAs. Each scan match has at least one corresponding
-		// occurrence in the original (since stripping only removed text,
-		// not the markers themselves).
-		const bodyIdx = body.indexOf(match[0], bodyCursor);
-		const markerEnd = bodyIdx >= 0 ? bodyIdx + match[0].length : match.index + match[0].length;
-		const dateCommitSource = bodyIdx >= 0 ? body : scanBody;
-		if (bodyIdx >= 0) bodyCursor = markerEnd;
+			const status = normalizeStatus(verb);
 
-		const shipped_at =
-			status === 'shipped' ? (extractNearbyDate(dateCommitSource, markerEnd) ?? undefined) : undefined;
-		const commit =
-			status === 'shipped' ? (extractNearbyCommit(dateCommitSource, markerEnd) ?? undefined) : undefined;
+			// Locate this marker's position in the ORIGINAL body (not the
+			// code-stripped scan body) so commit-SHA extraction sees backticked
+			// short-SHAs. The SLICE_MARKER_RE captures a leading sentinel char
+			// (whitespace/`*`/`_`/`(`) — we use match[0] verbatim for indexOf
+			// because that prefix is part of the literal marker text.
+			const bodyIdx = body.indexOf(match[0], bodyCursor);
+			const markerEnd = bodyIdx >= 0 ? bodyIdx + match[0].length : match.index + match[0].length;
+			const dateCommitSource = bodyIdx >= 0 ? body : scanBody;
+			if (bodyIdx >= 0) bodyCursor = markerEnd;
 
-		for (const ord of ordinals) {
-			const label = `${family} ${ord}`;
-			phases.push({
-				id: `${slug}#phase-${ord}`,
-				ordinal: ord,
-				label,
-				status,
-				shipped_at,
-				commit,
-				source: 'adr-body',
-				raw_marker: match[0],
-				qualifiers
-			});
+			const shipped_at =
+				status === 'shipped' ? (extractNearbyDate(dateCommitSource, markerEnd) ?? undefined) : undefined;
+			const commit =
+				status === 'shipped' ? (extractNearbyCommit(dateCommitSource, markerEnd) ?? undefined) : undefined;
+
+			for (const ord of ordinals) {
+				// Label: classic markers like `Phase 1` separate family + ordinal
+				// with whitespace; slice markers like `S1` / `CP4.1` keep them
+				// flush. `hasSpaceBeforeOrdinal` drives the right joiner.
+				const label = cfg.hasSpaceBeforeOrdinal ? `${family} ${ord}` : `${family}${ord}`;
+				phases.push({
+					id: `${slug}#phase-${ord}`,
+					ordinal: ord,
+					label,
+					status,
+					shipped_at,
+					commit,
+					source: 'adr-body',
+					raw_marker: match[0],
+					qualifiers
+				});
+			}
 		}
 	}
 
