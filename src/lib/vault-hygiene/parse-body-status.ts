@@ -105,17 +105,42 @@ const HISTORY_QUALIFIERS = new Set([
 
 /** Returns true iff the inner text contains the status word in a position
  *  that plausibly describes the ADR's CURRENT status (not a historical
- *  reference or an alternative being rejected within the body). */
+ *  reference, a parenthetical cross-reference to a sibling project, or
+ *  an alternative being rejected within the body). */
 function hasValidStatusOccurrence(inner: string, status: CanonicalStatus): boolean {
 	const wordRe = new RegExp(`\\b${status}\\b`, 'gi');
 	let m: RegExpExecArray | null;
 	while ((m = wordRe.exec(inner)) !== null) {
 		const before = inner.slice(0, m.index);
+
+		// Skip if preceded by a historical qualifier ("originally
+		// accepted", "previously shipped", etc.) — the span discusses
+		// past state, not current.
 		const lastWord = before.match(/([A-Za-z]+)\s*$/)?.[1]?.toLowerCase();
 		if (lastWord && HISTORY_QUALIFIERS.has(lastWord)) continue;
+
+		// Skip if inside an unclosed parenthetical — the status word
+		// is part of a cross-reference (e.g., `**G2 — overlap with
+		// vault-scout (already shipped)**` is talking about vault-scout,
+		// not this ADR).
+		if (insideUnclosedParen(before)) continue;
+
 		return true;
 	}
 	return false;
+}
+
+/** Returns true iff there are more `(` than `)` characters in the
+ *  prefix — i.e., the position immediately after `prefix` is inside a
+ *  parenthetical group. */
+function insideUnclosedParen(prefix: string): boolean {
+	let depth = 0;
+	for (let i = 0; i < prefix.length; i++) {
+		const ch = prefix[i];
+		if (ch === '(') depth++;
+		else if (ch === ')' && depth > 0) depth--;
+	}
+	return depth > 0;
 }
 
 /** Returns the substring that the parser should scope to — i.e. the

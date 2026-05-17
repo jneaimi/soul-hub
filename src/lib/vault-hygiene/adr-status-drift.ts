@@ -16,6 +16,15 @@ import {
 	type CanonicalStatus,
 } from './parse-body-status.js';
 
+/** Terminal statuses — once an ADR is here, the body's earlier active-
+ *  ladder declaration is historically accurate, not drift. An ADR is
+ *  *proposed → accepted → shipped*, then later *parked / rejected /
+ *  superseded*. The body's `**Proposed 2026-MM-DD**` line documents
+ *  where the ADR started; FM's `parked` documents where it ended up.
+ *  Both are correct — no drift. */
+const TERMINAL_STATUSES = new Set<CanonicalStatus>(['parked', 'rejected', 'superseded']);
+const ACTIVE_LADDER = new Set<CanonicalStatus>(['proposed', 'accepted', 'shipped']);
+
 export interface AdrStatusDriftIssue {
 	path: string;
 	project: string | null;
@@ -63,6 +72,14 @@ export function getAdrStatusDrift(engine: VaultEngine): AdrStatusDriftIssue[] {
 
 		const direction = compareStatuses(rawFmStatus, parsed.status);
 		if (direction === 'match') continue;
+
+		// Skip terminal-state-FM + active-body combinations. The body's
+		// active-ladder declaration is historically accurate (the ADR
+		// was proposed/accepted/shipped before the operator parked /
+		// rejected / superseded it). Not drift.
+		if (TERMINAL_STATUSES.has(rawFmStatus) && ACTIVE_LADDER.has(parsed.status)) {
+			continue;
+		}
 
 		issues.push({
 			path: note.path,
