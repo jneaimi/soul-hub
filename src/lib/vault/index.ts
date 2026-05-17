@@ -918,10 +918,40 @@ export class VaultEngine {
 			return { success: false, error: `Note not found: ${path}` };
 		}
 
-		const filename = path.split('/').pop()!;
-		const archivePath = join('archive', filename);
+		// ADR-012 — defensive guard: refuse to archive paths already under
+		// `archive/`. Pre-fix, `archive/foo.md` would map to `archive/foo.md`
+		// (collision with itself) or, under the new path-preserving rule,
+		// `archive/archive/foo.md` (nonsense). Single-source-of-truth: any
+		// archive op must originate from a non-archive zone.
+		if (path === 'archive' || path.startsWith('archive/')) {
+			return { success: false, error: `Path already in archive zone: ${path}` };
+		}
+
+		// ADR-012 — preserve source path under `archive/` so two notes with
+		// the same filename in different source paths don't collide.
+		// `projects/A/index.md` → `archive/projects/A/index.md`. Mirrors the
+		// `moveAssetToArchive` convention earlier in this file.
+		const segments = path.split('/').filter(Boolean);
+		const archivePath =
+			segments.length > 1
+				? join('archive', ...segments.slice(1))
+				: join('archive', segments[0] ?? path);
 		const absSource = resolve(this.config.rootDir, path);
 		const absTarget = resolve(this.config.rootDir, archivePath);
+
+		// ADR-012 — `stat()`-before-`rename` collision guard. `rename()` is a
+		// clobbering atomic move on the same filesystem; without this check,
+		// a second archive op on the same target SILENTLY OVERWRITES. Refuse
+		// rather than skip (operator-initiated; loud failure is correct).
+		try {
+			await stat(absTarget);
+			return {
+				success: false,
+				error: `Archive target already exists: ${archivePath}`,
+			};
+		} catch {
+			// Good — destination is free.
+		}
 
 		try {
 			await mkdir(dirname(absTarget), { recursive: true });
