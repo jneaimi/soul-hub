@@ -13,7 +13,7 @@ import { json } from '@sveltejs/kit';
 import { readdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { getVaultEngine } from '$lib/vault/index.js';
-import { parsePhases, parseProjectRoadmap, type Phase } from '$lib/vault/phase-parser.js';
+import { parsePhases, type Phase } from '$lib/vault/phase-parser.js';
 import type { VaultMeta } from '$lib/vault/types.js';
 
 const PROJECT_ZONE = 'projects';
@@ -46,10 +46,11 @@ interface DecisionRow {
 	tags: string[];
 	blockedBy: string[];
 	/** ADR-LEVEL phase milestones — only `source: 'adr-body'` phases
-	 *  (in-body markers like `**Phase 1 SHIPPED**`, possibly merged with
-	 *  a matching project-index ordinal). Project-level roadmap phases
-	 *  live on `ProjectRollup.projectPhases` instead, so the same logical
-	 *  P0..P4 milestone isn't duplicated under every ADR in the project.
+	 *  (in-body markers like `**Phase 1 SHIPPED**`). Project-level roadmap
+	 *  phases were retired by project-phases ADR-013 (2026-05-18): the
+	 *  `## Roadmap` table in `projects/<slug>/index.md` is now operator-curated
+	 *  narrative only, no parser consumes it for dynamic rendering. ADR
+	 *  frontmatter is the canonical lifecycle state.
 	 *  Empty on parse failure — never breaks the list view. */
 	phases?: Phase[];
 }
@@ -68,11 +69,6 @@ interface ProjectRollup {
 	 *  D2/D3: stored on `index.md` as `parent_project: "[[slug|alias]]"`.
 	 *  Inverted client-side to build the tree (child_projects is not stored). */
 	parentProject: string | null;
-	/** PROJECT-LEVEL phases parsed from the `## Roadmap` table in
-	 *  `projects/<slug>/index.md`. Surfaced once at the project level,
-	 *  not duplicated per-ADR. Only attached when the caller requested
-	 *  per-decision detail (single-slug query). */
-	projectPhases?: Phase[];
 	decisions?: DecisionRow[];
 }
 
@@ -255,9 +251,8 @@ export const GET: RequestHandler = async ({ url }) => {
 		// Second pass — attach phases now that the project-index body is known.
 		// Per-ADR phases are filtered to ADR-LEVEL only (source: 'adr-body',
 		// which includes phases that merged with a project-index ordinal —
-		// see phase-parser's mergePhases). Project-level roadmap phases live
-		// on the rollup's `projectPhases` field, parsed ONCE below, so the
-		// same logical milestones aren't duplicated under every ADR.
+		// see phase-parser's mergePhases). Project-level roadmap phases were
+		// retired by ADR-013 (2026-05-18).
 		// Wrap each call in try/catch so a parser failure on one ADR cannot
 		// break the list view (per ADR-001 contract: "never break the list").
 		if (includeDecisions && phaseTargets.length > 0) {
@@ -285,19 +280,6 @@ export const GET: RequestHandler = async ({ url }) => {
 				} catch {
 					target.row.phases = [];
 				}
-			}
-		}
-
-		// Project-level roadmap phases — parsed once from the index body
-		// regardless of ADR count. Falsy on parse failure to keep the rollup
-		// payload tight.
-		let projectPhases: Phase[] | undefined;
-		if (includeDecisions && projectIndexContent) {
-			try {
-				const roadmap = parseProjectRoadmap(slug, projectIndexContent);
-				if (roadmap.length > 0) projectPhases = roadmap;
-			} catch {
-				/* swallow — never break the rollup */
 			}
 		}
 
@@ -336,7 +318,6 @@ export const GET: RequestHandler = async ({ url }) => {
 			hasIndex,
 			indexPath,
 			parentProject,
-			...(projectPhases ? { projectPhases } : {}),
 			...(includeDecisions ? { decisions } : {}),
 		});
 	}

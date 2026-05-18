@@ -40,13 +40,32 @@
 		phases?: Phase[];
 	}
 
+	/** ADR-level "next action" item — the shape returned by
+	 *  /api/vault/projects/:slug/next-actions per project-phases ADR-013.
+	 *  Replaced the prior phase-keyed shape; slug uniqueness (ADR-046)
+	 *  guarantees no duplicate keys. */
+	interface NextActionItem {
+		id: string;
+		slug: string;
+		label: string;
+		status: PhaseStatus;
+		created: string | null;
+		accepted_on: string | null;
+		shipped_on: string | null;
+		target_date: string | null;
+		falsifier_date: string | null;
+		scope: string | null;
+		source: 'adr';
+	}
+
 	interface NextActionsResponse {
 		project: string;
 		generated_at: string;
-		open_phases: Phase[];
-		blocked_phases: Phase[];
-		recent_shipped: Phase[];
-		next: Phase | null;
+		open: NextActionItem[];
+		blocked: NextActionItem[];
+		recent_shipped: NextActionItem[];
+		next: NextActionItem | null;
+		hint: 'no_adrs' | null;
 	}
 
 	interface ProjectDetail {
@@ -59,9 +78,6 @@
 		upcomingFalsifiers: { path: string; date: string; daysAway: number }[];
 		hasIndex: boolean;
 		indexPath: string | null;
-		/** PROJECT-LEVEL phases from the index roadmap. Rendered once in
-		 *  its own section, not duplicated under every ADR. */
-		projectPhases?: Phase[];
 		decisions?: DecisionRow[];
 	}
 
@@ -84,50 +100,37 @@
 	// when individual decision rows are collapsed.
 	let expandedDecisions = $state<Set<string>>(new Set());
 	let nextActions = $state<NextActionsResponse | null>(null);
-	let roadmapExpanded = $state(true);
 
 	const slug = $derived($page.params.slug);
 	const decisions = $derived(detail?.decisions ?? []);
 	const proposed = $derived(decisions.filter((d) => d.status === 'proposed'));
 	const others = $derived(decisions.filter((d) => d.status !== 'proposed'));
 
-	// Phase rollup across BOTH project-level and ADR-level phases.
-	// Dedupes in two stages:
-	//   1. By phase.id — catches exact duplicates.
-	//   2. Project-index phases are dropped when an adr-body phase claims
-	//      the same ordinal (e.g. ADR-003 declaring "**Phase 1 SHIPPED**"
-	//      IS the project's P1 milestone; counting both would inflate).
-	// Project-index-only phases never participate in the blocked-check —
-	// that's an ADR-level signal.
+	// Phase rollup across ADR-level (`adr-body`) phases only.
+	// Project-roadmap phases were retired by project-phases ADR-013
+	// (2026-05-18) — slug uniqueness on ADRs replaces the ordinal-keyed
+	// roadmap channel that crashed Svelte hydration. Counts here drive
+	// the small "shipped / open / blocked" strip; the canonical
+	// per-status totals live in `detail.statusCounts` above.
 	const phaseRollup = $derived.by(() => {
 		const seen = new Set<string>();
 		let shipped = 0;
 		let open = 0;
 		let blocked = 0;
 		const blockedAdrPaths = new Set(
-			(nextActions?.blocked_phases ?? []).map((p) => p.id.split('#')[0])
+			(nextActions?.blocked ?? []).map((it) => it.id)
 		);
-		const adrBodyOrdinals = new Set<number>();
-		for (const d of decisions) {
-			for (const p of d.phases ?? []) {
-				if (p.source === 'adr-body') adrBodyOrdinals.add(p.ordinal);
-			}
-		}
-		const tally = (p: Phase) => {
+		const tally = (p: Phase, adrPath: string) => {
 			if (seen.has(p.id)) return;
 			seen.add(p.id);
 			if (p.status === 'shipped') shipped++;
 			else if (p.status === 'proposed' || p.status === 'accepted') {
-				if (blockedAdrPaths.has(p.id.split('#')[0]) && p.source === 'adr-body') blocked++;
+				if (blockedAdrPaths.has(adrPath)) blocked++;
 				else open++;
 			}
 		};
-		for (const p of detail?.projectPhases ?? []) {
-			if (p.source === 'project-index' && adrBodyOrdinals.has(p.ordinal)) continue;
-			tally(p);
-		}
 		for (const d of decisions) {
-			for (const p of d.phases ?? []) tally(p);
+			for (const p of d.phases ?? []) tally(p, d.path);
 		}
 		return { shipped, open, blocked, total: seen.size };
 	});
@@ -185,10 +188,6 @@
 		if (status === 'superseded') return 'bg-hub-muted/15 text-hub-muted line-through';
 		if (status === 'rejected') return 'bg-hub-danger/15 text-hub-danger';
 		return 'bg-hub-card text-hub-dim';
-	}
-
-	function adrSlugFromId(phaseId: string): string {
-		return phaseId.split('#')[0];
 	}
 
 	async function loadPlan() {
@@ -359,25 +358,33 @@
 					</div>
 				</div>
 
-				<!-- Next up strip (project-phases P3). Surfaces the open phase
-				     with the nearest falsifier across all ADRs. Hidden when
-				     no open phases exist (all shipped, or no parseable data). -->
+				<!-- Next up strip — surfaces the highest-priority open ADR
+				     (proposed, then accepted, oldest first; demotes ADRs whose
+				     blocked_by deps aren't all shipped). Per project-phases
+				     ADR-013 (2026-05-18): ranks ADRs directly rather than
+				     phase ordinals. Clicking jumps into the ADR drawer. -->
 				{#if nextActions?.next}
-					<div class="mb-6 p-3 rounded-lg border border-hub-info/30 bg-hub-info/5 flex items-center gap-3 flex-wrap">
+					<button
+						onclick={() => drawerPath = nextActions!.next!.id}
+						class="w-full mb-6 p-3 rounded-lg border border-hub-info/30 bg-hub-info/5 hover:bg-hub-info/10 transition-colors flex items-center gap-3 flex-wrap text-left cursor-pointer"
+					>
 						<span class="text-[10px] uppercase tracking-wider text-hub-info font-semibold">Next up</span>
 						<span class="text-[10px] px-1.5 py-0.5 rounded {phaseStatusClass(nextActions.next.status)} flex-shrink-0">
 							{nextActions.next.status}
 						</span>
-						<span class="text-sm font-medium text-hub-text">{nextActions.next.label}</span>
-						{#if nextActions.next.source === 'adr-body'}
-							<span class="text-[11px] font-mono text-hub-dim truncate">{adrSlugFromId(nextActions.next.id)}</span>
-						{/if}
-						{#if nextActions.next.scope}
-							<span class="text-xs text-hub-muted truncate flex-1 min-w-0">{nextActions.next.scope}</span>
+						<span class="text-[11px] font-mono text-hub-dim flex-shrink-0">{nextActions.next.slug}</span>
+						<span class="text-sm font-medium text-hub-text truncate flex-1 min-w-0">{nextActions.next.label}</span>
+						{#if nextActions.next.target_date}
+							<span class="text-[11px] text-hub-info flex-shrink-0" title="target ship date">→ {nextActions.next.target_date}</span>
 						{/if}
 						{#if nextActions.next.falsifier_date}
-							<span class="text-[11px] text-hub-warning flex-shrink-0">⏱ {nextActions.next.falsifier_date}</span>
+							<span class="text-[11px] text-hub-warning flex-shrink-0" title="falsifier date">⏱ {nextActions.next.falsifier_date}</span>
 						{/if}
+					</button>
+				{:else if nextActions?.hint === 'no_adrs'}
+					<div class="mb-6 p-3 rounded-lg border border-hub-border bg-hub-card/40 text-xs text-hub-dim">
+						<span class="font-semibold text-hub-text">No ADRs yet.</span>
+						Propose your first via <code class="font-mono text-hub-info">soul adr propose</code>.
 					</div>
 				{/if}
 
@@ -445,40 +452,11 @@
 					</section>
 				{/if}
 
-				<!-- Project roadmap (project-phases ADR-001 follow-up). The
-				     project-level phase tree from the `## Roadmap` table in
-				     index.md. Rendered ONCE here so the same milestones aren't
-				     duplicated under every ADR. Per-ADR expansion below shows
-				     only that ADR's own in-body markers. -->
-				{#if detail.projectPhases && detail.projectPhases.length > 0}
-					<section class="mb-6 border border-hub-border rounded-lg bg-hub-card/40 overflow-hidden">
-						<button
-							onclick={() => (roadmapExpanded = !roadmapExpanded)}
-							class="w-full flex items-center gap-2 px-4 py-3 hover:bg-hub-card/60 transition-colors text-left cursor-pointer"
-							aria-expanded={roadmapExpanded}
-						>
-							<svg class="w-4 h-4 text-hub-dim transition-transform" style:transform={roadmapExpanded ? 'rotate(90deg)' : ''} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-								<polyline points="9 18 15 12 9 6"/>
-							</svg>
-							<span class="text-sm font-medium text-hub-text">Project roadmap</span>
-							<span class="text-[11px] text-hub-dim">
-								{detail.projectPhases.filter(p => p.status === 'shipped').length}/{detail.projectPhases.length} shipped
-							</span>
-						</button>
-						{#if roadmapExpanded}
-							<div class="px-4 pb-3 pt-1 border-t border-hub-border space-y-1">
-								{#each detail.projectPhases as p (p.id)}
-									<div class="flex items-center gap-2 text-xs py-0.5" title={p.raw_marker}>
-										<span class="text-[10px] px-1.5 py-0.5 rounded {phaseStatusClass(p.status)} flex-shrink-0 min-w-[60px] text-center">{p.status}</span>
-										<span class="font-medium text-hub-text flex-shrink-0">{p.label}</span>
-										{#if p.scope}<span class="text-hub-dim truncate min-w-0">{p.scope}</span>{/if}
-										{#if p.shipped_at}<span class="text-hub-cta text-[10px] flex-shrink-0">✓ {p.shipped_at}</span>{/if}
-									</div>
-								{/each}
-							</div>
-						{/if}
-					</section>
-				{/if}
+				<!-- Project roadmap widget removed per project-phases ADR-013
+				     (2026-05-18). Operators read the `## Roadmap` narrative via
+				     the Plan section above, which renders index.md as markdown.
+				     Dynamic phase status now sources from ADR frontmatter
+				     (statusCounts grid + AdrGantt + Next up). -->
 
 				<!-- Falsifier alerts -->
 				{#if detail.upcomingFalsifiers.length > 0}

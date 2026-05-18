@@ -1,36 +1,67 @@
 /** GET /api/vault/projects/:slug/next-actions[?shipped_limit=N]
  *
- *  Derived view over the project's phase data — the AI-facing surface for
- *  "what's open" / "what should we do next". Returns:
+ *  AI-facing surface for "what's open" / "what should we do next". Per
+ *  project-phases ADR-013 (2026-05-18), this endpoint ranks ADRs directly
+ *  rather than the parsed roadmap-table phases — slug uniqueness (enforced
+ *  by ADR-046 createNote chokepoint) replaces the brittle ordinal-based
+ *  key that crashed Svelte hydration via `each_key_duplicate`.
  *
- *   - open_phases: phases with status in [proposed, accepted], sorted by
- *     falsifier_date ascending (nulls last). Blocked phases (via ADR-level
- *     `blocked_by` deps that aren't yet shipped) are split out.
- *   - blocked_phases: same status filter, but ADR has unmet `blocked_by`.
- *   - recent_shipped: last N shipped phases by shipped_at desc, then by
- *     phase.id desc as a deterministic tie-break (newer ADRs win when many
- *     slices ship on the same day). N defaults to 10 — covers the operator-
- *     observed case of one project shipping 4+ ADR slices same-day. Override
- *     via `?shipped_limit=N` (1-50). Per project-phases ADR-002 S3.
- *   - next: open_phases[0] — the single "do this next" hint.
+ *  Returns:
+ *    - open[]:           proposed + accepted ADRs, non-blocked first,
+ *                        sorted by (statusRank, created ASC).
+ *    - blocked[]:        proposed + accepted ADRs with at least one
+ *                        blocked_by dep slug not yet in the shipped set.
+ *                        Cross-project deps are treated as unmet.
+ *    - recent_shipped[]: last N shipped ADRs by shipped_on DESC, then
+ *                        slug DESC as deterministic tie-break.
+ *    - next:             open[0] ?? blocked[0] ?? null — the single
+ *                        "do this next" hint. Blocked falls through when
+ *                        EVERYTHING is blocked so the widget still gives
+ *                        signal rather than going silent.
+ *    - hint:             "no_adrs" when the project has zero decision
+ *                        notes (fresh project), else null. Lets the UI
+ *                        render the "propose your first ADR" nudge from
+ *                        ADR-013 Consequences §Negative.
  *
- *  Per project-phases ADR-001 P2. Pure read transform over engine.getNotes()
- *  + phase-parser. No explicit cache — engine results refresh on watcher
- *  re-index, and parser is <10ms per ADR. */
+ *  Skips parked / rejected / superseded. Pure read transform over
+ *  engine.getNotes(); no explicit cache (engine results refresh on
+ *  watcher re-index). */
 
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { getVaultEngine } from '$lib/vault/index.js';
-import { parsePhases, parseProjectRoadmap, type Phase } from '$lib/vault/phase-parser.js';
 import type { VaultMeta } from '$lib/vault/types.js';
+
+interface NextActionItem {
+	/** ADR vault path, e.g. "projects/naseej/adr-013-foo.md". */
+	id: string;
+	/** ADR slug (filename without .md), e.g. "adr-013-foo". */
+	slug: string;
+	/** ADR title — frontmatter `title` if present, else first H1, else slug. */
+	label: string;
+	/** Canonical ADR status — proposed | accepted | shipped. */
+	status: string;
+	created: string | null;
+	accepted_on: string | null;
+	shipped_on: string | null;
+	target_date: string | null;
+	falsifier_date: string | null;
+	/** First sentence of body (markdown stripped) for one-line context.
+	 *  Capped at ~120 chars. Null when body is empty. */
+	scope: string | null;
+	/** Distinguishes ADR-level rows from the legacy phase-level shape.
+	 *  Page renderer keys off this for label formatting. */
+	source: 'adr';
+}
 
 interface NextActionsResponse {
 	project: string;
 	generated_at: string;
-	open_phases: Phase[];
-	blocked_phases: Phase[];
-	recent_shipped: Phase[];
-	next: Phase | null;
+	open: NextActionItem[];
+	blocked: NextActionItem[];
+	recent_shipped: NextActionItem[];
+	next: NextActionItem | null;
+	hint: 'no_adrs' | null;
 }
 
 function asStringArray(raw: unknown): string[] {
@@ -63,6 +94,38 @@ function parseShippedLimit(raw: string | null): number {
 	return Math.min(n, MAX_SHIPPED_LIMIT);
 }
 
+/** Extract an ADR title — frontmatter `title` if a non-empty string, else
+ *  the first `# ` heading in the body, else the slug as a last resort. */
+function extractTitle(meta: VaultMeta, body: string, slug: string): string {
+	const t = meta.title;
+	if (typeof t === 'string' && t.trim().length > 0) return t.trim();
+	const h1 = /^#\s+(.+?)\s*$/m.exec(body);
+	if (h1) return h1[1].trim();
+	return slug;
+}
+
+/** Extract a one-line scope hint — first non-empty paragraph after any
+ *  H1, with light markdown stripping. Capped at 120 chars. Null when the
+ *  body has no extractable prose. */
+function extractScope(body: string): string | null {
+	const afterH1 = body.replace(/^---[\s\S]*?---\s*/, '').replace(/^#\s+.+?\n+/m, '');
+	const firstPara = afterH1.split(/\n\s*\n/).map((p) => p.trim()).find((p) => p.length > 0);
+	if (!firstPara) return null;
+	const stripped = firstPara
+		.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_m, _a, b) => (b ?? _a))
+		.replace(/`([^`]+)`/g, '$1')
+		.replace(/\*\*([^*]+)\*\*/g, '$1')
+		.replace(/\*([^*]+)\*/g, '$1')
+		.replace(/\s+/g, ' ')
+		.trim();
+	if (!stripped) return null;
+	return stripped.length > 120 ? stripped.slice(0, 117) + '…' : stripped;
+}
+
+function asStr(v: unknown): string | null {
+	return typeof v === 'string' && v.trim().length > 0 ? v.trim() : null;
+}
+
 export const GET: RequestHandler = async ({ params, url }) => {
 	const slug = params.slug;
 	if (!slug) return json({ error: 'slug required' }, { status: 400 });
@@ -76,161 +139,109 @@ export const GET: RequestHandler = async ({ params, url }) => {
 		.getNotes({ project: slug, limit: 500 })
 		.filter((n) => !n.path.startsWith('archive/'));
 
-	// First pass — collect project-index body, list decision notes, and
-	// build the set of shipped ADR slugs (used to determine which deps are
-	// satisfied for the blocked_phases filter).
-	let projectIndexContent: string | undefined;
-	const decisionNotes: Array<{ path: string; slug: string; body: string; meta: VaultMeta }> = [];
+	// Build ADR items + blocked-by index in one pass. shippedAdrSlugs is the
+	// satisfaction set for the blocked filter.
+	const items: NextActionItem[] = [];
 	const shippedAdrSlugs = new Set<string>();
-	const blockedByPerAdr = new Map<string, string[]>();
+	const blockedByPerPath = new Map<string, string[]>();
 
 	for (const note of notes) {
 		const full = engine.getNote(note.path);
 		if (!full) continue;
+		if (full.meta.type !== 'decision') continue;
 
-		if (note.path === `projects/${slug}/index.md`) {
-			projectIndexContent = full.content;
-		}
+		const adrSlug = note.path.split('/').pop()?.replace(/\.md$/i, '') ?? note.path;
+		const status = String(full.meta.status ?? '').toLowerCase();
 
-		if (full.meta.type === 'decision') {
-			const adrSlug = note.path.split('/').pop()?.replace(/\.md$/i, '') ?? note.path;
-			const status = String(full.meta.status ?? '').toLowerCase();
-			decisionNotes.push({
-				path: note.path,
-				slug: adrSlug,
-				body: full.content,
-				meta: full.meta,
-			});
-			if (status === 'shipped') shippedAdrSlugs.add(adrSlug);
+		if (status === 'shipped') shippedAdrSlugs.add(adrSlug);
 
-			const blockedBy = asStringArray(full.meta.blocked_by ?? full.meta.blockedBy);
-			if (blockedBy.length > 0) blockedByPerAdr.set(note.path, blockedBy);
-		}
+		const blockedBy = asStringArray(full.meta.blocked_by ?? full.meta.blockedBy);
+		if (blockedBy.length > 0) blockedByPerPath.set(note.path, blockedBy);
+
+		items.push({
+			id: note.path,
+			slug: adrSlug,
+			label: extractTitle(full.meta, full.content, adrSlug),
+			status,
+			created: asStr(full.meta.created),
+			accepted_on: asStr(full.meta.accepted_on),
+			shipped_on: asStr(full.meta.shipped_on),
+			target_date: asStr(full.meta.target_date),
+			falsifier_date: asStr(full.meta.falsifier_date),
+			scope: extractScope(full.content),
+			source: 'adr',
+		});
 	}
 
-	// Two-channel phase collection (mirrors the rollup endpoint's model):
-	//   - project-level phases come from the project-index roadmap, parsed
-	//     once via parseProjectRoadmap (no per-ADR merging)
-	//   - adr-body phases come from each ADR's parsePhases, filtered to
-	//     `source: 'adr-body'` (in-body markers + merged-with-roadmap)
-	// When an adr-body phase claims an ordinal that a project-level phase
-	// also describes, the adr-body version replaces the project-level one —
-	// they're the same logical milestone, ADR has richer info (commit,
-	// shipped_at, ADR-scoped id for blocked-check). No double-count.
-	const projectPhases: Phase[] = projectIndexContent
-		? parseProjectRoadmap(slug, projectIndexContent)
-		: [];
-
-	const adrBodyPhases: Array<{ phase: Phase; adrPath: string }> = [];
-	// ADR-002 S4 — rank ADRs by `accepted_on ASC, slug ASC` so the rank-0 ADR
-	// is the "primary" for project-index scope folding. Mirror of the rollup
-	// endpoint's rule.
-	const rankedDecisions = [...decisionNotes].sort((a, b) => {
-		const ao = (a.meta.accepted_on as string | undefined) ?? '9999-12-31';
-		const bo = (b.meta.accepted_on as string | undefined) ?? '9999-12-31';
-		if (ao !== bo) return ao.localeCompare(bo);
-		return a.slug.localeCompare(b.slug);
-	});
-	const primaryAdrPath = rankedDecisions[0]?.path;
-	for (const dn of decisionNotes) {
-		try {
-			const { phases } = parsePhases({
-				adrPath: dn.path,
-				adrBody: dn.body,
-				adrMeta: dn.meta,
-				projectIndexBody: projectIndexContent,
-				isPrimaryAdr: dn.path === primaryAdrPath,
-			});
-			for (const phase of phases) {
-				if (phase.source === 'adr-body') adrBodyPhases.push({ phase, adrPath: dn.path });
-			}
-		} catch {
-			// skip
-		}
-	}
-
-	const adrBodyOrdinals = new Set(adrBodyPhases.map((x) => x.phase.ordinal));
-	const allPhases: Array<{ phase: Phase; adrPath: string | null }> = [];
-	for (const p of projectPhases) {
-		if (adrBodyOrdinals.has(p.ordinal)) continue; // adr-body claims this milestone
-		allPhases.push({ phase: p, adrPath: null });
-	}
-	for (const x of adrBodyPhases) allPhases.push(x);
-
-	const isBlocked = (adrPath: string | null): boolean => {
-		if (!adrPath) return false; // project-level phase, no ADR-level deps
-		const deps = blockedByPerAdr.get(adrPath);
+	const isBlocked = (path: string): boolean => {
+		const deps = blockedByPerPath.get(path);
 		if (!deps || deps.length === 0) return false;
-		// Blocked if ANY dep slug is not in the shipped set. Cross-project
-		// deps (slugs not in this project) are conservatively treated as
-		// unshipped — operator can resolve manually.
+		// Blocked if ANY dep slug is not in this project's shipped set.
+		// Cross-project deps (slugs not in this project) are conservatively
+		// treated as unshipped — operator can resolve manually.
 		return deps.some((dep) => {
 			const depSlug = blockedByToSlug(dep);
 			return depSlug ? !shippedAdrSlugs.has(depSlug) : false;
 		});
 	};
 
-	const isOpen = (status: string) => status === 'proposed' || status === 'accepted';
+	const isOpen = (s: string) => s === 'proposed' || s === 'accepted';
+	const statusRank = (s: string) => (s === 'proposed' ? 0 : s === 'accepted' ? 1 : 2);
 
-	// Dedupe by phase.id — project-index phases get the same ID across all
-	// ADRs in the project (one logical milestone per project). Per-ADR
-	// phases (source: 'adr-body') get distinct IDs naturally.
-	//
-	// Blocked-check applies ONLY to per-ADR phases. Project-level phases
-	// represent shared milestones; their "blocked" status doesn't map to
-	// any single ADR's blocked_by frontmatter.
-	const openPhases: Phase[] = [];
-	const blockedPhases: Phase[] = [];
-	const seenIds = new Set<string>();
-	for (const { phase, adrPath } of allPhases) {
-		if (!isOpen(phase.status)) continue;
-		if (seenIds.has(phase.id)) continue;
-		seenIds.add(phase.id);
-		const blocked = phase.source === 'adr-body' && isBlocked(adrPath);
-		if (blocked) blockedPhases.push(phase);
-		else openPhases.push(phase);
+	const open: NextActionItem[] = [];
+	const blocked: NextActionItem[] = [];
+	const shipped: NextActionItem[] = [];
+
+	for (const item of items) {
+		if (item.status === 'shipped') {
+			if (item.shipped_on) shipped.push(item);
+			continue;
+		}
+		if (!isOpen(item.status)) continue; // skip parked / rejected / superseded
+		if (isBlocked(item.id)) blocked.push(item);
+		else open.push(item);
 	}
 
-	// Sort open by falsifier_date asc, nulls last; tie-break by id.
-	openPhases.sort((a, b) => {
-		const af = a.falsifier_date;
-		const bf = b.falsifier_date;
-		if (af && bf) return af.localeCompare(bf) || a.id.localeCompare(b.id);
-		if (af) return -1;
-		if (bf) return 1;
-		return a.id.localeCompare(b.id);
-	});
+	// open[] + blocked[] — sort by (statusRank, created ASC, slug ASC).
+	// Per ADR-013 §1. Slug is the deterministic tiebreak so two runs return
+	// the same order when several ADRs share a created date.
+	const sortOpen = (a: NextActionItem, b: NextActionItem) => {
+		const r = statusRank(a.status) - statusRank(b.status);
+		if (r !== 0) return r;
+		const c = (a.created ?? '').localeCompare(b.created ?? '');
+		if (c !== 0) return c;
+		return a.slug.localeCompare(b.slug);
+	};
+	open.sort(sortOpen);
+	blocked.sort(sortOpen);
 
-	// recent_shipped also dedupes by id (so project-index phases marked shipped
-	// don't appear once per ADR).
-	const shippedSeenIds = new Set<string>();
-	const recentShipped: Phase[] = [];
-	for (const { phase } of allPhases) {
-		if (phase.status !== 'shipped' || !phase.shipped_at) continue;
-		if (shippedSeenIds.has(phase.id)) continue;
-		shippedSeenIds.add(phase.id);
-		recentShipped.push(phase);
-	}
-	// ADR-002 S3 — sort by shipped_at desc, then phase.id desc as the tie-break.
-	// Without a tie-break, projects shipping multiple slices on the same day
-	// (e.g. naseej 2026-05-17: 4 ADR-006 slices + 3 ADR-007 slices + 1 ADR-003)
-	// have an arbitrary order, so a small `recent_shipped` cap deterministically
-	// hid some ADRs' slices. phase.id desc puts newer ADRs (lexicographically
-	// higher slug → higher number) first when shipped_at ties.
-	recentShipped.sort((a, b) => {
-		const dateCmp = (b.shipped_at ?? '').localeCompare(a.shipped_at ?? '');
+	// recent_shipped — desc by shipped_on, then slug desc as tie-break
+	// (mirrors the prior phase-level ordering rationale from ADR-002 S3:
+	// projects shipping multiple ADRs same-day get a deterministic order).
+	shipped.sort((a, b) => {
+		const dateCmp = (b.shipped_on ?? '').localeCompare(a.shipped_on ?? '');
 		if (dateCmp !== 0) return dateCmp;
-		return b.id.localeCompare(a.id);
+		return b.slug.localeCompare(a.slug);
 	});
-	recentShipped.splice(shippedLimit);
+	const recentShipped = shipped.slice(0, shippedLimit);
+
+	// `next` falls through to blocked when nothing is unblocked — keeps the
+	// widget useful instead of silent when every open ADR is gated.
+	const next = open[0] ?? blocked[0] ?? null;
+
+	// Empty-state hint: zero decision notes under the project. ADR-013
+	// Consequences §Negative mitigation — the UI renders the nudge to
+	// propose the first ADR.
+	const hint: 'no_adrs' | null = items.length === 0 ? 'no_adrs' : null;
 
 	const response: NextActionsResponse = {
 		project: slug,
 		generated_at: new Date().toISOString(),
-		open_phases: openPhases,
-		blocked_phases: blockedPhases,
+		open,
+		blocked,
 		recent_shipped: recentShipped,
-		next: openPhases[0] ?? null,
+		next,
+		hint,
 	};
 
 	return json(response);
