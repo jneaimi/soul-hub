@@ -31,6 +31,18 @@ BASE="${SOUL_HUB_BASE:-http://localhost:2400}"
 MIN_SCORE="${PEER_BRIEF_MIN_SCORE:-30}"
 RUN_ID="peer-brief-${DATE}-$(date +%s)"
 
+# ADR-007 S4 shadow-week path override.
+#
+# The legacy peer-brief-render.py task (07:30 cron) writes the canonical
+# ~/Downloads/peer-brief-<DATE>.en.pdf. This Naseej wrapper runs at 07:35
+# and finishes ~26 min later, so without an override it clobbers the
+# legacy artefact and breaks the same-day F2/F3 comparison (size, section
+# count, stop-slop score). Default the Naseej PDF to a "-naseej" suffix
+# during the shadow window. After F4 (legacy task disabled), delete this
+# block and the recipe default (~/Downloads/peer-brief-<DATE>.en.pdf)
+# takes back the canonical path.
+OUT_PDF="${PEER_BRIEF_OUT_PDF:-${HOME}/Downloads/peer-brief-${DATE}-naseej.en.pdf}"
+
 if ! [[ "$DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
 	echo "[ERROR] Invalid date format: $DATE (expected YYYY-MM-DD)" >&2
 	exit 2
@@ -61,7 +73,8 @@ PAYLOAD=$(cat <<JSON
 	"mode": "${MODE}",
 	"inputs": {
 		"date": "${DATE}",
-		"min_score": ${MIN_SCORE}
+		"min_score": ${MIN_SCORE},
+		"out_pdf": "${OUT_PDF}"
 	}
 }
 JSON

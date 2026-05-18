@@ -6,6 +6,10 @@ description: |
   scores operator text with stop-slop, writes the verdict to the vault, and
   notifies via Telegram with the resulting note path. Proves the spine works.
 
+  The persist step references `{{now}}` (ISO ms-precision timestamp from the
+  runner ctx) so repeat runs with the default text remain content-unique and
+  don't trip the vault chokepoint's content dedup gate.
+
 inputs:
   - name: text
     type: string
@@ -35,9 +39,12 @@ steps:
         tags: [naseej, hello-naseej, recipe-output]
         project: naseej
         run_id: "{{run_id}}"
+        ran_at: "{{now}}"
         source_agent: naseej-runner
       body: |
         # hello-naseej run {{run_id}}
+
+        Recorded at {{now}}.
 
         **Score**: {{steps.score.outputs.score}}/50 (passed: {{steps.score.outputs.passed}})
 

@@ -32,10 +32,14 @@ import { buildCatalogIndex, type ComponentRecord } from './manifest.js';
 import {
 	isAgentStep,
 	isComponentStep,
+	isGateStep,
+	isHumanStep,
 	isFileInput,
 	parseRecipe,
 	type AgentStep,
 	type ComponentStep,
+	type GateStep,
+	type HumanStep,
 	type Recipe,
 	type RecipeStep,
 } from './schemas/recipe.js';
@@ -46,6 +50,15 @@ import {
 	type DispatchResult,
 } from '$lib/agents/dispatch/index.js';
 import { getAgent } from '$lib/agents/store.js';
+import {
+	recordRunStart,
+	recordRunEnd,
+	updateRunStatus,
+	type RunSource,
+} from './audit.js';
+import { publish as publishEvent } from './events.js';
+import { registerPause } from './pause-registry.js';
+import type { HumanResponse, GateResponse } from './pause-types.js';
 
 const RECIPES_DIR = resolvePath(process.cwd(), 'catalog/recipes');
 
@@ -369,6 +382,7 @@ async function runAgentStep(
 	ctx: Record<string, unknown>,
 	signal: AbortSignal | undefined,
 	mode: DispatchMode,
+	onAgentEvent?: (event: DispatchEvent) => void,
 ): Promise<StepResult> {
 	const startedAt = Date.now();
 
@@ -425,6 +439,12 @@ async function runAgentStep(
 			}
 			events.push(next.value);
 			if (events.length > MAX_EVENT_BUFFER) events.shift();
+			// ADR-018 — stream the raw DispatchEvent to SSE subscribers
+			// when a publisher is wired in. Wrapped so a buggy subscriber
+			// cannot crash the runner.
+			if (onAgentEvent) {
+				try { onAgentEvent(next.value); } catch { /* swallow */ }
+			}
 		}
 	} catch (err) {
 		return {
@@ -480,6 +500,127 @@ async function runAgentStep(
 	return result;
 }
 
+/** Human-interactive step (ADR-011). Pauses the run, emits a `human_required`
+ *  SSE event, registers a resolver in the pause-registry, awaits the
+ *  operator's POST /api/recipes/runs/<id>/respond. While paused, the
+ *  audit row's status flips to 'paused' so the audit page surfaces the
+ *  wait visibly. Default timeout 3600s (1h); per-step `timeout_sec` overrides.
+ *  Cancellation propagates via `signal` (the runner's existing controller). */
+async function runHumanStep(
+	step: HumanStep,
+	runId: string,
+	signal: AbortSignal,
+): Promise<StepResult> {
+	const startedAt = Date.now();
+	const timeoutSec = step.human.timeout_sec ?? 3600;
+
+	publishEvent({
+		type: 'human_required',
+		runId,
+		stepId: step.id,
+		prompt: step.human.prompt,
+		...(step.human.fields ? { fields: step.human.fields } : {}),
+		timeoutSec,
+		ts: startedAt,
+	});
+
+	updateRunStatus(runId, 'paused');
+	try {
+		const payload = await registerPause(runId, step.id, 'human', timeoutSec, signal);
+		if (payload.kind !== 'human') {
+			return {
+				id: step.id,
+				kind: 'component',
+				exit_code: 1,
+				duration_ms: Date.now() - startedAt,
+				error: `pause kind mismatch: expected human, got ${payload.kind}`,
+			};
+		}
+		const response = (payload.response as HumanResponse).response;
+		return {
+			id: step.id,
+			kind: 'component',
+			exit_code: 0,
+			duration_ms: Date.now() - startedAt,
+			outputs: { response },
+		};
+	} catch (err) {
+		return {
+			id: step.id,
+			kind: 'component',
+			exit_code: 1,
+			duration_ms: Date.now() - startedAt,
+			error: (err as Error).message,
+		};
+	} finally {
+		// On either resolve or timeout/cancel, the runner outer loop continues
+		// or breaks. The recipe-level terminal write at the end will overwrite
+		// 'paused' with the final status. Flip back to 'running' so the audit
+		// page doesn't show stale 'paused' between steps.
+		updateRunStatus(runId, 'running');
+	}
+}
+
+/** Gate / decision step (ADR-011). Same pause/resume primitive as the
+ *  human step, but with a fixed payload shape (decision + comment) so
+ *  downstream steps can branch on `{{steps.<id>.outputs.decision}}`. */
+async function runGateStep(
+	step: GateStep,
+	runId: string,
+	signal: AbortSignal,
+): Promise<StepResult> {
+	const startedAt = Date.now();
+	const timeoutSec = step.gate.timeout_sec ?? 3600;
+	const allowComment = step.gate.allow_comment ?? true;
+
+	publishEvent({
+		type: 'gate_required',
+		runId,
+		stepId: step.id,
+		prompt: step.gate.prompt,
+		allowComment,
+		timeoutSec,
+		ts: startedAt,
+	});
+
+	updateRunStatus(runId, 'paused');
+	try {
+		const payload = await registerPause(runId, step.id, 'gate', timeoutSec, signal);
+		if (payload.kind !== 'gate') {
+			return {
+				id: step.id,
+				kind: 'component',
+				exit_code: 1,
+				duration_ms: Date.now() - startedAt,
+				error: `pause kind mismatch: expected gate, got ${payload.kind}`,
+			};
+		}
+		const gate = payload.response as GateResponse;
+		return {
+			id: step.id,
+			kind: 'component',
+			// Exit code 0 even on 'rejected' — rejection is a valid decision,
+			// not an error. Downstream steps branch via {{steps.X.outputs.decision}}.
+			exit_code: 0,
+			duration_ms: Date.now() - startedAt,
+			outputs: {
+				decision: gate.decision,
+				...(gate.comment ? { comment: gate.comment } : {}),
+			},
+		};
+	} catch (err) {
+		return {
+			id: step.id,
+			kind: 'component',
+			exit_code: 1,
+			duration_ms: Date.now() - startedAt,
+			error: (err as Error).message,
+		};
+	} finally {
+		updateRunStatus(runId, 'running');
+	}
+}
+
 export interface RunRecipeOptions {
 	signal?: AbortSignal;
 	/** ADR-005 CP2 — dispatch backend selector for agent steps.
@@ -493,6 +634,11 @@ export interface RunRecipeOptions {
 	 *  When omitted, an 8-char UUID slice is generated and only known
 	 *  after the run finishes (legacy CP1+CP2 behaviour). */
 	runId?: string;
+	/** ADR-021 — invocation source for the audit-trail row. The runner
+	 *  itself cannot tell who called it; each caller passes its own value.
+	 *  Defaults to 'api' (POST /api/recipes/run); scheduler handler and
+	 *  CLI wrapper pass 'scheduler' / 'cli' / 'chat' respectively. */
+	source?: RunSource;
 }
 
 /** ADR-005 CP3 — in-flight run registry. Each in-progress runRecipe call
@@ -532,6 +678,7 @@ export async function runRecipe(
 	const catalog = await buildCatalogIndex();
 	const order = topoSort(recipe.steps);
 	const mode: DispatchMode = opts.mode ?? 'production';
+	const source: RunSource = opts.source ?? 'api';
 
 	// Pre-flight: every component-step references an existing catalog entry,
 	// every agent-step references a known agent. Surface as a throw — these
@@ -555,6 +702,10 @@ export async function runRecipe(
 	const ctxBase = {
 		run_id: runId,
 		date: startedAt.toISOString().slice(0, 10),
+		// Full ISO timestamp at ms precision. Useful when a recipe wants
+		// per-run content uniqueness (e.g. vault-write into a deterministic
+		// path where content dedup would otherwise fire).
+		now: startedAt.toISOString(),
 		project: recipe.project ?? 'naseej',
 		HOME: homedir(),
 		work_dir: workDir,
@@ -577,34 +728,177 @@ export async function runRecipe(
 	}
 	runRegistry.set(runId, controller);
 
+	// ADR-021 — audit row insert. Non-critical: a DB failure here logs but
+	// never blocks the recipe run (recordRunStart wraps in try/catch).
+	recordRunStart({
+		runId,
+		recipe: recipe.name,
+		recipeVersion: recipe.version,
+		project: recipe.project ?? 'naseej',
+		mode,
+		source,
+		startedAt: startedAt.getTime(),
+	});
+
+	// ADR-018 — SSE recipe_start. Subscribers see the run shape immediately.
+	publishEvent({
+		type: 'recipe_start',
+		runId,
+		recipe: recipe.name,
+		recipeVersion: recipe.version,
+		project: recipe.project ?? 'naseej',
+		mode,
+		source,
+		ts: startedAt.getTime(),
+	});
+
 	const stepsCtx = ctx.steps as Record<string, { outputs: Record<string, unknown> }>;
 	const stepResults: StepResult[] = [];
 	let failedStep: string | undefined;
 
 	try {
 		for (const step of order) {
-			const stepResult = isAgentStep(step)
-				? await runAgentStep(step, ctx, controller.signal, mode)
-				: await runComponentStep(step, catalog, ctx);
+			const stepStartedAt = Date.now();
+			// ADR-011 — step_start carries the step kind so SSE consumers can
+			// pick the right UI (form for human, approve/reject for gate, log
+			// view for component/agent). Cast to widen the event union without
+			// editing every consumer; the runtime value is always one of the 4.
+			const stepKind: 'component' | 'agent' = isAgentStep(step)
+				? 'agent'
+				: isHumanStep(step) || isGateStep(step)
+					? 'component' // surface as 'component' so existing consumers don't break; human/gate-specific events carry the kind
+					: 'component';
+			publishEvent({
+				type: 'step_start',
+				runId,
+				stepId: step.id,
+				stepKind,
+				ts: stepStartedAt,
+			});
+			let stepResult: StepResult;
+			if (isAgentStep(step)) {
+				// ADR-020: per-step mode override falls back to recipe-wide mode.
+				const stepMode: DispatchMode = step.mode ?? mode;
+				stepResult = await runAgentStep(step, ctx, controller.signal, stepMode, (ev) => {
+					publishEvent({
+						type: 'step_output',
+						runId,
+						stepId: step.id,
+						payload: ev,
+						ts: Date.now(),
+					});
+				});
+			} else if (isHumanStep(step)) {
+				stepResult = await runHumanStep(step, runId, controller.signal);
+			} else if (isGateStep(step)) {
+				stepResult = await runGateStep(step, runId, controller.signal);
+			} else {
+				stepResult = await runComponentStep(step, catalog, ctx);
+			}
 			stepResults.push(stepResult);
 			stepsCtx[step.id] = { outputs: stepResult.outputs ?? {} };
 			if (stepResult.exit_code !== 0) {
+				publishEvent({
+					type: 'step_failed',
+					runId,
+					stepId: step.id,
+					exitCode: stepResult.exit_code,
+					durationMs: stepResult.duration_ms,
+					...(stepResult.error ? { error: stepResult.error } : {}),
+					ts: Date.now(),
+				});
 				failedStep = step.id;
 				break;
 			}
+			publishEvent({
+				type: 'step_complete',
+				runId,
+				stepId: step.id,
+				exitCode: stepResult.exit_code,
+				durationMs: stepResult.duration_ms,
+				ts: Date.now(),
+			});
 		}
 	} finally {
 		runRegistry.delete(runId);
 	}
 
 	const finishedAt = new Date();
+	// ADR-021 — cancel-vs-fail discrimination. The cancel endpoint aborts
+	// the controller; the loop breaks on the next step's signal check and
+	// the failing step's `error` carries an abort signature. Use the
+	// controller's signal state as the canonical signal: if aborted, the
+	// run was cancelled regardless of which step failed.
+	const wasCancelled = controller.signal.aborted;
+	const status: 'success' | 'failed' | 'cancelled' = wasCancelled
+		? 'cancelled'
+		: failedStep
+			? 'failed'
+			: 'success';
+	const durationMs = finishedAt.getTime() - startedAt.getTime();
+	const costUsd = stepResults.reduce((sum, s) => sum + (s.cost_usd ?? 0), 0);
+	const failedStepResult = failedStep
+		? stepResults.find((s) => s.id === failedStep)
+		: undefined;
+
+	// ADR-021 — audit row update. Project per-step state to a minimal shape
+	// (id + kind + exit_code + duration_ms + error) so the column stays
+	// query-friendly; the full step output stays in the runs/ filesystem
+	// dir (this table is the index, not the storage).
+	recordRunEnd({
+		runId,
+		status,
+		finishedAt: finishedAt.getTime(),
+		durationMs,
+		stepsJson: JSON.stringify(
+			stepResults.map((s) => ({
+				id: s.id,
+				kind: s.kind,
+				exit_code: s.exit_code,
+				duration_ms: s.duration_ms,
+				...(s.error ? { error: s.error } : {}),
+			})),
+		),
+		...(failedStepResult?.error ? { error: failedStepResult.error } : {}),
+		...(failedStep ? { failedStep } : {}),
+		...(costUsd > 0 ? { costUsd } : {}),
+	});
+
+	// ADR-018 — terminal event. SSE subscribers see this then the bus
+	// closes the run ~10s later.
+	if (status === 'cancelled') {
+		publishEvent({
+			type: 'recipe_cancelled',
+			runId,
+			durationMs,
+			...(failedStep ? { failedStep } : {}),
+			ts: finishedAt.getTime(),
+		});
+	} else if (status === 'failed') {
+		publishEvent({
+			type: 'recipe_failed',
+			runId,
+			durationMs,
+			...(failedStep ? { failedStep } : {}),
+			...(failedStepResult?.error ? { error: failedStepResult.error } : {}),
+			ts: finishedAt.getTime(),
+		});
+	} else {
+		publishEvent({
+			type: 'recipe_complete',
+			runId,
+			durationMs,
+			ts: finishedAt.getTime(),
+		});
+	}
+
 	return {
 		run_id: runId,
 		recipe: recipe.name,
-		status: failedStep ? 'failed' : 'success',
+		status: status === 'cancelled' ? 'failed' : status,
 		started_at: startedAt.toISOString(),
 		finished_at: finishedAt.toISOString(),
-		duration_ms: finishedAt.getTime() - startedAt.getTime(),
+		duration_ms: durationMs,
 		steps: stepResults,
 		...(failedStep ? { failed_step: failedStep } : {}),
 	};

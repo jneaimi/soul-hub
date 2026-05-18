@@ -1,0 +1,9 @@
+name: timeout-smoke-naseej
+version: 1.0.0
+project: naseej
+description: ADR-011 timeout test — 2s pause, no responder, expect fail
+steps:
+  - id: ask
+    human:
+      prompt: "anyone home?"
+      timeout_sec: 2

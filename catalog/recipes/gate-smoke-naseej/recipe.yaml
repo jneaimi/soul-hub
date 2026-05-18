@@ -1,0 +1,14 @@
+name: gate-smoke-naseej
+version: 1.0.0
+project: naseej
+description: |
+  ADR-011 v1 smoke — single gate step. Pauses on POST /run, expects a
+  POST /respond with {decision, comment?}, returns the decision in
+  steps.approve.outputs.decision.
+
+steps:
+  - id: approve
+    gate:
+      prompt: "Approve the deployment?"
+      allow_comment: true
+      timeout_sec: 60

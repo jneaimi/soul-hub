@@ -23,37 +23,41 @@
 	let loading = $state(true);
 	let loadError = $state<string | null>(null);
 	let components = $state<NaseejComponent[]>([]);
+	let total = $state(0);
 	let facets = $state<{ categories: string[]; runtimes: string[] }>({ categories: [], runtimes: [] });
 	let category = $state<string>('');
 	let runtime = $state<string>('');
 	let q = $state<string>('');
 
-	const filtered = $derived.by(() => {
-		return components.filter((c) => {
-			if (category && (c.category || '') !== category) return false;
-			if (runtime && (c.runtime || '') !== runtime) return false;
-			if (q) {
-				const hay = `${c.name} ${c.description || ''}`.toLowerCase();
-				if (!hay.includes(q.toLowerCase())) return false;
-			}
-			return true;
-		});
-	});
-
 	async function load() {
 		loading = true;
 		try {
-			const res = await fetch('/api/components');
+			const params = new URLSearchParams();
+			if (category) params.set('category', category);
+			if (runtime) params.set('runtime', runtime);
+			if (q) params.set('q', q);
+			const qs = params.toString();
+			const res = await fetch(`/api/components${qs ? `?${qs}` : ''}`);
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			const data = (await res.json()) as ApiResponse;
 			components = data.results;
-			facets = data.facets;
+			total = data.total;
+			// Facets are catalog-wide, not filter-dependent — only update them
+			// on the unfiltered fetch so the dropdowns stay populated.
+			if (!qs) facets = data.facets;
 			loadError = null;
 		} catch (err) {
 			loadError = (err as Error).message;
 		} finally {
 			loading = false;
 		}
+	}
+
+	// Debounce search input so we don't refetch on every keystroke.
+	let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+	function scheduleLoad() {
+		clearTimeout(debounceTimer);
+		debounceTimer = setTimeout(load, 200);
 	}
 
 	onMount(load);
@@ -85,6 +89,12 @@
 			</p>
 		</div>
 		<div class="flex items-center gap-2">
+			<a
+				href="/naseej/audit"
+				class="px-3 py-1.5 text-xs rounded-md border border-hub-border text-hub-muted hover:text-hub-text hover:bg-hub-card transition-colors"
+			>
+				Audit
+			</a>
 			<button
 				class="px-3 py-1.5 text-xs rounded-md border border-hub-border text-hub-muted hover:text-hub-text hover:bg-hub-card transition-colors"
 				onclick={load}
@@ -110,10 +120,12 @@
 			type="text"
 			placeholder="Search name or description…"
 			bind:value={q}
+			oninput={scheduleLoad}
 			class="flex-1 min-w-[200px] px-3 py-1.5 bg-hub-card border border-hub-border rounded-md text-hub-text placeholder:text-hub-muted/50 focus:outline-none focus:border-hub-info"
 		/>
 		<select
 			bind:value={category}
+			onchange={load}
 			class="px-3 py-1.5 bg-hub-card border border-hub-border rounded-md text-hub-text focus:outline-none focus:border-hub-info"
 		>
 			<option value="">All categories</option>
@@ -123,6 +135,7 @@
 		</select>
 		<select
 			bind:value={runtime}
+			onchange={load}
 			class="px-3 py-1.5 bg-hub-card border border-hub-border rounded-md text-hub-text focus:outline-none focus:border-hub-info"
 		>
 			<option value="">All runtimes</option>
@@ -130,26 +143,26 @@
 				<option value={rt}>{rt}</option>
 			{/each}
 		</select>
-		<span class="text-hub-muted ml-2">{filtered.length} of {components.length}</span>
+		<span class="text-hub-muted ml-2">{components.length} shown</span>
 	</div>
 
 	<!-- Component cards -->
 	{#if loading && components.length === 0}
 		<div class="text-sm text-hub-muted py-12 text-center">Loading components…</div>
-	{:else if components.length === 0}
+	{:else if components.length === 0 && (category || runtime || q)}
+		<div class="border border-dashed border-hub-border rounded-md py-12 text-center">
+			<p class="text-sm text-hub-muted">No components match the current filter.</p>
+		</div>
+		{:else if components.length === 0}
 		<div class="border border-dashed border-hub-border rounded-md py-12 text-center">
 			<p class="text-sm text-hub-muted">
 				No components published yet. Drop a <code class="text-xs bg-hub-card px-1 rounded">BLOCK.md</code>
 				under <code class="text-xs bg-hub-card px-1 rounded">catalog/components/&lt;name&gt;/</code> and reload.
 			</p>
 		</div>
-	{:else if filtered.length === 0}
-		<div class="border border-dashed border-hub-border rounded-md py-12 text-center">
-			<p class="text-sm text-hub-muted">No components match the current filter.</p>
-		</div>
 	{:else}
 		<ul class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-			{#each filtered as comp}
+			{#each components as comp}
 				<li
 					class="border border-hub-border rounded-md p-4 bg-hub-card/30 hover:bg-hub-card/60 transition-colors"
 				>

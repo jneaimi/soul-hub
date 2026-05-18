@@ -130,6 +130,10 @@ const AgentStepBudgetSchema = z
 	.strict();
 export type AgentStepBudget = z.infer<typeof AgentStepBudgetSchema>;
 
+/** Per-step dispatch mode override (ADR-020). When unset, the runner falls
+ *  back to the recipe-wide `mode`, which itself defaults to 'production'. */
+const DispatchModeEnum = z.enum(['production', 'test', 'oneshot']);
+
 const AgentStepSchema = z
 	.object({
 		id: KebabSlug,
@@ -138,10 +142,60 @@ const AgentStepSchema = z
 		context: z.string().optional(),
 		budget: AgentStepBudgetSchema.optional(),
 		goal_condition: z.string().optional(),
+		mode: DispatchModeEnum.optional(),
 		depends_on: z.array(z.string()).optional(),
 	})
 	.strict();
 export type AgentStep = z.infer<typeof AgentStepSchema>;
+
+/** Human-interactive step (ADR-011) — pauses the runner, emits a `human_required`
+ *  SSE event with the field schema; resumes when `POST /api/recipes/runs/<id>/respond`
+ *  carries the matching payload. Response becomes `{{steps.<id>.outputs.response}}`.
+ *  Default timeout 3600s (1h); per-step `timeout_sec` overrides. */
+const HumanStepFieldSchema = z
+	.object({
+		name: KebabSlug,
+		type: z.enum(['text', 'textarea', 'select', 'number', 'boolean']),
+		label: z.string().optional(),
+		required: z.boolean().optional(),
+		options: z.array(z.string()).optional(),
+	})
+	.strict();
+export type HumanStepField = z.infer<typeof HumanStepFieldSchema>;
+
+const HumanStepSchema = z
+	.object({
+		id: KebabSlug,
+		human: z
+			.object({
+				prompt: z.string().min(1, 'human step prompt may not be empty'),
+				fields: z.array(HumanStepFieldSchema).optional(),
+				timeout_sec: z.number().int().positive().optional(),
+			})
+			.strict(),
+		depends_on: z.array(z.string()).optional(),
+	})
+	.strict();
+export type HumanStep = z.infer<typeof HumanStepSchema>;
+
+/** Gate step (ADR-011) — pauses the runner, emits a `gate_required` event,
+ *  resumes when respond carries `{decision: 'approved'|'rejected', comment?}`.
+ *  Default timeout 3600s; per-step `timeout_sec` overrides. Distinct from
+ *  `human` because the decision shape is fixed binary + branchable downstream. */
+const GateStepSchema = z
+	.object({
+		id: KebabSlug,
+		gate: z
+			.object({
+				prompt: z.string().min(1, 'gate step prompt may not be empty'),
+				allow_comment: z.boolean().optional(),
+				timeout_sec: z.number().int().positive().optional(),
+			})
+			.strict(),
+		depends_on: z.array(z.string()).optional(),
+	})
+	.strict();
+export type GateStep = z.infer<typeof GateStepSchema>;
 
 /** Recipe step: discriminated by shape — `agent:` or `component:` (exactly
  *  one). Zod's `discriminatedUnion` wants a literal field; we don't want to
@@ -149,8 +203,13 @@ export type AgentStep = z.infer<typeof AgentStepSchema>;
  *  unambiguous, so we union the two object schemas and rely on `.strict()`
  *  on each plus the superRefine in RecipeSchema to enforce mutual exclusion
  *  AND that one of them is present. */
-const RecipeStepSchema = z.union([ComponentStepSchema, AgentStepSchema]);
-export type RecipeStep = ComponentStep | AgentStep;
+const RecipeStepSchema = z.union([
+	ComponentStepSchema,
+	AgentStepSchema,
+	HumanStepSchema,
+	GateStepSchema,
+]);
+export type RecipeStep = ComponentStep | AgentStep | HumanStep | GateStep;
 
 /** Type guard — runner uses this to pick the dispatch branch. */
 export function isAgentStep(step: RecipeStep): step is AgentStep {
@@ -160,6 +219,16 @@ export function isAgentStep(step: RecipeStep): step is AgentStep {
 /** Type guard — runner uses this to pick the dispatch branch. */
 export function isComponentStep(step: RecipeStep): step is ComponentStep {
 	return 'component' in step;
+}
+
+/** Type guard — ADR-011 human/interactive step. */
+export function isHumanStep(step: RecipeStep): step is HumanStep {
+	return 'human' in step;
+}
+
+/** Type guard — ADR-011 gate/decision step. */
+export function isGateStep(step: RecipeStep): step is GateStep {
+	return 'gate' in step;
 }
 
 /** Full recipe.yaml schema. ADR-003 requires `project:` so it's required here. */

@@ -30,6 +30,7 @@ import {
 	loadAllComponentManifests,
 	loadComponentManifestSafe,
 } from '$lib/naseej/manifest.js';
+import { recordPublish } from '$lib/naseej/audit.js';
 
 /** Per-test-file timeout. Tests today run in <2s (stop-slop) to <10s (vault-write). */
 const TEST_TIMEOUT_MS = 60_000;
@@ -143,18 +144,21 @@ export const GET: RequestHandler = async ({ url }) => {
 			return true;
 		})
 		.map((r) => ({
+			// List shape — only the fields the marketplace cards render. The
+			// full per-component detail (`inputs`, `outputs`, `invocation`)
+			// belongs in a future detail endpoint, not the list payload —
+			// keeping it out shaves ~60% off the response on a 20-component
+			// catalog and tightens the contract.
 			name: r.manifest.name,
 			version: r.manifest.version,
 			id: r.id,
 			type: r.manifest.type,
 			category: r.manifest.category,
 			runtime: r.manifest.runtime,
+			tier: r.manifest.tier,
 			description: r.manifest.description,
 			author: r.manifest.author,
 			project: r.manifest.project,
-			inputs: r.manifest.inputs,
-			outputs: r.manifest.outputs,
-			invocation: r.manifest.invocation,
 			manifest_path: r.manifest_path,
 		}));
 
@@ -217,6 +221,13 @@ export const POST: RequestHandler = async ({ request }) => {
 			duration_ms: Date.now() - startedAt,
 			checks,
 		};
+		recordPublish({
+			component: name,
+			publishedAt: Date.now(),
+			status: 'failed',
+			checksJson: JSON.stringify(checks),
+			durationMs: result.duration_ms,
+		});
 		return json(result, { status: 422 });
 	}
 	checks.push({ name: 'manifest_schema', status: 'passed' });
@@ -237,6 +248,14 @@ export const POST: RequestHandler = async ({ request }) => {
 			duration_ms: Date.now() - startedAt,
 			checks,
 		};
+		recordPublish({
+			component: record.manifest.name,
+			version: record.manifest.version,
+			publishedAt: Date.now(),
+			status: 'failed',
+			checksJson: JSON.stringify(checks),
+			durationMs: result.duration_ms,
+		});
 		return json(result, { status: 422 });
 	}
 	checks.push({ name: 'entry_exists', status: 'passed' });
@@ -300,5 +319,13 @@ export const POST: RequestHandler = async ({ request }) => {
 		duration_ms: Date.now() - startedAt,
 		checks,
 	};
+	recordPublish({
+		component: record.manifest.name,
+		version: record.manifest.version,
+		publishedAt: Date.now(),
+		status: failed ? 'failed' : 'passed',
+		checksJson: JSON.stringify(checks),
+		durationMs: result.duration_ms,
+	});
 	return json(result, { status: failed ? 422 : 200 });
 };
