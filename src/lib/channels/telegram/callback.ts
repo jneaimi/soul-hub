@@ -58,6 +58,13 @@ import {
 import { getMessage as getInboxMessage } from '../../inbox/index.js';
 import { findContactByEmail } from '../../crm/index.js';
 import { getVaultEngine } from '../../vault/index.js';
+import { dispatchAgent } from '../../agents/dispatch/index.js';
+import {
+	formatKeeperTask,
+	parseKeeperResult,
+	formatTelegramResult,
+	formatBatchList,
+} from '../../vault-hygiene/link-fix-payload.js';
 import {
 	getYoutubeCount,
 	incrementYoutubeCount,
@@ -128,7 +135,13 @@ type VaultHygieneVerb =
 	| 'vh-orphan-arc-n' // cancelled
 	| 'vh-inbox-drop' // first tap on stale_inbox_item → swap to confirm/cancel
 	| 'vh-inbox-drop-y' // confirmed → dropStaleInboxItem()
-	| 'vh-inbox-drop-n'; // cancelled
+	| 'vh-inbox-drop-n' // cancelled
+	// Bulk fix-broken-links — aggregate digest with one button row per batch.
+	// vh-fix-all dispatches the keeper agent against the batch; the other
+	// two are pure text-edits on the aggregate message.
+	| 'vh-fix-all' // dispatch keeper to bulk-fix the batch
+	| 'vh-fix-list' // expand the aggregate to a text-only enumeration
+	| 'vh-fix-skip'; // dismiss this batch (reappears in next digest)
 
 interface PendingButtonRow {
 	conversationKey: string;
@@ -299,7 +312,10 @@ function parseCallbackData(data: string): ParsedCallback | null {
 		verb === 'vh-orphan-arc-n' ||
 		verb === 'vh-inbox-drop' ||
 		verb === 'vh-inbox-drop-y' ||
-		verb === 'vh-inbox-drop-n'
+		verb === 'vh-inbox-drop-n' ||
+		verb === 'vh-fix-all' ||
+		verb === 'vh-fix-list' ||
+		verb === 'vh-fix-skip'
 	) {
 		return { kind: 'vault-hygiene', verb, id };
 	}
@@ -1261,11 +1277,86 @@ interface PendingVaultHygieneRow {
 const pendingVaultHygieneButtons = new Map<string, PendingVaultHygieneRow>();
 const VAULT_HYG_PENDING_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
+/** Per-batch state for the vh-fix-* aggregate flow. Keyed by a stable
+ *  id derived from the batch contents; the keyboard's callback_data
+ *  carries just the id so it fits inside Telegram's 64-byte cap.
+ *
+ *  Holds the full batch (source/raw pairs) so the callback handler
+ *  can build the keeper task message without round-tripping back to
+ *  the vault hygiene report (which may have shifted by the time the
+ *  operator taps the button). */
+interface PendingFixBatchRow {
+	batch: { source: string; raw: string }[];
+	digestText: string; // original aggregate body, for vh-fix-list restoration
+	chatJid: string;
+	messageId: number;
+	createdAt: number;
+}
+const pendingFixBatchButtons = new Map<string, PendingFixBatchRow>();
+const FIX_BATCH_PENDING_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 /** Deterministic id for a (source, raw) wikilink anomaly. SHA-1
  *  truncated to 16 chars keeps `vh-unlink-y:<id>` comfortably inside
  *  Telegram's 64-byte callback_data cap (≈26 bytes total). */
 function vaultHygieneIdFor(source: string, raw: string, bucket: string): string {
 	return createHash('sha1').update(`${source}\0${raw}\0${bucket}`).digest('base64url').slice(0, 16);
+}
+
+/** Stable id for a fix-batch keyboard. Hashes the source/raw pairs
+ *  in sorted order so two equivalent batches (same links, different
+ *  arrival order) collide intentionally — taps on either button
+ *  resolve against the same pending row. */
+function fixBatchIdFor(batch: { source: string; raw: string }[]): string {
+	const canonical = batch
+		.map((b) => `${b.source}\0${b.raw}`)
+		.sort()
+		.join('\n');
+	return createHash('sha1').update(canonical).digest('base64url').slice(0, 16);
+}
+
+/** Build the 3-button keyboard for an aggregate fix-batch message.
+ *  Buttons: `🤖 Fix all (N)` — dispatch keeper; `📋 Show list` —
+ *  expand to text; `⏭ Skip` — dismiss. */
+export function buildFixBatchKeyboard(
+	batch: { source: string; raw: string }[],
+): InlineKeyboardMarkup {
+	const id = fixBatchIdFor(batch);
+	return {
+		inline_keyboard: [
+			[
+				{ text: `🤖 Fix all (${batch.length})`, callback_data: `vh-fix-all:${id}` },
+				{ text: '📋 Show list', callback_data: `vh-fix-list:${id}` },
+				{ text: '⏭ Skip', callback_data: `vh-fix-skip:${id}` },
+			],
+		],
+	};
+}
+
+/** Stash the batch context so the callback handler can resolve a tap
+ *  back to the full source/raw list. Caller (the escalator) calls this
+ *  immediately AFTER sending the aggregate message and learning the
+ *  Telegram messageId. TTL prune is opportunistic on every store. */
+export function rememberFixBatch(args: {
+	batch: { source: string; raw: string }[];
+	digestText: string;
+	chatJid: string;
+	messageId: number;
+}): string {
+	const id = fixBatchIdFor(args.batch);
+	pendingFixBatchButtons.set(id, {
+		batch: args.batch,
+		digestText: args.digestText,
+		chatJid: args.chatJid,
+		messageId: args.messageId,
+		createdAt: Date.now(),
+	});
+	const now = Date.now();
+	for (const [k, v] of pendingFixBatchButtons) {
+		if (now - v.createdAt > FIX_BATCH_PENDING_TTL_MS) {
+			pendingFixBatchButtons.delete(k);
+		}
+	}
+	return id;
 }
 
 /** Build the inline keyboard for an `unresolved` (broken_link) anomaly.
@@ -1364,6 +1455,17 @@ async function handleVaultHygieneCallback(
 	parsed: VaultHygieneParse,
 	_config: TelegramChannelConfig,
 ): Promise<void> {
+	// Fast-path for the bulk fix-batch verbs — they resolve against a
+	// different pending map (per-batch instead of per-link).
+	if (
+		parsed.verb === 'vh-fix-all' ||
+		parsed.verb === 'vh-fix-list' ||
+		parsed.verb === 'vh-fix-skip'
+	) {
+		await handleFixBatchCallback(query, parsed);
+		return;
+	}
+
 	const row = pendingVaultHygieneButtons.get(parsed.id);
 	if (!row) {
 		await answerCallbackQuery({
@@ -1571,6 +1673,157 @@ export function buildInboxDigestKeyboard(messageId: number): InlineKeyboardMarku
 			],
 		],
 	};
+}
+
+/** Bulk fix-batch callback branch. Three verbs share the per-batch
+ *  pending map:
+ *   - vh-fix-all : edit message to "running…", spawn keeper dispatch
+ *                  async, on completion edit to the result summary
+ *   - vh-fix-list: edit message body to a text-only enumeration of
+ *                  the batch (no agent dispatch)
+ *   - vh-fix-skip: edit message to "skipped — reappears next digest"
+ *
+ *  The dispatch is fire-and-forget — the callback handler answers
+ *  Telegram within a few seconds (well inside the callback_query
+ *  timeout) while the keeper runs in the background. */
+async function handleFixBatchCallback(
+	query: TgCallbackQuery,
+	parsed: VaultHygieneParse,
+): Promise<void> {
+	const row = pendingFixBatchButtons.get(parsed.id);
+	if (!row) {
+		await answerCallbackQuery({
+			callback_query_id: query.id,
+			text: 'Fix-batch id expired — wait for next vault-hygiene tick',
+		});
+		return;
+	}
+
+	switch (parsed.verb) {
+		case 'vh-fix-list': {
+			// Pure text-edit. Show the full enumerated list; keyboard
+			// stays so the operator can still tap Fix all / Skip.
+			try {
+				await editMessageText({
+					chat_id: row.chatJid,
+					message_id: row.messageId,
+					text: formatBatchList(row.batch),
+					parse_mode: 'Markdown',
+					reply_markup: buildFixBatchKeyboard(row.batch),
+				});
+			} catch {
+				/* swallow */
+			}
+			await answerCallbackQuery({ callback_query_id: query.id });
+			return;
+		}
+
+		case 'vh-fix-skip': {
+			try {
+				await editMessageText({
+					chat_id: row.chatJid,
+					message_id: row.messageId,
+					text:
+						`⏭ Skipped — ${row.batch.length} broken wikilink${row.batch.length === 1 ? '' : 's'} ` +
+						`will reappear in the next vault-hygiene tick.`,
+					parse_mode: 'Markdown',
+				});
+			} catch {
+				/* swallow */
+			}
+			pendingFixBatchButtons.delete(parsed.id);
+			await answerCallbackQuery({ callback_query_id: query.id });
+			return;
+		}
+
+		case 'vh-fix-all': {
+			// 1. Immediately edit the message to a "running" state so the
+			//    operator gets feedback within seconds. Drop the keyboard
+			//    so they can't double-fire while keeper is mid-flight.
+			try {
+				await editMessageText({
+					chat_id: row.chatJid,
+					message_id: row.messageId,
+					text:
+						`🔄 Dispatching keeper to bulk-fix ${row.batch.length} broken ` +
+						`wikilink${row.batch.length === 1 ? '' : 's'}…\n\n` +
+						`Typically takes 1–3 minutes. This message will update when done.`,
+					parse_mode: 'Markdown',
+				});
+			} catch {
+				/* swallow */
+			}
+			await answerCallbackQuery({
+				callback_query_id: query.id,
+				text: '🤖 Keeper dispatched',
+			});
+
+			// 2. Fire-and-forget background dispatch. Wrapped in an async
+			//    IIFE so errors are logged but don't crash the channel
+			//    handler.
+			void (async () => {
+				try {
+					const task = formatKeeperTask(row.batch);
+					const generator = dispatchAgent('keeper', task, {
+						mode: 'production',
+					});
+					// Manual drain — TReturn carries the DispatchResult per
+					// `feedback_asyncgenerator_return_value_loop`.
+					let final: Awaited<ReturnType<typeof generator.next>> | null = null;
+					while (true) {
+						const next = await generator.next();
+						if (next.done) {
+							final = next;
+							break;
+						}
+					}
+					const result = final?.value;
+					if (!result || result.status === 'error') {
+						await editMessageText({
+							chat_id: row.chatJid,
+							message_id: row.messageId,
+							text:
+								`❌ Keeper dispatch failed — ${result?.error ?? 'unknown error'}\n\n` +
+								`Batch unchanged. Tap the digest button again or use \`/api/hygiene/vault-escalate-buttons\` to resurface.`,
+							parse_mode: 'Markdown',
+						});
+						return;
+					}
+					const parsedResult = parseKeeperResult(result.output);
+					if (!parsedResult) {
+						await editMessageText({
+							chat_id: row.chatJid,
+							message_id: row.messageId,
+							text:
+								`❌ Keeper output unparseable — no JSON result block found.\n\n` +
+								`First 800 chars:\n\`\`\`\n${result.output.slice(0, 800)}\n\`\`\``,
+							parse_mode: 'Markdown',
+						});
+						return;
+					}
+					await editMessageText({
+						chat_id: row.chatJid,
+						message_id: row.messageId,
+						text: formatTelegramResult(parsedResult, row.batch.length),
+						parse_mode: 'Markdown',
+					});
+					pendingFixBatchButtons.delete(parsed.id);
+				} catch (err) {
+					try {
+						await editMessageText({
+							chat_id: row.chatJid,
+							message_id: row.messageId,
+							text: `❌ Keeper crashed: ${(err as Error).message}`,
+							parse_mode: 'Markdown',
+						});
+					} catch {
+						/* swallow */
+					}
+				}
+			})();
+			return;
+		}
+	}
 }
 
 /** Inbox callback branch. Four verbs:

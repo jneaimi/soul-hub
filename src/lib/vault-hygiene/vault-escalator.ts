@@ -29,12 +29,14 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { sendText } from '../channels/telegram/outbound.js';
 import {
+	buildFixBatchKeyboard,
 	buildVaultHygieneOrphanKeyboard,
 	buildVaultHygieneStaleInboxKeyboard,
-	buildVaultHygieneUnresolvedKeyboard,
 	hasPendingVaultHygiene,
+	rememberFixBatch,
 	rememberVaultHygieneButtons,
 } from '../channels/telegram/callback.js';
+import { formatAggregateDigest } from './link-fix-payload.js';
 import { config as soulHubConfig } from '../config.js';
 import { getVaultEngine } from '../vault/index.js';
 import { getStaleInbox } from './stale-inbox.js';
@@ -265,48 +267,52 @@ export async function emitVaultHygieneEscalations(): Promise<VaultEscalationResu
 			name: 'unresolved',
 			total: unresolvedIssues.length,
 			run: async () => {
+				// Bulk-fix surface (new): one aggregate message with a
+				// `🤖 Fix all (N) · 📋 Show list · ⏭ Skip` keyboard
+				// instead of N per-row messages. Per-row vh-unlink rows
+				// are retired for this bucket — the operator does
+				// everything from the aggregate, or expands to the
+				// text-only list via the button.
 				const bucket = 'unresolved';
-				const cap = BUCKET_CAPS[bucket] ?? 10;
 				const suppressed = await loadActiveSuppressions(bucket);
-				let bucketSent = 0;
-				for (const link of unresolvedIssues) {
-					if (bucketSent >= cap) break;
-					const issue: UnresolvedIssue = {
-						source: link.source,
-						raw: link.raw,
-						suggestedFix: `Fuzzy-match \`${link.raw}\` against vault titles in \`${link.source}\` directory; correct the link or remove the line.`,
-					};
-					const key = vaultHygieneKeyFor(issue.source, issue.raw);
-					if (
-						suppressed.has(key) ||
-						hasPendingVaultHygiene(issue.source, issue.raw, bucket)
-					) {
-						byBucket[bucket].skipped++;
-						skipped++;
-						continue;
-					}
-					const result = await sendText(chatId, formatUnresolvedMessage(issue), delivery, {
-						replyMarkup: buildVaultHygieneUnresolvedKeyboard(issue.source, issue.raw),
-					});
-					if (!result.ok || result.messageIds.length === 0) {
+				const fresh = unresolvedIssues.filter((link) => {
+					const key = vaultHygieneKeyFor(link.source, link.raw);
+					return !suppressed.has(key);
+				});
+				const suppressedCount = unresolvedIssues.length - fresh.length;
+				byBucket[bucket].skipped += suppressedCount;
+				skipped += suppressedCount;
+				if (fresh.length === 0) return;
+
+				const batch = fresh.map((link) => ({
+					source: link.source,
+					raw: link.raw,
+				}));
+				const digestText = formatAggregateDigest(batch);
+				const result = await sendText(chatId, digestText, delivery, {
+					replyMarkup: buildFixBatchKeyboard(batch),
+				});
+				if (!result.ok || result.messageIds.length === 0) {
+					for (const link of fresh) {
 						failures.push({
-							source: issue.source,
-							raw: issue.raw,
+							source: link.source,
+							raw: link.raw,
 							error: result.error ?? 'send-failed',
 						});
-						continue;
 					}
-					rememberVaultHygieneButtons({
-						source: issue.source,
-						raw: issue.raw,
-						bucket,
-						chatJid: String(chatId),
-						messageId: result.messageIds[0],
-					});
-					byBucket[bucket].sent++;
-					sent++;
-					bucketSent++;
+					return;
 				}
+				rememberFixBatch({
+					batch,
+					digestText,
+					chatJid: String(chatId),
+					messageId: result.messageIds[0],
+				});
+				// All fresh links are now under one aggregate. Count as
+				// a single send (not N) so the metric reflects messages
+				// emitted, not links covered.
+				byBucket[bucket].sent += 1;
+				sent += 1;
 			},
 		},
 	];
