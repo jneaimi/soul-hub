@@ -1018,6 +1018,20 @@ export class VaultEngine {
 		const absSource = resolve(this.config.rootDir, path);
 		const absTarget = resolve(this.config.rootDir, newPath);
 
+		if (newPath === path) {
+			return { success: false, error: `Target zone equals source zone: ${path}` };
+		}
+
+		// Collision guard — `rename()` silently clobbers on POSIX. Refuse loud
+		// so the caller knows the target is occupied (mirrors ADR-012 archive
+		// guard).
+		try {
+			await stat(absTarget);
+			return { success: false, error: `Move target already exists: ${newPath}` };
+		} catch {
+			// Good — destination free.
+		}
+
 		try {
 			await mkdir(dirname(absTarget), { recursive: true });
 			await rename(absSource, absTarget);
