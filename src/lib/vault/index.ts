@@ -52,6 +52,35 @@ function validateProjectShape(
 	return null;
 }
 
+/** projects-graph ADR-002 — validate `status:` against the zone's canonical
+ *  set, honoring the `allowedStatusesScope` sentinel.
+ *
+ *  - `'decisions-only'` (zone default): only `type: decision` notes are checked.
+ *    Preserves pre-ADR-002 behaviour and lets every other type free-text status.
+ *  - `'all-types'`: every note with a non-empty `status:` field is checked.
+ *
+ *  Returns null on pass (including absent status, empty allowedStatuses, or
+ *  scope mismatch). Returns a refusal message on a non-canonical value.
+ *
+ *  The sentinel is the cutover lever: operators flip a zone to `all-types`
+ *  AFTER its migration runs to canonical-6, and the chokepoint immediately
+ *  refuses regressive writes. No code change required — just a CLAUDE.md
+ *  edit and a watcher-driven governance re-scan. */
+function validateStatusScope(meta: VaultMeta, zone: VaultZone): string | null {
+	if (zone.allowedStatuses.length === 0) return null;
+	const raw = meta.status;
+	if (raw === undefined || raw === null || raw === '') return null;
+	const scopeMatches =
+		zone.allowedStatusesScope === 'all-types' ||
+		meta.type === 'decision';
+	if (!scopeMatches) return null;
+	const value = String(raw).toLowerCase();
+	if (!zone.allowedStatuses.includes(value)) {
+		return `status "${raw}" not in canonical set (allowed: ${zone.allowedStatuses.join(', ')})`;
+	}
+	return null;
+}
+
 export class VaultEngine {
 	private indexer: VaultIndexer;
 	private searcher: VaultSearch;
@@ -82,6 +111,13 @@ export class VaultEngine {
 		// 9 ticks) clears without tripping, but a runaway loop still
 		// trips. Background-only — only the worker writes under this ID.
 		'inbox-auto-route': 200,
+		// projects-graph ADR-002 — one-shot status canonical-6 migration.
+		// ~192 notes touched in projects/ + knowledge/. Cap at 1000/hr so
+		// the whole run finishes in a single window without burning a
+		// 4-hour wall-clock against the default 50/hr limiter. Remove the
+		// override after the migration completes (single executor; the
+		// agent name is not reused for ongoing operations).
+		'status-migration': 1000,
 	};
 
 	private static rateLimitFor(agent: string): number {
@@ -272,20 +308,27 @@ export class VaultEngine {
 				}
 			}
 
-			// Canonical status check (decisions only). Empty allowedStatuses
-			// = no rule for this zone.
+			// Canonical status check. Scope sentinel decides which note types
+			// participate (projects-graph ADR-002):
+			//   - 'decisions-only' (default): only `type: decision` notes
+			//   - 'all-types': every note with a `status:` field
+			// Empty allowedStatuses = no rule for this zone (skip entirely).
 			if (
-				note.meta.type === 'decision' &&
 				zone.allowedStatuses.length > 0 &&
 				note.meta.status !== undefined &&
 				note.meta.status !== null &&
 				note.meta.status !== ''
 			) {
-				const status = String(note.meta.status).toLowerCase();
-				if (!zone.allowedStatuses.includes(status)) {
-					violations.push(
-						`Status "${note.meta.status}" not in canonical set (allowed: ${zone.allowedStatuses.join(', ')})`,
-					);
+				const scopeMatches =
+					zone.allowedStatusesScope === 'all-types' ||
+					note.meta.type === 'decision';
+				if (scopeMatches) {
+					const status = String(note.meta.status).toLowerCase();
+					if (!zone.allowedStatuses.includes(status)) {
+						violations.push(
+							`Status "${note.meta.status}" not in canonical set (allowed: ${zone.allowedStatuses.join(', ')})`,
+						);
+					}
 				}
 			}
 
@@ -498,6 +541,15 @@ export class VaultEngine {
 		const createShapeErr = validateProjectShape(join(req.zone, req.filename), req.meta, zone);
 		if (createShapeErr) {
 			return { success: false, error: createShapeErr, field: 'project_shape' };
+		}
+
+		// projects-graph ADR-002 — canonical-set status enforcement. Scope
+		// sentinel (`allowedStatusesScope`) decides whether this fires for
+		// every note or only `type: decision`. Operators flip a zone to
+		// `all-types` in CLAUDE.md after migration completes.
+		const createStatusErr = validateStatusScope(req.meta, zone);
+		if (createStatusErr) {
+			return { success: false, error: createStatusErr, field: 'status' };
 		}
 
 		// Validate naming pattern
@@ -836,6 +888,18 @@ export class VaultEngine {
 		const updateShapeErr = validateProjectShape(path, mergedMeta, updateZone);
 		if (updateShapeErr) {
 			return { success: false, error: updateShapeErr, field: 'project_shape' };
+		}
+
+		// projects-graph ADR-002 — canonical-set status check on update too.
+		// Post-merge meta means a caller sending only content inherits the
+		// existing status: a legacy note with `status: active` is not touched
+		// by a body-only update if the zone is still 'decisions-only' OR the
+		// note isn't a decision. Once the zone flips to 'all-types', a
+		// body-only update on a legacy non-canonical note WILL refuse —
+		// forcing a one-time migration of any straggler before further edits.
+		const updateStatusErr = validateStatusScope(mergedMeta, updateZone);
+		if (updateStatusErr) {
+			return { success: false, error: updateStatusErr, field: 'status' };
 		}
 
 		// ADR-047 — same wikilink validation as createNote. Always re-validates

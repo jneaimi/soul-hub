@@ -41,6 +41,7 @@ export class GovernanceResolver {
 				requireTemplate: false,
 				requiredFields: [],
 				allowedStatuses: [],
+				allowedStatusesScope: 'decisions-only',
 				allowedRelationshipFields: [],
 				allowedProjectShapes: [],
 				rawGovernance: ''
@@ -52,10 +53,17 @@ export class GovernanceResolver {
 		const inheritedStatuses = chain.find((z) => z.allowedStatuses.length > 0)?.allowedStatuses ?? [];
 		const inheritedRelationships = chain.find((z) => z.allowedRelationshipFields.length > 0)?.allowedRelationshipFields ?? [];
 		const inheritedProjectShapes = chain.find((z) => z.allowedProjectShapes.length > 0)?.allowedProjectShapes ?? [];
+		// projects-graph ADR-002 — scope sentinel. First explicit declaration
+		// in the chain wins; absent on every level defaults to decisions-only.
+		// Parsed from CLAUDE.md `## Allowed Statuses Scope` (single-value
+		// section); raw value normalised in parseGovernance.
+		const inheritedScope =
+			chain.find((z) => z.allowedStatusesScope !== 'decisions-only')?.allowedStatusesScope ?? 'decisions-only';
 
 		return {
 			...child,
 			allowedStatuses: inheritedStatuses,
+			allowedStatusesScope: inheritedScope,
 			allowedRelationshipFields: inheritedRelationships,
 			allowedProjectShapes: inheritedProjectShapes,
 		};
@@ -104,6 +112,11 @@ function parseGovernance(zonePath: string, raw: string): VaultZone {
 	// notes. Same parsing rule as Allowed Statuses (each bullet's leading
 	// identifier; trailing prose stripped).
 	const allowedProjectShapes = extractFieldNames(raw, 'Allowed Project Shapes');
+	// projects-graph ADR-002 — scope sentinel; single-value section. Default
+	// 'decisions-only' preserves the pre-ADR-002 behaviour (canonical-status
+	// check applies only to `type: decision`). 'all-types' broadens to every
+	// note in the zone with a `status:` field.
+	const allowedStatusesScope = extractScope(raw);
 	const namingPattern = extractNamingPattern(raw);
 	const requireTemplate =
 		/template\s+.*(?:required|MUST\s+use)/i.test(raw) ||
@@ -120,10 +133,29 @@ function parseGovernance(zonePath: string, raw: string): VaultZone {
 		requiredFields,
 		namingPattern: namingPattern ?? undefined,
 		allowedStatuses,
+		allowedStatusesScope,
 		allowedRelationshipFields,
 		allowedProjectShapes,
 		rawGovernance: raw
 	};
+}
+
+/** projects-graph ADR-002 — parse `## Allowed Statuses Scope` from CLAUDE.md.
+ *  Single-value section; reads the first non-empty line under the heading
+ *  and matches it against the two known values. Unknown / absent → defaults
+ *  to 'decisions-only' (pre-ADR-002 behaviour). */
+function extractScope(raw: string): 'decisions-only' | 'all-types' {
+	const pattern = /^##\s+Allowed\s+Statuses\s+Scope\s*$/im;
+	const match = pattern.exec(raw);
+	if (!match) return 'decisions-only';
+	const after = raw.slice(match.index + match[0].length);
+	const next = after.search(/^##\s+/m);
+	const block = (next === -1 ? after : after.slice(0, next)).trim();
+	const firstLine = block.split('\n').find((l) => l.trim() && !l.trim().startsWith('<!--'));
+	if (!firstLine) return 'decisions-only';
+	const value = firstLine.replace(/^[-*`\s]+|[`\s]+$/g, '').toLowerCase();
+	if (value === 'all-types') return 'all-types';
+	return 'decisions-only';
 }
 
 function extractListSection(raw: string, heading: string, zonePath?: string): string[] {

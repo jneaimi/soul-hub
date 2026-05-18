@@ -117,10 +117,18 @@ export interface VaultZone {
 	requiredFields: string[];
 	/** Naming pattern regex (validated on write) */
 	namingPattern?: string;
-	/** Allowed `status:` values for `type: decision` notes (canonical set per
-	 *  zone). Empty = no restriction. Sourced from CLAUDE.md `## Allowed
-	 *  Statuses` section. */
+	/** Allowed `status:` values (canonical set per zone). Empty = no
+	 *  restriction. Sourced from CLAUDE.md `## Allowed Statuses` section.
+	 *  Scope (decision-only vs all-types) is controlled separately via
+	 *  `allowedStatusesScope` — see below. */
 	allowedStatuses: string[];
+	/** projects-graph ADR-002 — which note types `allowedStatuses` applies to.
+	 *  `'decisions-only'` (default, backwards-compat): only `type: decision`
+	 *  notes get canonical-set validation. `'all-types'`: every note in the
+	 *  zone with a `status:` field gets validated, regardless of `type`.
+	 *  Sourced from CLAUDE.md `## Allowed Statuses Scope` (a one-line
+	 *  section containing exactly one of the two values). */
+	allowedStatusesScope: 'decisions-only' | 'all-types';
 	/** Allowed relationship-field NAMES on decision notes (e.g. supersedes,
 	 *  blocks, blocked_by, relates_to, extends, superseded_by). Values for
 	 *  these fields must be wikilink format `[[slug]]` (or list of). Empty =
