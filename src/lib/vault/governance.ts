@@ -42,6 +42,7 @@ export class GovernanceResolver {
 				requiredFields: [],
 				allowedStatuses: [],
 				allowedRelationshipFields: [],
+				allowedProjectShapes: [],
 				rawGovernance: ''
 			};
 		}
@@ -50,11 +51,13 @@ export class GovernanceResolver {
 		// Walk parent → root for the inheriting fields. First non-empty wins.
 		const inheritedStatuses = chain.find((z) => z.allowedStatuses.length > 0)?.allowedStatuses ?? [];
 		const inheritedRelationships = chain.find((z) => z.allowedRelationshipFields.length > 0)?.allowedRelationshipFields ?? [];
+		const inheritedProjectShapes = chain.find((z) => z.allowedProjectShapes.length > 0)?.allowedProjectShapes ?? [];
 
 		return {
 			...child,
 			allowedStatuses: inheritedStatuses,
 			allowedRelationshipFields: inheritedRelationships,
+			allowedProjectShapes: inheritedProjectShapes,
 		};
 	}
 
@@ -97,6 +100,10 @@ function parseGovernance(zonePath: string, raw: string): VaultZone {
 	// correctly to just `supersedes`.
 	const allowedStatuses = extractFieldNames(raw, 'Allowed Statuses');
 	const allowedRelationshipFields = extractFieldNames(raw, 'Allowed Relationship Fields');
+	// projects-graph ADR-001 — `project_shape:` enum for project-root index.md
+	// notes. Same parsing rule as Allowed Statuses (each bullet's leading
+	// identifier; trailing prose stripped).
+	const allowedProjectShapes = extractFieldNames(raw, 'Allowed Project Shapes');
 	const namingPattern = extractNamingPattern(raw);
 	const requireTemplate =
 		/template\s+.*(?:required|MUST\s+use)/i.test(raw) ||
@@ -114,6 +121,7 @@ function parseGovernance(zonePath: string, raw: string): VaultZone {
 		namingPattern: namingPattern ?? undefined,
 		allowedStatuses,
 		allowedRelationshipFields,
+		allowedProjectShapes,
 		rawGovernance: raw
 	};
 }

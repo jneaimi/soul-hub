@@ -24,6 +24,34 @@ function truncate(s: string, max: number): string {
 	return s.length <= max ? s : s.slice(0, max - 1) + '…';
 }
 
+/** projects-graph ADR-001 — match the project ROOT `index.md` (e.g.
+ *  `projects/soul-hub/index.md`). Nested `index.md` files (design/,
+ *  content-bank/, docs/) sit deeper and don't own `project_shape`. */
+function isProjectRootIndex(path: string): boolean {
+	return /^projects\/[^/]+\/index\.md$/.test(path);
+}
+
+/** projects-graph ADR-001 — validate `project_shape:` frontmatter value
+ *  against the zone's `allowedProjectShapes` enum. Returns null on pass
+ *  (including absent field — Day 1 cutover treats missing as OPTIONAL
+ *  but the hygiene reporter still flags it). Returns a refusal message
+ *  on non-enum values. */
+function validateProjectShape(
+	notePath: string,
+	meta: VaultMeta,
+	zone: VaultZone,
+): string | null {
+	if (!isProjectRootIndex(notePath)) return null;
+	if (zone.allowedProjectShapes.length === 0) return null;
+	const raw = meta.project_shape;
+	if (raw === undefined || raw === null || raw === '') return null;
+	const value = String(raw).toLowerCase();
+	if (!zone.allowedProjectShapes.includes(value)) {
+		return `project_shape "${raw}" not in canonical set (allowed: ${zone.allowedProjectShapes.join(', ')})`;
+	}
+	return null;
+}
+
 export class VaultEngine {
 	private indexer: VaultIndexer;
 	private searcher: VaultSearch;
@@ -219,6 +247,28 @@ export class VaultEngine {
 			for (const field of zone.requiredFields) {
 				if (!(field in note.meta) || note.meta[field] === undefined || note.meta[field] === '') {
 					violations.push(`Missing required field: ${field}`);
+				}
+			}
+
+			// projects-graph ADR-001 — project_shape hygiene flag on project
+			// root index.md. Day 1 cutover: missing values escalate via the
+			// keeper digest (no chokepoint REFUSE yet). Non-enum values are
+			// caught here too (defence in depth — the chokepoint refuses on
+			// write, but a pre-ADR file written before this rule shipped will
+			// only surface via the hygiene scan).
+			if (isProjectRootIndex(note.path) && zone.allowedProjectShapes.length > 0) {
+				const raw = note.meta.project_shape;
+				if (raw === undefined || raw === null || raw === '') {
+					violations.push(
+						`Missing project_shape (projects-graph ADR-001 — allowed: ${zone.allowedProjectShapes.join(', ')})`,
+					);
+				} else {
+					const value = String(raw).toLowerCase();
+					if (!zone.allowedProjectShapes.includes(value)) {
+						violations.push(
+							`project_shape "${raw}" not in canonical set (allowed: ${zone.allowedProjectShapes.join(', ')})`,
+						);
+					}
 				}
 			}
 
@@ -439,6 +489,15 @@ export class VaultEngine {
 			if (!(field in req.meta) || req.meta[field] === undefined || req.meta[field] === '') {
 				return { success: false, error: `Zone "${req.zone}" requires field: ${field}`, field };
 			}
+		}
+
+		// projects-graph ADR-001 — project_shape enum check on the project
+		// root index.md. Refuse non-enum values; missing values are
+		// accepted Day 1 and surface as a hygiene violation via
+		// getGovernanceViolations() (keeper Telegram digest).
+		const createShapeErr = validateProjectShape(join(req.zone, req.filename), req.meta, zone);
+		if (createShapeErr) {
+			return { success: false, error: createShapeErr, field: 'project_shape' };
 		}
 
 		// Validate naming pattern
@@ -768,6 +827,15 @@ export class VaultEngine {
 			if (!(field in mergedMeta) || mergedMeta[field] === undefined || mergedMeta[field] === '') {
 				return { success: false, error: `Missing required field: ${field}`, field };
 			}
+		}
+
+		// projects-graph ADR-001 — project_shape enum check on update too.
+		// Validates against the post-merge meta; a caller sending only `content`
+		// inherits the existing meta and passes through unchanged.
+		const updateZone = this.governance.resolve(dirname(path));
+		const updateShapeErr = validateProjectShape(path, mergedMeta, updateZone);
+		if (updateShapeErr) {
+			return { success: false, error: updateShapeErr, field: 'project_shape' };
 		}
 
 		// ADR-047 — same wikilink validation as createNote. Always re-validates

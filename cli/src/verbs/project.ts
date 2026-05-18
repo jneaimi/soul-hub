@@ -1,5 +1,18 @@
-import { apiGet, apiPost } from '../api.ts';
+import { apiGet, apiPost, apiPut } from '../api.ts';
 import { emit, fail, ageDays, todayIso, exitIfApiFailure, type OutputOpts } from '../output.ts';
+
+/** projects-graph ADR-001 — canonical shape enum. Kept in lockstep with
+ *  `PROJECT_SHAPES` in `src/lib/vault/types.ts` and the `## Allowed Project
+ *  Shapes` section in `~/vault/projects/CLAUDE.md`. Used by `label-shape`. */
+const PROJECT_SHAPES = [
+  'coding-spine',
+  'producer-pipeline',
+  'publishing-outlet',
+  'strategy-initiative',
+  'time-boxed-bet',
+  'maintained-system',
+  'parent',
+] as const;
 
 interface ProjectRow {
   slug: string;
@@ -100,6 +113,54 @@ export async function create(args: Record<string, string | undefined>, opts: Out
     d.success === false
       ? `✗ ${d.error ?? 'unknown error'}`
       : `✓ created project ${slug} → ${d.path ?? `projects/${slug}/index.md`}`,
+  );
+  exitIfApiFailure(data);
+}
+
+/** projects-graph ADR-001 — set the `project_shape:` frontmatter on a
+ *  project root `index.md` via the vault chokepoint (PUT /api/vault/notes).
+ *  Validates the value against the canonical enum BEFORE the HTTP call so
+ *  errors point at the CLI (not the API) when the operator fat-fingers a
+ *  shape. Supports `--dry-run`.
+ *
+ *  Usage:
+ *    soul project label-shape <slug> --shape <shape>
+ *    soul project label-shape <slug> <shape>      (positional shape)
+ */
+export async function labelShape(args: Record<string, string | undefined>, opts: OutputOpts) {
+  // `args._` packs all positionals as `slug/shape` per index.ts:139.
+  const positionals = (args._ ?? '').split('/').filter(Boolean);
+  const slug = positionals[0];
+  const shape = args.shape ?? positionals[1];
+
+  if (!slug) fail('project label-shape: missing SLUG (e.g. soul project label-shape soul-hub --shape coding-spine)');
+  if (!shape) fail('project label-shape: missing SHAPE (--shape coding-spine; one of: ' + PROJECT_SHAPES.join(', ') + ')');
+  if (!(PROJECT_SHAPES as readonly string[]).includes(shape)) {
+    fail(`project label-shape: invalid shape "${shape}". Allowed: ${PROJECT_SHAPES.join(', ')}`);
+  }
+
+  const path = `projects/${slug}/index.md`;
+  const body = {
+    meta: {
+      project_shape: shape,
+      // Stamp WHO labelled and WHEN for the Day 1-7 sweep audit trail.
+      source_agent: 'soul-cli',
+      source_context: `soul project label-shape ${slug} ${shape} (${todayIso()})`,
+    },
+  };
+
+  if (args['dry-run']) {
+    emit({ dryRun: true, method: 'PUT', path: `/api/vault/notes/${path}`, body }, opts, (d: any) =>
+      `DRY RUN — PUT /api/vault/notes/${path}\nBody:\n${JSON.stringify(d.body, null, 2).split('\n').map((l) => '  ' + l).join('\n')}`,
+    );
+    return;
+  }
+
+  const data = await apiPut<WriteResp>(`/api/vault/notes/${path}`, body);
+  emit(data, opts, (d: WriteResp) =>
+    d.success === false
+      ? `✗ ${d.error ?? 'unknown error'}`
+      : `✓ labelled ${slug} → project_shape: ${shape}`,
   );
   exitIfApiFailure(data);
 }

@@ -11,6 +11,39 @@
 		other: number;
 	}
 
+	/** projects-graph ADR-001 — declared shape (5 primary + 2 meta). */
+	type ProjectShape =
+		| 'coding-spine'
+		| 'producer-pipeline'
+		| 'publishing-outlet'
+		| 'strategy-initiative'
+		| 'time-boxed-bet'
+		| 'maintained-system'
+		| 'parent';
+
+	const PROJECT_SHAPES_UI: readonly ProjectShape[] = [
+		'coding-spine',
+		'producer-pipeline',
+		'publishing-outlet',
+		'strategy-initiative',
+		'time-boxed-bet',
+		'maintained-system',
+		'parent',
+	] as const;
+
+	function shapeClass(s: ProjectShape | null): string {
+		switch (s) {
+			case 'coding-spine':         return 'bg-hub-info/15 text-hub-info';
+			case 'producer-pipeline':    return 'bg-hub-cta/15 text-hub-cta';
+			case 'publishing-outlet':    return 'bg-hub-warning/15 text-hub-warning';
+			case 'strategy-initiative':  return 'bg-hub-info/15 text-hub-info';
+			case 'time-boxed-bet':       return 'bg-hub-danger/15 text-hub-danger';
+			case 'maintained-system':    return 'bg-hub-muted/15 text-hub-muted';
+			case 'parent':               return 'bg-hub-dim/15 text-hub-dim';
+			default:                     return 'bg-hub-dim/15 text-hub-dim';
+		}
+	}
+
 	interface ProjectRollup {
 		slug: string;
 		adrCount: number;
@@ -18,9 +51,12 @@
 		statusCounts: StatusCounts;
 		openCount: number;
 		lastActivity: number | null;
-		upcomingFalsifiers: { path: string; date: string; daysAway: number }[];
+		upcomingFalsifiers: { path: string; date: string; daysAway: number; source?: 'project' }[];
 		hasIndex: boolean;
 		parentProject: string | null;
+		shape: ProjectShape | null;
+		projectFalsifier: string | null;
+		projectFalsifierDate: string | null;
 	}
 
 	interface TreeNode {
@@ -49,16 +85,20 @@
 	let error = $state('');
 	let filter = $state('');
 	let statusFilter = $state<'all' | 'open' | 'shipped' | 'archived'>('all');
+	/** projects-graph ADR-001 — operator-chosen shape filter. `'all'` shows
+	 *  every project; a concrete value scopes the list to that shape. */
+	let shapeFilter = $state<ProjectShape | 'all'>('all');
 	let expanded = $state<Set<string>>(new Set());
 
-	/** A project passes the row-level filter (text + status). The tree-walk
-	 *  below uses this to decide whether to keep a node OR any of its
-	 *  descendants (descendant-aware filtering). */
+	/** A project passes the row-level filter (text + status + shape). The
+	 *  tree-walk below uses this to decide whether to keep a node OR any of
+	 *  its descendants (descendant-aware filtering). */
 	function projectMatches(p: ProjectRollup): boolean {
 		if (filter && !p.slug.toLowerCase().includes(filter.toLowerCase())) return false;
 		if (statusFilter === 'open' && p.statusCounts.proposed === 0) return false;
 		if (statusFilter === 'shipped' && p.statusCounts.shipped === 0) return false;
 		if (statusFilter === 'archived' && p.adrCount > 0) return false;
+		if (shapeFilter !== 'all' && p.shape !== shapeFilter) return false;
 		return true;
 	}
 
@@ -118,7 +158,7 @@
 	 *  Computed only when filter is active so manual expand/collapse wins
 	 *  when filters are empty. */
 	const autoExpanded = $derived.by(() => {
-		if (!filter && statusFilter === 'all') return null;
+		if (!filter && statusFilter === 'all' && shapeFilter === 'all') return null;
 		const set = new Set<string>();
 		const visit = (nodes: TreeNode[], ancestors: string[]) => {
 			for (const n of nodes) {
@@ -242,12 +282,29 @@
 			</button>
 			<a href="/projects/{project.slug}" class="flex-1 block p-4 cursor-pointer min-w-0">
 				<div class="flex items-start justify-between mb-2 min-w-0 gap-2">
-					<h3 class="text-sm font-semibold text-hub-text group-hover:text-hub-cta transition-colors truncate">
-						{project.slug}
-						{#if hasChildren}
-							<span class="ml-1 text-[10px] font-normal text-hub-dim">({node.children.length})</span>
+					<div class="min-w-0 flex items-center gap-2 flex-wrap">
+						<h3 class="text-sm font-semibold text-hub-text group-hover:text-hub-cta transition-colors truncate">
+							{project.slug}
+							{#if hasChildren}
+								<span class="ml-1 text-[10px] font-normal text-hub-dim">({node.children.length})</span>
+							{/if}
+						</h3>
+						{#if project.shape}
+							<span
+								class="px-1.5 py-0.5 rounded text-[10px] font-medium flex-shrink-0 {shapeClass(project.shape)}"
+								title="Project shape (projects-graph ADR-001)"
+							>
+								{project.shape}
+							</span>
+						{:else}
+							<span
+								class="px-1.5 py-0.5 rounded text-[10px] font-medium flex-shrink-0 bg-hub-warning/10 text-hub-warning border border-hub-warning/30"
+								title="No project_shape — run `soul project label-shape {project.slug} <shape>`"
+							>
+								no shape
+							</span>
 						{/if}
-					</h3>
+					</div>
 					{#if project.upcomingFalsifiers.length > 0}
 						<span
 							class="flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium"
@@ -416,6 +473,19 @@
 							class:text-hub-muted={statusFilter !== 'archived'}
 						>Quiet</button>
 					</div>
+					<!-- projects-graph ADR-001 — scope by declared project_shape. -->
+					<select
+						bind:value={shapeFilter}
+						class="px-2 py-2 rounded-lg border border-hub-border bg-transparent text-xs text-hub-muted hover:text-hub-text focus:outline-none focus:border-hub-cta/50 transition-colors cursor-pointer"
+						class:border-hub-cta={shapeFilter !== 'all'}
+						class:text-hub-cta={shapeFilter !== 'all'}
+						title="Filter by project shape"
+					>
+						<option value="all">all shapes</option>
+						{#each PROJECT_SHAPES_UI as s}
+							<option value={s}>{s}</option>
+						{/each}
+					</select>
 				</div>
 
 				{#if visibleCount === 0}

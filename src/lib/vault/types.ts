@@ -21,6 +21,32 @@ export interface VaultNote {
 	size: number;
 }
 
+/** Per projects-graph ADR-001. Declared shape of a project — drives shape-aware
+ *  rendering on `/projects` and `/projects/[slug]`. Only meaningful on a project
+ *  root `index.md`; enforced at the vault-write chokepoint. Five PRIMARY modes +
+ *  two META modes. See ~/vault/projects/CLAUDE.md `## Allowed Project Shapes`. */
+export type ProjectShape =
+	| 'coding-spine'
+	| 'producer-pipeline'
+	| 'publishing-outlet'
+	| 'strategy-initiative'
+	| 'time-boxed-bet'
+	| 'maintained-system'
+	| 'parent';
+
+/** Canonical enum list — same order as `## Allowed Project Shapes` in
+ *  `~/vault/projects/CLAUDE.md`. Used by the chokepoint validator and the
+ *  `soul project label-shape` CLI verb. Single source of truth in code. */
+export const PROJECT_SHAPES: readonly ProjectShape[] = [
+	'coding-spine',
+	'producer-pipeline',
+	'publishing-outlet',
+	'strategy-initiative',
+	'time-boxed-bet',
+	'maintained-system',
+	'parent',
+] as const;
+
 export interface VaultMeta {
 	type?: string;
 	status?: string;
@@ -33,6 +59,14 @@ export interface VaultMeta {
 	resolved?: boolean;
 	source_agent?: string;
 	source_context?: string;
+	/** projects-graph ADR-001 — declared project shape. Applies only on
+	 *  `projects/<slug>/index.md` notes; enforced at chokepoint. */
+	project_shape?: ProjectShape;
+	/** projects-graph ADR-001 — free-text claim that if true at
+	 *  `falsifier_date:` signals the project has failed. Lives on the project
+	 *  root `index.md` alongside companion `falsifier_date:` (Shape A) or
+	 *  alone (Shape D, undated commitment). */
+	project_falsifier?: string;
 	/** Catch-all for custom frontmatter fields */
 	[key: string]: unknown;
 }
@@ -92,6 +126,10 @@ export interface VaultZone {
 	 *  these fields must be wikilink format `[[slug]]` (or list of). Empty =
 	 *  no restriction. Sourced from CLAUDE.md `## Allowed Relationship Fields`. */
 	allowedRelationshipFields: string[];
+	/** projects-graph ADR-001 — allowed `project_shape:` values on project root
+	 *  `index.md` notes. Empty = no restriction. Sourced from CLAUDE.md
+	 *  `## Allowed Project Shapes`. */
+	allowedProjectShapes: string[];
 	/** Raw governance text (from CLAUDE.md) */
 	rawGovernance: string;
 }

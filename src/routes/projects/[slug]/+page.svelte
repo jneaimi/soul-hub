@@ -68,6 +68,16 @@
 		hint: 'no_adrs' | null;
 	}
 
+	/** projects-graph ADR-001 — declared shape (5 primary + 2 meta). */
+	type ProjectShape =
+		| 'coding-spine'
+		| 'producer-pipeline'
+		| 'publishing-outlet'
+		| 'strategy-initiative'
+		| 'time-boxed-bet'
+		| 'maintained-system'
+		| 'parent';
+
 	interface ProjectDetail {
 		slug: string;
 		adrCount: number;
@@ -75,10 +85,29 @@
 		statusCounts: { proposed: number; accepted: number; shipped: number; rejected: number; parked: number; superseded: number; other: number };
 		openCount: number;
 		lastActivity: number | null;
-		upcomingFalsifiers: { path: string; date: string; daysAway: number }[];
+		upcomingFalsifiers: { path: string; date: string; daysAway: number; source?: 'project' }[];
 		hasIndex: boolean;
 		indexPath: string | null;
+		/** projects-graph ADR-001 — null when un-labelled. */
+		shape: ProjectShape | null;
+		projectFalsifier: string | null;
+		projectFalsifierDate: string | null;
 		decisions?: DecisionRow[];
+	}
+
+	/** Compact, neutral pill colour for each shape. Same hub-* tokens used
+	 *  elsewhere; no new design tokens introduced. */
+	function shapeClass(s: ProjectShape | null): string {
+		switch (s) {
+			case 'coding-spine':         return 'bg-hub-info/15 text-hub-info';
+			case 'producer-pipeline':    return 'bg-hub-cta/15 text-hub-cta';
+			case 'publishing-outlet':    return 'bg-hub-warning/15 text-hub-warning';
+			case 'strategy-initiative':  return 'bg-hub-info/15 text-hub-info';
+			case 'time-boxed-bet':       return 'bg-hub-danger/15 text-hub-danger';
+			case 'maintained-system':    return 'bg-hub-muted/15 text-hub-muted';
+			case 'parent':               return 'bg-hub-dim/15 text-hub-dim';
+			default:                     return 'bg-hub-dim/15 text-hub-dim';
+		}
 	}
 
 	let detail = $state<ProjectDetail | null>(null);
@@ -283,6 +312,21 @@
 					</svg>
 				</a>
 				<h1 class="text-lg font-semibold text-hub-text truncate">{slug}</h1>
+				{#if detail?.shape}
+					<span
+						class="px-1.5 py-0.5 rounded text-[10px] font-medium flex-shrink-0 {shapeClass(detail.shape)}"
+						title="Project shape (projects-graph ADR-001)"
+					>
+						{detail.shape}
+					</span>
+				{:else if detail}
+					<span
+						class="px-1.5 py-0.5 rounded text-[10px] font-medium flex-shrink-0 bg-hub-warning/10 text-hub-warning border border-hub-warning/30"
+						title="No project_shape set — add via `soul project label-shape {slug} <shape>` (projects-graph ADR-001)"
+					>
+						no shape
+					</span>
+				{/if}
 				{#if detail}
 					<span class="text-hub-dim text-sm">{detail.adrCount} ADR{detail.adrCount === 1 ? '' : 's'} · {detail.noteCount} note{detail.noteCount === 1 ? '' : 's'}</span>
 				{/if}
@@ -480,14 +524,33 @@
 						</div>
 						<div class="space-y-1">
 							{#each detail.upcomingFalsifiers as f}
-								<button
-									onclick={() => drawerPath = f.path}
-									class="w-full flex items-center justify-between text-xs hover:bg-hub-card/60 px-1 py-0.5 rounded transition-colors cursor-pointer text-left"
-									title={falsifierMeaning(f.daysAway)}
-								>
-									<span class="font-mono text-hub-text truncate">{f.path.split('/').pop()}</span>
-									<span class="{falsifierClass(f.daysAway)} ml-2 flex-shrink-0">⏱ {f.daysAway}d ({f.date})</span>
-								</button>
+								{#if f.source === 'project'}
+									<!-- projects-graph ADR-001 — project-level falsifier
+									     row. Renders the prose claim from project_falsifier
+									     alongside the date instead of a filename, so the
+									     operator sees WHAT failed without drilling in. -->
+									<div
+										class="flex items-center justify-between text-xs px-1 py-0.5 rounded border border-hub-warning/30 bg-hub-warning/5"
+										title={falsifierMeaning(f.daysAway)}
+									>
+										<div class="flex items-center gap-2 min-w-0">
+											<span class="px-1 py-0 rounded text-[9px] uppercase tracking-wider bg-hub-warning/15 text-hub-warning flex-shrink-0">project</span>
+											<span class="text-hub-text truncate" title={detail.projectFalsifier ?? ''}>
+												{detail.projectFalsifier ?? '(project-level falsifier)'}
+											</span>
+										</div>
+										<span class="{falsifierClass(f.daysAway)} ml-2 flex-shrink-0">⏱ {f.daysAway}d ({f.date})</span>
+									</div>
+								{:else}
+									<button
+										onclick={() => drawerPath = f.path}
+										class="w-full flex items-center justify-between text-xs hover:bg-hub-card/60 px-1 py-0.5 rounded transition-colors cursor-pointer text-left"
+										title={falsifierMeaning(f.daysAway)}
+									>
+										<span class="font-mono text-hub-text truncate">{f.path.split('/').pop()}</span>
+										<span class="{falsifierClass(f.daysAway)} ml-2 flex-shrink-0">⏱ {f.daysAway}d ({f.date})</span>
+									</button>
+								{/if}
 							{/each}
 						</div>
 					</div>

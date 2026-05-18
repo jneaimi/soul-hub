@@ -14,7 +14,8 @@ import { readdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { getVaultEngine } from '$lib/vault/index.js';
 import { parsePhases, type Phase } from '$lib/vault/phase-parser.js';
-import type { VaultMeta } from '$lib/vault/types.js';
+import type { ProjectShape, VaultMeta } from '$lib/vault/types.js';
+import { PROJECT_SHAPES } from '$lib/vault/types.js';
 
 const PROJECT_ZONE = 'projects';
 
@@ -62,13 +63,29 @@ interface ProjectRollup {
 	statusCounts: StatusCounts;
 	openCount: number;
 	lastActivity: number | null;
-	upcomingFalsifiers: { path: string; date: string; daysAway: number }[];
+	/** Mixed list: ADR-level falsifier dates (existing) plus the project-level
+	 *  falsifier date (projects-graph ADR-001) when present. `source: 'project'`
+	 *  marks the project-level row so the UI can render it distinctly. */
+	upcomingFalsifiers: {
+		path: string;
+		date: string;
+		daysAway: number;
+		source?: 'project';
+	}[];
 	hasIndex: boolean;
 	indexPath: string | null;
 	/** Slug of parent project, or null for root projects. Per ADR-038
 	 *  D2/D3: stored on `index.md` as `parent_project: "[[slug|alias]]"`.
 	 *  Inverted client-side to build the tree (child_projects is not stored). */
 	parentProject: string | null;
+	/** projects-graph ADR-001 — declared shape (`coding-spine`, `producer-pipeline`,
+	 *  etc). Drives shape-aware rendering. Null when un-labelled. */
+	shape: ProjectShape | null;
+	/** projects-graph ADR-001 — free-text project-level falsifier claim. */
+	projectFalsifier: string | null;
+	/** Companion ISO date for `projectFalsifier`. Shape A (Schmidt/parser-style)
+	 *  per project-phases ADR-004. */
+	projectFalsifierDate: string | null;
 	decisions?: DecisionRow[];
 }
 
@@ -179,6 +196,9 @@ export const GET: RequestHandler = async ({ url }) => {
 		let hasIndex = false;
 		let indexPath: string | null = null;
 		let parentProject: string | null = null;
+		let shape: ProjectShape | null = null;
+		let projectFalsifier: string | null = null;
+		let projectFalsifierDate: string | null = null;
 		const upcomingFalsifiers: ProjectRollup['upcomingFalsifiers'] = [];
 		const decisions: DecisionRow[] = [];
 
@@ -202,6 +222,35 @@ export const GET: RequestHandler = async ({ url }) => {
 				indexPath = note.path;
 				parentProject = parseParentSlug(full.meta.parent_project);
 				projectIndexContent = full.content;
+
+				// projects-graph ADR-001 — surface project_shape + project_falsifier
+				// + companion falsifier_date from the project root index.
+				const rawShape = full.meta.project_shape;
+				if (typeof rawShape === 'string' && rawShape.trim()) {
+					const v = rawShape.trim().toLowerCase();
+					if ((PROJECT_SHAPES as readonly string[]).includes(v)) {
+						shape = v as ProjectShape;
+					}
+				}
+				if (typeof full.meta.project_falsifier === 'string' && full.meta.project_falsifier.trim()) {
+					projectFalsifier = full.meta.project_falsifier.trim();
+				}
+				projectFalsifierDate = asIsoDate(full.meta.falsifier_date) ?? asIsoDate(full.meta.falsifierDate);
+
+				// Emit the project-level falsifier into upcomingFalsifiers
+				// alongside ADR-level ones. Same urgency window (-1..60 days).
+				// `source: 'project'` lets the UI distinguish.
+				if (projectFalsifierDate) {
+					const days = daysBetween(projectFalsifierDate);
+					if (days !== null && days >= -1 && days <= 60) {
+						upcomingFalsifiers.push({
+							path: note.path,
+							date: projectFalsifierDate,
+							daysAway: days,
+							source: 'project',
+						});
+					}
+				}
 			}
 
 			if (full.mtime && (!lastActivity || full.mtime > lastActivity)) {
@@ -318,6 +367,9 @@ export const GET: RequestHandler = async ({ url }) => {
 			hasIndex,
 			indexPath,
 			parentProject,
+			shape,
+			projectFalsifier,
+			projectFalsifierDate,
 			...(includeDecisions ? { decisions } : {}),
 		});
 	}
