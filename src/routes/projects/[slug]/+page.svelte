@@ -78,11 +78,19 @@
 		| 'maintained-system'
 		| 'parent';
 
+	type StatusCounts = { proposed: number; accepted: number; shipped: number; rejected: number; parked: number; superseded: number; other: number };
+
 	interface ProjectDetail {
 		slug: string;
 		adrCount: number;
 		noteCount: number;
-		statusCounts: { proposed: number; accepted: number; shipped: number; rejected: number; parked: number; superseded: number; other: number };
+		statusCounts: StatusCounts;
+		/** projects-graph ADR-003 — per-type artifact rollup. Keys are
+		 *  frontmatter `type:` values; each value is a canonical-6 bucket.
+		 *  Always includes `decision` (mirrors `statusCounts`); additional
+		 *  keys appear lazily for any other type that has at least one note
+		 *  in this project (`task`, `output`, `research`, `proposal`, ...). */
+		artifactCounts: Record<string, StatusCounts>;
 		openCount: number;
 		lastActivity: number | null;
 		upcomingFalsifiers: { path: string; date: string; daysAway: number; source?: 'project' }[];
@@ -94,6 +102,18 @@
 		projectFalsifierDate: string | null;
 		decisions?: DecisionRow[];
 	}
+
+	/** projects-graph ADR-003 — sum of every status bucket (including `other`).
+	 *  Used to decide whether to render the type section at all. */
+	function totalForType(counts: StatusCounts | undefined): number {
+		if (!counts) return 0;
+		return counts.proposed + counts.accepted + counts.shipped + counts.rejected + counts.parked + counts.superseded + counts.other;
+	}
+
+	/** Render order for per-type sections. Decisions already render via the
+	 *  primary grid + lists; this list controls only the secondary "Other
+	 *  artifacts" surface, so `decision` is intentionally excluded. */
+	const ARTIFACT_TYPE_ORDER = ['task', 'output', 'research', 'proposal', 'risk', 'metric', 'post', 'draft'] as const;
 
 	/** Compact, neutral pill colour for each shape. Same hub-* tokens used
 	 *  elsewhere; no new design tokens introduced. */
@@ -721,6 +741,70 @@
 						</div>
 					{/if}
 				</section>
+
+				<!-- projects-graph ADR-003 — per-type artifact rollup. Renders
+				     a small status-counts grid per non-decision type with at
+				     least one note. Decisions stay in the dedicated section
+				     above (they already get a full per-row treatment). The
+				     order follows ARTIFACT_TYPE_ORDER; any type the project
+				     uses outside that order falls through to a tail block. -->
+				{@const otherTypes = Object.entries(detail.artifactCounts ?? {})
+					.filter(([t, c]) => t !== 'decision' && t !== 'index' && totalForType(c) > 0)
+					.sort(([a], [b]) => {
+						const ai = ARTIFACT_TYPE_ORDER.indexOf(a as any);
+						const bi = ARTIFACT_TYPE_ORDER.indexOf(b as any);
+						const aWeight = ai === -1 ? 100 : ai;
+						const bWeight = bi === -1 ? 100 : bi;
+						if (aWeight !== bWeight) return aWeight - bWeight;
+						return a.localeCompare(b);
+					})}
+				{#if otherTypes.length > 0}
+					<section class="mt-8">
+						<div class="mb-3 flex items-center justify-between">
+							<h2 class="text-sm font-semibold text-hub-text">
+								Other artifacts
+								<span class="ml-1 text-[11px] font-normal text-hub-dim">({otherTypes.length} type{otherTypes.length === 1 ? '' : 's'})</span>
+							</h2>
+							<span class="text-[10px] text-hub-dim" title="projects-graph ADR-003">per-type rollup</span>
+						</div>
+						<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+							{#each otherTypes as [type, c] (type)}
+								<div class="p-3 rounded-lg border border-hub-border bg-hub-card/40">
+									<div class="flex items-center justify-between mb-2">
+										<span class="text-xs font-mono uppercase tracking-wider text-hub-text">{type}</span>
+										<span class="text-[10px] text-hub-dim">{totalForType(c)} total</span>
+									</div>
+									<div class="flex flex-wrap items-center gap-1">
+										{#if c.proposed > 0}
+											<span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-hub-warning/15 text-hub-warning">{c.proposed} proposed</span>
+										{/if}
+										{#if c.accepted > 0}
+											<span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-hub-info/15 text-hub-info">{c.accepted} accepted</span>
+										{/if}
+										{#if c.shipped > 0}
+											<span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-hub-cta/15 text-hub-cta">{c.shipped} shipped</span>
+										{/if}
+										{#if c.parked > 0}
+											<span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-hub-dim/15 text-hub-dim">{c.parked} parked</span>
+										{/if}
+										{#if c.superseded > 0}
+											<span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-hub-muted/15 text-hub-muted">{c.superseded} superseded</span>
+										{/if}
+										{#if c.rejected > 0}
+											<span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-hub-danger/15 text-hub-danger">{c.rejected} rejected</span>
+										{/if}
+										{#if c.other > 0}
+											<span
+												class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-hub-dim/10 text-hub-dim border border-hub-warning/30"
+												title="Non-canonical or missing status (per projects-graph ADR-002)"
+											>{c.other} other</span>
+										{/if}
+									</div>
+								</div>
+							{/each}
+						</div>
+					</section>
+				{/if}
 			{/if}
 		</div>
 	</div>

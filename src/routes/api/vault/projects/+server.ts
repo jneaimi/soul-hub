@@ -60,7 +60,16 @@ interface ProjectRollup {
 	slug: string;
 	adrCount: number;
 	noteCount: number;
+	/** Decision-only status counts. Retained verbatim so existing consumers
+	 *  (list-view tree row, detail-page grid) keep working unchanged.
+	 *  Mirrors `artifactCounts.decision` exactly. */
 	statusCounts: StatusCounts;
+	/** projects-graph ADR-003 — per-note-type status rollup. Keyed by frontmatter
+	 *  `type:` (e.g. `decision`, `task`, `output`, `research`, `proposal`).
+	 *  Each value is a StatusCounts bucket using the canonical-6 buckets
+	 *  enforced by ADR-002. Only types that have at least one note appear
+	 *  as keys — empty/sparse projects don't pay the iteration cost. */
+	artifactCounts: Record<string, StatusCounts>;
 	openCount: number;
 	lastActivity: number | null;
 	/** Mixed list: ADR-level falsifier dates (existing) plus the project-level
@@ -191,6 +200,12 @@ export const GET: RequestHandler = async ({ url }) => {
 			.filter((n) => !n.path.startsWith('archive/'));
 
 		const counts = emptyStatusCounts();
+		// projects-graph ADR-003 — per-type accumulator. Lazily-allocated so
+		// that a project with only `decision` notes ships `{ decision: {...} }`
+		// rather than 6 empty buckets. Keys are lowercased frontmatter `type:`
+		// values. `counts` (decision-only) stays as the public back-compat
+		// surface and is kept in sync with `artifactCounts.decision`.
+		const artifactCounts: Record<string, StatusCounts> = {};
 		let adrCount = 0;
 		let lastActivity: number | null = null;
 		let hasIndex = false;
@@ -255,6 +270,19 @@ export const GET: RequestHandler = async ({ url }) => {
 
 			if (full.mtime && (!lastActivity || full.mtime > lastActivity)) {
 				lastActivity = full.mtime;
+			}
+
+			// projects-graph ADR-003 — per-type artifact rollup. Counts ANY note
+			// with a frontmatter `type:` value, regardless of whether the type
+			// is `decision`. Status is bucketed against canonical-6 (ADR-002).
+			// Notes without `type:` are skipped — they'd produce a useless
+			// `undefined: {...}` bucket. Notes with type but no status (e.g.
+			// raw research notes) still count: the status goes into `other`,
+			// which the UI can render distinctly.
+			const noteType = typeof full.meta.type === 'string' ? full.meta.type.toLowerCase().trim() : '';
+			if (noteType) {
+				if (!artifactCounts[noteType]) artifactCounts[noteType] = emptyStatusCounts();
+				artifactCounts[noteType][bucketStatus(full.meta.status)]++;
 			}
 
 			if (full.meta.type === 'decision') {
@@ -361,6 +389,7 @@ export const GET: RequestHandler = async ({ url }) => {
 			adrCount,
 			noteCount: notes.length,
 			statusCounts: counts,
+			artifactCounts,
 			openCount: counts.proposed,
 			lastActivity,
 			upcomingFalsifiers,
