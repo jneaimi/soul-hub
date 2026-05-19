@@ -42,6 +42,10 @@ plain AdrGantt — preserves today's behaviour bit-for-bit.
 		dateInferred: boolean;
 		falsifierDate: string | null;
 		falsifierDaysAway: number | null;
+		/** projects-graph ADR-016 P2 — propagated for the aggregated
+		 *  parent-rollup Network view (`computeCriticalPath` inside
+		 *  `AdrNetwork` parses these into the cross-project DAG). */
+		blockedBy?: string[];
 	}
 
 	interface ProjectNode {
@@ -232,6 +236,52 @@ plain AdrGantt — preserves today's behaviour bit-for-bit.
 	}
 
 	const isOpen = $derived(expanded.has(rootSlug));
+
+	/** projects-graph ADR-016 P2 — aggregated decisions list for the
+	 *  cross-project Network. Concatenates root + every descendant.
+	 *  Filtered to ADRs that participate in at least one CROSS-PROJECT
+	 *  `blocked_by` edge — isolated ADRs and intra-project chains aren't
+	 *  the question this section answers. The vault is the data source:
+	 *  cross-project edges live in `blocked_by` frontmatter today; no
+	 *  API change required.
+	 *
+	 *  Filter rationale: soul-hub today has 144 decisions across 18
+	 *  projects but only ~6 cross-project edges. Rendering all 144 in
+	 *  dagre stacks 130+ unrelated rank-0 nodes vertically — visually
+	 *  honest but operationally useless. This filter cuts to the
+	 *  signal: which ADRs make this *cluster of projects* connected. */
+	const aggregatedDecisions = $derived.by<DecisionRow[]>(() => {
+		const all = [...rootDecisions, ...descendants.flatMap((d) => d.decisions ?? [])];
+		if (all.length === 0) return [];
+
+		const slugOf = (p: string) => p.split('/').pop()?.replace(/\.md$/i, '') ?? '';
+		const projectOf = (p: string) => {
+			const m = /^projects\/([^/]+)\//.exec(p);
+			return m ? m[1] : '';
+		};
+		const slugToProject = new Map<string, string>();
+		for (const d of all) slugToProject.set(slugOf(d.path), projectOf(d.path));
+
+		const linkRe = /^\[\[([^\]|#]+?)(?:\|[^\]]*)?\]\]$/;
+		const crossSlugs = new Set<string>();
+		for (const d of all) {
+			const srcProject = projectOf(d.path);
+			const srcSlug = slugOf(d.path);
+			for (const raw of d.blockedBy ?? []) {
+				const m = linkRe.exec(raw.trim());
+				if (!m) continue;
+				const targetLast = m[1].trim().split('/').pop();
+				if (!targetLast) continue;
+				const targetSlug = targetLast.replace(/\.md$/i, '');
+				const targetProject = slugToProject.get(targetSlug);
+				if (!targetProject || targetProject === srcProject) continue;
+				crossSlugs.add(srcSlug);
+				crossSlugs.add(targetSlug);
+			}
+		}
+		if (crossSlugs.size === 0) return [];
+		return all.filter((d) => crossSlugs.has(slugOf(d.path)));
+	});
 </script>
 
 {#if descendants.length === 0}
@@ -322,6 +372,28 @@ plain AdrGantt — preserves today's behaviour bit-for-bit.
 				{/each}
 			</div>
 		</section>
+
+		<!-- projects-graph ADR-016 P2 — Cross-project ADR Network.
+		     Aggregates root + every descendant into one dagre-laid-out DAG.
+		     The vault is the source: cross-project blocked_by edges become
+		     arrows that visibly span project clusters. Project-stripe on
+		     each node makes ownership readable; status fill stays
+		     informative. Skipped in `?view=gantt` mode (operator opted out
+		     of structural inspection) and when aggregated set < 2 (no
+		     graph to render). -->
+		{#if view === 'network' && aggregatedDecisions.length >= 2}
+			<section class="rounded-lg border border-hub-info/30 bg-hub-info/5 overflow-hidden">
+				<header class="px-3 py-2 flex items-center gap-2 text-[10px] uppercase tracking-wider text-hub-info border-b border-hub-info/20">
+					<span>Cross-project network</span>
+					<span class="text-hub-dim font-normal normal-case tracking-normal">
+						{aggregatedDecisions.length} ADR{aggregatedDecisions.length === 1 ? '' : 's'} across {descendants.length + 1} project{descendants.length === 0 ? '' : 's'}
+					</span>
+				</header>
+				<div class="px-3 py-3">
+					<AdrNetwork decisions={aggregatedDecisions} {onSelect} projectStripe />
+				</div>
+			</section>
+		{/if}
 
 		<!-- Parent's own ADR-level detail. Same component, same data shape
 		     as today; only its position changed (below the project rollup

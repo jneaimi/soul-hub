@@ -38,12 +38,27 @@ care which view is rendering.
 	let {
 		decisions,
 		onSelect,
+		projectStripe = false,
 	}: {
 		decisions: DecisionRow[];
 		onSelect: (path: string) => void;
+		/** projects-graph ADR-016 P2 — when true, render a 3-px stripe at
+		 *  the top of each node colored by the ADR's source project
+		 *  (parsed from `path`). The status fill stays as the body color,
+		 *  so both signals (status + project) read at once. Drives the
+		 *  aggregated parent-rollup Network view where the operator
+		 *  needs to see WHICH PROJECT owns each node in addition to
+		 *  WHAT STATUS it carries. Default `false` keeps single-project
+		 *  Network identical to today. */
+		projectStripe?: boolean;
 	} = $props();
 
-	let showInactive = $state(false);
+	// In the aggregated cross-project view, superseded/rejected ADRs are
+	// often load-bearing structural pinch-points (e.g., a project that's
+	// `superseded` by another but still anchors the dependency chain).
+	// Default showInactive=true when projectStripe is on so the full
+	// topology renders without an extra click.
+	let showInactive = $state(projectStripe);
 
 	const visible = $derived(
 		decisions
@@ -108,6 +123,38 @@ care which view is rendering.
 		return m ? m[0] : d.title.split(/[—:]/)[0].trim().slice(0, 14);
 	}
 
+	/** Project slug parsed from the ADR's path (e.g.
+	 *  `projects/soul-hub-whatsapp/adr-001-foo.md` → `soul-hub-whatsapp`).
+	 *  Returns empty string when the path doesn't start with `projects/`. */
+	function projectOf(d: { path: string }): string {
+		const m = /^projects\/([^/]+)\//.exec(d.path);
+		return m ? m[1] : '';
+	}
+
+	/** Deterministic per-project palette. Hashes the slug into one of 8
+	 *  hub-token-aligned hues. Stable across renders so the operator
+	 *  builds intuition for "blue projects" / "green projects" without
+	 *  needing the legend after a few views. */
+	const PROJECT_PALETTE = [
+		// Hand-picked for max perceptual separation at 3-px stripe sizes —
+		// avoids the pink/rose collision the previous palette had at small
+		// counts, ensures no two adjacent slugs blur together.
+		'#60a5fa', // sky blue
+		'#fbbf24', // amber
+		'#a78bfa', // violet
+		'#22d3ee', // cyan
+		'#fb7185', // rose
+		'#84cc16', // lime
+		'#f97316', // orange
+		'#ec4899', // hot pink
+	];
+	function projectColor(slug: string): string {
+		if (!slug) return 'var(--hub-muted, #6b7280)';
+		let h = 0;
+		for (let i = 0; i < slug.length; i++) h = (h * 31 + slug.charCodeAt(i)) >>> 0;
+		return PROJECT_PALETTE[h % PROJECT_PALETTE.length];
+	}
+
 	function tooltip(d: DecisionRow): string {
 		const parts = [d.title, '', `status: ${d.status}`, `created: ${d.created}`];
 		if (d.acceptedOn) parts.push(`accepted: ${d.acceptedOn}`);
@@ -142,6 +189,24 @@ care which view is rendering.
 	const NODE_H = 32;
 	const criticalCount = $derived(dep.criticalSlugs.size);
 	const cycleCount = $derived(dep.hasCycle ? dep.cycleEdges.size : 0);
+
+	/** Distinct project slugs across visible decisions — drives the
+	 *  aggregated-view legend. Sorted by node count desc so the dominant
+	 *  contributor reads first. Empty when projectStripe is off OR all
+	 *  decisions share a project (the legend chip would be noise). */
+	const projectLegend = $derived.by<{ slug: string; count: number; color: string }[]>(() => {
+		if (!projectStripe) return [];
+		const counts = new Map<string, number>();
+		for (const d of visible) {
+			const p = projectOf(d);
+			if (!p) continue;
+			counts.set(p, (counts.get(p) ?? 0) + 1);
+		}
+		if (counts.size <= 1) return [];
+		return [...counts.entries()]
+			.map(([slug, count]) => ({ slug, count, color: projectColor(slug) }))
+			.sort((a, b) => b.count - a.count || a.slug.localeCompare(b.slug));
+	});
 </script>
 
 {#if visible.length === 0 && decisions.length > 0}
@@ -210,6 +275,26 @@ care which view is rendering.
 			</button>
 		</div>
 
+		<!-- Project legend — only when multiple projects contribute nodes
+		     (i.e., aggregated parent-rollup view). The colored chip matches
+		     the 3-px stripe at the top of each node. Anchor → drill into
+		     that project's own page. -->
+		{#if projectLegend.length > 0}
+			<div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
+				<span class="text-hub-dim">Projects:</span>
+				{#each projectLegend as p (p.slug)}
+					<a
+						href="/projects/{p.slug}"
+						class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-hub-border/40 bg-hub-card/30 hover:bg-hub-card transition-colors text-hub-text"
+					>
+						<span class="w-2.5 h-2.5 rounded" style:background-color={p.color}></span>
+						<span class="font-mono text-[10.5px]">{p.slug}</span>
+						<span class="text-hub-dim text-[10px]">{p.count}</span>
+					</a>
+				{/each}
+			</div>
+		{/if}
+
 		<!-- Network canvas. Scrolls horizontally when wider than container;
 		     dagre's bounds already include a margin so no extra padding. -->
 		<div class="border border-hub-border rounded-lg bg-hub-card/30 overflow-auto">
@@ -276,7 +361,7 @@ care which view is rendering.
 							aria-current={isCritical ? 'true' : undefined}
 							aria-label={shortLabel(row) + ' — ' + row.status}
 						>
-							<title>{tooltip(row)}</title>
+							<title>{tooltip(row)}{projectStripe && projectOf(row) ? '\n· project: ' + projectOf(row) : ''}</title>
 							<rect
 								width={NODE_W}
 								height={NODE_H}
@@ -288,6 +373,18 @@ care which view is rendering.
 								stroke-dasharray={row.dateInferred ? '3 2' : undefined}
 								stroke="var(--hub-text, #e5e7eb)"
 							/>
+							{#if projectStripe && projectOf(row)}
+								<!-- Project stripe — 3px band at the top of the pill colored
+								     by the source project. Keeps the status fill intact so
+								     both signals (status + project) read at once. -->
+								<rect
+									x="0"
+									y="0"
+									width={NODE_W}
+									height="3"
+									fill={projectColor(projectOf(row))}
+								/>
+							{/if}
 							<text
 								x={NODE_W / 2}
 								y={NODE_H / 2 + 1}
