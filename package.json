@@ -46,6 +46,7 @@
 		"@ai-sdk/google": "^3.0.67",
 		"@azure/identity": "^4.13.1",
 		"@azure/msal-node": "^5.1.2",
+		"@dagrejs/dagre": "^3.0.0",
 		"@microsoft/microsoft-graph-client": "^3.0.7",
 		"@mozilla/readability": "^0.6.0",
 		"@openrouter/ai-sdk-provider": "^2.9.0",

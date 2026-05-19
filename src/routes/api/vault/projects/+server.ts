@@ -17,6 +17,8 @@ import { parsePhases, type Phase } from '$lib/vault/phase-parser.js';
 import type { ProjectShape, VaultMeta } from '$lib/vault/types.js';
 import { PROJECT_SHAPES } from '$lib/vault/types.js';
 import { getDescendants } from '$lib/vault/descendants.js';
+import { computeCriticalPath } from '$lib/projects/critical-path.js';
+import { computeNetworkLayout } from '$lib/projects/dagre-layout.js';
 
 const PROJECT_ZONE = 'projects';
 
@@ -139,6 +141,19 @@ interface ProjectRollup {
 	 *  Saves a second round-trip + lets the tree-table render in a
 	 *  single component without per-child fetches. */
 	descendantRollups?: ProjectRollup[];
+	/** projects-graph ADR-016 — dagre Sugiyama layout for the project's
+	 *  ADR DAG (per-project network view). Present only when the request
+	 *  passed `?layout=network`. The shape mirrors `LayoutResult` from
+	 *  `dagre-layout.ts`: `{ nodes: [{slug, x, y, rank}], edges: [{edge,
+	 *  points}], bounds, ranks }`. AI consumers (`soul project get …`,
+	 *  chat-driven inspection) see `rank: N` per node directly without
+	 *  inferring it from the visual layout. */
+	networkLayout?: {
+		nodes: { slug: string; x: number; y: number; rank: number }[];
+		edges: { edge: { blocker: string; dependent: string; external: boolean; blockerStatus: string | null }; points: { x: number; y: number }[] }[];
+		bounds: { width: number; height: number };
+		ranks: number;
+	};
 }
 
 /** projects-graph ADR-012 — extract the first non-heading, non-blockquote,
@@ -261,11 +276,19 @@ export const GET: RequestHandler = async ({ url }) => {
 	const wantChildren = wantDescendants && url.searchParams.get('includeChildren') === 'true';
 	const internalFilterSet = wantDescendants ? null : filterSet;
 
+	// projects-graph ADR-016 — `?layout=network` attaches a `networkLayout`
+	// field to each rollup (dagre Sugiyama positioning of ADR nodes +
+	// polyline edges). AI-facing affordance for the `/projects/[slug]`
+	// per-project view. Forces decisions to be included even on
+	// multi-slug requests so the layout has nodes to lay out.
+	const wantNetworkLayout = url.searchParams.get('layout') === 'network';
+
 	// When a single slug is requested, include per-decision rows on the rollup.
 	// Skipped on the list view to keep the payload tight. When child-decisions
 	// are requested, every project in the loop builds decisions so the
 	// post-pass can attach descendant rollups with their own decisions.
-	const includeDecisions = (filterSet !== null && filterSet.size === 1) || wantChildren;
+	const includeDecisions =
+		(filterSet !== null && filterSet.size === 1) || wantChildren || wantNetworkLayout;
 
 	const rollups: ProjectRollup[] = [];
 
@@ -491,6 +514,35 @@ export const GET: RequestHandler = async ({ url }) => {
 			});
 		}
 
+		// projects-graph ADR-016 — compute dagre network layout per project
+		// when `?layout=network` is set. Filters to non-rejected /
+		// non-superseded decisions (mirrors AdrNetwork's default visible
+		// set) and feeds the `computeNetworkLayout` utility. Cycle
+		// detection inherits from `computeCriticalPath()`; on cycle, we
+		// omit the layout — the renderer's cycle-banner branch will fire.
+		let networkLayout: ProjectRollup['networkLayout'] | undefined;
+		if (wantNetworkLayout) {
+			const layoutRows = decisions.filter(
+				(d) => d.created && d.status !== 'rejected' && d.status !== 'superseded',
+			);
+			if (layoutRows.length > 0) {
+				const cp = computeCriticalPath(
+					layoutRows.map((d) => ({
+						path: d.path,
+						status: d.status,
+						created: d.created,
+						acceptedOn: d.acceptedOn,
+						shippedOn: d.shippedOn,
+						targetDate: d.targetDate,
+						blockedBy: d.blockedBy,
+					})),
+				);
+				if (!cp.hasCycle) {
+					networkLayout = computeNetworkLayout(layoutRows, cp.edges);
+				}
+			}
+		}
+
 		rollups.push({
 			slug,
 			adrCount,
@@ -509,6 +561,7 @@ export const GET: RequestHandler = async ({ url }) => {
 			tags: projectTags,
 			description: projectDescription,
 			...(includeDecisions ? { decisions } : {}),
+			...(networkLayout ? { networkLayout } : {}),
 		});
 	}
 

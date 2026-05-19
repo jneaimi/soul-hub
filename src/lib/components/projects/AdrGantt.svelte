@@ -20,7 +20,7 @@
 	 *  in violet (critical path). Cycles render in red with a legend
 	 *  warning — they're a data bug worth fixing. */
 
-	import { computeCriticalPath, type DepEdge } from '$lib/projects/critical-path.js';
+	import { computeCriticalPath } from '$lib/projects/critical-path.js';
 
 	interface DecisionRow {
 		path: string;

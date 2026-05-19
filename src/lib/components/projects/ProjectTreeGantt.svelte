@@ -29,6 +29,7 @@ plain AdrGantt — preserves today's behaviour bit-for-bit.
 -->
 <script lang="ts">
 	import AdrGantt from './AdrGantt.svelte';
+	import AdrNetwork from './AdrNetwork.svelte';
 
 	interface DecisionRow {
 		path: string;
@@ -53,11 +54,20 @@ plain AdrGantt — preserves today's behaviour bit-for-bit.
 		rootDecisions,
 		descendants,
 		onSelect,
+		view = 'network',
 	}: {
 		rootSlug: string;
 		rootDecisions: DecisionRow[];
 		descendants: ProjectNode[];
 		onSelect: (path: string) => void;
+		/** projects-graph ADR-016 — per-project ADR rendering. Default is
+		 *  `'network'` (dagre Sugiyama DAG, vault-faithful — `blocked_by`
+		 *  drives layout). `'gantt'` falls back to the legacy time-axis
+		 *  chart for operators who want calendar context. The parent-
+		 *  rollup table (one bar per project on a shared time axis) is
+		 *  ALWAYS Gantt — that surface lives at a different abstraction
+		 *  and is unaffected by this prop. */
+		view?: 'network' | 'gantt';
 	} = $props();
 
 	const TODAY_ISO = new Date().toISOString().slice(0, 10);
@@ -225,8 +235,13 @@ plain AdrGantt — preserves today's behaviour bit-for-bit.
 </script>
 
 {#if descendants.length === 0}
-	<!-- Leaf project — render today's ADR-level Gantt verbatim. -->
-	<AdrGantt decisions={rootDecisions} {onSelect} />
+	<!-- Leaf project — per-project view per ADR-016 (network = default,
+	     gantt = ?view=gantt fallback). -->
+	{#if view === 'gantt'}
+		<AdrGantt decisions={rootDecisions} {onSelect} />
+	{:else}
+		<AdrNetwork decisions={rootDecisions} {onSelect} />
+	{/if}
 {:else}
 	<div class="space-y-4">
 		<!-- Project Rollup — shared time axis -->
@@ -318,7 +333,11 @@ plain AdrGantt — preserves today's behaviour bit-for-bit.
 					{rootSlug} — own ADRs
 				</header>
 				<div class="px-3 py-2">
-					<AdrGantt decisions={rootDecisions} {onSelect} />
+					{#if view === 'gantt'}
+						<AdrGantt decisions={rootDecisions} {onSelect} />
+					{:else}
+						<AdrNetwork decisions={rootDecisions} {onSelect} />
+					{/if}
 				</div>
 			</section>
 		{/if}
