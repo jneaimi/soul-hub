@@ -163,7 +163,6 @@ export const GET: RequestHandler = async () => {
 		let parent: string | null = null;
 		let shape: ProjectShape | undefined;
 		let cluster: string | undefined;
-		let title = slug;
 		let createdIso: string | undefined;
 		let tagList: string[] | undefined;
 
@@ -171,7 +170,6 @@ export const GET: RequestHandler = async () => {
 			parent = parseParentSlug(indexNote.meta.parent_project);
 			shape = asProjectShape(indexNote.meta.project_shape);
 			cluster = parseClusterTag(indexNote.meta.tags);
-			title = indexNote.title || slug;
 			if (typeof indexNote.meta.created === 'string') {
 				createdIso = indexNote.meta.created;
 			}
@@ -189,7 +187,12 @@ export const GET: RequestHandler = async () => {
 
 		const node: GraphNode = {
 			id: indexPath,
-			label: title,
+			// Slug as label — operators recognise project slugs (`naseej`,
+			// `soul-hub-whatsapp`) instantly; the full index.md `title:`
+			// often runs ~80 chars of descriptive prose that occludes
+			// neighbouring nodes in graph view. Detail-page tooltips still
+			// surface the rich title.
+			label: slug,
 			type: 'project',
 			zone: 'projects',
 			tags: tagList,

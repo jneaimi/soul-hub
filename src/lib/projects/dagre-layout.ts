@@ -61,9 +61,14 @@ export interface LayoutResult {
 export interface LayoutOptions {
 	nodeWidth?: number;
 	nodeHeight?: number;
-	/** Horizontal gap between ranks (left-to-right). */
+	/** Rank flow direction. `'LR'` (left-to-right, default) suits long
+	 *  ADR dependency chains; `'TB'` (top-to-bottom) suits wide project
+	 *  hierarchies (one root with many children). projects-graph ADR-005
+	 *  uses TB for the `/projects?view=graph` consumer. */
+	rankdir?: 'LR' | 'TB';
+	/** Gap between ranks (along the rankdir axis). */
 	rankSep?: number;
-	/** Vertical gap between sibling nodes within a rank. */
+	/** Gap between sibling nodes within a rank (perpendicular to rankdir). */
 	nodeSep?: number;
 	/** Canvas inner margin. */
 	margin?: number;
@@ -89,10 +94,11 @@ export function computeNetworkLayout(
 	const rankSep = opts.rankSep ?? 90;
 	const nodeSep = opts.nodeSep ?? 24;
 	const margin = opts.margin ?? 20;
+	const rankdir = opts.rankdir ?? 'LR';
 
 	const g = new dagre.graphlib.Graph();
 	g.setGraph({
-		rankdir: 'LR',
+		rankdir,
 		nodesep: nodeSep,
 		ranksep: rankSep,
 		marginx: margin,

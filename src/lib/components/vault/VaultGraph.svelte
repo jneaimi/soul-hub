@@ -122,13 +122,29 @@
         blockerStatus: null,
       }));
 
-    const result = computeNetworkLayout(synthRows, depEdges);
+    // LR (left-to-right) for project hierarchies: parents on the left,
+    // children stacked vertically to the right. Counter-intuitive but
+    // load-bearing — when one parent has 17 children (soul-hub's actual
+    // shape), TB packs them into a single horizontal row that no
+    // viewport can render without label collisions; LR stacks them
+    // vertically (one slug per line), letting the canvas height carry
+    // the burden instead of width. ADR-014's per-project ADR network
+    // uses LR for the same reason — long chain shapes.
+    const result = computeNetworkLayout(synthRows, depEdges, {
+      rankdir: 'LR',
+      nodeWidth: 180,
+      nodeHeight: 36,
+      rankSep: 220,
+      nodeSep: 18,
+    });
     const slugToNode = new Map<string, string>();
     for (const [nodeId, slug] of slugByNode.entries()) slugToNode.set(slug, nodeId);
     const positions = new Map<string, { x: number; y: number }>();
+    // Sigma uses Y-up (math); dagre uses Y-down (web). Flip Y so rank
+    // ordering matches visual ordering.
     for (const ln of result.nodes) {
       const nodeId = slugToNode.get(ln.slug);
-      if (nodeId) positions.set(nodeId, { x: ln.x, y: ln.y });
+      if (nodeId) positions.set(nodeId, { x: ln.x, y: -ln.y });
     }
     return positions;
   }
@@ -142,13 +158,22 @@
 
     const graph = new GraphClass();
     const positions = computeHierarchicalPositions();
+    // ADR-005 — in hierarchical mode the node `size` field carries
+    // `activity_30d` (raw note count), which can run 0..60+. Sigma sizes
+    // are unitless and small (typical range 2..15); a raw count would
+    // render absurdly large balls that swallow the canvas. Clamp into a
+    // legible range while preserving relative ordering via sqrt.
+    const isHierarchical = layout === 'hierarchical';
 
     for (const node of nodes) {
       const nodeIsNew = isNew(node.created);
       const pos = positions?.get(node.id);
+      const displaySize = isHierarchical
+        ? Math.max(4, Math.min(12, Math.sqrt((node.size ?? 1) + 1) * 2.5))
+        : node.size;
       graph.addNode(node.id, {
         label: node.label,
-        size: node.size,
+        size: displaySize,
         color: node.color,
         x: pos?.x ?? Math.random() * 100,
         y: pos?.y ?? Math.random() * 100,
@@ -182,19 +207,39 @@
       }
     }
 
-    const settings: Record<string, unknown> = {
-      renderEdgeLabels: false,
-      labelColor: { color: '#e2e8f0' },
-      labelFont: 'IBM Plex Sans',
-      labelSize: 11,
-      labelRenderedSizeThreshold: 8,
-      labelDensity: 0.07,
-      labelGridCellSize: 150,
-      defaultNodeColor: '#6b7280',
-      defaultEdgeColor: '#7c8cf844',
-      defaultEdgeType: 'rectangle',
-      minEdgeThickness: 0.5,
-    };
+    // ADR-005 — hierarchical mode (project graph) shows EVERY node as
+    // an addressable target; the operator needs to be able to read each
+    // slug. Force mode (note graph) has hundreds of nodes and relies on
+    // the density gates so labels don't smear into illegible noise.
+    const settings: Record<string, unknown> = isHierarchical
+      ? {
+          renderEdgeLabels: false,
+          labelColor: { color: '#e2e8f0' },
+          labelFont: 'IBM Plex Sans',
+          labelSize: 12,
+          // 0 = always render the label regardless of zoom-scaled node size.
+          labelRenderedSizeThreshold: 0,
+          // 1 = pack as many labels as possible per grid cell.
+          labelDensity: 1,
+          labelGridCellSize: 80,
+          defaultNodeColor: '#6b7280',
+          defaultEdgeColor: '#94a3b888',
+          defaultEdgeType: 'rectangle',
+          minEdgeThickness: 0.6,
+        }
+      : {
+          renderEdgeLabels: false,
+          labelColor: { color: '#e2e8f0' },
+          labelFont: 'IBM Plex Sans',
+          labelSize: 11,
+          labelRenderedSizeThreshold: 8,
+          labelDensity: 0.07,
+          labelGridCellSize: 150,
+          defaultNodeColor: '#6b7280',
+          defaultEdgeColor: '#7c8cf844',
+          defaultEdgeType: 'rectangle',
+          minEdgeThickness: 0.5,
+        };
 
     if (EdgeProg) {
       settings.edgeProgramClasses = { rectangle: EdgeProg };
@@ -441,23 +486,42 @@
       </div>
     {/if}
 
-    <!-- Bottom left: legend -->
-    <div class="absolute bottom-3 left-3 bg-hub-card/90 backdrop-blur-sm border border-hub-border rounded-lg px-3 py-2">
-      <div class="flex flex-wrap gap-x-3 gap-y-1">
-        <span class="flex items-center gap-1 text-xs text-hub-muted">
-          <span class="w-2.5 h-2.5 rounded-full" style="background: #6366f1"></span> projects
-        </span>
-        <span class="flex items-center gap-1 text-xs text-hub-muted">
-          <span class="w-2.5 h-2.5 rounded-full" style="background: #06b6d4"></span> knowledge
-        </span>
-        <span class="flex items-center gap-1 text-xs text-hub-muted">
-          <span class="w-2.5 h-2.5 rounded-full" style="background: #8b5cf6"></span> content
-        </span>
-        <span class="flex items-center gap-1 text-xs text-hub-muted">
-          <span class="w-2.5 h-2.5 rounded-full" style="background: #64748b"></span> operations
-        </span>
+    <!-- Bottom left: legend. ADR-005 — hierarchical mode swaps the zone
+         palette (irrelevant on project view) for a project-shape legend
+         driven by the actual shapes present in the visible node set. -->
+    {#if layout === 'hierarchical'}
+      {@const presentShapes = Array.from(new Set(nodes.map((n) => n.shape).filter(Boolean))).sort()}
+      {#if presentShapes.length > 0}
+        <div class="absolute bottom-3 left-3 bg-hub-card/90 backdrop-blur-sm border border-hub-border rounded-lg px-3 py-2 max-w-md">
+          <div class="flex flex-wrap gap-x-3 gap-y-1">
+            {#each presentShapes as s (s)}
+              {@const sample = nodes.find((n) => n.shape === s)}
+              <span class="flex items-center gap-1 text-[11px] text-hub-muted">
+                <span class="w-2.5 h-2.5 rounded-full" style="background: {sample?.color ?? '#9ca3af'}"></span> {s}
+              </span>
+            {/each}
+          </div>
+          <p class="text-[10px] text-hub-dim/60 mt-1">Color = project_shape · size = activity (30d) · click node → project page.</p>
+        </div>
+      {/if}
+    {:else}
+      <div class="absolute bottom-3 left-3 bg-hub-card/90 backdrop-blur-sm border border-hub-border rounded-lg px-3 py-2">
+        <div class="flex flex-wrap gap-x-3 gap-y-1">
+          <span class="flex items-center gap-1 text-xs text-hub-muted">
+            <span class="w-2.5 h-2.5 rounded-full" style="background: #6366f1"></span> projects
+          </span>
+          <span class="flex items-center gap-1 text-xs text-hub-muted">
+            <span class="w-2.5 h-2.5 rounded-full" style="background: #06b6d4"></span> knowledge
+          </span>
+          <span class="flex items-center gap-1 text-xs text-hub-muted">
+            <span class="w-2.5 h-2.5 rounded-full" style="background: #8b5cf6"></span> content
+          </span>
+          <span class="flex items-center gap-1 text-xs text-hub-muted">
+            <span class="w-2.5 h-2.5 rounded-full" style="background: #64748b"></span> operations
+          </span>
+        </div>
+        <p class="text-[10px] text-hub-dim/60 mt-1">Larger nodes = more connections. Cyan ring marks new notes (7d).</p>
       </div>
-      <p class="text-[10px] text-hub-dim/60 mt-1">Larger nodes = more connections. Cyan ring marks new notes (7d).</p>
-    </div>
+    {/if}
   {/if}
 </div>
