@@ -24,7 +24,7 @@ export const NASEEJ_EVENT_SCHEMA_VERSION = 1;
 /** Discriminated union of all v1 event payloads. */
 export type NaseejEvent =
 	| { type: 'recipe_start'; runId: string; recipe: string; recipeVersion: string; project: string; mode: string; source: string; ts: number }
-	| { type: 'step_start'; runId: string; stepId: string; stepKind: 'component' | 'agent'; ts: number }
+	| { type: 'step_start'; runId: string; stepId: string; stepKind: 'component' | 'agent'; componentSlug?: string; ts: number }
 	| { type: 'step_output'; runId: string; stepId: string; payload: unknown; ts: number }
 	| { type: 'step_complete'; runId: string; stepId: string; exitCode: number; durationMs: number; ts: number }
 	| { type: 'step_failed'; runId: string; stepId: string; exitCode: number; durationMs: number; error?: string; ts: number }

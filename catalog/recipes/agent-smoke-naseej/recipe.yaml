@@ -13,19 +13,23 @@ description: |
   PTY backend exits gracefully via the goal-loop without burning the
   600s default timeout.
 
+  Re-authored for ADR-023 CP5: `agent:` step type replaced with
+  `component: agent-dispatch@1.0.0`. Budget fields flattened into inputs.
+
 steps:
   - id: verify
-    agent: inspector
-    task: |
-      Verify that the file projects/naseej/index.md exists in the current
-      working directory (which is the vault root). Use the Read tool once.
-      Report a single line — either exactly "VERIFIED: naseej index exists"
-      or exactly "MISSING: naseej index not found". Do not iterate, do not
-      run tests, do not invoke any other tools, do not write any files,
-      do not load any vault context. This is a minimum-spend dispatch smoke,
-      not a real QA pass.
-    budget:
+    component: agent-dispatch@1.0.0
+    inputs:
+      agent: inspector
+      task: |
+        Verify that the file projects/naseej/index.md exists in the current
+        working directory (which is the vault root). Use the Read tool once.
+        Report a single line — either exactly "VERIFIED: naseej index exists"
+        or exactly "MISSING: naseej index not found". Do not iterate, do not
+        run tests, do not invoke any other tools, do not write any files,
+        do not load any vault context. This is a minimum-spend dispatch smoke,
+        not a real QA pass.
       timeout_sec: 180
       max_turns: 4
       max_usd: 0.10
-    goal_condition: a verification line was written to stdout
+      goal_condition: a verification line was written to stdout

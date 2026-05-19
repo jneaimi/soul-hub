@@ -6,9 +6,13 @@ description: |
   POST /respond with {decision, comment?}, returns the decision in
   steps.approve.outputs.decision.
 
+  Re-authored for ADR-023 CP5: `gate:` block replaced with
+  `component: approval-gate@1.0.0`. All fields moved into inputs.
+
 steps:
   - id: approve
-    gate:
+    component: approval-gate@1.0.0
+    inputs:
       prompt: "Approve the deployment?"
       allow_comment: true
       timeout_sec: 60

@@ -113,122 +113,26 @@ const ComponentStepSchema = z
 		id: KebabSlug,
 		component: ComponentRef,
 		depends_on: z.array(z.string()).optional(),
+		on_failure: z.enum(['halt', 'continue']).optional(),
 		inputs: z.record(z.string(), z.unknown()).optional(),
 	})
 	.strict();
 export type ComponentStep = z.infer<typeof ComponentStepSchema>;
 
-/** Agent-flavored step (ADR-005) — invokes a `~/.claude/agents/<id>.md` agent
- *  through `dispatchAgent()`. Budget + goal_condition are optional per-step
- *  overrides; missing fields fall through to the agent's own defaults. */
-const AgentStepBudgetSchema = z
-	.object({
-		timeout_sec: z.number().int().positive().optional(),
-		max_turns: z.number().int().positive().optional(),
-		max_usd: z.number().nonnegative().optional(),
-	})
-	.strict();
-export type AgentStepBudget = z.infer<typeof AgentStepBudgetSchema>;
+/** Recipe step. Post-ADR-023 (CP6 2026-05-20): the recipe layer recognises
+ *  exactly ONE step type — the component step. The legacy `agent:`, `human:`,
+ *  and `gate:` step types collapsed into first-class catalog components:
+ *  `agent-dispatch@1.0.0`, `human-form@1.0.0`, `approval-gate@1.0.0`. The
+ *  pause-intercept lives at the runner layer, gated on `manifest.shape === 'gate'`.
+ *  See [[adr-023-component-first-uniformity]] + ADR-026 foundation reset. */
+const RecipeStepSchema = ComponentStepSchema;
+export type RecipeStep = ComponentStep;
 
-/** Per-step dispatch mode override (ADR-020). When unset, the runner falls
- *  back to the recipe-wide `mode`, which itself defaults to 'production'. */
-const DispatchModeEnum = z.enum(['production', 'test', 'oneshot']);
-
-const AgentStepSchema = z
-	.object({
-		id: KebabSlug,
-		agent: KebabSlug,
-		task: z.string().min(1, 'agent step task may not be empty'),
-		context: z.string().optional(),
-		budget: AgentStepBudgetSchema.optional(),
-		goal_condition: z.string().optional(),
-		mode: DispatchModeEnum.optional(),
-		depends_on: z.array(z.string()).optional(),
-	})
-	.strict();
-export type AgentStep = z.infer<typeof AgentStepSchema>;
-
-/** Human-interactive step (ADR-011) — pauses the runner, emits a `human_required`
- *  SSE event with the field schema; resumes when `POST /api/recipes/runs/<id>/respond`
- *  carries the matching payload. Response becomes `{{steps.<id>.outputs.response}}`.
- *  Default timeout 3600s (1h); per-step `timeout_sec` overrides. */
-const HumanStepFieldSchema = z
-	.object({
-		name: KebabSlug,
-		type: z.enum(['text', 'textarea', 'select', 'number', 'boolean']),
-		label: z.string().optional(),
-		required: z.boolean().optional(),
-		options: z.array(z.string()).optional(),
-	})
-	.strict();
-export type HumanStepField = z.infer<typeof HumanStepFieldSchema>;
-
-const HumanStepSchema = z
-	.object({
-		id: KebabSlug,
-		human: z
-			.object({
-				prompt: z.string().min(1, 'human step prompt may not be empty'),
-				fields: z.array(HumanStepFieldSchema).optional(),
-				timeout_sec: z.number().int().positive().optional(),
-			})
-			.strict(),
-		depends_on: z.array(z.string()).optional(),
-	})
-	.strict();
-export type HumanStep = z.infer<typeof HumanStepSchema>;
-
-/** Gate step (ADR-011) — pauses the runner, emits a `gate_required` event,
- *  resumes when respond carries `{decision: 'approved'|'rejected', comment?}`.
- *  Default timeout 3600s; per-step `timeout_sec` overrides. Distinct from
- *  `human` because the decision shape is fixed binary + branchable downstream. */
-const GateStepSchema = z
-	.object({
-		id: KebabSlug,
-		gate: z
-			.object({
-				prompt: z.string().min(1, 'gate step prompt may not be empty'),
-				allow_comment: z.boolean().optional(),
-				timeout_sec: z.number().int().positive().optional(),
-			})
-			.strict(),
-		depends_on: z.array(z.string()).optional(),
-	})
-	.strict();
-export type GateStep = z.infer<typeof GateStepSchema>;
-
-/** Recipe step: discriminated by shape — `agent:` or `component:` (exactly
- *  one). Zod's `discriminatedUnion` wants a literal field; we don't want to
- *  burden recipe authors with a `kind:` line when the step shape is already
- *  unambiguous, so we union the two object schemas and rely on `.strict()`
- *  on each plus the superRefine in RecipeSchema to enforce mutual exclusion
- *  AND that one of them is present. */
-const RecipeStepSchema = z.union([
-	ComponentStepSchema,
-	AgentStepSchema,
-	HumanStepSchema,
-	GateStepSchema,
-]);
-export type RecipeStep = ComponentStep | AgentStep | HumanStep | GateStep;
-
-/** Type guard — runner uses this to pick the dispatch branch. */
-export function isAgentStep(step: RecipeStep): step is AgentStep {
-	return 'agent' in step;
-}
-
-/** Type guard — runner uses this to pick the dispatch branch. */
+/** Type guard — kept as an identity check so existing call sites continue
+ *  compiling. Returns true for every step in the post-ADR-023 world since
+ *  ComponentStep is the only kind. */
 export function isComponentStep(step: RecipeStep): step is ComponentStep {
 	return 'component' in step;
-}
-
-/** Type guard — ADR-011 human/interactive step. */
-export function isHumanStep(step: RecipeStep): step is HumanStep {
-	return 'human' in step;
-}
-
-/** Type guard — ADR-011 gate/decision step. */
-export function isGateStep(step: RecipeStep): step is GateStep {
-	return 'gate' in step;
 }
 
 /** Full recipe.yaml schema. ADR-003 requires `project:` so it's required here. */
@@ -240,6 +144,7 @@ export const RecipeSchema = z
 		description: z.string().optional(),
 		inputs: z.array(RecipeInput).default([]),
 		steps: z.array(RecipeStepSchema).min(1, 'recipe must have at least one step'),
+		max_parallelism: z.number().int().positive().max(16).optional(),
 	})
 	.passthrough()
 	.superRefine((v, ctx) => {

@@ -29,7 +29,6 @@ import { parse as parseYaml } from 'yaml';
 import { fileExists } from '$lib/naseej/manifest.js';
 import { buildCatalogIndex } from '$lib/naseej/manifest.js';
 import {
-	isAgentStep,
 	isComponentStep,
 	parseComponentRef,
 	safeParseRecipe,
@@ -276,14 +275,20 @@ export const POST: RequestHandler = async ({ request }) => {
 		...(unsatisfied.length > 0 ? { unsatisfied } : {}),
 	});
 
-	// Check 4: agents_exist (ADR-005 falsifier #3)
-	// Every agent step must reference an ~/.claude/agents/<id>.md known to
-	// the in-memory store. getAgent() returns null if the slug is unknown.
+	// Check 4: agents_exist — post-ADR-023 the `agent:` step type is gone;
+	// agents are dispatched via the `agent-dispatch@1.0.0` component with the
+	// agent slug in `inputs.agent`. Inspect those component steps and verify
+	// each referenced agent resolves via the store. Recipes that don't use
+	// `agent-dispatch` pass this check trivially.
 	const missingAgents: Array<{ step: string; agent: string }> = [];
 	for (const step of recipe.steps) {
-		if (!isAgentStep(step)) continue;
-		if (!getAgent(step.agent)) {
-			missingAgents.push({ step: step.id, agent: step.agent });
+		if (!isComponentStep(step)) continue;
+		const ref = parseComponentRef(step.component);
+		if (ref.name !== 'agent-dispatch') continue;
+		const agentSlug = step.inputs?.agent;
+		if (typeof agentSlug !== 'string' || !agentSlug) continue;
+		if (!getAgent(agentSlug)) {
+			missingAgents.push({ step: step.id, agent: agentSlug });
 		}
 	}
 	checks.push({

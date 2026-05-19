@@ -25,7 +25,6 @@
 
 import type { ComponentRecord } from './manifest.js';
 import {
-	isAgentStep,
 	isComponentStep,
 	isFileInput,
 	parseComponentRef,
@@ -34,7 +33,6 @@ import {
 } from './schemas/recipe.js';
 
 const CTX_GLOBALS = new Set(['HOME', 'work_dir', 'run_id', 'date', 'project']);
-const AGENT_OUTPUTS = new Set(['output_excerpt', 'artifact_path']);
 const KNOWN_FILTERS = new Set(['basename', 'dirname', 'human_bytes', 'date_fmt']);
 
 export interface TemplateRef {
@@ -317,14 +315,6 @@ export function validateTemplating(
 		const refs: TemplateRef[] = [];
 		if (isComponentStep(step)) {
 			refs.push(...findTemplateRefs(step.inputs ?? {}, ['steps', step.id, 'inputs']));
-		} else if (isAgentStep(step)) {
-			refs.push(...findTemplateRefs(step.task, ['steps', step.id, 'task']));
-			if (step.context) {
-				refs.push(...findTemplateRefs(step.context, ['steps', step.id, 'context']));
-			}
-			if (step.goal_condition) {
-				refs.push(...findTemplateRefs(step.goal_condition, ['steps', step.id, 'goal_condition']));
-			}
 		}
 		for (const ref of refs) {
 			const issue = resolveRef(ref, symbols, idx);
@@ -333,8 +323,6 @@ export function validateTemplating(
 		}
 		if (isComponentStep(step)) {
 			symbols.stepOutputs.set(step.id, declaredComponentOutputs(step.component, catalog));
-		} else if (isAgentStep(step)) {
-			symbols.stepOutputs.set(step.id, new Set(AGENT_OUTPUTS));
 		}
 	});
 

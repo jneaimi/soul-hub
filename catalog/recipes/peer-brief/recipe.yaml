@@ -14,6 +14,10 @@ description: |
   YAML and the generic component scans raw text. Swap to the generic component
   once peer-brief parity is no longer the bar.
 
+  Re-authored for ADR-023 CP5: `agent:` step type on synth replaced with
+  `component: agent-dispatch@1.0.0`. Budget fields flattened into inputs.
+  Downstream `{{steps.synth.outputs.artifact_path}}` reference preserved.
+
 inputs:
   - name: date
     type: date
@@ -59,35 +63,36 @@ steps:
       timeout_sec: 120
 
   - id: synth
-    agent: peer-brief-synth
-    task: |
-      Synthesise today's peer-brief recipe.
+    component: agent-dispatch@1.0.0
+    inputs:
+      agent: peer-brief-synth
+      task: |
+        Synthesise today's peer-brief recipe.
 
-      DATE: {{inputs.date}}
-      MINER-DAILY REPORT: {{inputs.miner_daily}}
-      CANONICAL RECIPE TEMPLATE: {{inputs.canonical_recipe}}
-      SIGNAL-TREND YAML (Figure 0 input, paste verbatim): {{steps.extract-trend.outputs.stdout_path}}
-      OUTPUT RECIPE PATH: {{work_dir}}/peer-brief-{{inputs.date}}-synthesised.yaml
+        DATE: {{inputs.date}}
+        MINER-DAILY REPORT: {{inputs.miner_daily}}
+        CANONICAL RECIPE TEMPLATE: {{inputs.canonical_recipe}}
+        SIGNAL-TREND YAML (Figure 0 input, paste verbatim): {{steps.extract-trend.outputs.stdout_path}}
+        OUTPUT RECIPE PATH: {{work_dir}}/peer-brief-{{inputs.date}}-synthesised.yaml
 
-      Read the canonical recipe to absorb section structure and prose voice.
-      Read today's miner-daily for findings, signal counts, and source material.
-      Read the trend YAML; embed verbatim under the signal-trend-area section.
+        Read the canonical recipe to absorb section structure and prose voice.
+        Read today's miner-daily for findings, signal counts, and source material.
+        Read the trend YAML; embed verbatim under the signal-trend-area section.
 
-      Write the synthesised recipe to the output path. Apply stop-slop discipline.
-      Apply the six lessons (em-dash ban, text: not quote: for pull-quote, etc.).
+        Write the synthesised recipe to the output path. Apply stop-slop discipline.
+        Apply the six lessons (em-dash ban, text: not quote: for pull-quote, etc.).
 
-      When the recipe file is written and the em-dash self-check is clean,
-      output EXACTLY these three lines as your final response, on their own,
-      with nothing after them:
+        When the recipe file is written and the em-dash self-check is clean,
+        output EXACTLY these three lines as your final response, on their own,
+        with nothing after them:
 
-      ===ARTIFACT===
-      {{work_dir}}/peer-brief-{{inputs.date}}-synthesised.yaml
-      ===END===
+        ===ARTIFACT===
+        {{work_dir}}/peer-brief-{{inputs.date}}-synthesised.yaml
+        ===END===
 
-      Then (separately, via a Bash tool call) echo the [SYNTH-DONE] line
-      to stderr for the legacy `peer-brief-render.sh` wrapper compatibility:
-      `echo "[SYNTH-DONE] sections=14 findings=<N> output={{work_dir}}/peer-brief-{{inputs.date}}-synthesised.yaml" >&2`
-    budget:
+        Then (separately, via a Bash tool call) echo the [SYNTH-DONE] line
+        to stderr for the legacy `peer-brief-render.sh` wrapper compatibility:
+        `echo "[SYNTH-DONE] sections=14 findings=<N> output={{work_dir}}/peer-brief-{{inputs.date}}-synthesised.yaml" >&2`
       # 30-min ceiling. Empirical from 2026-05-17 ADR-007 S3 testing (4
       # PTY+/goal attempts on the same 2026-05-15 miner-daily):
       #   run 1: goal_achieved at 11:24 / 1 turn
@@ -100,10 +105,10 @@ steps:
       timeout_sec: 1800
       max_turns: 50
       max_usd: 2.00
-    # Goal condition references the literal marker text so Claude Code's `/goal`
-    # evaluator can verify the ARTIFACT block has actually been printed (run 3
-    # showed the evaluator firing on fuzzy "intent" rather than the literal block).
-    goal_condition: the literal string "===ARTIFACT===" was printed as part of the agent's final response
+      # Goal condition references the literal marker text so Claude Code's `/goal`
+      # evaluator can verify the ARTIFACT block has actually been printed (run 3
+      # showed the evaluator firing on fuzzy "intent" rather than the literal block).
+      goal_condition: the literal string "===ARTIFACT===" was printed as part of the agent's final response
 
   - id: scan
     component: shell-exec@1.0.0

@@ -30,26 +30,13 @@ import { randomUUID } from 'node:crypto';
 import { parse as parseYaml } from 'yaml';
 import { buildCatalogIndex, type ComponentRecord } from './manifest.js';
 import {
-	isAgentStep,
 	isComponentStep,
-	isGateStep,
-	isHumanStep,
 	isFileInput,
 	parseRecipe,
-	type AgentStep,
 	type ComponentStep,
-	type GateStep,
-	type HumanStep,
 	type Recipe,
 	type RecipeStep,
 } from './schemas/recipe.js';
-import {
-	dispatchAgent,
-	type DispatchEvent,
-	type DispatchMode,
-	type DispatchResult,
-} from '$lib/agents/dispatch/index.js';
-import { getAgent } from '$lib/agents/store.js';
 import {
 	recordRunStart,
 	recordRunEnd,
@@ -58,23 +45,8 @@ import {
 } from './audit.js';
 import { publish as publishEvent } from './events.js';
 import { registerPause } from './pause-registry.js';
-import type { HumanResponse, GateResponse } from './pause-types.js';
 
 const RECIPES_DIR = resolvePath(process.cwd(), 'catalog/recipes');
-
-/** ADR-005 D6 — agent context cap. Bigger context blobs hit the PTY paste-stall
- *  documented in `2026-05-06-pty-paste-stall-and-agent-flag`. */
-const MAX_CONTEXT_CHARS = 4000;
-
-/** ADR-005 D5 — last-N event buffer cap per agent step. Bound memory; full
- *  output is already in `output_excerpt`. */
-const MAX_EVENT_BUFFER = 50;
-
-/** ADR-005 D7 — agent artifact marker convention. Agents that write a
- *  vault-relative file path between these markers get it surfaced as
- *  `outputs.artifact_path` on the step result. Not a contract — agents
- *  that don't emit the marker simply don't get an artifact pointer. */
-const ARTIFACT_MARKER_RE = /===ARTIFACT===\s*\n([^\n]+)\s*\n===END===/;
 
 export type { Recipe, RecipeStep };
 
@@ -142,6 +114,61 @@ function topoSort(steps: RecipeStep[]): RecipeStep[] {
 	for (const s of steps) visit(s.id);
 	return order;
 }
+
+/** ADR-013 — group steps into parallel waves by dependency depth.
+ *
+ *  Back-compat rule: a step with `depends_on === undefined` inherits the
+ *  PREVIOUS step in declaration order as its implicit dependency. This keeps
+ *  every existing recipe (which assumes sequential execution) running
+ *  sequentially. Recipes opt INTO parallelism by declaring `depends_on: []`
+ *  explicitly (= no deps, runs in wave 0) or by depending only on a sibling
+ *  that's not the immediate predecessor.
+ *
+ *  Returns waves[]; each wave is an array of steps that can run concurrently.
+ *  Steps within a wave have no dependency relationship to each other; all
+ *  their deps are in earlier waves. */
+function toWaves(steps: RecipeStep[]): RecipeStep[][] {
+	// Materialise the dependency graph with implicit-chain back-compat.
+	const deps = new Map<string, string[]>();
+	for (let i = 0; i < steps.length; i++) {
+		const step = steps[i];
+		if (step.depends_on !== undefined) {
+			deps.set(step.id, step.depends_on);
+		} else {
+			deps.set(step.id, i === 0 ? [] : [steps[i - 1].id]);
+		}
+	}
+
+	const byId = new Map(steps.map((s) => [s.id, s]));
+	const remaining = new Set(steps.map((s) => s.id));
+	const completed = new Set<string>();
+	const waves: RecipeStep[][] = [];
+
+	while (remaining.size > 0) {
+		const ready: RecipeStep[] = [];
+		for (const id of remaining) {
+			const stepDeps = deps.get(id)!;
+			if (stepDeps.every((d) => completed.has(d))) {
+				ready.push(byId.get(id)!);
+			}
+		}
+		if (ready.length === 0) {
+			throw new Error(
+				`runner deadlock: no ready steps from remaining {${[...remaining].join(', ')}} — likely a cycle or unknown dep`,
+			);
+		}
+		// Preserve declaration order within a wave for deterministic step ordering.
+		ready.sort((a, b) => steps.indexOf(a) - steps.indexOf(b));
+		waves.push(ready);
+		for (const s of ready) {
+			remaining.delete(s.id);
+			completed.add(s.id);
+		}
+	}
+	return waves;
+}
+
+const DEFAULT_MAX_PARALLELISM = 4;
 
 function lookup(expr: string, ctx: Record<string, unknown>): unknown {
 	const parts = expr.split('.');
@@ -369,265 +396,119 @@ async function runComponentStep(
 	return result;
 }
 
-/** Agent-step branch (ADR-005). Drives `dispatchAgent()` for-await, buffers
- *  the last MAX_EVENT_BUFFER events, parses the optional ARTIFACT marker,
- *  maps `DispatchResult.status` to exit-code semantics so the main loop's
- *  halt-on-error treats success+goal_achieved as pass.
+/** ADR-023 CP4 — pause-intercept wrapper for `shape: gate` components.
+ *  Calls runComponentStep once. If the result indicates a pause-request
+ *  (exit_code === 2 AND manifest declares `shape: gate` AND parsed outputs
+ *  carry `{pause: true, kind, ...}`), enters the runner-managed pause flow:
+ *  emit the human_required / gate_required SSE event, registerPause() with
+ *  the resolver, and on resume RE-INVOKE the component with the operator's
+ *  response injected as a `resume_response` step input. Second invocation
+ *  exits 0 with the final outputs.
  *
- *  `mode` controls which dispatch backend handles the agent. 'production'
- *  (default) routes through claude-pty; 'test' routes through claude-cli-flag
- *  for cheaper/faster CI smokes (no PTY, single-shot). */
-async function runAgentStep(
-	step: AgentStep,
+ *  Non-gate components, or gate components that don't actually pause (e.g.
+ *  exit 2 from a different error condition), flow through unchanged. The
+ *  `shape: gate` guard is essential — without it, shell-exec components
+ *  that legitimately exit 2 on bad input would be misidentified. */
+async function runComponentStepWithGateIntercept(
+	step: ComponentStep,
+	catalog: Map<string, ComponentRecord>,
 	ctx: Record<string, unknown>,
-	signal: AbortSignal | undefined,
-	mode: DispatchMode,
-	onAgentEvent?: (event: DispatchEvent) => void,
+	runId: string,
+	signal: AbortSignal,
 ): Promise<StepResult> {
-	const startedAt = Date.now();
+	const firstResult = await runComponentStep(step, catalog, ctx);
 
-	if (!getAgent(step.agent)) {
-		return {
-			id: step.id,
-			kind: 'agent',
-			agent: step.agent,
-			exit_code: -1,
-			duration_ms: Date.now() - startedAt,
-			error: `agent not found: ${step.agent}`,
-		};
-	}
+	if (firstResult.exit_code !== 2) return firstResult;
+	const record = catalog.get(step.component);
+	if (record?.manifest.shape !== 'gate') return firstResult;
+	const pause = firstResult.outputs;
+	if (!pause || pause.pause !== true) return firstResult;
 
-	const task = String(interpolate(step.task, ctx));
-	if (!task.trim()) {
-		return {
-			id: step.id,
-			kind: 'agent',
-			agent: step.agent,
-			exit_code: -1,
-			duration_ms: Date.now() - startedAt,
-			error: 'agent task resolved to empty after interpolation',
-		};
-	}
+	const kind: 'human' | 'gate' = pause.kind === 'gate' ? 'gate' : 'human';
+	const timeoutSec = typeof pause.timeout_sec === 'number' ? pause.timeout_sec : 3600;
+	const prompt = typeof pause.prompt === 'string' ? pause.prompt : '';
 
-	let context: string | undefined;
-	if (step.context != null) {
-		const interpolated = String(interpolate(step.context, ctx));
-		context = interpolated.length > MAX_CONTEXT_CHARS
-			? interpolated.slice(0, MAX_CONTEXT_CHARS)
-			: interpolated;
-	}
-
-	const goalCondition = step.goal_condition
-		? String(interpolate(step.goal_condition, ctx))
-		: undefined;
-
-	const events: DispatchEvent[] = [];
-	let final: DispatchResult | undefined;
-	try {
-		const gen = dispatchAgent(step.agent, task, {
-			mode,
-			signal,
-			context,
-			goal_condition: goalCondition,
-			budget_override: step.budget,
+	if (kind === 'human') {
+		publishEvent({
+			type: 'human_required',
+			runId,
+			stepId: step.id,
+			prompt,
+			...(Array.isArray(pause.fields)
+				? {
+						fields: pause.fields as Array<{
+							name: string;
+							type: string;
+							label?: string;
+							required?: boolean;
+							options?: string[];
+						}>,
+					}
+				: {}),
+			timeoutSec,
+			ts: Date.now(),
 		});
-		while (true) {
-			const next = await gen.next();
-			if (next.done) {
-				final = next.value;
-				break;
-			}
-			events.push(next.value);
-			if (events.length > MAX_EVENT_BUFFER) events.shift();
-			// ADR-018 — stream the raw DispatchEvent to SSE subscribers
-			// when a publisher is wired in. Wrapped so a buggy subscriber
-			// cannot crash the runner.
-			if (onAgentEvent) {
-				try { onAgentEvent(next.value); } catch { /* swallow */ }
-			}
-		}
+	} else {
+		publishEvent({
+			type: 'gate_required',
+			runId,
+			stepId: step.id,
+			prompt,
+			allowComment: pause.allow_comment !== false,
+			timeoutSec,
+			ts: Date.now(),
+		});
+	}
+
+	updateRunStatus(runId, 'paused');
+	let pauseResponse;
+	try {
+		pauseResponse = await registerPause(runId, step.id, kind, timeoutSec, signal);
 	} catch (err) {
+		updateRunStatus(runId, 'running');
 		return {
 			id: step.id,
-			kind: 'agent',
-			agent: step.agent,
-			exit_code: -1,
-			duration_ms: Date.now() - startedAt,
-			error: `dispatcher threw: ${(err as Error).message}`,
-			events,
+			kind: 'component',
+			component: step.component,
+			exit_code: 1,
+			duration_ms: 0,
+			error: (err as Error).message,
 		};
 	}
+	updateRunStatus(runId, 'running');
 
-	if (!final) {
-		// Defensive — the generator's return value is non-optional per the
-		// dispatchAgent contract; this would mean the iterator returned done
-		// without a value, which is structurally impossible. Surfaced as a
-		// step failure instead of an unhandled exception.
-		return {
-			id: step.id,
-			kind: 'agent',
-			agent: step.agent,
-			exit_code: -1,
-			duration_ms: Date.now() - startedAt,
-			error: 'dispatcher returned no final result',
-			events,
-		};
-	}
-
-	const passed = final.status === 'success' || final.status === 'goal_achieved';
-	const artifactMatch = final.output.match(ARTIFACT_MARKER_RE);
-	const artifactPath = artifactMatch?.[1]?.trim() || undefined;
-	const outputExcerpt = final.output.slice(-2000);
-
-	const outputs: Record<string, unknown> = { output_excerpt: outputExcerpt };
-	if (artifactPath) outputs.artifact_path = artifactPath;
-
-	const result: StepResult = {
-		id: step.id,
-		kind: 'agent',
-		agent: step.agent,
-		exit_code: passed ? 0 : 1,
-		duration_ms: final.duration_ms || Date.now() - startedAt,
-		outputs,
-		agent_status: final.status,
-		num_turns: final.num_turns,
-		cost_usd: final.cost_usd,
-		output_excerpt: outputExcerpt,
-		events,
+	// Re-invoke with operator's response injected as a step input. The
+	// component's second invocation sees `resume_response` present, skips the
+	// pause emission, and exits 0 with the final outputs.
+	//
+	// Unwrap one layer for human responses: the /respond endpoint wraps the
+	// operator's payload in `HumanResponse = { response: <payload> }` before
+	// storing in the pause registry. We pass the raw payload to the component
+	// so the human-form's stdout shape `{response: resume_response}` matches
+	// the legacy runHumanStep output (single-wrap, not double). Gate responses
+	// are already in their final shape (`{decision, comment?}`) — pass through.
+	const responseForComponent =
+		kind === 'human'
+			? (pauseResponse.response as { response: unknown }).response
+			: pauseResponse.response;
+	const resumedStep: ComponentStep = {
+		...step,
+		inputs: {
+			...(step.inputs ?? {}),
+			resume_response: responseForComponent,
+		},
 	};
-	if (artifactPath) result.artifact_path = artifactPath;
-	if (!passed) result.error = final.error || `agent dispatch status: ${final.status}`;
-	return result;
+	return await runComponentStep(resumedStep, catalog, ctx);
 }
 
-/** Human-interactive step (ADR-011). Pauses the run, emits a `human_required`
- *  SSE event, registers a resolver in the pause-registry, awaits the
- *  operator's POST /api/recipes/runs/<id>/respond. While paused, the
- *  audit row's status flips to 'paused' so the audit page surfaces the
- *  wait visibly. Default timeout 3600s (1h); per-step `timeout_sec` overrides.
- *  Cancellation propagates via `signal` (the runner's existing controller). */
-async function runHumanStep(
-	step: HumanStep,
-	runId: string,
-	signal: AbortSignal,
-): Promise<StepResult> {
-	const startedAt = Date.now();
-	const timeoutSec = step.human.timeout_sec ?? 3600;
-
-	publishEvent({
-		type: 'human_required',
-		runId,
-		stepId: step.id,
-		prompt: step.human.prompt,
-		...(step.human.fields ? { fields: step.human.fields } : {}),
-		timeoutSec,
-		ts: startedAt,
-	});
-
-	updateRunStatus(runId, 'paused');
-	try {
-		const payload = await registerPause(runId, step.id, 'human', timeoutSec, signal);
-		if (payload.kind !== 'human') {
-			return {
-				id: step.id,
-				kind: 'component',
-				exit_code: 1,
-				duration_ms: Date.now() - startedAt,
-				error: `pause kind mismatch: expected human, got ${payload.kind}`,
-			};
-		}
-		const response = (payload.response as HumanResponse).response;
-		return {
-			id: step.id,
-			kind: 'component',
-			exit_code: 0,
-			duration_ms: Date.now() - startedAt,
-			outputs: { response },
-		};
-	} catch (err) {
-		return {
-			id: step.id,
-			kind: 'component',
-			exit_code: 1,
-			duration_ms: Date.now() - startedAt,
-			error: (err as Error).message,
-		};
-	} finally {
-		// On either resolve or timeout/cancel, the runner outer loop continues
-		// or breaks. The recipe-level terminal write at the end will overwrite
-		// 'paused' with the final status. Flip back to 'running' so the audit
-		// page doesn't show stale 'paused' between steps.
-		updateRunStatus(runId, 'running');
-	}
-}
-
-/** Gate / decision step (ADR-011). Same pause/resume primitive as the
- *  human step, but with a fixed payload shape (decision + comment) so
- *  downstream steps can branch on `{{steps.<id>.outputs.decision}}`. */
-async function runGateStep(
-	step: GateStep,
-	runId: string,
-	signal: AbortSignal,
-): Promise<StepResult> {
-	const startedAt = Date.now();
-	const timeoutSec = step.gate.timeout_sec ?? 3600;
-	const allowComment = step.gate.allow_comment ?? true;
-
-	publishEvent({
-		type: 'gate_required',
-		runId,
-		stepId: step.id,
-		prompt: step.gate.prompt,
-		allowComment,
-		timeoutSec,
-		ts: startedAt,
-	});
-
-	updateRunStatus(runId, 'paused');
-	try {
-		const payload = await registerPause(runId, step.id, 'gate', timeoutSec, signal);
-		if (payload.kind !== 'gate') {
-			return {
-				id: step.id,
-				kind: 'component',
-				exit_code: 1,
-				duration_ms: Date.now() - startedAt,
-				error: `pause kind mismatch: expected gate, got ${payload.kind}`,
-			};
-		}
-		const gate = payload.response as GateResponse;
-		return {
-			id: step.id,
-			kind: 'component',
-			// Exit code 0 even on 'rejected' — rejection is a valid decision,
-			// not an error. Downstream steps branch via {{steps.X.outputs.decision}}.
-			exit_code: 0,
-			duration_ms: Date.now() - startedAt,
-			outputs: {
-				decision: gate.decision,
-				...(gate.comment ? { comment: gate.comment } : {}),
-			},
-		};
-	} catch (err) {
-		return {
-			id: step.id,
-			kind: 'component',
-			exit_code: 1,
-			duration_ms: Date.now() - startedAt,
-			error: (err as Error).message,
-		};
-	} finally {
-		updateRunStatus(runId, 'running');
-	}
-}
 
 export interface RunRecipeOptions {
 	signal?: AbortSignal;
-	/** ADR-005 CP2 — dispatch backend selector for agent steps.
-	 *  'production' (default) uses claude-pty; 'test' uses claude-cli-flag
-	 *  for CI smokes (no PTY, no terminal, single-shot). Component steps
-	 *  are unaffected — they spawn subprocesses regardless. */
-	mode?: DispatchMode;
+	/** @deprecated — vestigial post-ADR-023. The runner no longer dispatches
+	 *  agent steps directly; the `agent-dispatch@1.0.0` component owns this
+	 *  concern via `inputs.mode`. Accepted-but-ignored to keep the existing
+	 *  POST /api/recipes/run contract backward-compatible for one release. */
+	mode?: 'production' | 'test' | 'oneshot';
 	/** ADR-005 CP3 — opt-in caller-supplied runId. When provided, replaces
 	 *  the auto-generated short-id. Lets the caller register a cancel hook
 	 *  via POST /api/recipes/runs/<id>/cancel before the run completes.
@@ -677,18 +558,20 @@ export async function runRecipe(
 	const recipe = await loadRecipe(recipePath);
 	const catalog = await buildCatalogIndex();
 	const order = topoSort(recipe.steps);
-	const mode: DispatchMode = opts.mode ?? 'production';
+	const waves = toWaves(recipe.steps);
+	const maxParallelism = (recipe as { max_parallelism?: number }).max_parallelism ?? DEFAULT_MAX_PARALLELISM;
 	const source: RunSource = opts.source ?? 'api';
+	// Recorded on the audit row + recipe_start SSE event for backward compat.
+	// Per the @deprecated note on opts.mode, the runner does NOT act on this;
+	// agent-dispatch components handle dispatch backend via `inputs.mode`.
+	const mode = opts.mode ?? 'production';
 
-	// Pre-flight: every component-step references an existing catalog entry,
-	// every agent-step references a known agent. Surface as a throw — these
-	// are recipe-author errors, not runtime failures.
+	// Pre-flight: every step is a component step post-ADR-023; verify each
+	// references an existing catalog entry. Recipe-author errors throw here
+	// rather than failing mid-run.
 	for (const step of order) {
 		if (isComponentStep(step) && !catalog.has(step.component)) {
 			throw new Error(`step "${step.id}" references unknown component: ${step.component}`);
-		}
-		if (isAgentStep(step) && !getAgent(step.agent)) {
-			throw new Error(`step "${step.id}" references unknown agent: ${step.agent}`);
 		}
 	}
 
@@ -757,67 +640,110 @@ export async function runRecipe(
 	let failedStep: string | undefined;
 
 	try {
-		for (const step of order) {
+		// ADR-013 — wave-based execution. Steps within a wave run concurrently
+		// (bounded by max_parallelism), waves run sequentially. Step bodies are
+		// identical to the legacy sequential loop; only the iteration shape
+		// changed. Per-step `on_failure: continue` lets a wave-mate failure not
+		// halt the recipe; default `halt` preserves legacy behaviour.
+		const runSingleStep = async (step: RecipeStep): Promise<StepResult> => {
 			const stepStartedAt = Date.now();
-			// ADR-011 — step_start carries the step kind so SSE consumers can
-			// pick the right UI (form for human, approve/reject for gate, log
-			// view for component/agent). Cast to widen the event union without
-			// editing every consumer; the runtime value is always one of the 4.
-			const stepKind: 'component' | 'agent' = isAgentStep(step)
-				? 'agent'
-				: isHumanStep(step) || isGateStep(step)
-					? 'component' // surface as 'component' so existing consumers don't break; human/gate-specific events carry the kind
-					: 'component';
+			// ADR-023 CP6 — every step is a component step. The legacy
+			// 'agent'/'human'/'gate' stepKind values are gone; SSE consumers
+			// discriminate by `componentSlug` instead.
 			publishEvent({
 				type: 'step_start',
 				runId,
 				stepId: step.id,
-				stepKind,
+				stepKind: 'component',
+				componentSlug: step.component,
 				ts: stepStartedAt,
 			});
-			let stepResult: StepResult;
-			if (isAgentStep(step)) {
-				// ADR-020: per-step mode override falls back to recipe-wide mode.
-				const stepMode: DispatchMode = step.mode ?? mode;
-				stepResult = await runAgentStep(step, ctx, controller.signal, stepMode, (ev) => {
-					publishEvent({
-						type: 'step_output',
-						runId,
-						stepId: step.id,
-						payload: ev,
-						ts: Date.now(),
-					});
-				});
-			} else if (isHumanStep(step)) {
-				stepResult = await runHumanStep(step, runId, controller.signal);
-			} else if (isGateStep(step)) {
-				stepResult = await runGateStep(step, runId, controller.signal);
-			} else {
-				stepResult = await runComponentStep(step, catalog, ctx);
-			}
-			stepResults.push(stepResult);
-			stepsCtx[step.id] = { outputs: stepResult.outputs ?? {} };
-			if (stepResult.exit_code !== 0) {
-				publishEvent({
-					type: 'step_failed',
-					runId,
-					stepId: step.id,
-					exitCode: stepResult.exit_code,
-					durationMs: stepResult.duration_ms,
-					...(stepResult.error ? { error: stepResult.error } : {}),
-					ts: Date.now(),
-				});
-				failedStep = step.id;
-				break;
-			}
-			publishEvent({
-				type: 'step_complete',
+			// `shape: gate` components (human-form, approval-gate, any future
+			// gate) flow through the pause-intercept wrapper; non-gate components
+			// are unaffected (the wrapper returns the first result unchanged).
+			return await runComponentStepWithGateIntercept(
+				step,
+				catalog,
+				ctx,
 				runId,
-				stepId: step.id,
-				exitCode: stepResult.exit_code,
-				durationMs: stepResult.duration_ms,
-				ts: Date.now(),
-			});
+				controller.signal,
+			);
+		};
+
+		outer: for (const wave of waves) {
+			// Bound concurrency: split wide waves into chunks of max_parallelism.
+			for (let chunkStart = 0; chunkStart < wave.length; chunkStart += maxParallelism) {
+				const chunk = wave.slice(chunkStart, chunkStart + maxParallelism);
+				const settled = await Promise.allSettled(chunk.map(runSingleStep));
+
+				// Process results in declaration order so downstream waves see
+				// outputs in a stable shape. Order.indexOf is O(n) but the order
+				// array is tiny in practice.
+				for (let i = 0; i < settled.length; i++) {
+					const settledResult = settled[i];
+					const step = chunk[i];
+					if (settledResult.status === 'rejected') {
+						// Wrapper-level error (not the step's own exit code). Surface as
+						// a synthetic failed-step result so the recipe response stays
+						// consistent. The step's own try/catch should have caught most;
+						// this branch is the safety net.
+						const errMsg = settledResult.reason instanceof Error
+							? settledResult.reason.message
+							: String(settledResult.reason);
+						const synthetic: StepResult = {
+							id: step.id,
+							kind: 'component',
+							exit_code: 1,
+							duration_ms: 0,
+							error: `runner wrapper error: ${errMsg}`,
+						};
+						stepResults.push(synthetic);
+						stepsCtx[step.id] = { outputs: {} };
+						publishEvent({
+							type: 'step_failed',
+							runId,
+							stepId: step.id,
+							exitCode: 1,
+							durationMs: 0,
+							error: synthetic.error!,
+							ts: Date.now(),
+						});
+						failedStep = step.id;
+						break outer;
+					}
+					const stepResult = settledResult.value;
+					stepResults.push(stepResult);
+					stepsCtx[step.id] = { outputs: stepResult.outputs ?? {} };
+					if (stepResult.exit_code !== 0) {
+						publishEvent({
+							type: 'step_failed',
+							runId,
+							stepId: step.id,
+							exitCode: stepResult.exit_code,
+							durationMs: stepResult.duration_ms,
+							...(stepResult.error ? { error: stepResult.error } : {}),
+							ts: Date.now(),
+						});
+						const onFailure = (step as { on_failure?: 'halt' | 'continue' }).on_failure ?? 'halt';
+						if (onFailure === 'halt') {
+							failedStep = step.id;
+							break outer;
+						}
+						// on_failure: 'continue' — log + keep going (no failedStep set yet,
+						// but a later step might set it; for now, the wave continues + the
+						// next wave starts).
+					} else {
+						publishEvent({
+							type: 'step_complete',
+							runId,
+							stepId: step.id,
+							exitCode: stepResult.exit_code,
+							durationMs: stepResult.duration_ms,
+							ts: Date.now(),
+						});
+					}
+				}
+			}
 		}
 	} finally {
 		runRegistry.delete(runId);

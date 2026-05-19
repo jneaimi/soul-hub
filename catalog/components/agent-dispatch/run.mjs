@@ -105,15 +105,31 @@ async function loadAgentModules() {
 		};
 	} catch (firstErr) {
 		// Fallback: look for the module in the .svelte-kit build output chunks.
-		// The exact chunk name varies by build; we look for the canonical export.
+		// SvelteKit splits the agent modules into two separate chunks:
+		//   dispatch.js — exports dispatchAgent
+		//   store.js    — exports getAgent
+		// Note: these chunks use mangled export names in production builds.
+		// We reach for the named exports via the chunk's live module object.
 		try {
-			const { createRequire: cr } = await import('node:module');
-			const requireFromRoot = cr(join(SOUL_HUB_ROOT, 'package.json'));
-			const built = requireFromRoot('./.svelte-kit/output/server/chunks/agents.js');
-			return {
-				dispatchAgent: built.dispatchAgent,
-				getAgent: built.getAgent,
-			};
+			const dispatchChunk = await import(
+				join(SOUL_HUB_ROOT, '.svelte-kit', 'output', 'server', 'chunks', 'dispatch.js')
+			);
+			const storeChunk = await import(
+				join(SOUL_HUB_ROOT, '.svelte-kit', 'output', 'server', 'chunks', 'store.js')
+			);
+			// Named exports may be mangled; scan the module object for the functions.
+			const dispatchAgent = dispatchChunk.dispatchAgent
+				?? Object.values(dispatchChunk).find(
+					(v) => typeof v === 'function' && v.name === 'dispatchAgent',
+				);
+			const getAgent = storeChunk.getAgent
+				?? Object.values(storeChunk).find(
+					(v) => typeof v === 'function' && v.name === 'getAgent',
+				);
+			if (typeof dispatchAgent !== 'function' || typeof getAgent !== 'function') {
+				throw new Error('could not locate dispatchAgent or getAgent in build chunks');
+			}
+			return { dispatchAgent, getAgent };
 		} catch {
 			throw new Error(
 				`agent-dispatch: could not load $lib/agents module (${firstErr.message}). ` +

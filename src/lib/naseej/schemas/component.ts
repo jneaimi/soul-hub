@@ -86,6 +86,12 @@ export const ComponentManifestSchema = z
 		 *  `katib-build`, `vault-write`). Defaults to 2 so existing components
 		 *  pre-ADR-006 keep parsing without migration. */
 		tier: z.union([z.literal(1), z.literal(2)]).default(2),
+		/** ADR-023 — component shape discriminator. `default` (most components:
+		 *  passive subprocess with exit 0/non-zero, no pause). `agentic` (UI hint:
+		 *  surfaces agent-style metadata; e.g. `agent-dispatch`). `gate` (runner
+		 *  applies the stdout-code-2 pause-intercept protocol; required for
+		 *  `human-form` + `approval-gate`). Default preserves pre-ADR-023 behaviour. */
+		shape: z.enum(['default', 'agentic', 'gate']).default('default'),
 		inputs: z.array(InputField).default([]),
 		outputs: z.array(OutputField).default([]),
 		invocation: Invocation.optional(),
