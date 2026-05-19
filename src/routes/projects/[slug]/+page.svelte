@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/stores';
+	import { goto } from '$app/navigation';
 	import RenderedMarkdown from '$lib/components/RenderedMarkdown.svelte';
 	import DecisionActions from '$lib/components/projects/DecisionActions.svelte';
 	import AdrDrawer from '$lib/components/projects/AdrDrawer.svelte';
@@ -100,6 +101,8 @@
 		shape: ProjectShape | null;
 		projectFalsifier: string | null;
 		projectFalsifierDate: string | null;
+		/** projects-graph ADR-011 — parent project slug (null for roots). */
+		parentProject: string | null;
 		decisions?: DecisionRow[];
 	}
 
@@ -135,6 +138,13 @@
 	let error = $state('');
 	let drawerPath = $state<string | null>(null);
 
+	// projects-graph ADR-011 — breadcrumb + sibling switcher.
+	// The full project list is fetched once on mount and used to derive the
+	// sibling set client-side (32 projects ≈ sub-ms filter; no new endpoint).
+	type SiblingRow = { slug: string; adrCount: number; parentProject: string | null };
+	let allProjects = $state<SiblingRow[]>([]);
+	let siblingsOpen = $state(false);
+
 	let planExpanded = $state(false);
 	let planHtml = $state('');
 	let planLoaded = $state(false);
@@ -154,6 +164,17 @@
 	const decisions = $derived(detail?.decisions ?? []);
 	const proposed = $derived(decisions.filter((d) => d.status === 'proposed'));
 	const others = $derived(decisions.filter((d) => d.status !== 'proposed'));
+
+	// projects-graph ADR-011 — sibling computation.
+	// Siblings = other projects sharing the same parentProject. Sort by adrCount
+	// desc so the operator sees the most-active siblings first.
+	const siblings = $derived.by(() => {
+		const parent = detail?.parentProject;
+		if (!parent || allProjects.length === 0) return [];
+		return allProjects
+			.filter((p) => p.parentProject === parent && p.slug !== slug)
+			.sort((a, b) => b.adrCount - a.adrCount);
+	});
 
 	// Phase rollup across ADR-level (`adr-body`) phases only.
 	// Project-roadmap phases were retired by project-phases ADR-013
@@ -201,6 +222,9 @@
 			// Fire-and-forget next-actions fetch (separate state path so the
 			// main page renders even if this endpoint is slow/fails).
 			loadNextActions();
+			// projects-graph ADR-011 — fire-and-forget full project list for
+			// the sibling switcher. Reuses the same endpoint, no filter.
+			loadAllProjects();
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Load failed';
 		} finally {
@@ -227,6 +251,42 @@
 		if (next.has(path)) next.delete(path);
 		else next.add(path);
 		expandedDecisions = next;
+	}
+
+	// projects-graph ADR-011 — sibling switcher data.
+	async function loadAllProjects() {
+		try {
+			const res = await fetch('/api/vault/projects');
+			if (!res.ok) return;
+			const data = await res.json();
+			allProjects = (data.projects ?? []).map((p: SiblingRow) => ({
+				slug: p.slug,
+				adrCount: p.adrCount,
+				parentProject: p.parentProject
+			}));
+		} catch {
+			// Sibling switcher is a nice-to-have; failing silently is acceptable.
+			allProjects = [];
+		}
+	}
+
+	// projects-graph ADR-011 — alt + ←/→ cycles through siblings by adrCount-desc order.
+	// Falls back to no-op when there's no parent or no siblings. Browser default nav
+	// keeps working when modifier isn't held.
+	function onSiblingKey(e: KeyboardEvent) {
+		if (!e.altKey) return;
+		if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+		if (siblings.length === 0) return;
+		// Build the full cycle: [current, ...siblings]. Find current, step ±1, wrap.
+		const cycle = [slug, ...siblings.map((s) => s.slug)];
+		const idx = cycle.indexOf(slug);
+		if (idx < 0) return;
+		const step = e.key === 'ArrowRight' ? 1 : -1;
+		const next = cycle[(idx + step + cycle.length) % cycle.length];
+		if (next && next !== slug) {
+			e.preventDefault();
+			goto(`/projects/${encodeURIComponent(next)}`);
+		}
 	}
 
 	function phaseStatusClass(status: PhaseStatus): string {
@@ -321,16 +381,40 @@
 	<title>{slug} | Projects | Soul Hub</title>
 </svelte:head>
 
+<!-- projects-graph ADR-011 — Alt + ←/→ cycles to prev/next sibling. -->
+<svelte:window onkeydown={onSiblingKey} />
+
 <div class="h-full flex flex-col">
 	<!-- Header -->
 	<header class="flex-shrink-0 px-4 sm:px-6 py-4 border-b border-hub-border">
 		<div class="max-w-5xl mx-auto">
 			<div class="flex items-center gap-3 mb-2">
-				<a href="/projects" class="p-1.5 rounded-lg hover:bg-hub-card transition-colors text-hub-muted hover:text-hub-text" aria-label="Back to projects">
-					<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-						<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
-					</svg>
-				</a>
+				<!-- projects-graph ADR-011 — breadcrumb when project has a parent;
+				     otherwise the existing back-arrow icon. -->
+				{#if detail?.parentProject}
+					<nav class="flex items-center gap-1.5 text-sm text-hub-muted min-w-0" aria-label="Breadcrumb">
+						<a href="/projects" class="hover:text-hub-text transition-colors" title="All projects">
+							<svg class="w-4 h-4 inline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+								<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
+							</svg>
+						</a>
+						<span class="text-hub-dim" aria-hidden="true">/</span>
+						<a
+							href="/projects/{detail.parentProject}"
+							class="hover:text-hub-text transition-colors truncate"
+							title="Parent project: {detail.parentProject}"
+						>
+							{detail.parentProject}
+						</a>
+						<span class="text-hub-dim" aria-hidden="true">/</span>
+					</nav>
+				{:else}
+					<a href="/projects" class="p-1.5 rounded-lg hover:bg-hub-card transition-colors text-hub-muted hover:text-hub-text" aria-label="Back to projects">
+						<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+							<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
+						</svg>
+					</a>
+				{/if}
 				<h1 class="text-lg font-semibold text-hub-text truncate">{slug}</h1>
 				{#if detail?.shape}
 					<span
@@ -348,7 +432,42 @@
 					</span>
 				{/if}
 				{#if detail}
-					<span class="text-hub-dim text-sm">{detail.adrCount} ADR{detail.adrCount === 1 ? '' : 's'} · {detail.noteCount} note{detail.noteCount === 1 ? '' : 's'}</span>
+					<span class="text-hub-dim text-sm flex-shrink-0">{detail.adrCount} ADR{detail.adrCount === 1 ? '' : 's'} · {detail.noteCount} note{detail.noteCount === 1 ? '' : 's'}</span>
+				{/if}
+
+				<!-- projects-graph ADR-011 — sibling switcher.
+				     Renders only when the project has ≥1 sibling under the same parent.
+				     Uses <details> for built-in keyboard accessibility (Enter/Space toggles,
+				     focus traps follow native semantics). Alt+←/→ global cycle is wired
+				     separately via onSiblingKey on the window. -->
+				{#if siblings.length > 0}
+					<details
+						class="ml-auto relative flex-shrink-0"
+						bind:open={siblingsOpen}
+					>
+						<summary
+							class="cursor-pointer list-none px-2 py-1 rounded text-xs text-hub-muted hover:text-hub-text hover:bg-hub-card transition-colors"
+							title="Alt + ←/→ cycles siblings"
+						>
+							{siblings.length} sibling{siblings.length === 1 ? '' : 's'} ▾
+						</summary>
+						<ul
+							class="absolute right-0 top-full mt-1 z-20 w-64 max-h-80 overflow-y-auto bg-hub-card border border-hub-border rounded-lg shadow-lg py-1 text-sm"
+						>
+							{#each siblings as sib (sib.slug)}
+								<li>
+									<a
+										href="/projects/{sib.slug}"
+										class="flex items-center justify-between gap-3 px-3 py-1.5 hover:bg-hub-bg transition-colors"
+										onclick={() => (siblingsOpen = false)}
+									>
+										<span class="text-hub-text truncate">{sib.slug}</span>
+										<span class="text-hub-dim text-xs flex-shrink-0">{sib.adrCount} ADR{sib.adrCount === 1 ? '' : 's'}</span>
+									</a>
+								</li>
+							{/each}
+						</ul>
+					</details>
 				{/if}
 			</div>
 		</div>
