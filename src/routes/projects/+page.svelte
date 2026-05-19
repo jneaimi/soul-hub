@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/stores';
 
 	interface StatusCounts {
 		proposed: number;
@@ -57,6 +58,10 @@
 		shape: ProjectShape | null;
 		projectFalsifier: string | null;
 		projectFalsifierDate: string | null;
+		/** projects-graph ADR-013 — root index.md tag list (cluster filter source). */
+		tags: string[];
+		/** projects-graph ADR-012 — list-view description. */
+		description: string;
 	}
 
 	interface TreeNode {
@@ -90,6 +95,29 @@
 	let shapeFilter = $state<ProjectShape | 'all'>('all');
 	let expanded = $state<Set<string>>(new Set());
 
+	// projects-graph ADR-012 — cluster filter (sourced from root index tags),
+	// sort dropdown (5 options), both persisted in localStorage. The cluster
+	// pref defaults to `?cluster=<x>` query param when present so ADR-013's
+	// header cluster pill deep-links into the filtered view.
+	type SortPref = 'recency' | 'name' | 'adr-count' | 'falsifier' | 'shape';
+	let clusterFilter = $state<string>('all');
+	let sortPref = $state<SortPref>('recency');
+
+	const CLUSTER_KEY = 'vault-projects-cluster-pref';
+	const SORT_KEY = 'vault-projects-sort-pref';
+
+	/** projects-graph ADR-012 — distinct cluster tags across the loaded
+	 *  project list. Sorted alphabetically for stable chip order. */
+	const clusters = $derived.by<string[]>(() => {
+		const set = new Set<string>();
+		for (const p of projects) {
+			for (const t of p.tags ?? []) {
+				if (t.startsWith('cluster:')) set.add(t.slice('cluster:'.length));
+			}
+		}
+		return Array.from(set).sort();
+	});
+
 	/** A project passes the row-level filter (text + status + shape). The
 	 *  tree-walk below uses this to decide whether to keep a node OR any of
 	 *  its descendants (descendant-aware filtering). */
@@ -99,6 +127,17 @@
 		if (statusFilter === 'shipped' && p.statusCounts.shipped === 0) return false;
 		if (statusFilter === 'archived' && p.adrCount > 0) return false;
 		if (shapeFilter !== 'all' && p.shape !== shapeFilter) return false;
+		// projects-graph ADR-012 — cluster filter scoped to the explicit
+		// `cluster:<slug>` tag on the project root index.md. `ungrouped`
+		// matches projects without any cluster tag.
+		if (clusterFilter !== 'all') {
+			const tagSet = new Set(p.tags ?? []);
+			if (clusterFilter === 'ungrouped') {
+				if ([...tagSet].some((t) => t.startsWith('cluster:'))) return false;
+			} else if (!tagSet.has(`cluster:${clusterFilter}`)) {
+				return false;
+			}
+		}
 		return true;
 	}
 
@@ -121,7 +160,32 @@
 			}
 		}
 
-		const sortByActivity = (a: ProjectRollup, b: ProjectRollup) => {
+		// projects-graph ADR-012 — sort comparator dispatched by sortPref.
+		// `recency` matches today's default (preserved verbatim). Other prefs
+		// add deterministic secondary sort by slug to stabilise ties.
+		const cmp = (a: ProjectRollup, b: ProjectRollup): number => {
+			if (sortPref === 'name') return a.slug.localeCompare(b.slug);
+			if (sortPref === 'adr-count') {
+				if (a.adrCount !== b.adrCount) return b.adrCount - a.adrCount;
+				return a.slug.localeCompare(b.slug);
+			}
+			if (sortPref === 'falsifier') {
+				// Soonest first; projects without a falsifier sink to bottom.
+				const da = a.upcomingFalsifiers[0]?.daysAway;
+				const db = b.upcomingFalsifiers[0]?.daysAway;
+				if (da !== undefined && db !== undefined) return da - db;
+				if (da !== undefined) return -1;
+				if (db !== undefined) return 1;
+				return a.slug.localeCompare(b.slug);
+			}
+			if (sortPref === 'shape') {
+				// Order by shape string; unlabelled projects sink.
+				const sa = a.shape ?? '￿';
+				const sb = b.shape ?? '￿';
+				if (sa !== sb) return sa.localeCompare(sb);
+				return a.slug.localeCompare(b.slug);
+			}
+			// Default: recency.
 			if (a.lastActivity && b.lastActivity) return b.lastActivity - a.lastActivity;
 			if (a.lastActivity) return -1;
 			if (b.lastActivity) return 1;
@@ -131,12 +195,12 @@
 		const buildNode = (p: ProjectRollup, depth: number): TreeNode => {
 			const kids = (childrenOf.get(p.slug) ?? [])
 				.slice()
-				.sort(sortByActivity)
+				.sort(cmp)
 				.map((c) => buildNode(c, depth + 1));
 			return { project: p, depth, children: kids };
 		};
 
-		return roots.sort(sortByActivity).map((r) => buildNode(r, 0));
+		return roots.sort(cmp).map((r) => buildNode(r, 0));
 	});
 
 	/** Descendant-aware filter: a node survives if it matches OR any
@@ -158,7 +222,7 @@
 	 *  Computed only when filter is active so manual expand/collapse wins
 	 *  when filters are empty. */
 	const autoExpanded = $derived.by(() => {
-		if (!filter && statusFilter === 'all' && shapeFilter === 'all') return null;
+		if (!filter && statusFilter === 'all' && shapeFilter === 'all' && clusterFilter === 'all') return null;
 		const set = new Set<string>();
 		const visit = (nodes: TreeNode[], ancestors: string[]) => {
 			for (const n of nodes) {
@@ -255,7 +319,32 @@
 		} catch {
 			// localStorage unavailable or malformed value — start collapsed
 		}
+
+		// projects-graph ADR-012 — restore sort + cluster prefs from
+		// localStorage; URL `?cluster=<x>` query param (deep-link from
+		// ADR-013's header cluster pill) wins over the persisted pref.
+		try {
+			const savedSort = localStorage.getItem(SORT_KEY);
+			if (savedSort && ['recency','name','adr-count','falsifier','shape'].includes(savedSort)) {
+				sortPref = savedSort as SortPref;
+			}
+			const savedCluster = localStorage.getItem(CLUSTER_KEY);
+			if (savedCluster) clusterFilter = savedCluster;
+		} catch {
+			// noop — defaults stay
+		}
+		const urlCluster = $page.url.searchParams.get('cluster');
+		if (urlCluster) clusterFilter = urlCluster;
+
 		loadProjects();
+	});
+
+	// projects-graph ADR-012 — persist sort + cluster prefs on change.
+	$effect(() => {
+		try { localStorage.setItem(SORT_KEY, sortPref); } catch { /* noop */ }
+	});
+	$effect(() => {
+		try { localStorage.setItem(CLUSTER_KEY, clusterFilter); } catch { /* noop */ }
 	});
 </script>
 
@@ -325,6 +414,12 @@
 					<span class="text-hub-dim">·</span>
 					<span class="text-hub-dim">{timeAgoMs(project.lastActivity)}</span>
 				</div>
+				<!-- projects-graph ADR-012 — one-line description (frontmatter or
+				     body first-paragraph fallback). Hidden when both sources are
+				     empty so the card stays compact. -->
+				{#if project.description}
+					<p class="text-[11px] text-hub-muted mb-2 line-clamp-2">{project.description}</p>
+				{/if}
 				<div class="flex flex-wrap items-center gap-1">
 					{#if project.statusCounts.proposed > 0}
 						<span class="px-2 py-0.5 rounded text-[10px] font-medium bg-hub-warning/15 text-hub-warning">
@@ -485,6 +580,38 @@
 						{#each PROJECT_SHAPES_UI as s}
 							<option value={s}>{s}</option>
 						{/each}
+					</select>
+
+					<!-- projects-graph ADR-012 — scope by cluster: tag. Sourced
+					     dynamically from the loaded project list so new clusters
+					     surface without code changes. -->
+					<select
+						bind:value={clusterFilter}
+						class="px-2 py-2 rounded-lg border border-hub-border bg-transparent text-xs text-hub-muted hover:text-hub-text focus:outline-none focus:border-hub-cta/50 transition-colors cursor-pointer"
+						class:border-hub-cta={clusterFilter !== 'all'}
+						class:text-hub-cta={clusterFilter !== 'all'}
+						title="Filter by cluster: tag on the project root index"
+					>
+						<option value="all">all clusters</option>
+						<option value="ungrouped">ungrouped</option>
+						{#each clusters as c}
+							<option value={c}>cluster:{c}</option>
+						{/each}
+					</select>
+
+					<!-- projects-graph ADR-012 — sort dropdown; persisted via
+					     vault-projects-sort-pref. Default `recency` matches
+					     today's behavior verbatim. -->
+					<select
+						bind:value={sortPref}
+						class="px-2 py-2 rounded-lg border border-hub-border bg-transparent text-xs text-hub-muted hover:text-hub-text focus:outline-none focus:border-hub-cta/50 transition-colors cursor-pointer"
+						title="Sort projects"
+					>
+						<option value="recency">recency</option>
+						<option value="name">name (A→Z)</option>
+						<option value="adr-count">ADR count</option>
+						<option value="falsifier">falsifier urgency</option>
+						<option value="shape">shape</option>
 					</select>
 				</div>
 

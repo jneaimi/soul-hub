@@ -101,7 +101,41 @@ interface ProjectRollup {
 	 *  tag-derived UI. Tags on individual notes within the project are NOT
 	 *  aggregated here — too noisy. */
 	tags: string[];
+	/** projects-graph ADR-012 — one-line project description for the list
+	 *  view. Resolution order: (1) `description:` frontmatter on root
+	 *  index.md, (2) first non-heading paragraph of the index body
+	 *  truncated to 140 chars. Empty when neither resolves. */
+	description: string;
 	decisions?: DecisionRow[];
+}
+
+/** projects-graph ADR-012 — extract the first non-heading, non-blockquote,
+ *  non-list paragraph from a markdown body. Returns trimmed prose up to
+ *  140 chars (with ellipsis when truncated), or '' when nothing usable. */
+function firstParagraph(body: string): string {
+	const lines = body.split('\n');
+	const buf: string[] = [];
+	for (const raw of lines) {
+		const line = raw.trim();
+		if (!line) {
+			if (buf.length) break;
+			continue;
+		}
+		if (/^#{1,6}\s/.test(line)) continue;
+		if (line.startsWith('>')) continue;
+		if (/^[-*+]\s/.test(line)) continue;
+		if (/^\d+\.\s/.test(line)) continue;
+		if (line.startsWith('```')) continue;
+		if (line.startsWith('|')) continue;
+		if (line.startsWith('<')) continue;
+		buf.push(line);
+	}
+	const joined = buf.join(' ').replace(/\s+/g, ' ').trim();
+	if (!joined) return '';
+	if (joined.length <= 140) return joined;
+	const slice = joined.slice(0, 140);
+	const lastSpace = slice.lastIndexOf(' ');
+	return (lastSpace > 100 ? slice.slice(0, lastSpace) : slice).trimEnd() + '…';
 }
 
 /** Extract the target slug from a parent_project wikilink value.
@@ -222,6 +256,8 @@ export const GET: RequestHandler = async ({ url }) => {
 		let projectFalsifierDate: string | null = null;
 		// projects-graph ADR-013 — tags from the project root index.md only.
 		let projectTags: string[] = [];
+		// projects-graph ADR-012 — description for list-view cards.
+		let projectDescription = '';
 		const upcomingFalsifiers: ProjectRollup['upcomingFalsifiers'] = [];
 		const decisions: DecisionRow[] = [];
 
@@ -247,6 +283,14 @@ export const GET: RequestHandler = async ({ url }) => {
 				projectIndexContent = full.content;
 				// projects-graph ADR-013 — capture root index tags for the cluster pill.
 				projectTags = asStringArray(full.meta.tags);
+				// projects-graph ADR-012 — description: prefer explicit
+				// frontmatter, fall back to first body paragraph (140-char cap).
+				const rawDesc = full.meta.description;
+				if (typeof rawDesc === 'string' && rawDesc.trim()) {
+					projectDescription = rawDesc.trim();
+				} else if (typeof full.content === 'string') {
+					projectDescription = firstParagraph(full.content);
+				}
 
 				// projects-graph ADR-001 — surface project_shape + project_falsifier
 				// + companion falsifier_date from the project root index.
@@ -410,6 +454,7 @@ export const GET: RequestHandler = async ({ url }) => {
 			projectFalsifier,
 			projectFalsifierDate,
 			tags: projectTags,
+			description: projectDescription,
 			...(includeDecisions ? { decisions } : {}),
 		});
 	}
