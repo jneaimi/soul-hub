@@ -18,6 +18,17 @@ This skill is the **only sanctioned way for AI to author vault content** under `
 
 If Soul Hub isn't running on `:2400`, this skill fails closed. Start Soul Hub first.
 
+## Precedence — try the `soul` CLI first
+
+Before invoking this skill, check whether a `soul` verb covers the case. All three paths terminate at the same `POST /api/vault/notes` chokepoint (ADR-046), so validation is identical — the CLI just doesn't burn a skill-invocation budget for what is a thin HTTP wrapper.
+
+1. **`soul adr {propose,accept,ship,park,reject}`** — first choice for ADR lifecycle ops in `projects/<slug>/`
+2. **`soul note {create,update}`** — first choice for general vault notes (any zone, full frontmatter control via `--meta-json`)
+3. **This skill (`/vault-write`)** — fallback when a `soul` verb doesn't fit (e.g., update mid-script, complex piping)
+4. **Direct `curl POST /api/vault/notes`** — last resort if both above are broken
+
+Run `soul --help` and `soul note create --help` to confirm the CLI shape before falling back. See `feedback_soul_cli_first_choice` auto-memory and `~/dev/soul-hub/CLAUDE.md` (the "soul CLI is first-choice" section) for the governing rule.
+
 ## Quickstart
 
 ### Create a new note
