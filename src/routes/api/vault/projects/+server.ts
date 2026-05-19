@@ -171,17 +171,22 @@ function firstParagraph(body: string): string {
 }
 
 /** Extract the target slug from a parent_project wikilink value.
- *  Accepts `[[slug]]` or `[[slug|alias]]` or `[[path/to/slug]]`. Returns
- *  null if the value is missing or not a wikilink. */
+ *  Accepts `[[slug]]`, `[[slug|alias]]`, `[[path/to/slug]]`, or the
+ *  path-to-index form `[[../soul-hub/index|soul-hub]]` operators reach for
+ *  when Obsidian's link-completer picks an `index.md`. Trailing `/index`
+ *  (or `/index.md`) is stripped before we take the last segment, so both
+ *  shapes resolve to the same project slug. */
 function parseParentSlug(raw: unknown): string | null {
 	if (typeof raw !== 'string') return null;
 	const m = /^\[\[([^\]|#]+?)(?:\|[^\]]*)?\]\]$/.exec(raw.trim());
 	if (!m) return null;
-	// If target is a path like `projects/soul-hub|index|soul-hub`, take the
-	// last segment so we get the project slug, not the directory chain.
 	const target = m[1].trim();
-	const lastSeg = target.split('/').pop() ?? target;
-	return lastSeg || null;
+	const segs = target.split('/').filter(Boolean);
+	while (segs.length > 1 && /^index(\.md)?$/i.test(segs[segs.length - 1])) {
+		segs.pop();
+	}
+	const lastSeg = segs[segs.length - 1] ?? target;
+	return lastSeg.replace(/\.md$/i, '') || null;
 }
 
 function asStringArray(raw: unknown): string[] {

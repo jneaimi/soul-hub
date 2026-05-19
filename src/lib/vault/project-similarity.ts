@@ -255,13 +255,18 @@ function extractSlugFromIndexPath(path: string): string | null {
 }
 
 /** Pull the target slug from a wikilink string. Accepts the same forms
- *  as the projects API's `parseParentSlug`. */
+ *  as the projects API's `parseParentSlug`, including the path-to-index
+ *  form `[[../soul-hub/index|soul-hub]]`. */
 function parseWikilinkSlug(raw: string): string | null {
 	const m = /^\[\[([^\]|#]+?)(?:\|[^\]]*)?\]\]$/.exec(raw.trim());
 	if (!m) return null;
 	const target = m[1].trim();
-	const lastSeg = target.split('/').pop() ?? target;
-	return lastSeg || null;
+	const segs = target.split('/').filter(Boolean);
+	while (segs.length > 1 && /^index(\.md)?$/i.test(segs[segs.length - 1])) {
+		segs.pop();
+	}
+	const lastSeg = segs[segs.length - 1] ?? target;
+	return lastSeg.replace(/\.md$/i, '') || null;
 }
 
 /** Gemini Flash one-shot. Returns a coarse verdict plus any project
