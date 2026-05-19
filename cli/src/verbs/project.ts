@@ -164,6 +164,80 @@ export async function graph(args: Record<string, string | undefined>, opts: Outp
 
 interface WriteResp { success?: boolean; path?: string; error?: string }
 
+/** projects-graph ADR-006 — outgoing + incoming producer→consumer edges
+ *  for a single project. Reads `producesFor` from the producer rollup
+ *  (passthrough of `produces_for[]` frontmatter) AND `consumesFrom` from
+ *  the same endpoint's computed inverse (no second round-trip). */
+export async function edges(args: Record<string, string | undefined>, opts: OutputOpts) {
+  const slug = args._;
+  if (!slug) fail('project edges: missing SLUG (e.g. soul project edges signal-forge)');
+  const format = (args.format ?? 'adjacency-list').toLowerCase();
+  if (!['json', 'adjacency-list'].includes(format)) {
+    fail(`project edges: unknown --format "${format}". Allowed: json, adjacency-list`);
+  }
+
+  type ProducerEdgeLite =
+    | string
+    | { target?: string; destination?: string; falsifier?: string; falsifier_date?: string };
+  interface EdgesRow extends ProjectRow {
+    producesFor?: ProducerEdgeLite[];
+    consumesFrom?: string[];
+  }
+  interface EdgesResp { projects: EdgesRow[] }
+
+  const data = await apiGet<EdgesResp>('/api/vault/projects', { slug });
+  const row = data.projects.find((p) => p.slug === slug) ?? data.projects[0];
+  if (!row) fail(`project edges: no project named "${slug}"`, 2);
+
+  if (opts.json || format === 'json') {
+    process.stdout.write(
+      JSON.stringify(
+        {
+          slug: row.slug,
+          producesFor: row.producesFor ?? [],
+          consumesFrom: row.consumesFrom ?? [],
+        },
+      ) + '\n',
+    );
+    return;
+  }
+
+  const targetSlug = (raw: string): string => {
+    const m = /^\[\[([^\]|#]+?)(?:\|[^\]]*)?\]\]$/.exec(raw.trim());
+    if (!m) return raw;
+    const segs = m[1].split('/').filter(Boolean);
+    while (segs.length > 1 && /^index(\.md)?$/i.test(segs[segs.length - 1])) segs.pop();
+    return (segs[segs.length - 1] ?? m[1]).replace(/\.md$/i, '');
+  };
+
+  const outgoing = row.producesFor ?? [];
+  const incoming = row.consumesFrom ?? [];
+  const lines: string[] = [];
+  lines.push(`# ${row.slug}`);
+  if (outgoing.length > 0) {
+    lines.push(`\nOutgoing (produces_for):`);
+    for (const e of outgoing) {
+      if (typeof e === 'string') lines.push(`  → ${targetSlug(e)}`);
+      else if (e && typeof e === 'object') {
+        const tgt = typeof e.target === 'string' ? targetSlug(e.target) : '(no-target)';
+        const meta: string[] = [];
+        if (e.destination) meta.push(`dest=${e.destination}`);
+        if (e.falsifier_date) meta.push(`falsifier=${e.falsifier_date}`);
+        lines.push(`  → ${tgt}${meta.length > 0 ? ' [' + meta.join(', ') + ']' : ''}`);
+      }
+    }
+  } else {
+    lines.push(`\nOutgoing: (none)`);
+  }
+  if (incoming.length > 0) {
+    lines.push(`\nIncoming (consumes_from — computed):`);
+    for (const slug of incoming) lines.push(`  ← ${slug}`);
+  } else {
+    lines.push(`\nIncoming: (none)`);
+  }
+  process.stdout.write(lines.join('\n') + '\n');
+}
+
 export async function create(args: Record<string, string | undefined>, opts: OutputOpts) {
   if (!args.slug) fail('project create: --slug is required');
   const slug = args.slug;

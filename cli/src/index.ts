@@ -21,6 +21,7 @@ READ VERBS
   soul project list
   soul project get   SLUG
   soul project graph [--format json|adjacency-list|dot]
+  soul project edges SLUG [--format json|adjacency-list]
   soul adr list   --project SLUG [--status STATUS]
   soul crm find   [-q QUERY] [--stage S] [--limit N]
   soul crm followups
@@ -61,7 +62,7 @@ interface Dispatch { [noun: string]: { [verb: string]: Verb }; }
 
 const dispatch: Dispatch = {
   vault:     { search: vault.search, get: vault.get, recent: vault.recent },
-  project:   { list: project.list, get: project.get, graph: project.graph, create: project.create, 'label-shape': project.labelShape },
+  project:   { list: project.list, get: project.get, graph: project.graph, edges: project.edges, create: project.create, 'label-shape': project.labelShape },
   adr:       { list: adr.list, propose: adr.propose, accept: adr.accept, ship: adr.ship, park: adr.park, reject: adr.reject },
   crm:       { find: crm.find, followups: crm.followups },
   scheduler: { tasks: scheduler.tasks },

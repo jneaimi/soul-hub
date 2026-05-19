@@ -67,9 +67,37 @@ export interface VaultMeta {
 	 *  root `index.md` alongside companion `falsifier_date:` (Shape A) or
 	 *  alone (Shape D, undated commitment). */
 	project_falsifier?: string;
+	/** projects-graph ADR-006 — cross-project producer→consumer edges
+	 *  declared on the PRODUCER side only. Each entry is either a bare
+	 *  wikilink string (`"[[social-media-launch|social-media-launch]]"`)
+	 *  or a rich-form object with optional `destination` (for `edge-flow`
+	 *  staleness watching), `falsifier`, and `falsifier_date`. The
+	 *  reverse view (`consumes_from`) is COMPUTED read-time by inverting
+	 *  every project's declarations — never stored. */
+	produces_for?: ProducerEdge[];
 	/** Catch-all for custom frontmatter fields */
 	[key: string]: unknown;
 }
+
+/** projects-graph ADR-006 — single `produces_for[]` entry. Operators
+ *  reach for the simple string form for typical producer→consumer
+ *  declarations; the rich object form opts the edge into vault-scout's
+ *  edge-stale watcher by adding `destination` + `falsifier`. */
+export type ProducerEdge =
+	| string
+	| {
+		/** Wikilink to the consumer project: `[[<slug>|<alias>]]`. */
+		target: string;
+		/** Path the consumer reads from. Vault-internal
+		 *  (`~/vault/content/signal-forge/drafts/`) OR external
+		 *  (`~/Downloads/peer-brief-*.pdf`). Watched by edge-flow.ts. */
+		destination?: string;
+		/** Free-text claim that, if true at `falsifier_date:`, signals
+		 *  the producer→consumer chain is broken. */
+		falsifier?: string;
+		/** Companion ISO date for `falsifier`. */
+		falsifier_date?: string;
+	};
 
 export interface VaultLink {
 	/** Raw link text as written: "Some Note" or "folder/note" */

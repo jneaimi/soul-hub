@@ -59,6 +59,9 @@ import {
 	getBlockerSnapshot,
 	upsertBlockerSnapshot,
 	type BlockerSnapshotRow,
+	getEdgeSnapshot,
+	upsertEdgeSnapshot,
+	type EdgeSnapshotRow,
 } from '../../channels/whatsapp/heartbeat-state.js';
 import {
 	extractUnblockCandidates,
@@ -67,6 +70,13 @@ import {
 	type BlockerResolver,
 	type UnblockCandidate,
 } from './vault-scout-unblock.js';
+import {
+	extractEdgeStaleCandidates,
+	type EdgeSnapshot,
+	type EdgeSnapshotStore,
+	type EdgeStaleCandidate,
+	type ProducerIndex,
+} from './vault-scout-edge.js';
 import type { TaskFn } from '../task-types.js';
 
 const SYNTH_MODEL = 'gemini-2.5-flash';
@@ -80,7 +90,7 @@ interface ScoutParams {
 	vaultDir?: string;
 }
 
-export type CandidateKind = 'falsifier' | 'review-date' | 'future-mention' | 'unblock';
+export type CandidateKind = 'falsifier' | 'review-date' | 'future-mention' | 'unblock' | 'edge-stale';
 
 export interface Candidate {
 	id: string;
@@ -98,6 +108,18 @@ export interface Candidate {
 	 *  transitions observed THIS run (prev_status → new_status). Used by
 	 *  F2 verification + the renderer's audit footer. */
 	triggerTrail?: Array<{ blockerPath: string; prevStatus: string; newStatus: string }>;
+	/** projects-graph ADR-006 — only set when kind === 'edge-stale'.
+	 *  Names the consumer slug, filesystem destination, and how stale the
+	 *  edge is so the synth prompt can compose a useful WhatsApp surface. */
+	edgeStale?: {
+		consumerSlug: string;
+		destination: string;
+		falsifier: string;
+		falsifierDate: string;
+		lastFlowMtime: number | null;
+		daysStale: number;
+		staleWindowDays: number;
+	};
 }
 
 const PROJECT_FOLDER_RE = /^projects\/([^/]+)\//;
@@ -264,7 +286,7 @@ const ScoutOutputSchema = z.object({
 	decisions: z.array(ScoutDecisionItemSchema),
 });
 
-const SCOUT_SYSTEM_PROMPT = `You are Vault-Scout, the proactive milestone-detector for Jasem's Soul Hub second-brain. Each day you receive a list of candidates extracted from the vault — falsifier dates, review dates, future-date mentions in project notes, AND unblock events (an ADR's blockers just shipped) — and decide which deserve a WhatsApp voice-queue surface.
+const SCOUT_SYSTEM_PROMPT = `You are Vault-Scout, the proactive milestone-detector for Jasem's Soul Hub second-brain. Each day you receive a list of candidates extracted from the vault — falsifier dates, review dates, future-date mentions in project notes, unblock events (an ADR's blockers just shipped), AND edge-stale events (a producer→consumer flow has gone dark beyond its declared window) — and decide which deserve a WhatsApp voice-queue surface.
 
 Your job:
 1. For each candidate, decide: "queue" (worth pinging), "skip" (irrelevant or covered by another producer), or "defer" (re-evaluate next run).
@@ -280,6 +302,7 @@ Rules:
 - Review dates: same scaling.
 - Future-mentions: only queue if the date itself is the actionable signal (e.g. an "earliest YYYY-MM-DD" deadline).
 - Unblock events: HIGH priority by default — the operator has been blocked on this dependent ADR; surface it the same day. voice_due = today's date. body should name the unblocked ADR + the blocker(s) that shipped + a one-line "next step" suggestion. Skip only if the dependent ADR is itself already in status: shipped or superseded.
+- Edge-stale events: NORMAL priority by default; HIGH when the consumer is on the operator's critical path (peer-brief, social-media-launch). voice_due = today's date. body should name the producer→consumer chain, the destination path, the falsifier window, and how many days the edge has been silent. Skip only if either the producer or the consumer is already in status: parked or superseded.
 - Skip duplicates of project-hygiene's coverage (anomalies, stale-active) — those producers handle their own flagging.
 - "defer" sparingly — only when you're genuinely uncertain.
 
@@ -319,6 +342,8 @@ async function synthesize(
 				// blockers that just transitioned to shipped/superseded.
 				blocker_paths: c.blockerPaths,
 				trigger_trail: c.triggerTrail,
+				// projects-graph ADR-006 — only present on kind: 'edge-stale'.
+				edge_stale: c.edgeStale,
 			})),
 		},
 		null,
@@ -364,6 +389,12 @@ interface RunResult {
 	unblockPairsExamined: number;
 	unblockTransitions: number;
 	unblockUnresolved: number;
+	/** projects-graph ADR-006 — edge-stale slice measurement, mirroring
+	 *  the ADR-009 split. Falsifier reads `edgeStaleCandidates > 0`. */
+	edgeWatchMs?: number;
+	edgeStaleCandidates?: number;
+	edgesExamined?: number;
+	edgesFirstObserved?: number;
 }
 
 function validateDecision(d: SynthDecision, today: string): { ok: boolean; reason?: string } {
@@ -514,7 +545,58 @@ export function vaultScoutFactory(rawParams: unknown): TaskFn {
 			triggerTrail: u.triggerTrail,
 		}));
 
-		candidates = [...candidates, ...unblockCandidatesBridged];
+		// projects-graph ADR-006 — edge-stale slice. Walks producer index.md
+		// notes with rich-form `produces_for[]` entries, probes their
+		// filesystem destinations via edge-flow.ts, and emits candidates
+		// when the freshness gap exceeds the declared window. Single-table
+		// snapshot store mirrors the unblock pattern; first observation
+		// is quiet to keep the first post-deploy run noise-free.
+		const edgeStartMs = Date.now();
+		const producerIndexes: ProducerIndex[] = allNotes
+			.filter((n) => /^projects\/[^/]+\/index\.md$/.test(n.path))
+			.map<ProducerIndex | null>((n) => {
+				const raw = n.meta.produces_for;
+				if (!Array.isArray(raw) || raw.length === 0) return null;
+				const richEntries = raw
+					.filter((e): e is { target: string; destination?: string; falsifier?: string; falsifier_date?: string } =>
+						!!e && typeof e === 'object' && 'target' in e && typeof (e as { target?: unknown }).target === 'string',
+					);
+				if (richEntries.length === 0) return null;
+				const slug = n.path.replace(/^projects\//, '').replace(/\/index\.md$/, '');
+				return { path: n.path, slug, producesFor: richEntries };
+			})
+			.filter((p): p is ProducerIndex => p !== null);
+
+		const edgeStore: EdgeSnapshotStore = {
+			get: (producerSlug, consumerSlug) => {
+				const row = getEdgeSnapshot(producerSlug, consumerSlug);
+				return row ? (row as EdgeSnapshot) : null;
+			},
+			upsert: (row) => upsertEdgeSnapshot(row as EdgeSnapshotRow),
+		};
+		const edge = await extractEdgeStaleCandidates(producerIndexes, edgeStore, now.getTime());
+		const edgeWatchMs = Date.now() - edgeStartMs;
+
+		const edgeStaleBridged: Candidate[] = edge.candidates.map((e: EdgeStaleCandidate) => ({
+			id: e.id,
+			kind: 'edge-stale' as const,
+			sourcePath: e.producerPath,
+			projectFolder: e.producerSlug,
+			suggestedDate: today,
+			rawText: `producer→consumer edge stale: ${e.producerSlug} → ${e.consumerSlug} (no flow for ${e.daysStale}d, window ${e.staleWindowDays}d)`,
+			frontmatter: { status: undefined },
+			edgeStale: {
+				consumerSlug: e.consumerSlug,
+				destination: e.destination,
+				falsifier: e.falsifier,
+				falsifierDate: e.falsifierDate,
+				lastFlowMtime: e.lastFlowMtime,
+				daysStale: e.daysStale,
+				staleWindowDays: e.staleWindowDays,
+			},
+		}));
+
+		candidates = [...candidates, ...unblockCandidatesBridged, ...edgeStaleBridged];
 
 		// Skip already-decided candidates.
 		const decidedIds = getDecidedCandidateIds(candidates.map((c) => c.id));
@@ -540,6 +622,10 @@ export function vaultScoutFactory(rawParams: unknown): TaskFn {
 				unblockPairsExamined: unblock.stats.pairsExamined,
 				unblockTransitions: unblock.stats.transitionsObserved,
 				unblockUnresolved: unblock.stats.unresolvedBlockers,
+				edgeWatchMs,
+				edgeStaleCandidates: edge.candidates.length,
+				edgesExamined: edge.stats.edgesExamined,
+				edgesFirstObserved: edge.stats.edgesFirstObserved,
 			};
 		}
 
@@ -649,6 +735,10 @@ export function vaultScoutFactory(rawParams: unknown): TaskFn {
 			unblockPairsExamined: unblock.stats.pairsExamined,
 			unblockTransitions: unblock.stats.transitionsObserved,
 			unblockUnresolved: unblock.stats.unresolvedBlockers,
+			edgeWatchMs,
+			edgeStaleCandidates: edge.candidates.length,
+			edgesExamined: edge.stats.edgesExamined,
+			edgesFirstObserved: edge.stats.edgesFirstObserved,
 		};
 	};
 }

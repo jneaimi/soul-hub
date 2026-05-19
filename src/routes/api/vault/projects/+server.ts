@@ -14,7 +14,7 @@ import { readdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { getVaultEngine } from '$lib/vault/index.js';
 import { parsePhases, type Phase } from '$lib/vault/phase-parser.js';
-import type { ProjectShape, VaultMeta } from '$lib/vault/types.js';
+import type { ProducerEdge, ProjectShape, VaultMeta } from '$lib/vault/types.js';
 import { PROJECT_SHAPES } from '$lib/vault/types.js';
 import { getDescendants } from '$lib/vault/descendants.js';
 import { computeCriticalPath } from '$lib/projects/critical-path.js';
@@ -104,6 +104,17 @@ interface ProjectRollup {
 	 *  tag-derived UI. Tags on individual notes within the project are NOT
 	 *  aggregated here — too noisy. */
 	tags: string[];
+	/** projects-graph ADR-006 — outgoing producer→consumer edges declared
+	 *  on this project's root `index.md`. Mix of bare wikilink strings and
+	 *  rich-form `{target, destination?, falsifier?, falsifier_date?}`
+	 *  entries. Operator-authored. Omitted when none. */
+	producesFor?: ProducerEdge[];
+	/** projects-graph ADR-006 — computed inverse: slugs of every project
+	 *  whose `produces_for` includes THIS project. Never stored — derived
+	 *  read-time by walking every project's `produces_for` and inverting.
+	 *  Mirrors the ADR-038 `child_projects ← parent_project` pattern.
+	 *  Omitted when empty. */
+	consumesFrom?: string[];
 	/** projects-graph ADR-012 — one-line project description for the list
 	 *  view. Resolution order: (1) `description:` frontmatter on root
 	 *  index.md, (2) first non-heading paragraph of the index body
@@ -290,6 +301,36 @@ export const GET: RequestHandler = async ({ url }) => {
 	const includeDecisions =
 		(filterSet !== null && filterSet.size === 1) || wantChildren || wantNetworkLayout;
 
+	// projects-graph ADR-006 — build the producer→consumer inverse map
+	// in a single full-vault sweep BEFORE the rollup loop. Required even
+	// when `filterSet` restricts the response so that `consumesFrom` on
+	// a filtered project surfaces producers outside the filter set. Each
+	// entry: <consumer-slug> → sorted list of <producer-slug>s. Cheap —
+	// every index.md is already in the engine's in-memory index.
+	const consumesFromMap = new Map<string, Set<string>>();
+	for (const producerSlug of entries) {
+		if (producerSlug.startsWith('.') || producerSlug.startsWith('_')) continue;
+		const idx = engine.getNote(`projects/${producerSlug}/index.md`);
+		if (!idx) continue;
+		const rawProducesFor = idx.meta.produces_for;
+		if (!Array.isArray(rawProducesFor)) continue;
+		for (const entry of rawProducesFor) {
+			let target: string | undefined;
+			if (typeof entry === 'string') {
+				target = entry;
+			} else if (entry && typeof entry === 'object' && 'target' in entry) {
+				const t = (entry as { target?: unknown }).target;
+				if (typeof t === 'string') target = t;
+			}
+			if (!target) continue;
+			const consumerSlug = parseParentSlug(target);
+			if (!consumerSlug || consumerSlug === producerSlug) continue;
+			const set = consumesFromMap.get(consumerSlug) ?? new Set<string>();
+			set.add(producerSlug);
+			consumesFromMap.set(consumerSlug, set);
+		}
+	}
+
 	const rollups: ProjectRollup[] = [];
 
 	for (const slug of entries) {
@@ -330,6 +371,10 @@ export const GET: RequestHandler = async ({ url }) => {
 		let shape: ProjectShape | null = null;
 		let projectFalsifier: string | null = null;
 		let projectFalsifierDate: string | null = null;
+		// projects-graph ADR-006 — passthrough on the producer rollup.
+		// Consumers see this same array verbatim; the reverse view
+		// (`consumesFrom`) is computed below across all rollups.
+		let producesFor: ProducerEdge[] | undefined;
 		// projects-graph ADR-013 — tags from the project root index.md only.
 		let projectTags: string[] = [];
 		// projects-graph ADR-012 — description for list-view cards.
@@ -376,6 +421,16 @@ export const GET: RequestHandler = async ({ url }) => {
 					if ((PROJECT_SHAPES as readonly string[]).includes(v)) {
 						shape = v as ProjectShape;
 					}
+				}
+
+				// projects-graph ADR-006 — passthrough `produces_for[]`. The
+				// chokepoint (index.ts) already validated wikilink shape +
+				// target resolution at write-time, so we don't re-validate
+				// here. Honor both bare-string and rich-form `{target,
+				// destination, falsifier?, falsifier_date?}` entries.
+				const rawProducesFor = full.meta.produces_for;
+				if (Array.isArray(rawProducesFor) && rawProducesFor.length > 0) {
+					producesFor = rawProducesFor as ProducerEdge[];
 				}
 				if (typeof full.meta.project_falsifier === 'string' && full.meta.project_falsifier.trim()) {
 					projectFalsifier = full.meta.project_falsifier.trim();
@@ -560,6 +615,13 @@ export const GET: RequestHandler = async ({ url }) => {
 			projectFalsifierDate,
 			tags: projectTags,
 			description: projectDescription,
+			...(producesFor ? { producesFor } : {}),
+			...((() => {
+				const incoming = consumesFromMap.get(slug);
+				return incoming && incoming.size > 0
+					? { consumesFrom: [...incoming].sort() }
+					: {};
+			})()),
 			...(includeDecisions ? { decisions } : {}),
 			...(networkLayout ? { networkLayout } : {}),
 		});

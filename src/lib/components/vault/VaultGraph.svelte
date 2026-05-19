@@ -192,14 +192,21 @@
     for (const edge of edges) {
       if (graph.hasNode(edge.source) && graph.hasNode(edge.target)) {
         try {
-          // ADR-005 — `parent` edges (project hierarchy) get a softer
-          // slate stroke so they read as structure, not as wikilinks.
-          // Note-level wikilink edges (no `.type`) keep the existing
-          // purple-tinted color so `/vault` looks identical.
-          const edgeColor = edge.type === 'parent' ? '#94a3b888' : '#7c8cf844';
+          // Edge color by type (project-level graph adds the semantic types):
+          // - `'parent'` → soft slate (project hierarchy, structure-only)
+          // - `'produces_for'` (ADR-006) → emerald green (operator-declared
+          //   producer→consumer flow; thicker stroke to read as a primary edge)
+          // - default (note-level wikilink) → existing purple
+          let edgeColor = '#7c8cf844';
+          let edgeSize = 1;
+          if (edge.type === 'parent') edgeColor = '#94a3b888';
+          else if (edge.type === 'produces_for') {
+            edgeColor = '#22c55edd'; // emerald-500 with slight transparency
+            edgeSize = 2;
+          }
           graph.addEdge(edge.source, edge.target, {
             color: edgeColor,
-            size: 1,
+            size: edgeSize,
           });
         } catch {
           // parallel edge — skip
@@ -491,6 +498,7 @@
          driven by the actual shapes present in the visible node set. -->
     {#if layout === 'hierarchical'}
       {@const presentShapes = Array.from(new Set(nodes.map((n) => n.shape).filter(Boolean))).sort()}
+      {@const hasProducesFor = edges.some((e) => e.type === 'produces_for')}
       {#if presentShapes.length > 0}
         <div class="absolute bottom-3 left-3 bg-hub-card/90 backdrop-blur-sm border border-hub-border rounded-lg px-3 py-2 max-w-md">
           <div class="flex flex-wrap gap-x-3 gap-y-1">
@@ -500,8 +508,13 @@
                 <span class="w-2.5 h-2.5 rounded-full" style="background: {sample?.color ?? '#9ca3af'}"></span> {s}
               </span>
             {/each}
+            {#if hasProducesFor}
+              <span class="flex items-center gap-1 text-[11px] text-hub-muted">
+                <span class="w-3 h-0.5 inline-block rounded" style="background: #22c55edd"></span> produces_for
+              </span>
+            {/if}
           </div>
-          <p class="text-[10px] text-hub-dim/60 mt-1">Color = project_shape · size = activity (30d) · click node → project page.</p>
+          <p class="text-[10px] text-hub-dim/60 mt-1">Color = project_shape · size = activity (30d) · green = producer→consumer · click node → project page.</p>
         </div>
       {/if}
     {:else}

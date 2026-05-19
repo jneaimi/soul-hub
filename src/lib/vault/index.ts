@@ -75,6 +75,89 @@ function validateProjectShape(
  *  AFTER its migration runs to canonical-6, and the chokepoint immediately
  *  refuses regressive writes. No code change required — just a CLAUDE.md
  *  edit and a watcher-driven governance re-scan. */
+/** projects-graph ADR-006 — validate that every wikilink TARGET in the
+ *  zone's `allowedRelationshipFields` resolves to an existing note.
+ *  Today's chokepoint only checks wikilink FORMAT (`^\[\[.+\]\]$`);
+ *  this check additionally REFUSES when the target slug doesn't resolve.
+ *
+ *  - Accepts both shapes per ADR-006 — bare wikilink string OR rich-form
+ *    object (`{target, destination?, falsifier?, falsifier_date?}`). For
+ *    rich-form, the target field carries the wikilink.
+ *  - Empty / absent fields skip silently — relationship fields are
+ *    optional. Same goes for items lacking a `.target` (the rich form
+ *    can also be a pure external destination — `target?: string`).
+ *  - link-validator.ts is UNCHANGED — its scope is BODY wikilinks
+ *    (3 rules per ADR-047). Frontmatter relationship-field targets ride
+ *    the governance path. See ADR-006 § Assumption cleared #2 for the
+ *    extension-point rationale.
+ *
+ *  Returns null on pass; a refusal message on the first miss. */
+function validateRelationshipFields(
+	meta: VaultMeta,
+	zone: VaultZone,
+	sourcePath: string,
+	resolveLink: (raw: string, src: string) => string | null,
+	hasNote: (path: string) => boolean,
+): string | null {
+	if (zone.allowedRelationshipFields.length === 0) return null;
+	for (const field of zone.allowedRelationshipFields) {
+		if (!(field in meta)) continue;
+		const value = meta[field];
+		const items: unknown[] = Array.isArray(value) ? value : [value];
+		for (const item of items) {
+			if (item === null || item === undefined || item === '') continue;
+			// Rich-form object: pull `.target`. No target = pure-external
+			// edge (allowed by ADR-006 § Negative consequences) — skip.
+			let raw: string;
+			if (typeof item === 'string') {
+				raw = item.trim();
+			} else if (typeof item === 'object' && item !== null && 'target' in item) {
+				const target = (item as { target?: unknown }).target;
+				if (typeof target !== 'string' || target.trim() === '') continue;
+				raw = target.trim();
+			} else {
+				continue;
+			}
+			// Parse wikilink: extract the TARGET (group 1) — same regex
+			// shape used in parser.ts WIKILINK_RE. The resolver expects
+			// the inner content (`social-media-launch`), NOT the wrapped
+			// form (`[[social-media-launch|alias]]`).
+			const m = /^\[\[([^\]|#^]+?)(?:#[^\]|]+?)?(?:\^[^\]|]+?)?(?:\|[^\]]+?)?\]\]$/.exec(raw);
+			if (!m) {
+				return `Relationship field "${field}" must be wikilink format [[slug]] (got: ${raw.length > 60 ? raw.slice(0, 57) + '…' : raw})`;
+			}
+			const target = m[1].trim();
+			// Resolve the wikilink target; null = doesn't resolve to any
+			// known note. `'external'` would mean URL/asset embed, which
+			// is meaningless for a project relationship — refuse it too.
+			const resolved = resolveLink(target, sourcePath);
+			if (resolved === 'external') {
+				return `Relationship field "${field}" cannot point to external URL/asset: ${raw}.`;
+			}
+			// Project-index fallback. The resolver's bare-basename tier
+			// only finds files literally named `<slug>.md`; project root
+			// `index.md` notes are addressed by folder name in
+			// relationship-field convention (`parent_project: "[[soul-hub]]"`
+			// or `produces_for: ["[[social-media-launch|x]]"]`). Honor that
+			// convention here without changing the global resolver — try
+			// `projects/<bare-slug>/index.md` before declaring failure.
+			let finalPath: string | null =
+				typeof resolved === 'string' ? resolved : null;
+			if (finalPath === null && !target.includes('/')) {
+				const projectIndex = `projects/${target.replace(/\.md$/i, '')}/index.md`;
+				if (hasNote(projectIndex)) finalPath = projectIndex;
+			}
+			if (finalPath === null) {
+				return `Relationship field "${field}" target does not resolve: ${raw}. Create the target project first OR fix the slug.`;
+			}
+			if (!hasNote(finalPath)) {
+				return `Relationship field "${field}" target resolved but missing: ${raw} → ${finalPath}.`;
+			}
+		}
+	}
+	return null;
+}
+
 function validateStatusScope(meta: VaultMeta, zone: VaultZone): string | null {
 	if (zone.allowedStatuses.length === 0) return null;
 	const raw = meta.status;
@@ -343,7 +426,9 @@ export class VaultEngine {
 
 			// Relationship field format check. For any allowed relationship
 			// field that's present on the note, every value must be wikilink
-			// format `[[slug]]` (single string or list of strings).
+			// format `[[slug]]` — string OR rich-form object (ADR-006:
+			// `produces_for[]` may be `{target, destination?, falsifier?,
+			// falsifier_date?}`; the wikilink target rides on `.target`).
 			if (zone.allowedRelationshipFields.length > 0) {
 				for (const field of zone.allowedRelationshipFields) {
 					if (!(field in note.meta)) continue;
@@ -351,10 +436,19 @@ export class VaultEngine {
 					const items: unknown[] = Array.isArray(value) ? value : [value];
 					for (const item of items) {
 						if (item === null || item === undefined || item === '') continue;
-						const s = String(item).trim();
-						if (!/^\[\[.+\]\]$/.test(s)) {
+						let raw: string;
+						if (typeof item === 'string') {
+							raw = item.trim();
+						} else if (typeof item === 'object' && item !== null && 'target' in item) {
+							const t = (item as { target?: unknown }).target;
+							if (typeof t !== 'string' || t.trim() === '') continue;
+							raw = t.trim();
+						} else {
+							continue;
+						}
+						if (!/^\[\[.+\]\]$/.test(raw)) {
 							violations.push(
-								`Relationship field "${field}" must be wikilink format [[slug]] (got: ${truncate(s, 60)})`,
+								`Relationship field "${field}" must be wikilink format [[slug]] (got: ${truncate(raw, 60)})`,
 							);
 							break; // one message per field is enough
 						}
@@ -558,6 +652,21 @@ export class VaultEngine {
 		const createStatusErr = validateStatusScope(req.meta, zone);
 		if (createStatusErr) {
 			return { success: false, error: createStatusErr, field: 'status' };
+		}
+
+		// projects-graph ADR-006 — relationship-field wikilink resolution.
+		// Today's L347 hygiene reporter only checks format; this REFUSES
+		// at write-time when the target slug doesn't resolve. Closes
+		// ADR-006 F5 (refuse `produces_for: ['[[nonexistent-slug]]']`).
+		const createRelErr = validateRelationshipFields(
+			req.meta,
+			zone,
+			join(req.zone, req.filename),
+			(raw, src) => this.indexer.resolveLink(raw, src),
+			(p) => this.indexer.hasNote(p),
+		);
+		if (createRelErr) {
+			return { success: false, error: createRelErr };
 		}
 
 		// Validate naming pattern
@@ -908,6 +1017,21 @@ export class VaultEngine {
 		const updateStatusErr = validateStatusScope(mergedMeta, updateZone);
 		if (updateStatusErr) {
 			return { success: false, error: updateStatusErr, field: 'status' };
+		}
+
+		// projects-graph ADR-006 — relationship-field wikilink resolution
+		// on update too. Catches the case where someone updates a project's
+		// `produces_for` to point at a slug that was later deleted, or
+		// adds a typo via PUT.
+		const updateRelErr = validateRelationshipFields(
+			mergedMeta,
+			updateZone,
+			path,
+			(raw, src) => this.indexer.resolveLink(raw, src),
+			(p) => this.indexer.hasNote(p),
+		);
+		if (updateRelErr) {
+			return { success: false, error: updateRelErr };
 		}
 
 		// ADR-047 — same wikilink validation as createNote. Always re-validates

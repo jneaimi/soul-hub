@@ -413,6 +413,30 @@ function migrate(db: Database.Database): void {
 		`);
 		db.pragma('user_version = 16');
 	}
+
+	if (version < 17) {
+		// projects-graph ADR-006 — vault-scout edge-stale snapshot table.
+		// One row per (producer, consumer) edge with a rich-form destination.
+		// Per-run extractor probes `edge-flow.ts` for each destination,
+		// records newest mtime, and emits `kind: 'edge-stale'` candidates
+		// when (now - last_flow_mtime) exceeds the declared falsifier
+		// window. Mirrors v16's snapshot convention exactly — first
+		// observation is QUIET (INSERT only). Single-migration-owner per
+		// the v7/v16 precedent.
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS vault_scout_edge_snapshots (
+				producer_slug    TEXT    NOT NULL,
+				consumer_slug    TEXT    NOT NULL,
+				destination      TEXT    NOT NULL,
+				last_flow_mtime  INTEGER,
+				last_check_at    INTEGER NOT NULL,
+				PRIMARY KEY (producer_slug, consumer_slug)
+			);
+			CREATE INDEX IF NOT EXISTS idx_vault_scout_edge_snapshots_prod
+				ON vault_scout_edge_snapshots(producer_slug);
+		`);
+		db.pragma('user_version = 17');
+	}
 }
 
 /** Heartbeat run statuses logged to `proactive_log`. */
@@ -971,4 +995,51 @@ export function allBlockerSnapshotsForDependent(
 			 WHERE dependent_path = ?`,
 		)
 		.all(dependentPath) as BlockerSnapshotRow[];
+}
+
+// ── projects-graph ADR-006 vault-scout edge-stale snapshots ─────────
+
+export interface EdgeSnapshotRow {
+	producer_slug: string;
+	consumer_slug: string;
+	destination: string;
+	/** null when the destination has never resolved to any file (broken
+	 *  edge from day zero) — the watcher still records the check so we
+	 *  don't endlessly re-probe. */
+	last_flow_mtime: number | null;
+	last_check_at: number;
+}
+
+export function getEdgeSnapshot(
+	producerSlug: string,
+	consumerSlug: string,
+): EdgeSnapshotRow | null {
+	const row = getHeartbeatDb()
+		.prepare(
+			`SELECT producer_slug, consumer_slug, destination, last_flow_mtime, last_check_at
+			 FROM vault_scout_edge_snapshots
+			 WHERE producer_slug = ? AND consumer_slug = ?`,
+		)
+		.get(producerSlug, consumerSlug) as EdgeSnapshotRow | undefined;
+	return row ?? null;
+}
+
+export function upsertEdgeSnapshot(input: EdgeSnapshotRow): void {
+	getHeartbeatDb()
+		.prepare(
+			`INSERT INTO vault_scout_edge_snapshots
+				(producer_slug, consumer_slug, destination, last_flow_mtime, last_check_at)
+			 VALUES (?, ?, ?, ?, ?)
+			 ON CONFLICT(producer_slug, consumer_slug)
+			 DO UPDATE SET destination     = excluded.destination,
+			               last_flow_mtime = excluded.last_flow_mtime,
+			               last_check_at   = excluded.last_check_at`,
+		)
+		.run(
+			input.producer_slug,
+			input.consumer_slug,
+			input.destination,
+			input.last_flow_mtime,
+			input.last_check_at,
+		);
 }

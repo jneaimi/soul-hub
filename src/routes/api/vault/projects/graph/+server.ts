@@ -107,6 +107,11 @@ export const GET: RequestHandler = async () => {
 	// a node (e.g. parent declared in frontmatter but the folder doesn't
 	// exist in the vault yet).
 	const pendingParentEdges: Array<{ from: string; to: string }> = [];
+	// projects-graph ADR-006 — second pending-edge queue for
+	// producer→consumer flows. Resolved against `bySlug` after the
+	// node pass so we never emit a green arrow pointing at a slug that
+	// has no node.
+	const pendingProducerEdges: Array<{ from: string; to: string }> = [];
 
 	for (const slug of entries) {
 		if (slug.startsWith('.') || slug.startsWith('_')) continue;
@@ -181,6 +186,27 @@ export const GET: RequestHandler = async () => {
 			// badge.
 			const projFalsifier = parseFalsifierDate(indexNote.meta.falsifier_date);
 			if (projFalsifier !== null && projFalsifier < now) hasOverdueFalsifier = true;
+
+			// projects-graph ADR-006 — outgoing producer→consumer edges.
+			// Honor both bare-string and rich-form entries; rich-form
+			// metadata (destination, falsifier) is surfaced via the
+			// rollup endpoint, not duplicated on the graph edge.
+			const rawProducesFor = indexNote.meta.produces_for;
+			if (Array.isArray(rawProducesFor)) {
+				for (const entry of rawProducesFor) {
+					let target: string | undefined;
+					if (typeof entry === 'string') {
+						target = entry;
+					} else if (entry && typeof entry === 'object' && 'target' in entry) {
+						const t = (entry as { target?: unknown }).target;
+						if (typeof t === 'string') target = t;
+					}
+					if (!target) continue;
+					const consumerSlug = parseParentSlug(target);
+					if (!consumerSlug || consumerSlug === slug) continue;
+					pendingProducerEdges.push({ from: slug, to: consumerSlug });
+				}
+			}
 		}
 
 		const color = shape ? SHAPE_COLORS[shape] : '#9ca3af'; // gray-400 fallback
@@ -228,6 +254,19 @@ export const GET: RequestHandler = async () => {
 			source: parentNode.id,
 			target: childNode.id,
 			type: 'parent',
+		});
+	}
+	// projects-graph ADR-006 — resolve producer→consumer edges. Same
+	// drop-when-orphaned discipline as parent edges. Producer's id =
+	// source; consumer's id = target so the arrowhead points consumer-ward.
+	for (const e of pendingProducerEdges) {
+		const producerNode = bySlug.get(e.from);
+		const consumerNode = bySlug.get(e.to);
+		if (!producerNode || !consumerNode) continue;
+		edges.push({
+			source: producerNode.id,
+			target: consumerNode.id,
+			type: 'produces_for',
 		});
 	}
 
