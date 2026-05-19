@@ -71,16 +71,34 @@
 			.sort((a, b) => (a.created ?? '').localeCompare(b.created ?? '')),
 	);
 
+	/** projects-graph ADR-014 fix bundle — falsifier dates are excluded from
+	 *  the axis end. Falsifiers are typically 3 months out from creation
+	 *  (operator convention), which previously stretched the axis 9-45×
+	 *  beyond the actual work-span and collapsed every bar into a single
+	 *  pixel column. A 14-day floor on the visible span guarantees that
+	 *  even an all-same-day project (15 ADRs all `created` today) gets a
+	 *  readable canvas. Falsifier diamonds clamp to the right edge of the
+	 *  visible range — the lane div uses `overflow:visible` so a clamped
+	 *  diamond still renders. */
+	const AXIS_MIN_SPAN_MS = 14 * 86_400_000;
 	const range = $derived.by(() => {
 		if (visible.length === 0) return null;
 		const starts = visible.map((d) => Date.parse(d.created!));
 		const ends = visible.map((d) => Date.parse(endIso(d)));
-		const targets = visible.filter((d) => d.targetDate).map((d) => Date.parse(d.targetDate!));
-		const falsifiers = visible
-			.filter((d) => d.falsifierDate)
-			.map((d) => Date.parse(d.falsifierDate!));
+		// Only OPEN ADRs (proposed/accepted) contribute their target_date to
+		// the axis end — those are the rows that actually render a forecast
+		// extension. A shipped ADR's lingering `target_date` is historical
+		// trivia (operator set it pre-ship, never cleared), and previously
+		// stretched the axis 3-4 months forward in projects like
+		// soul-hub-whatsapp where all ADRs are shipped but several still
+		// carry old targets. Mirrors the `isOpen` gate used inside the
+		// per-row forecast block.
+		const targets = visible
+			.filter((d) => (d.status === 'proposed' || d.status === 'accepted') && d.targetDate)
+			.map((d) => Date.parse(d.targetDate!));
 		const startMs = Math.min(...starts);
-		const endMs = Math.max(TODAY_MS, ...ends, ...targets, ...falsifiers);
+		const rawEndMs = Math.max(TODAY_MS, ...ends, ...targets);
+		const endMs = Math.max(rawEndMs, startMs + AXIS_MIN_SPAN_MS);
 		const pad = Math.max((endMs - startMs) * 0.03, 86_400_000); // ≥1 day
 		return { startMs: startMs - pad, endMs: endMs + pad };
 	});
@@ -247,6 +265,31 @@
 		dep.edges.filter((e) => !e.external && rowIndex.has(e.blocker) && rowIndex.has(e.dependent)),
 	);
 
+	/** Per-edge exit + entry lane assignments — used to fan arrows out
+	 *  when multiple arrows share a blocker (same exit X) or a dependent
+	 *  (same entry X). The 2026-05-19 render-patterns report flagged this
+	 *  as the dominant readability problem for same-day-heavy projects:
+	 *  fifteen arrows all leaving the same X pile into a vertical column.
+	 *  Lane offsets spread them across a horizontal band. Exit lanes
+	 *  count outgoing edges per blocker; entry lanes count incoming
+	 *  edges per dependent. */
+	const edgeLanes = $derived.by(() => {
+		const exit = new Map<string, number>();
+		const entry = new Map<string, number>();
+		const exitCount = new Map<string, number>();
+		const entryCount = new Map<string, number>();
+		for (const e of renderEdges) {
+			const ekey = `${e.blocker}→${e.dependent}`;
+			const elane = exitCount.get(e.blocker) ?? 0;
+			const ilane = entryCount.get(e.dependent) ?? 0;
+			exit.set(ekey, elane);
+			entry.set(ekey, ilane);
+			exitCount.set(e.blocker, elane + 1);
+			entryCount.set(e.dependent, ilane + 1);
+		}
+		return { exit, entry };
+	});
+
 	const cycleCount = $derived(dep.hasCycle ? dep.cycleEdges.size : 0);
 	const criticalCount = $derived(dep.criticalSlugs.size);
 
@@ -264,24 +307,37 @@
 		return 'var(--hub-muted, #6b7280)';
 	}
 
-	/** Bezier path connecting (xStart, yStart) to (xEnd, yEnd) in the
-	 *  100-wide × N-tall viewBox. Control-point offset scales with the
-	 *  horizontal gap so dense graphs read clearly. */
-	function bezierPath(
+	/** Routing strategy per render-patterns research (2026-05-19):
+	 *  - When the horizontal gap is meaningful (xEnd - xStart > 3 units in
+	 *    the 0-100 axis), draw a smooth Bezier — classic Gantt look.
+	 *  - When the gap is tight (same-day blockers, common in this vault),
+	 *    fall back to orthogonal Manhattan routing: exit right, drop to
+	 *    target Y, arrive at target. Mirrors what frappe-gantt + DHTMLX
+	 *    use for dense layouts. */
+	function arrowPath(
 		xStart: number,
 		yStart: number,
 		xEnd: number,
 		yEnd: number,
 	): string {
-		const dx = Math.max(2, Math.abs(xEnd - xStart) * 0.35);
-		// Same-row self-edge would render as a flat line; nudge it into a
-		// small arc above the row. Rare in practice (no live data hits this),
-		// but cheap to handle.
-		if (Math.abs(yStart - yEnd) < 0.01) {
+		const dxRaw = xEnd - xStart;
+		const sameRow = Math.abs(yStart - yEnd) < 0.01;
+		if (sameRow) {
+			// Tiny arc above the row — rare in practice, but cheap to handle.
 			const yArc = yStart - 0.4;
-			return `M ${xStart} ${yStart} C ${xStart + dx} ${yArc}, ${xEnd - dx} ${yArc}, ${xEnd} ${yEnd}`;
+			return `M ${xStart} ${yStart} C ${xStart + 2} ${yArc}, ${xEnd - 2} ${yArc}, ${xEnd} ${yEnd}`;
 		}
-		return `M ${xStart} ${yStart} C ${xStart + dx} ${yStart}, ${xEnd - dx} ${yEnd}, ${xEnd} ${yEnd}`;
+		if (dxRaw > 3) {
+			// Comfortable horizontal gap → smooth Bezier.
+			const dx = Math.max(2, Math.abs(dxRaw) * 0.35);
+			return `M ${xStart} ${yStart} C ${xStart + dx} ${yStart}, ${xEnd - dx} ${yEnd}, ${xEnd} ${yEnd}`;
+		}
+		// Tight or negative horizontal gap → orthogonal step. Exit right
+		// past the source bar zone, drop vertically to the target row, then
+		// approach the target from the right with a small inward step.
+		const exitRight = xStart + 1.6;
+		const approachLeft = Math.max(xEnd - 0.8, xStart + 0.8);
+		return `M ${xStart} ${yStart} L ${exitRight} ${yStart} L ${exitRight} ${yEnd} L ${approachLeft} ${yEnd} L ${xEnd} ${yEnd}`;
 	}
 </script>
 
@@ -420,7 +476,9 @@
 						{@const endPct = pct(Date.parse(endIso(d)))}
 						{@const widthPct = Math.max(endPct - startPct, MIN_BAR_PCT)}
 						{@const targetPct = d.targetDate ? pct(Date.parse(d.targetDate)) : null}
-						{@const falsifierPct = d.falsifierDate ? pct(Date.parse(d.falsifierDate)) : null}
+						{@const rawFalsifierPct = d.falsifierDate ? pct(Date.parse(d.falsifierDate)) : null}
+					{@const falsifierIsOffAxis = rawFalsifierPct !== null && rawFalsifierPct > 100}
+					{@const falsifierPct = rawFalsifierPct !== null ? Math.min(Math.max(rawFalsifierPct, 0), 99) : null}
 						{@const isOpen = d.status === 'proposed' || d.status === 'accepted'}
 						{@const isCritical = dep.criticalSlugs.has(rowKey(d))}
 						{@const forecastEndPct = isOpen
@@ -448,11 +506,16 @@
 									{shortLabel(d)}
 								</span>
 							</div>
-							<!-- Bar lane -->
-							<div class="flex-1 relative">
-								<!-- Bar -->
+							<!-- Bar lane. `overflow-visible` so a falsifier diamond clamped
+							     to the right edge still renders past the lane bounds rather
+							     than getting clipped — per 2026-05-19 render-patterns report. -->
+							<div class="flex-1 relative overflow-visible">
+								<!-- Bar — `min-w-[8px]` enforces the universal pattern: zero-
+								     duration tasks render as a milestone pill, never as 0px.
+								     Every mature Gantt tool (MS Project, Jira, Airtable, DHTMLX)
+								     does this. The pill width survives narrow visible spans. -->
 								<div
-									class="absolute top-1.5 bottom-1.5 rounded {statusFill(d.status)} transition-colors {d.dateInferred ? 'border border-dashed border-hub-text/30' : ''} {isCritical ? 'adr-gantt-critical-bar' : ''}"
+									class="absolute top-1.5 bottom-1.5 rounded min-w-[8px] {statusFill(d.status)} transition-colors {d.dateInferred ? 'border border-dashed border-hub-text/30' : ''} {isCritical ? 'adr-gantt-critical-bar' : ''}"
 									style:left="{startPct}%"
 									style:width="{widthPct}%"
 								></div>
@@ -466,14 +529,24 @@
 										title="Forecast → {d.targetDate ?? d.falsifierDate}"
 									></div>
 								{/if}
-								<!-- Falsifier diamond — rendered on every ADR that carries
-								     a falsifier_date, regardless of status. Click bubbles
-								     to the row button (drawer opens via onSelect). -->
+								<!-- Falsifier diamond. Clamps to 99% when the actual falsifier
+								     date is past the visible range (typical: 3 months out).
+								     A subtle `›` chevron precedes the clamped diamond so the
+								     off-axis status reads at a glance. Click bubbles to the
+								     row button (drawer opens via onSelect). -->
 								{#if falsifierPct !== null}
+									{#if falsifierIsOffAxis}
+										<span
+											class="absolute top-1/2 -translate-y-1/2 text-[10px] text-hub-dim/80 pointer-events-none select-none"
+											style:left="calc({falsifierPct}% - 11px)"
+											aria-hidden="true"
+										>›</span>
+									{/if}
 									<span
 										class="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2.5 h-2.5 rotate-45 {falsifierFill(d.falsifierDaysAway)} border border-hub-bg shadow-sm pointer-events-none"
 										style:left="{falsifierPct}%"
 										aria-hidden="true"
+										title={falsifierIsOffAxis ? 'Falsifier ' + d.falsifierDate + ' — off-axis (clamped)' : undefined}
 									></span>
 								{/if}
 							</div>
@@ -533,14 +606,17 @@
 							{@const bStart = bRow ? pct(Date.parse(bRow.created!)) : 0}
 							{@const bEnd = bRow ? pct(Date.parse(endIso(bRow))) : 0}
 							{@const dStart = dRow ? pct(Date.parse(dRow.created!)) : 0}
-							{@const xStart = Math.max(bStart + MIN_BAR_PCT, bEnd)}
-							{@const xEnd = dStart}
+							{@const ekey = `${e.blocker}→${e.dependent}`}
+							{@const exitLane = edgeLanes.exit.get(ekey) ?? 0}
+							{@const entryLane = edgeLanes.entry.get(ekey) ?? 0}
+							{@const xStart = Math.max(bStart + MIN_BAR_PCT, bEnd) + exitLane * 1.1}
+							{@const xEnd = Math.max(0, dStart - entryLane * 1.1)}
 							{@const yStart = bIdx + 0.5}
 							{@const yEnd = dIdx + 0.5}
-							{@const isCycle = dep.cycleEdges.has(`${e.blocker}→${e.dependent}`)}
+							{@const isCycle = dep.cycleEdges.has(ekey)}
 							{@const onCritical = dep.criticalSlugs.has(e.blocker) && dep.criticalSlugs.has(e.dependent)}
 							<path
-								d={bezierPath(xStart, yStart, xEnd, yEnd)}
+								d={arrowPath(xStart, yStart, xEnd, yEnd)}
 								fill="none"
 								stroke={isCycle ? '#ef4444' : onCritical ? '#a78bfa' : arrowColor(e.blockerStatus)}
 								stroke-width={onCritical ? 2 : isCycle ? 2 : 1.25}
@@ -586,7 +662,12 @@
 	   `:global` block so the dynamic class (`adr-gantt-critical-bar`) on the
 	   absolutely-positioned bar div survives Svelte's scoping. */
 	:global(.adr-gantt-critical-bar) {
-		box-shadow: 0 0 0 1.5px #a78bfa inset;
+		/* `outline` renders OUTSIDE the element bounds, so the violet rim
+		   stays visible even when a bar collapses to 1-2px width (zero-span
+		   ADRs). `box-shadow … inset` was the old approach and disappeared
+		   at narrow widths — the report explicitly called this out. */
+		outline: 2px solid #a78bfa;
+		outline-offset: 1px;
 	}
 	:global(.adr-gantt-critical-dot) {
 		display: inline-block;
