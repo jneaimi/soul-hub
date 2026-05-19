@@ -1,14 +1,23 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import type { GraphNode, GraphEdge } from '$lib/vault/types';
+  import { computeNetworkLayout } from '$lib/projects/dagre-layout.js';
 
   interface Props {
     nodes: GraphNode[];
     edges: GraphEdge[];
     onNodeClick: (path: string) => void;
+    /** projects-graph ADR-005 — layout mode.
+     *  - `'force'` (default): random seed + forceAtlas2 post-layout. Used
+     *    by `/vault` for note-level wikilink graphs. Behaviour unchanged
+     *    from pre-ADR-005.
+     *  - `'hierarchical'`: dagre Sugiyama (left-to-right rank-by-rank);
+     *    reuses ADR-016's `computeNetworkLayout`. Used by `/projects?view=graph`
+     *    for project-level parent_project graphs. Skips forceAtlas2. */
+    layout?: 'force' | 'hierarchical';
   }
 
-  let { nodes, edges, onNodeClick }: Props = $props();
+  let { nodes, edges, onNodeClick, layout = 'force' }: Props = $props();
 
   let container: HTMLDivElement;
   let renderer: InstanceType<typeof import('sigma').default> | null = null;
@@ -28,6 +37,12 @@
   let tooltipType = $state('');
   let tooltipDegree = $state(0);
   let tooltipNew = $state(false);
+  // ADR-005 — project-graph context (empty in note-level usage).
+  let tooltipShape = $state('');
+  let tooltipCluster = $state('');
+  let tooltipAggOpen = $state(0);
+  let tooltipAggTotal = $state(0);
+  let tooltipOverdue = $state(false);
   let showRanking = $state(true);
   // Track whether the user has manually toggled the panel — once they have,
   // we stop auto-adjusting based on node count and respect their choice.
@@ -74,6 +89,50 @@
 
   const rankingNodes = $derived(rankingTab === 'connected' ? topConnected : latestNodes);
 
+  /** Derive a stable slug from a GraphNode id. For the project-level
+   *  graph, ids look like `projects/<slug>/index.md` — we want `<slug>`
+   *  so dagre groups parent-child by slug, not by the literal `index`
+   *  filename. Falls back to the filename stem for note-level ids. */
+  function nodeIdToSlug(id: string): string {
+    const last = (id.split('/').pop() ?? id).replace(/\.md$/i, '');
+    if (last === 'index') {
+      const parts = id.split('/');
+      return parts[parts.length - 2] ?? last;
+    }
+    return last;
+  }
+
+  /** ADR-005 P2 — compute hierarchical positions via dagre (reused from
+   *  ADR-016's `computeNetworkLayout`). Synthesises the `RowLike` +
+   *  `DepEdge` shapes the wrapper expects so we get the same Sugiyama
+   *  rank-by-rank layout used on `/projects/[slug]`. Returns null in
+   *  `'force'` mode so the caller falls back to random + forceAtlas2. */
+  function computeHierarchicalPositions(): Map<string, { x: number; y: number }> | null {
+    if (layout !== 'hierarchical') return null;
+    const slugByNode = new Map<string, string>();
+    for (const n of nodes) slugByNode.set(n.id, nodeIdToSlug(n.id));
+
+    const synthRows = nodes.map((n) => ({ path: `${slugByNode.get(n.id)}.md` }));
+    const depEdges = edges
+      .filter((e) => slugByNode.has(e.source) && slugByNode.has(e.target))
+      .map((e) => ({
+        blocker: slugByNode.get(e.source)!,
+        dependent: slugByNode.get(e.target)!,
+        external: false,
+        blockerStatus: null,
+      }));
+
+    const result = computeNetworkLayout(synthRows, depEdges);
+    const slugToNode = new Map<string, string>();
+    for (const [nodeId, slug] of slugByNode.entries()) slugToNode.set(slug, nodeId);
+    const positions = new Map<string, { x: number; y: number }>();
+    for (const ln of result.nodes) {
+      const nodeId = slugToNode.get(ln.slug);
+      if (nodeId) positions.set(nodeId, { x: ln.x, y: ln.y });
+    }
+    return positions;
+  }
+
   function buildGraph() {
     if (renderer) {
       renderer.kill();
@@ -82,26 +141,39 @@
     if (!GraphClass || !SigmaClass || !container || nodes.length === 0) return;
 
     const graph = new GraphClass();
+    const positions = computeHierarchicalPositions();
 
     for (const node of nodes) {
       const nodeIsNew = isNew(node.created);
+      const pos = positions?.get(node.id);
       graph.addNode(node.id, {
         label: node.label,
         size: node.size,
         color: node.color,
-        x: Math.random() * 100,
-        y: Math.random() * 100,
+        x: pos?.x ?? Math.random() * 100,
+        y: pos?.y ?? Math.random() * 100,
         nodeType: node.type || '',
         degree: node.degree ?? 0,
         isNew: nodeIsNew,
+        // ADR-005 — extra fields surfaced in the tooltip when present.
+        shape: node.shape ?? '',
+        cluster: node.cluster ?? '',
+        aggregateOpen: node.aggregateStatus?.open ?? 0,
+        aggregateTotal: node.aggregateStatus?.total ?? 0,
+        overdue: node.hasOverdueFalsifier ?? false,
       });
     }
 
     for (const edge of edges) {
       if (graph.hasNode(edge.source) && graph.hasNode(edge.target)) {
         try {
+          // ADR-005 — `parent` edges (project hierarchy) get a softer
+          // slate stroke so they read as structure, not as wikilinks.
+          // Note-level wikilink edges (no `.type`) keep the existing
+          // purple-tinted color so `/vault` looks identical.
+          const edgeColor = edge.type === 'parent' ? '#94a3b888' : '#7c8cf844';
           graph.addEdge(edge.source, edge.target, {
-            color: '#7c8cf844',
+            color: edgeColor,
             size: 1,
           });
         } catch {
@@ -137,6 +209,11 @@
       tooltipType = (attrs.nodeType as string) || '';
       tooltipDegree = (attrs.degree as number) || 0;
       tooltipNew = (attrs.isNew as boolean) || false;
+      tooltipShape = (attrs.shape as string) || '';
+      tooltipCluster = (attrs.cluster as string) || '';
+      tooltipAggOpen = (attrs.aggregateOpen as number) || 0;
+      tooltipAggTotal = (attrs.aggregateTotal as number) || 0;
+      tooltipOverdue = (attrs.overdue as boolean) || false;
       container.style.cursor = 'pointer';
 
       const neighbors = new Set(graph.neighbors(node));
@@ -182,20 +259,27 @@
       tooltipFlipY = e.y - 10 + h > ch;
     });
 
-    import('graphology-layout-forceatlas2').then(({ default: forceAtlas2 }) => {
-      if (!graph || graph.order === 0) return;
-      forceAtlas2.assign(graph, {
-        iterations: 150,
-        settings: {
-          gravity: 0.1,
-          scalingRatio: 20,
-          strongGravityMode: true,
-          barnesHutOptimize: false,
-          slowDown: 6,
-        }
-      });
+    // ADR-005 — only run forceAtlas2 post-layout in `'force'` mode.
+    // Hierarchical mode trusts dagre's deterministic positions; running
+    // forceAtlas2 over them would scramble the rank layering.
+    if (layout === 'force') {
+      import('graphology-layout-forceatlas2').then(({ default: forceAtlas2 }) => {
+        if (!graph || graph.order === 0) return;
+        forceAtlas2.assign(graph, {
+          iterations: 150,
+          settings: {
+            gravity: 0.1,
+            scalingRatio: 20,
+            strongGravityMode: true,
+            barnesHutOptimize: false,
+            slowDown: 6,
+          }
+        });
+        renderer?.refresh();
+      }).catch(() => {});
+    } else {
       renderer?.refresh();
-    }).catch(() => {});
+    }
   }
 
   function focusNode(nodeId: string) {
@@ -256,10 +340,22 @@
     >
       <p class="text-sm text-hub-text font-medium">{tooltipLabel}</p>
       <div class="flex items-center gap-2 mt-0.5">
-        {#if tooltipType}
+        {#if tooltipShape}
+          <span class="text-[10px] px-1.5 py-0.5 rounded bg-hub-surface text-hub-muted font-medium">{tooltipShape}</span>
+        {:else if tooltipType}
           <span class="text-xs text-hub-muted">{tooltipType}</span>
         {/if}
-        <span class="text-xs text-hub-dim">{tooltipDegree} connections</span>
+        {#if tooltipCluster}
+          <span class="text-[10px] text-hub-dim">cluster:{tooltipCluster}</span>
+        {/if}
+        {#if tooltipAggTotal > 0}
+          <span class="text-[10px] text-hub-dim">{tooltipAggOpen} open · {tooltipAggTotal} ADRs</span>
+        {:else}
+          <span class="text-xs text-hub-dim">{tooltipDegree} connections</span>
+        {/if}
+        {#if tooltipOverdue}
+          <span class="text-[10px] px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 font-medium">overdue</span>
+        {/if}
         {#if tooltipNew}
           <span class="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-400 font-medium">new</span>
         {/if}

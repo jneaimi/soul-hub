@@ -68,6 +68,100 @@ export async function get(args: Record<string, string | undefined>, opts: Output
   });
 }
 
+/** projects-graph ADR-005 — project-level graph response shape returned
+ *  by `/api/vault/projects/graph`. Mirrors `ProjectGraphData` in
+ *  `src/lib/vault/types.ts`; kept local so this CLI has no runtime
+ *  dependency on the Svelte app build output. */
+interface GraphNodeLite {
+  id: string;
+  label: string;
+  shape?: string;
+  cluster?: string;
+  parent?: string | null;
+  size: number;
+  aggregateStatus?: { open: number; shipped: number; total: number };
+  hasOverdueFalsifier?: boolean;
+}
+interface GraphEdgeLite {
+  source: string;
+  target: string;
+  type?: string;
+}
+interface ProjectGraphResp {
+  nodes: GraphNodeLite[];
+  edges: GraphEdgeLite[];
+  clusters: Array<{ name: string; member_slugs: string[] }>;
+}
+
+function slugFromId(id: string): string {
+  return id.replace(/^projects\//, '').replace(/\/index\.md$/i, '');
+}
+
+function emitDot(g: ProjectGraphResp): string {
+  const lines: string[] = ['digraph projects {'];
+  lines.push('  rankdir=LR;');
+  lines.push('  node [shape=box, style=rounded];');
+  // Cluster subgraphs — dot uses `cluster_` prefix to draw boxes.
+  for (const c of g.clusters) {
+    if (c.name === 'ungrouped' || c.member_slugs.length === 0) continue;
+    lines.push(`  subgraph cluster_${c.name.replace(/[^a-z0-9]/gi, '_')} {`);
+    lines.push(`    label="cluster:${c.name}";`);
+    for (const slug of c.member_slugs) lines.push(`    "${slug}";`);
+    lines.push('  }');
+  }
+  for (const e of g.edges) {
+    const src = slugFromId(e.source);
+    const tgt = slugFromId(e.target);
+    const style = e.type === 'parent' ? ' [color="#94a3b8"]' : '';
+    lines.push(`  "${src}" -> "${tgt}"${style};`);
+  }
+  lines.push('}');
+  return lines.join('\n');
+}
+
+function emitAdjacencyList(g: ProjectGraphResp): string {
+  // Group edges by source slug, then format `<src> -> <tgt1>, <tgt2>`.
+  const out = new Map<string, string[]>();
+  for (const e of g.edges) {
+    const src = slugFromId(e.source);
+    const tgt = slugFromId(e.target);
+    const list = out.get(src) ?? [];
+    list.push(tgt);
+    out.set(src, list);
+  }
+  const lines: string[] = [];
+  // Walk in node order so unconnected projects still appear (with empty list).
+  for (const n of g.nodes) {
+    const slug = slugFromId(n.id);
+    const children = out.get(slug) ?? [];
+    const tail = children.length > 0 ? ' → ' + children.sort().join(', ') : '';
+    const shape = n.shape ? ` [${n.shape}]` : '';
+    const cluster = n.cluster ? ` (cluster:${n.cluster})` : '';
+    lines.push(`${slug}${shape}${cluster}${tail}`);
+  }
+  return lines.join('\n');
+}
+
+export async function graph(args: Record<string, string | undefined>, opts: OutputOpts) {
+  const format = (args.format ?? 'adjacency-list').toLowerCase();
+  if (!['json', 'adjacency-list', 'dot'].includes(format)) {
+    fail(`project graph: unknown --format "${format}". Allowed: json, adjacency-list, dot`);
+  }
+
+  const data = await apiGet<ProjectGraphResp>('/api/vault/projects/graph');
+
+  // `--json` always wins (matches the global flag contract) and emits
+  // the raw API JSON. `--format json` is the same thing for explicit
+  // call-site readability.
+  if (opts.json || format === 'json') {
+    process.stdout.write(JSON.stringify(data) + '\n');
+    return;
+  }
+
+  const rendered = format === 'dot' ? emitDot(data) : emitAdjacencyList(data);
+  process.stdout.write(rendered + '\n');
+}
+
 interface WriteResp { success?: boolean; path?: string; error?: string }
 
 export async function create(args: Record<string, string | undefined>, opts: OutputOpts) {

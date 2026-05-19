@@ -200,6 +200,27 @@ export interface GraphNode {
 	mtime?: number;
 	/** Frontmatter `created` date string (YYYY-MM-DD) — semantic newness */
 	created?: string;
+	// ── projects-graph ADR-005 — project-level graph extension ────────
+	// All fields below are OPTIONAL and only populated by the project-level
+	// endpoint (`/api/vault/projects/graph`). The note-level endpoint
+	// (`/api/vault/graph`, consumed by `/vault`) keeps the original shape
+	// bit-for-bit and never reads these. Reusing one struct so the
+	// `<VaultGraph>` renderer stays a single component for both surfaces.
+	/** ADR-001 project shape — drives shape-aware colorizer when set. */
+	shape?: ProjectShape;
+	/** ADR-004 aggregate-status rollup summed across self + descendants
+	 *  (open / shipped / total). Drives badge rendering on the node. */
+	aggregateStatus?: { open: number; shipped: number; total: number };
+	/** True when this project — or any descendant — has a falsifier whose
+	 *  date is in the past. Surfaces an urgency badge on the node. */
+	hasOverdueFalsifier?: boolean;
+	/** Cluster name extracted from `cluster:<name>` tag on root index.md.
+	 *  Drives cluster-band grouping in hierarchical layout. */
+	cluster?: string;
+	/** Slug of parent project (from `parent_project: "[[slug]]"`); null
+	 *  for root projects. Layout-mode picker uses this for hierarchical
+	 *  positioning. */
+	parent?: string | null;
 }
 
 export interface GraphEdge {
@@ -209,6 +230,24 @@ export interface GraphEdge {
 	target: string;
 	/** Edge label (link alias if any) */
 	label?: string;
+	/** projects-graph ADR-005 — edge type. Only set on project-level
+	 *  graph; note-level edges leave it unset. `'parent'` is the only
+	 *  type emitted by ADR-005; ADR-006 extends with `'produces_for'`
+	 *  and `'consumes_from'`. */
+	type?: 'parent' | 'produces_for' | 'consumes_from' | 'supersedes' | 'successor_of';
+}
+
+// ── Projects graph (ADR-005) ───────────────────────────────
+
+/** Response shape of `/api/vault/projects/graph` — project-level graph
+ *  for the `/projects?view=graph` opt-in view. Nodes are projects; edges
+ *  are parent_project (today) + ADR-006 cross-project producer edges
+ *  (future). Clusters group nodes by `cluster:<name>` tag on root
+ *  index.md; projects with no cluster land in `'ungrouped'`. */
+export interface ProjectGraphData {
+	nodes: GraphNode[];
+	edges: GraphEdge[];
+	clusters: Array<{ name: string; member_slugs: string[] }>;
 }
 
 // ── Stats & Health ──────────────────────────────────────────
@@ -377,6 +416,21 @@ export const ZONE_COLORS: Record<string, string> = {
 	content: '#8b5cf6',      // violet
 	operations: '#64748b',   // slate
 	archive: '#6b7280',      // gray
+};
+
+/** projects-graph ADR-005 — project shape → color. Used by the
+ *  project-level graph endpoint (`/api/vault/projects/graph`) to derive
+ *  `GraphNode.color`. Mirrors the seven `ProjectShape` enum values; the
+ *  hex palette matches the per-shape pill rendering on `/projects/[slug]`
+ *  so the graph and detail views read consistently. */
+export const SHAPE_COLORS: Record<ProjectShape, string> = {
+	'coding-spine':         '#6366f1', // indigo  — ADR-driven engineering work
+	'producer-pipeline':    '#14b8a6', // teal    — agent/cadence-driven outputs
+	'publishing-outlet':    '#8b5cf6', // violet  — content kanban
+	'strategy-initiative':  '#f59e0b', // amber   — multi-facet planning
+	'time-boxed-bet':       '#ef4444', // red     — dated, falsifier-anchored
+	'maintained-system':    '#64748b', // slate   — shipped + ongoing
+	'parent':               '#9ca3af', // gray    — pure container
 };
 
 export const TYPE_COLORS: Record<string, string> = {

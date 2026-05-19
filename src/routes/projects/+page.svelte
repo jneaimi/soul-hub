@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
+	import VaultGraph from '$lib/components/vault/VaultGraph.svelte';
+	import type { GraphNode, GraphEdge, ProjectGraphData } from '$lib/vault/types';
 
 	interface StatusCounts {
 		proposed: number;
@@ -105,6 +107,15 @@
 
 	const CLUSTER_KEY = 'vault-projects-cluster-pref';
 	const SORT_KEY = 'vault-projects-sort-pref';
+	// projects-graph ADR-005 — opt-in graph view. URL `?view=graph` wins
+	// over the persisted pref so deep-links from elsewhere (chat, soul CLI)
+	// land predictably; otherwise we restore the operator's last choice.
+	const VIEW_KEY = 'vault-projects-view-pref';
+	type ProjectView = 'tree' | 'graph';
+	let view = $state<ProjectView>('tree');
+	let projectGraph = $state<ProjectGraphData | null>(null);
+	let graphLoading = $state(false);
+	let graphError = $state('');
 
 	/** projects-graph ADR-012 — distinct cluster tags across the loaded
 	 *  project list. Sorted alphabetically for stable chip order. */
@@ -289,6 +300,72 @@
 		return `${months}mo ago`;
 	}
 
+	/** projects-graph ADR-005 — lazy fetch of the project-level graph.
+	 *  Only fires when the operator flips into `view=graph`; tree-view
+	 *  users pay no cost. Re-fetches on retry; otherwise cached for the
+	 *  lifetime of the page. */
+	async function loadProjectGraph() {
+		if (projectGraph || graphLoading) return;
+		graphLoading = true;
+		graphError = '';
+		try {
+			const res = await fetch('/api/vault/projects/graph');
+			if (!res.ok) throw new Error(`graph ${res.status}`);
+			projectGraph = (await res.json()) as ProjectGraphData;
+		} catch (e) {
+			graphError = e instanceof Error ? e.message : 'Failed to load graph';
+		} finally {
+			graphLoading = false;
+		}
+	}
+
+	function setView(next: ProjectView) {
+		view = next;
+		try {
+			localStorage.setItem(VIEW_KEY, next);
+		} catch {
+			// noop — localStorage unavailable
+		}
+		if (next === 'graph') loadProjectGraph();
+	}
+
+	/** projects-graph ADR-005 — slugs visible after filtering. Drives the
+	 *  graph view so the filter bar (text + status + shape + cluster) is
+	 *  honoured in both views; an unfiltered page shows the full
+	 *  project graph. */
+	const visibleSlugs = $derived.by<Set<string>>(() => {
+		const set = new Set<string>();
+		const walk = (nodes: TreeNode[]) => {
+			for (const n of nodes) {
+				if (projectMatches(n.project)) set.add(n.project.slug);
+				walk(n.children);
+			}
+		};
+		walk(filtered);
+		return set;
+	});
+
+	const filteredGraphNodes = $derived.by<GraphNode[]>(() => {
+		if (!projectGraph) return [];
+		return projectGraph.nodes.filter((n) => {
+			const slug = n.id.replace(/^projects\//, '').replace(/\/index\.md$/, '');
+			return visibleSlugs.has(slug);
+		});
+	});
+
+	const filteredGraphEdges = $derived.by<GraphEdge[]>(() => {
+		if (!projectGraph || filteredGraphNodes.length === 0) return [];
+		const visibleIds = new Set(filteredGraphNodes.map((n) => n.id));
+		return projectGraph.edges.filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target));
+	});
+
+	function onGraphNodeClick(id: string) {
+		const slug = id.replace(/^projects\//, '').replace(/\/index\.md$/, '');
+		if (slug) {
+			window.location.href = `/projects/${slug}`;
+		}
+	}
+
 	async function loadProjects() {
 		error = '';
 		try {
@@ -336,7 +413,24 @@
 		const urlCluster = $page.url.searchParams.get('cluster');
 		if (urlCluster) clusterFilter = urlCluster;
 
+		// projects-graph ADR-005 — view pref order: URL ?view=graph wins
+		// over localStorage which wins over the default ('tree'). Falsifier
+		// F2 requires the URL form to be bookmarkable, so the URL is
+		// authoritative when present.
+		const urlView = $page.url.searchParams.get('view');
+		if (urlView === 'graph' || urlView === 'tree') {
+			view = urlView;
+		} else {
+			try {
+				const savedView = localStorage.getItem(VIEW_KEY);
+				if (savedView === 'graph' || savedView === 'tree') view = savedView;
+			} catch {
+				// noop — defaults stay
+			}
+		}
+
 		loadProjects();
+		if (view === 'graph') loadProjectGraph();
 	});
 
 	// projects-graph ADR-012 — persist sort + cluster prefs on change.
@@ -489,17 +583,35 @@
 					{/if}
 				</div>
 			</div>
-			<nav class="flex items-center gap-1 text-xs">
-				<a href="/projects" class="px-3 py-1.5 rounded-md bg-hub-card text-hub-text">
-					All
-				</a>
-				<a href="/projects/queue" class="px-3 py-1.5 rounded-md text-hub-muted hover:text-hub-text hover:bg-hub-card transition-colors cursor-pointer flex items-center gap-1.5">
-					Decision Queue
-					{#if queueCount > 0}
-						<span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-hub-warning/20 text-hub-warning">{queueCount}</span>
-					{/if}
-				</a>
-			</nav>
+			<div class="flex items-center justify-between gap-3">
+				<nav class="flex items-center gap-1 text-xs">
+					<a href="/projects" class="px-3 py-1.5 rounded-md bg-hub-card text-hub-text">
+						All
+					</a>
+					<a href="/projects/queue" class="px-3 py-1.5 rounded-md text-hub-muted hover:text-hub-text hover:bg-hub-card transition-colors cursor-pointer flex items-center gap-1.5">
+						Decision Queue
+						{#if queueCount > 0}
+							<span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-hub-warning/20 text-hub-warning">{queueCount}</span>
+						{/if}
+					</a>
+				</nav>
+				<!-- projects-graph ADR-005 — view toggle (tree | graph).
+				     Anchors so middle-click + bookmarks work; localStorage
+				     pref tracked via setView so the choice survives reload
+				     even without query params. -->
+				<nav class="flex items-center gap-0.5 text-[11px] rounded-md border border-hub-border overflow-hidden" aria-label="View mode">
+					<a
+						href="/projects"
+						onclick={(e) => { e.preventDefault(); setView('tree'); }}
+						class="px-2.5 py-1.5 transition-colors {view === 'tree' ? 'bg-hub-card text-hub-text' : 'text-hub-muted hover:text-hub-text'}"
+					>Tree</a>
+					<a
+						href="/projects?view=graph"
+						onclick={(e) => { e.preventDefault(); setView('graph'); }}
+						class="px-2.5 py-1.5 transition-colors {view === 'graph' ? 'bg-hub-card text-hub-text' : 'text-hub-muted hover:text-hub-text'}"
+					>Graph</a>
+				</nav>
+			</div>
 		</div>
 	</header>
 
@@ -615,7 +727,37 @@
 					</select>
 				</div>
 
-				{#if visibleCount === 0}
+				{#if view === 'graph'}
+					<!-- projects-graph ADR-005 — graph view (opt-in). Reuses
+					     VaultGraph in hierarchical mode (dagre Sugiyama via
+					     ADR-016's computeNetworkLayout). Filter bar above
+					     applies to both views; node click navigates to the
+					     project detail page. -->
+					{#if graphLoading}
+						<div class="flex items-center justify-center min-h-[480px]">
+							<div class="text-hub-muted text-sm">Loading graph…</div>
+						</div>
+					{:else if graphError}
+						<div class="bg-hub-danger/10 border border-hub-danger/30 rounded-lg px-4 py-3 text-sm text-hub-danger mb-4 flex items-center justify-between">
+							<span>{graphError}</span>
+							<button onclick={() => { projectGraph = null; loadProjectGraph(); }} class="text-xs underline cursor-pointer">Retry</button>
+						</div>
+					{:else if !projectGraph || filteredGraphNodes.length === 0}
+						<p class="text-hub-dim text-xs py-6 text-center">No projects match the current filter.</p>
+					{:else}
+						<div class="rounded-lg border border-hub-border bg-hub-card/30 overflow-hidden" style="height: min(75vh, 720px);">
+							<VaultGraph
+								nodes={filteredGraphNodes}
+								edges={filteredGraphEdges}
+								layout="hierarchical"
+								onNodeClick={onGraphNodeClick}
+							/>
+						</div>
+						<p class="text-[10px] text-hub-dim/60 mt-2">
+							Project graph · {filteredGraphNodes.length} projects · {filteredGraphEdges.length} parent_project edges · colors = project_shape · click node → detail
+						</p>
+					{/if}
+				{:else if visibleCount === 0}
 					<p class="text-hub-dim text-xs py-6 text-center">No projects match the current filter.</p>
 				{:else}
 					<div class="flex flex-col gap-2">
