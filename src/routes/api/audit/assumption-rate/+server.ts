@@ -27,6 +27,12 @@ const DEFAULT_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
 
 export const GET: RequestHandler = async ({ url }) => {
 	const project = url.searchParams.get('project') ?? undefined;
+	// projects-graph ADR-004 — OR-match across multiple project slugs
+	// (parent + descendants). Comma-separated.
+	const projectsParam = url.searchParams.get('projects');
+	const projects = projectsParam
+		? projectsParam.split(',').map((s) => s.trim()).filter(Boolean)
+		: undefined;
 	const includeDismissed = url.searchParams.get('include_dismissed') === 'true';
 
 	let since: number | undefined;
@@ -51,14 +57,18 @@ export const GET: RequestHandler = async ({ url }) => {
 		limit = parsed;
 	}
 
-	const opts = { project, since, limit, include_dismissed: includeDismissed };
+	const opts = { project, projects, since, limit, include_dismissed: includeDismissed };
 	const audits = queryAudits(opts);
 	const counts = countAudits(opts);
 
 	return json({
 		generated_at: new Date().toISOString(),
-		filter: { project: project ?? null, since: new Date(since).toISOString() },
+		filter: {
+			project: project ?? null,
+			projects: projects ?? null,
+			since: new Date(since).toISOString(),
+		},
 		audits,
-		counts
+		counts,
 	});
 };

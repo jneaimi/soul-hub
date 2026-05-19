@@ -16,6 +16,7 @@ import { getVaultEngine } from '$lib/vault/index.js';
 import { parsePhases, type Phase } from '$lib/vault/phase-parser.js';
 import type { ProjectShape, VaultMeta } from '$lib/vault/types.js';
 import { PROJECT_SHAPES } from '$lib/vault/types.js';
+import { getDescendants } from '$lib/vault/descendants.js';
 
 const PROJECT_ZONE = 'projects';
 
@@ -107,6 +108,37 @@ interface ProjectRollup {
 	 *  truncated to 140 chars. Empty when neither resolves. */
 	description: string;
 	decisions?: DecisionRow[];
+	/** projects-graph ADR-004 — flat list of descendant slugs reachable
+	 *  via `parent_project` edges. Only present when the request passed
+	 *  `?descendants=true`. Empty for leaf projects. */
+	descendantSlugs?: string[];
+	/** projects-graph ADR-004 — statusCounts summed across self + all
+	 *  descendants. Only present when `?descendants=true`. The grid in
+	 *  /projects/[slug] renders this alongside per-project counts. */
+	aggregateStatusCounts?: StatusCounts;
+	/** projects-graph ADR-004 — per-type artifact buckets summed across
+	 *  self + descendants. Same lazy-allocation shape as `artifactCounts`. */
+	aggregateArtifactCounts?: Record<string, StatusCounts>;
+	/** projects-graph ADR-004 — descendant falsifiers tagged with their
+	 *  source project for the rolled-up UpcomingFalsifiers strip. */
+	descendantFalsifiers?: {
+		path: string;
+		date: string;
+		daysAway: number;
+		source?: 'project';
+		fromProject: string;
+	}[];
+	/** projects-graph ADR-004 — true when the walker hit a cycle
+	 *  (defensive; live data is acyclic). Surfaces a hygiene warning in
+	 *  the UI when set. */
+	cycleDetected?: boolean;
+	/** projects-graph ADR-004 — descendant rollups (each with its own
+	 *  decisions[] when applicable) inlined for the parent-rollup Gantt.
+	 *  Only present when both `?descendants=true` and
+	 *  `?includeChildren=true` flags are set on a single-slug request.
+	 *  Saves a second round-trip + lets the tree-table render in a
+	 *  single component without per-child fetches. */
+	descendantRollups?: ProjectRollup[];
 }
 
 /** projects-graph ADR-012 — extract the first non-heading, non-blockquote,
@@ -210,15 +242,31 @@ export const GET: RequestHandler = async ({ url }) => {
 	const filterParam = url.searchParams.get('slug');
 	const filterSet = filterParam ? new Set(filterParam.split(',').map((s) => s.trim())) : null;
 
+	// projects-graph ADR-004 — `?descendants=true` triggers a parent-rollup
+	// pass: aggregate statusCounts / artifactCounts / upcomingFalsifiers
+	// across descendants reachable via `parent_project` edges. When set,
+	// we MUST build rollups for the whole vault (the walker needs every
+	// project's parentProject + counts) and then restrict the response set
+	// to the requested filter at the end.
+	const wantDescendants = url.searchParams.get('descendants') === 'true';
+	// projects-graph ADR-004 — `?includeChildren=true` (only honored
+	// alongside `?descendants=true` and a single-slug filter) inlines
+	// descendant rollups + their decisions so the tree-Gantt renders
+	// without N+1 fetches.
+	const wantChildren = wantDescendants && url.searchParams.get('includeChildren') === 'true';
+	const internalFilterSet = wantDescendants ? null : filterSet;
+
 	// When a single slug is requested, include per-decision rows on the rollup.
-	// Skipped on the list view to keep the payload tight.
-	const includeDecisions = filterSet !== null && filterSet.size === 1;
+	// Skipped on the list view to keep the payload tight. When child-decisions
+	// are requested, every project in the loop builds decisions so the
+	// post-pass can attach descendant rollups with their own decisions.
+	const includeDecisions = (filterSet !== null && filterSet.size === 1) || wantChildren;
 
 	const rollups: ProjectRollup[] = [];
 
 	for (const slug of entries) {
 		if (slug.startsWith('.') || slug.startsWith('_')) continue;
-		if (filterSet && !filterSet.has(slug)) continue;
+		if (internalFilterSet && !internalFilterSet.has(slug)) continue;
 
 		const abs = resolve(projectsDir, slug);
 		try {
@@ -466,6 +514,88 @@ export const GET: RequestHandler = async ({ url }) => {
 		if (b.lastActivity) return 1;
 		return a.slug.localeCompare(b.slug);
 	});
+
+	// projects-graph ADR-004 — descendant rollup pass. Walks `parent_project`
+	// edges to attach aggregate statusCounts + artifactCounts + falsifiers
+	// per requested project. Runs only when `?descendants=true`. The walker
+	// is pure + cycle-defensive; per-call cost is O(N+E) over rollups.
+	if (wantDescendants) {
+		const edges = rollups.map((r) => ({ slug: r.slug, parentProject: r.parentProject }));
+		const byslug = new Map<string, ProjectRollup>();
+		for (const r of rollups) byslug.set(r.slug, r);
+
+		// Determine which rollups need aggregates. If a filterSet was given,
+		// attach only to those; otherwise attach to every project that has
+		// at least one child (saves payload bytes for leaves on a LIST call).
+		const targets = filterSet
+			? rollups.filter((r) => filterSet.has(r.slug))
+			: rollups.filter((r) => edges.some((e) => e.parentProject === r.slug));
+
+		for (const r of targets) {
+			const walk = getDescendants(r.slug, edges);
+			r.descendantSlugs = walk.descendants;
+			r.cycleDetected = walk.cycleDetected;
+
+			// Seed aggregates with self, then sum descendants. `aggregate*`
+			// always includes the project's own counts so a parent with no
+			// children still gets a meaningful value (= same as the
+			// per-project counts).
+			const aggStatus: StatusCounts = { ...r.statusCounts };
+			const aggArtifacts: Record<string, StatusCounts> = {};
+			for (const [type, counts] of Object.entries(r.artifactCounts)) {
+				aggArtifacts[type] = { ...counts };
+			}
+			const aggFalsifiers: NonNullable<ProjectRollup['descendantFalsifiers']> = [];
+
+			for (const dslug of walk.descendants) {
+				const child = byslug.get(dslug);
+				if (!child) continue;
+				for (const k of Object.keys(aggStatus) as (keyof StatusCounts)[]) {
+					aggStatus[k] += child.statusCounts[k];
+				}
+				for (const [type, counts] of Object.entries(child.artifactCounts)) {
+					if (!aggArtifacts[type]) {
+						aggArtifacts[type] = { proposed: 0, accepted: 0, shipped: 0, rejected: 0, parked: 0, superseded: 0, other: 0 };
+					}
+					for (const k of Object.keys(counts) as (keyof StatusCounts)[]) {
+						aggArtifacts[type][k] += counts[k];
+					}
+				}
+				for (const f of child.upcomingFalsifiers) {
+					aggFalsifiers.push({ ...f, fromProject: dslug });
+				}
+			}
+
+			// Sort falsifiers by date ascending (soonest first) so the UI can
+			// render them in operator-priority order without re-sorting.
+			aggFalsifiers.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+			r.aggregateStatusCounts = aggStatus;
+			r.aggregateArtifactCounts = aggArtifacts;
+			r.descendantFalsifiers = aggFalsifiers;
+
+			// projects-graph ADR-004 — inline descendant rollups (and their
+			// decisions, when the loop built them) so the Gantt tree-table
+			// renders in one component. Slugs ordered as the walker found
+			// them — depth-first via the queue, alphabetically within depth.
+			if (wantChildren) {
+				const inlined: ProjectRollup[] = [];
+				for (const dslug of walk.descendants) {
+					const child = byslug.get(dslug);
+					if (child) inlined.push(child);
+				}
+				r.descendantRollups = inlined;
+			}
+		}
+
+		// Restrict response to the requested filter set (if any) — the
+		// internal loop expanded to whole-vault to feed the walker, but the
+		// response should still honor the original ?slug filter.
+		if (filterSet) {
+			const filtered = rollups.filter((r) => filterSet.has(r.slug));
+			return json({ projects: filtered, total: filtered.length });
+		}
+	}
 
 	return json({ projects: rollups, total: rollups.length });
 };

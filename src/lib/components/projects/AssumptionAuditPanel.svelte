@@ -57,7 +57,16 @@
 		counts: { high_score: number; medium_score: number; low_score: number };
 	}
 
-	const { slug }: { slug: string } = $props();
+	const {
+		slug,
+		descendantSlugs = [],
+	}: {
+		slug: string;
+		/** projects-graph ADR-004 — when the parent project has descendants,
+		 *  pass them in to widen the audit query (OR-match across slug +
+		 *  descendants). Header explicitly labels the rolled-up mode. */
+		descendantSlugs?: string[];
+	} = $props();
 
 	let data = $state<AuditResponse | null>(null);
 	let loading = $state(true);
@@ -71,7 +80,17 @@
 		loading = true;
 		loadError = null;
 		try {
-			const url = `/api/audit/assumption-rate?project=${encodeURIComponent(slug)}&include_dismissed=true&limit=100`;
+			// projects-graph ADR-004 — when descendants are passed, switch
+			// to the `?projects=` OR-match query so the panel surfaces
+			// high-severity claims from the whole subtree. Otherwise, keep
+			// the single-project filter (today's behaviour).
+			let url: string;
+			if (descendantSlugs.length > 0) {
+				const allSlugs = [slug, ...descendantSlugs].map(encodeURIComponent).join(',');
+				url = `/api/audit/assumption-rate?projects=${allSlugs}&include_dismissed=true&limit=100`;
+			} else {
+				url = `/api/audit/assumption-rate?project=${encodeURIComponent(slug)}&include_dismissed=true&limit=100`;
+			}
 			const res = await fetch(url);
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			data = (await res.json()) as AuditResponse;
@@ -83,6 +102,18 @@
 	}
 
 	onMount(load);
+
+	// projects-graph ADR-004 — re-fetch when the parent's descendant set
+	// changes (e.g. detail page swaps slug, or descendants become known
+	// after the initial fetch). $effect already tracks reactive deps.
+	let prevKey = $state(`${slug}|${descendantSlugs.join(',')}`);
+	$effect(() => {
+		const nextKey = `${slug}|${descendantSlugs.join(',')}`;
+		if (nextKey !== prevKey) {
+			prevKey = nextKey;
+			load();
+		}
+	});
 
 	function toggleExpand(id: number): void {
 		const next = new Set(expanded);
@@ -169,7 +200,7 @@
 	<div class="mb-6 p-3 rounded-lg border border-hub-info/30 bg-hub-info/5">
 		<div class="flex items-center justify-between gap-3 mb-2 flex-wrap">
 			<div class="text-xs font-medium text-hub-info">
-				Assumption-rate audits
+				Assumption-rate audits{#if descendantSlugs.length > 0} <span class="text-[10px] uppercase tracking-wider text-hub-info">· rollup across {descendantSlugs.length} descendant{descendantSlugs.length === 1 ? '' : 's'}</span>{/if}
 				<span class="text-hub-dim font-normal">
 					({data.counts.high_score} high / {data.counts.medium_score} medium{lowCount > 0 ? ` / ${lowCount} low` : ''}{dismissedCount > 0 ? ` · ${dismissedCount} dismissed` : ''})
 				</span>

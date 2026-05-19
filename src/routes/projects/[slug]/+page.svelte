@@ -5,6 +5,7 @@
 	import DecisionActions from '$lib/components/projects/DecisionActions.svelte';
 	import AdrDrawer from '$lib/components/projects/AdrDrawer.svelte';
 	import AdrGantt from '$lib/components/projects/AdrGantt.svelte';
+	import ProjectTreeGantt from '$lib/components/projects/ProjectTreeGantt.svelte';
 	import AssumptionAuditPanel from '$lib/components/projects/AssumptionAuditPanel.svelte';
 	import ProposalsPanel from '$lib/components/projects/ProposalsPanel.svelte';
 
@@ -106,6 +107,28 @@
 		/** projects-graph ADR-013 — root index.md tag list, drives cluster pill. */
 		tags: string[];
 		decisions?: DecisionRow[];
+		/** projects-graph ADR-004 — descendant slugs reachable via parent_project. */
+		descendantSlugs?: string[];
+		/** projects-graph ADR-004 — statusCounts summed across self + descendants. */
+		aggregateStatusCounts?: StatusCounts;
+		/** projects-graph ADR-004 — per-type artifact buckets summed similarly. */
+		aggregateArtifactCounts?: Record<string, StatusCounts>;
+		/** projects-graph ADR-004 — child falsifiers tagged with source slug. */
+		descendantFalsifiers?: {
+			path: string;
+			date: string;
+			daysAway: number;
+			source?: 'project';
+			fromProject: string;
+		}[];
+		/** projects-graph ADR-004 — true when walker hit a cycle. */
+		cycleDetected?: boolean;
+		/** projects-graph ADR-004 — descendant rollups inlined when
+		 *  ?includeChildren=true. Each carries its own decisions[]. */
+		descendantRollups?: Array<{
+			slug: string;
+			decisions?: DecisionRow[];
+		}>;
 	}
 
 	/** projects-graph ADR-003 — sum of every status bucket (including `other`).
@@ -259,7 +282,12 @@
 		error = '';
 		loading = true;
 		try {
-			const res = await fetch(`/api/vault/projects?slug=${encodeURIComponent(slug)}`);
+			// projects-graph ADR-004 — request aggregate fields + descendant
+			// rollups (with their own decisions) so the page can render the
+			// rolled-up statusCounts + falsifiers AND the tree-Gantt when the
+			// project has children. Pure additive — endpoint omits the
+			// nested fields for leaves so no extra payload on solo projects.
+			const res = await fetch(`/api/vault/projects?slug=${encodeURIComponent(slug)}&descendants=true&includeChildren=true`);
 			if (!res.ok) throw new Error(`Project load: ${res.status}`);
 			const data = await res.json();
 			detail = (data.projects ?? [])[0] ?? null;
@@ -649,6 +677,60 @@
 					</div>
 				</div>
 
+				<!-- projects-graph ADR-004 — parent-rollup aggregate grid.
+				     Renders only when the project has descendants. Mirrors the
+				     per-project grid above but sums across self + all
+				     parent_project descendants. Shipped count uses hub-cta
+				     accent so the rolled-up scope reads at a glance. -->
+				{#if detail.descendantSlugs && detail.descendantSlugs.length > 0 && detail.aggregateStatusCounts}
+					{@const agg = detail.aggregateStatusCounts}
+					{@const aggTotal = agg.proposed + agg.accepted + agg.shipped + agg.parked + agg.rejected + agg.superseded}
+					<div class="mb-6">
+						<div class="flex items-center gap-2 mb-2">
+							<span class="text-[10px] uppercase tracking-wider text-hub-info font-semibold">Aggregate</span>
+							<span class="text-[11px] text-hub-dim">across {detail.descendantSlugs.length} descendant{detail.descendantSlugs.length === 1 ? '' : 's'} · {aggTotal} total</span>
+							{#if detail.cycleDetected}
+								<span
+									class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-hub-warning/15 text-hub-warning border border-hub-warning/30"
+									title="A parent_project cycle was hit during the walk — partial result"
+								>
+									cycle hit
+								</span>
+							{/if}
+						</div>
+						<div class="grid grid-cols-2 sm:grid-cols-5 lg:grid-cols-6 gap-2">
+							<div class="p-3 rounded-lg bg-hub-info/5 border border-hub-info/30">
+								<div class="text-[10px] uppercase tracking-wider text-hub-dim mb-1">Proposed</div>
+								<div class="text-lg font-semibold text-hub-warning">{agg.proposed}</div>
+							</div>
+							<div class="p-3 rounded-lg bg-hub-info/5 border border-hub-info/30">
+								<div class="text-[10px] uppercase tracking-wider text-hub-dim mb-1">Accepted</div>
+								<div class="text-lg font-semibold text-hub-info">{agg.accepted}</div>
+							</div>
+							<div class="p-3 rounded-lg bg-hub-info/5 border border-hub-info/30">
+								<div class="text-[10px] uppercase tracking-wider text-hub-dim mb-1">Shipped</div>
+								<div class="text-lg font-semibold text-hub-cta">{agg.shipped}</div>
+							</div>
+							<div class="p-3 rounded-lg bg-hub-info/5 border border-hub-info/30">
+								<div class="text-[10px] uppercase tracking-wider text-hub-dim mb-1">Parked</div>
+								<div class="text-lg font-semibold text-hub-dim">{agg.parked}</div>
+							</div>
+							{#if agg.superseded > 0}
+								<div class="p-3 rounded-lg bg-hub-info/5 border border-hub-info/30">
+									<div class="text-[10px] uppercase tracking-wider text-hub-dim mb-1">Superseded</div>
+									<div class="text-lg font-semibold text-hub-muted">{agg.superseded}</div>
+								</div>
+							{/if}
+							{#if agg.rejected > 0}
+								<div class="p-3 rounded-lg bg-hub-info/5 border border-hub-info/30">
+									<div class="text-[10px] uppercase tracking-wider text-hub-dim mb-1">Rejected</div>
+									<div class="text-lg font-semibold text-hub-danger">{agg.rejected}</div>
+								</div>
+							{/if}
+						</div>
+					</div>
+				{/if}
+
 				<!-- Next up strip — surfaces the highest-priority open ADR
 				     (proposed, then accepted, oldest first; demotes ADRs whose
 				     blocked_by deps aren't all shipped). Per project-phases
@@ -736,7 +818,18 @@
 						{#if timelineExpanded}
 							<div class="px-4 pb-4 border-t border-hub-border">
 								<div class="pt-3">
-									<AdrGantt decisions={decisions} onSelect={(p) => (drawerPath = p)} />
+									<!-- projects-graph ADR-004 — ProjectTreeGantt wraps the
+									     legacy AdrGantt. When the project has descendants
+									     (parent_project children), renders a parent row
+									     with aggregate progress + collapsible child sub-blocks.
+									     For leaf projects, falls through to plain AdrGantt
+									     so today's behaviour is preserved bit-for-bit. -->
+									<ProjectTreeGantt
+										rootSlug={slug}
+										rootDecisions={decisions}
+										descendants={detail.descendantRollups ?? []}
+										onSelect={(p) => (drawerPath = p)}
+									/>
 								</div>
 							</div>
 						{/if}
@@ -803,8 +896,40 @@
 					</div>
 				{/if}
 
-				<!-- Assumption-rate audits (project-phases ADR-008 S4) — silent on empty corpus -->
-				<AssumptionAuditPanel {slug} />
+				<!-- projects-graph ADR-004 — descendant falsifier rollup.
+				     Rendered only when the project has at least one descendant
+				     with an upcoming falsifier. Each row tags its source slug
+				     so the operator can navigate without losing context. -->
+				{#if detail.descendantFalsifiers && detail.descendantFalsifiers.length > 0}
+					<div class="mb-6 p-3 rounded-lg border border-hub-info/30 bg-hub-info/5">
+						<div class="flex items-center justify-between gap-3 mb-2 flex-wrap">
+							<div class="text-xs font-medium text-hub-info">
+								Descendant falsifiers
+								<span class="text-hub-dim font-normal ml-1">({detail.descendantFalsifiers.length} across descendants)</span>
+							</div>
+						</div>
+						<div class="space-y-1">
+							{#each detail.descendantFalsifiers as f}
+								<button
+									onclick={() => drawerPath = f.path}
+									class="w-full flex items-center justify-between text-xs hover:bg-hub-card/60 px-1 py-0.5 rounded transition-colors cursor-pointer text-left"
+									title={falsifierMeaning(f.daysAway)}
+								>
+									<div class="flex items-center gap-2 min-w-0">
+										<span class="px-1 py-0 rounded text-[9px] uppercase tracking-wider bg-hub-info/15 text-hub-info flex-shrink-0">{f.fromProject}</span>
+										<span class="font-mono text-hub-text truncate">{f.path.split('/').pop()}</span>
+									</div>
+									<span class="{falsifierClass(f.daysAway)} ml-2 flex-shrink-0">⏱ {f.daysAway}d ({f.date})</span>
+								</button>
+							{/each}
+						</div>
+					</div>
+				{/if}
+
+				<!-- Assumption-rate audits (project-phases ADR-008 S4) — silent on empty corpus.
+				     projects-graph ADR-004 — pass descendant slugs so parent pages
+				     surface high-severity claims from any child. -->
+				<AssumptionAuditPanel {slug} descendantSlugs={detail.descendantSlugs ?? []} />
 
 				<!-- AI proposals (project-phases ADR-005 S3) — silent on empty corpus -->
 				<ProposalsPanel {slug} />

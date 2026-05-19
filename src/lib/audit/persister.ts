@@ -137,6 +137,12 @@ function decode(r: RawAuditRow): AuditRow {
 export interface QueryAuditsOptions {
 	/** Filter to audits whose `linked_projects` JSON-array contains this slug. */
 	project?: string;
+	/** projects-graph ADR-004 — filter to audits whose `linked_projects`
+	 *  contains ANY of these slugs (OR semantics). Used by the parent-
+	 *  rollup AssumptionAuditPanel so a parent project surfaces high-
+	 *  severity claims from any descendant. Combines with `project` if
+	 *  both are passed (project must match AND projects OR-match). */
+	projects?: string[];
 	/** Lower-bound on audited_at (ms epoch); inclusive. */
 	since?: number;
 	/** Max rows to return. Default 50, capped at 500. */
@@ -168,10 +174,17 @@ export function queryAudits(opts: QueryAuditsOptions = {}): AuditRow[] {
 		.all({ since: opts.since ?? 0, oversize: limit * 4 }) as RawAuditRow[];
 	const decoded = rows.map(decode);
 
-	if (!opts.project) return decoded.slice(0, limit);
-
 	const slug = opts.project;
-	return decoded.filter((r) => r.linked_projects.includes(slug)).slice(0, limit);
+	const slugSet = opts.projects && opts.projects.length > 0 ? new Set(opts.projects) : null;
+	if (!slug && !slugSet) return decoded.slice(0, limit);
+
+	return decoded
+		.filter((r) => {
+			if (slug && !r.linked_projects.includes(slug)) return false;
+			if (slugSet && !r.linked_projects.some((p) => slugSet.has(p))) return false;
+			return true;
+		})
+		.slice(0, limit);
 }
 
 /** Bucket counts (high/medium/low) over the same set queryAudits would
