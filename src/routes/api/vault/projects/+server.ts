@@ -95,6 +95,12 @@ interface ProjectRollup {
 	/** Companion ISO date for `projectFalsifier`. Shape A (Schmidt/parser-style)
 	 *  per project-phases ADR-004. */
 	projectFalsifierDate: string | null;
+	/** projects-graph ADR-013 — tag list from the project root index.md
+	 *  frontmatter. Empty when index.md is absent. Drives the header cluster
+	 *  pill (`tags.find(t => t.startsWith('cluster:'))`) and any future
+	 *  tag-derived UI. Tags on individual notes within the project are NOT
+	 *  aggregated here — too noisy. */
+	tags: string[];
 	decisions?: DecisionRow[];
 }
 
@@ -214,6 +220,8 @@ export const GET: RequestHandler = async ({ url }) => {
 		let shape: ProjectShape | null = null;
 		let projectFalsifier: string | null = null;
 		let projectFalsifierDate: string | null = null;
+		// projects-graph ADR-013 — tags from the project root index.md only.
+		let projectTags: string[] = [];
 		const upcomingFalsifiers: ProjectRollup['upcomingFalsifiers'] = [];
 		const decisions: DecisionRow[] = [];
 
@@ -237,6 +245,8 @@ export const GET: RequestHandler = async ({ url }) => {
 				indexPath = note.path;
 				parentProject = parseParentSlug(full.meta.parent_project);
 				projectIndexContent = full.content;
+				// projects-graph ADR-013 — capture root index tags for the cluster pill.
+				projectTags = asStringArray(full.meta.tags);
 
 				// projects-graph ADR-001 — surface project_shape + project_falsifier
 				// + companion falsifier_date from the project root index.
@@ -399,6 +409,7 @@ export const GET: RequestHandler = async ({ url }) => {
 			shape,
 			projectFalsifier,
 			projectFalsifierDate,
+			tags: projectTags,
 			...(includeDecisions ? { decisions } : {}),
 		});
 	}

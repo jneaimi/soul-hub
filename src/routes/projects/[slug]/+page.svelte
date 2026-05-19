@@ -103,6 +103,8 @@
 		projectFalsifierDate: string | null;
 		/** projects-graph ADR-011 — parent project slug (null for roots). */
 		parentProject: string | null;
+		/** projects-graph ADR-013 — root index.md tag list, drives cluster pill. */
+		tags: string[];
 		decisions?: DecisionRow[];
 	}
 
@@ -150,6 +152,12 @@
 	let planLoaded = $state(false);
 	let planLoading = $state(false);
 	let planError = $state('');
+	// projects-graph ADR-013 — once the operator manually collapses an
+	// auto-expanded plan, persist it in localStorage so the auto-expand
+	// effect doesn't re-fire on subsequent navigations to the same project.
+	// The key is per-slug so different small projects each get their own
+	// "I touched this" memory.
+	let operatorTouched = $state(false);
 
 	let timelineExpanded = $state(true);
 
@@ -175,6 +183,48 @@
 			.filter((p) => p.parentProject === parent && p.slug !== slug)
 			.sort((a, b) => b.adrCount - a.adrCount);
 	});
+
+	// projects-graph ADR-013 — cluster tag derivation.
+	// Convention: `cluster:<slug>` tag on the project root index.md, set
+	// during the soul-hub cluster backfill (ADR-038 Phase 1). The pill links
+	// to `/projects?cluster=<slug>` which ADR-012 will respect; until then,
+	// the unrecognized query param is harmless (list shows all).
+	const clusterTag = $derived.by(() => {
+		const tags = detail?.tags ?? [];
+		const found = tags.find((t) => t.startsWith('cluster:'));
+		return found ? found.slice('cluster:'.length) : null;
+	});
+
+	// projects-graph ADR-013 — last-shipped derivation from decision rows.
+	// Picks the newest `shippedOn` across all decisions. Date-string sort works
+	// because shippedOn is ISO YYYY-MM-DD. Returns null when no shipped ADRs.
+	// Label is derived from path's basename (DecisionRow exposes path, not slug).
+	const lastShipped = $derived.by(() => {
+		const rows = detail?.decisions ?? [];
+		let best: { date: string; label: string } | null = null;
+		for (const d of rows) {
+			if (!d.shippedOn) continue;
+			if (!best || d.shippedOn > best.date) {
+				const label = d.path.split('/').pop()?.replace(/\.md$/, '') ?? d.path;
+				best = { date: d.shippedOn, label };
+			}
+		}
+		return best;
+	});
+
+	// projects-graph ADR-013 — relative date helper for the last-shipped pill.
+	// Caps at "yesterday" → "Nd ago" → "Nw ago" → "Nmo ago" → "Ny ago".
+	function relativeDate(iso: string): string {
+		const then = new Date(iso + 'T00:00:00').getTime();
+		if (Number.isNaN(then)) return iso;
+		const days = Math.floor((Date.now() - then) / (24 * 60 * 60 * 1000));
+		if (days <= 0) return 'today';
+		if (days === 1) return 'yesterday';
+		if (days < 7) return `${days}d ago`;
+		if (days < 30) return `${Math.floor(days / 7)}w ago`;
+		if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+		return `${Math.floor(days / 365)}y ago`;
+	}
 
 	// Phase rollup across ADR-level (`adr-body`) phases only.
 	// Project-roadmap phases were retired by project-phases ADR-013
@@ -219,6 +269,15 @@
 			planHtml = '';
 			planError = '';
 			expandedDecisions = new Set();
+			// projects-graph ADR-013 — restore per-slug touched flag from
+			// localStorage so a manual collapse persists across reloads.
+			try {
+				operatorTouched =
+					typeof localStorage !== 'undefined' &&
+					localStorage.getItem(`vault-projects-plan-touched-${slug}`) === '1';
+			} catch {
+				operatorTouched = false;
+			}
 			// Fire-and-forget next-actions fetch (separate state path so the
 			// main page renders even if this endpoint is slow/fails).
 			loadNextActions();
@@ -322,6 +381,17 @@
 	function togglePlan() {
 		planExpanded = !planExpanded;
 		if (planExpanded && !planLoaded) loadPlan();
+		// projects-graph ADR-013 — mark touched so auto-expand doesn't fight
+		// the operator on subsequent visits. Persisted per-slug.
+		operatorTouched = true;
+		try {
+			if (typeof localStorage !== 'undefined') {
+				localStorage.setItem(`vault-projects-plan-touched-${slug}`, '1');
+			}
+		} catch {
+			// localStorage unavailable (SSR, private mode) — touched flag
+			// stays in-memory only, which is fine for the current session.
+		}
 	}
 
 	function handleTransition(info: { path: string; action: 'accept' | 'reject' | 'park' | 'ship'; newStatus: string }) {
@@ -375,6 +445,20 @@
 	}
 
 	$effect(() => { if (slug) load(); });
+
+	// projects-graph ADR-013 — auto-expand Plan widget when the project is
+	// small (< 5 ADRs) and the operator hasn't manually collapsed it before.
+	// $effect runs whenever its dependencies change; we guard so the expand
+	// fires once per slug-load, not on every state tick. `loadPlan()` is
+	// idempotent (early-returns when already loaded/loading).
+	$effect(() => {
+		if (!detail) return;
+		if (planExpanded) return;
+		if (operatorTouched) return;
+		if (detail.adrCount >= 5) return;
+		planExpanded = true;
+		loadPlan();
+	});
 </script>
 
 <svelte:head>
@@ -433,6 +517,30 @@
 				{/if}
 				{#if detail}
 					<span class="text-hub-dim text-sm flex-shrink-0">{detail.adrCount} ADR{detail.adrCount === 1 ? '' : 's'} · {detail.noteCount} note{detail.noteCount === 1 ? '' : 's'}</span>
+				{/if}
+
+				<!-- projects-graph ADR-013 — cluster pill (links to /projects?cluster=<x>
+				     which ADR-012's list-page filter will respect). Hidden when project's
+				     root index.md doesn't carry a `cluster:` tag. -->
+				{#if clusterTag}
+					<a
+						href="/projects?cluster={encodeURIComponent(clusterTag)}"
+						class="px-1.5 py-0.5 rounded text-[10px] font-medium flex-shrink-0 bg-hub-card text-hub-muted hover:bg-hub-bg hover:text-hub-text transition-colors border border-hub-border"
+						title="Filter /projects to cluster:{clusterTag}"
+					>
+						cluster:{clusterTag}
+					</a>
+				{/if}
+
+				<!-- projects-graph ADR-013 — last-shipped slot. Computed from
+				     detail.decisions[]; hidden when no shipped ADRs. -->
+				{#if lastShipped}
+					<span
+						class="text-hub-dim text-xs flex-shrink-0"
+						title="{lastShipped.label} on {lastShipped.date}"
+					>
+						last shipped {relativeDate(lastShipped.date)}
+					</span>
 				{/if}
 
 				<!-- projects-graph ADR-011 — sibling switcher.
