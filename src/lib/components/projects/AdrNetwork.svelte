@@ -148,11 +148,34 @@ care which view is rendering.
 		'#f97316', // orange
 		'#ec4899', // hot pink
 	];
+	/** Map slug → palette color. Order-deterministic: visible projects
+	 *  sorted by node count desc (then slug asc), assigned palette[i].
+	 *  Guarantees ZERO collisions until the visible project count
+	 *  exceeds `PROJECT_PALETTE.length` (8 today). Replaces a hash-based
+	 *  assignment that hit 1/8 collisions on small visible sets — e.g.
+	 *  `soul-hub-whatsapp` and `soul-hub-pipeline` both mapped to rose,
+	 *  making the legend useless on /projects/soul-hub. */
+	const projectColorMap = $derived.by<Map<string, string>>(() => {
+		const map = new Map<string, string>();
+		if (!projectStripe) return map;
+		const counts = new Map<string, number>();
+		for (const d of visible) {
+			const p = projectOf(d);
+			if (!p) continue;
+			counts.set(p, (counts.get(p) ?? 0) + 1);
+		}
+		const sorted = [...counts.entries()].sort(
+			(a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
+		);
+		sorted.forEach(([slug], i) => {
+			map.set(slug, PROJECT_PALETTE[i % PROJECT_PALETTE.length]);
+		});
+		return map;
+	});
+
 	function projectColor(slug: string): string {
 		if (!slug) return 'var(--hub-muted, #6b7280)';
-		let h = 0;
-		for (let i = 0; i < slug.length; i++) h = (h * 31 + slug.charCodeAt(i)) >>> 0;
-		return PROJECT_PALETTE[h % PROJECT_PALETTE.length];
+		return projectColorMap.get(slug) ?? PROJECT_PALETTE[0];
 	}
 
 	function tooltip(d: DecisionRow): string {
