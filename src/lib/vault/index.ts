@@ -32,19 +32,28 @@ function isProjectRootIndex(path: string): boolean {
 }
 
 /** projects-graph ADR-001 — validate `project_shape:` frontmatter value
- *  against the zone's `allowedProjectShapes` enum. Returns null on pass
- *  (including absent field — Day 1 cutover treats missing as OPTIONAL
- *  but the hygiene reporter still flags it). Returns a refusal message
- *  on non-enum values. */
+ *  against the zone's `allowedProjectShapes` enum. Non-enum values are
+ *  always refused. Missing field handling depends on `mode`:
+ *    - `'create'` (Day 8+ cutover, flipped 2026-05-19 at 100% labelling
+ *      coverage): REFUSE missing field on new project-root index.md.
+ *    - `'update'`: still permissive — pre-cutover index.md files without a
+ *      shape can be edited normally; backfill via `soul project label-shape`.
+ *  Returns null on pass. */
 function validateProjectShape(
 	notePath: string,
 	meta: VaultMeta,
 	zone: VaultZone,
+	mode: 'create' | 'update' = 'update',
 ): string | null {
 	if (!isProjectRootIndex(notePath)) return null;
 	if (zone.allowedProjectShapes.length === 0) return null;
 	const raw = meta.project_shape;
-	if (raw === undefined || raw === null || raw === '') return null;
+	if (raw === undefined || raw === null || raw === '') {
+		if (mode === 'create') {
+			return `Missing project_shape on project-root index.md (projects-graph ADR-001 Day 8+ cutover — allowed: ${zone.allowedProjectShapes.join(', ')})`;
+		}
+		return null;
+	}
 	const value = String(raw).toLowerCase();
 	if (!zone.allowedProjectShapes.includes(value)) {
 		return `project_shape "${raw}" not in canonical set (allowed: ${zone.allowedProjectShapes.join(', ')})`;
@@ -535,10 +544,9 @@ export class VaultEngine {
 		}
 
 		// projects-graph ADR-001 — project_shape enum check on the project
-		// root index.md. Refuse non-enum values; missing values are
-		// accepted Day 1 and surface as a hygiene violation via
-		// getGovernanceViolations() (keeper Telegram digest).
-		const createShapeErr = validateProjectShape(join(req.zone, req.filename), req.meta, zone);
+		// root index.md. Day 8+ cutover (flipped 2026-05-19): refuse missing
+		// AND non-enum values on CREATE. Update path stays permissive.
+		const createShapeErr = validateProjectShape(join(req.zone, req.filename), req.meta, zone, 'create');
 		if (createShapeErr) {
 			return { success: false, error: createShapeErr, field: 'project_shape' };
 		}
